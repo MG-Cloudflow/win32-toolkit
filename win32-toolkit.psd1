@@ -10,7 +10,7 @@
 
     # Only the single entry-point command is exported to the caller.
     # All helper functions in Private\ remain invisible outside the module.
-    FunctionsToExport = @('Invoke-Win32Toolkit', 'Test-Win32ToolkitProject')
+    FunctionsToExport = @('Invoke-Win32Toolkit', 'Test-Win32ToolkitProject', 'Export-Win32ToolkitIntuneWin')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

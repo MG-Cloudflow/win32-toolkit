@@ -597,9 +597,6 @@ Write-Host "1. Copy the Documentation folder to your host system" -ForegroundCol
 Write-Host "2. Use InstallationChanges JSON for automated uninstall and requirement script generation" -ForegroundColor Green
 Write-Host "3. Review detailed log for installation analysis" -ForegroundColor Green
 
-Write-Host "`nOpening documentation folder..." -ForegroundColor Cyan
-Start-Process -FilePath "explorer.exe" -ArgumentList $outputPath
-
 Write-Host "`n======================================"
 Write-Host "AUTO-CLOSING SANDBOX IN 30 SECONDS" -ForegroundColor Red
 Write-Host "======================================"

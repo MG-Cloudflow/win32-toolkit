@@ -55,7 +55,10 @@ function Invoke-Win32Toolkit {
 
         [Parameter(Mandatory = $false)]
         [ValidateSet('InstallUninstall', 'Update')]
-        [string[]]$RunTest
+        [string[]]$RunTest,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$PackageIntune
     )
 
     try {
@@ -172,11 +175,18 @@ function Invoke-Win32Toolkit {
 
         Write-Host "`nProject name will be: $projectName" -ForegroundColor Cyan
 
-        # Create the PSADT project scaffold
-        $projectCreated = Create-PSADTProject -ProjectName $projectName -ProjectPath $BasePath -Force:$Force
+        # Ensure the Projects tier exists before scaffolding
+        $paths       = Get-Win32ToolkitPaths -BasePath $BasePath
+        $projectsDir = $paths.Projects
+        if (-not (Test-Path $projectsDir)) {
+            New-Item -Path $projectsDir -ItemType Directory -Force | Out-Null
+        }
+
+        # Create the PSADT project scaffold inside Projects\
+        $projectCreated = Create-PSADTProject -ProjectName $projectName -ProjectPath $projectsDir -Force:$Force
 
         if ($projectCreated) {
-            $projectFullPath = Join-Path $BasePath $projectName
+            $projectFullPath = Join-Path $projectsDir $projectName
             $downloadPath    = Join-Path $projectFullPath 'Files'
 
             if (!(Test-Path $downloadPath)) {
@@ -242,10 +252,12 @@ function Invoke-Win32Toolkit {
                     }
                 }
 
-                # Open the project folder in Explorer
-                if (Get-Command explorer.exe -ErrorAction SilentlyContinue) {
-                    explorer.exe $projectFullPath
+                # Package as .intunewin if requested
+                if ($PackageIntune) {
+                    Export-Win32ToolkitIntuneWin -ProjectPath $projectFullPath
                 }
+
+
             }
             else {
                 Write-Warning 'Project was created but download failed. You can manually add the application files to the Files directory.'
