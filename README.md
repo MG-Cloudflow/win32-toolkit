@@ -51,9 +51,10 @@ Import-Module win32-toolkit
 ```powershell
 Get-Command -Module win32-toolkit
 # Expected output:
-# Name                  CommandType
-# ----                  -----------
-# Invoke-Win32Toolkit   Function
+# Name                       CommandType
+# ----                       -----------
+# Invoke-Win32Toolkit        Function
+# Test-Win32ToolkitProject   Function
 ```
 
 ---
@@ -107,6 +108,14 @@ Invoke-Win32Toolkit
     [-Architecture <string>]
     [-Force]
     [-BasePath <string>]
+    [-RunTest <string[]>]
+```
+
+```powershell
+Test-Win32ToolkitProject
+    [-ProjectPath <string>]
+    [-BasePath <string>]
+    [-Scenario <string>]
 ```
 
 ---
@@ -201,6 +210,24 @@ Defaults to `C:\Win32Apps`.
 Invoke-Win32Toolkit -Id 'Git.Git' -BasePath 'D:\Packaging\Projects'
 ```
 
+---
+
+#### `-RunTest <string[]>`
+
+Runs one or more sandbox test scenarios immediately after the project is built and documented. Accepts an array, so multiple scenarios can be chained in a single call.
+
+Valid values: `InstallUninstall`, `Update`
+
+```powershell
+# Run a full install/uninstall test right after packaging
+Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall
+
+# Chain multiple scenarios
+Invoke-Win32Toolkit -Id 'Mozilla.Firefox' -Architecture x64 -Force -RunTest InstallUninstall, Update
+```
+
+Internally this calls `Test-Win32ToolkitProject -ProjectPath $projectFullPath -Scenario $_` for each value supplied, so the same project is tested sequentially without any extra input required.
+
 **Example output structure:**
 
 ```
@@ -249,6 +276,12 @@ Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -BasePath
 Invoke-Win32Toolkit -Id 'Google.Chrome' -Architecture x64 -TemplateName 'Contoso' -Force
 ```
 
+#### Package and immediately run an install/uninstall test
+
+```powershell
+Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall
+```
+
 #### Create/update org template only (no packaging)
 
 ```powershell
@@ -293,6 +326,93 @@ Invoke-Win32Toolkit -NewTemplate -TemplateName 'Contoso'
 | `SupportFiles\TargetedDocumentationScript.ps1` | Script that runs inside Windows Sandbox to capture install changes |
 | `SupportFiles\RequirementScript.ps1` | Ready-to-paste Intune Win32 requirement script |
 | `<ProjectName>_TargetedDocumentation.wsb` | Windows Sandbox configuration — double-click to re-run documentation |
+
+---
+
+---
+
+## Test-Win32ToolkitProject
+
+Tests a PSADT project by launching a **Windows Sandbox** session that runs a full install/uninstall cycle (or another scenario). This can be called standalone after packaging, as part of a pipeline via `-RunTest` on `Invoke-Win32Toolkit`, or at any time against any existing PSADT project folder.
+
+```powershell
+Test-Win32ToolkitProject
+    [-ProjectPath <string>]
+    [-BasePath <string>]
+    [-Scenario <string>]
+```
+
+### Parameters
+
+#### `-ProjectPath <string>`
+
+Full path to an existing PSADT project folder (the folder that contains `Invoke-AppDeployToolkit.ps1`). If omitted, an interactive numbered list is shown that scans `BasePath` for valid projects.
+
+```powershell
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0'
+```
+
+---
+
+#### `-BasePath <string>`
+
+Root folder to scan for PSADT projects when `-ProjectPath` is not provided. Defaults to `C:\Win32Apps`.
+
+```powershell
+# Show a project picker over all projects in a custom folder
+Test-Win32ToolkitProject -BasePath 'D:\Packaging\Projects'
+```
+
+---
+
+#### `-Scenario <string>`
+
+The test scenario to execute. Defaults to `InstallUninstall`.
+
+| Value | Description |
+|---|---|
+| `InstallUninstall` | Install → 2-minute countdown (skippable) → Uninstall. Sandbox stays open for verification. |
+| `Update` | *Reserved — placeholder for a future update-over-existing-install test.* |
+
+```powershell
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0' -Scenario InstallUninstall
+```
+
+---
+
+### How InstallUninstall works
+
+When this scenario runs the function:
+
+1. Creates `<ProjectPath>\Sandbox\Countdown.ps1` — a WinForms countdown dialog (2 minutes, skippable) displayed between install and uninstall
+2. Writes `<ProjectPath>\Sandbox\FinalDemo.wsb` — the Windows Sandbox configuration that maps the project folder to `C:\PSADT` inside the sandbox
+3. Launches Windows Sandbox with the `.wsb` file; the sandbox automatically:
+   - Runs `Invoke-AppDeployToolkit.ps1` (install)
+   - Shows the countdown dialog
+   - Runs `Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall`
+   - Keeps the sandbox window open for manual verification
+
+```
+Sandbox\
+  Countdown.ps1      WinForms dialog with 2-min timer and Skip button
+  FinalDemo.wsb      Sandbox config — double-click to re-run the test
+```
+
+### Examples
+
+```powershell
+# Interactive project picker (scans C:\Win32Apps)
+Test-Win32ToolkitProject
+
+# Direct path
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0'
+
+# Interactive picker over a custom folder
+Test-Win32ToolkitProject -BasePath 'D:\Packaging'
+
+# Called automatically at the end of a packaging run
+Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall
+```
 
 ---
 

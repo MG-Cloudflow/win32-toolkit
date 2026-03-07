@@ -51,7 +51,11 @@ function Invoke-Win32Toolkit {
         [switch]$Force,
 
         [Parameter(Mandatory = $false)]
-        [string]$BasePath = 'C:\Win32Apps'
+        [string]$BasePath = 'C:\Win32Apps',
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('InstallUninstall', 'Update')]
+        [string[]]$RunTest
     )
 
     try {
@@ -229,6 +233,13 @@ function Invoke-Win32Toolkit {
                 }
                 else {
                     Write-Warning 'Documentation generation had issues - please review manually'
+                }
+
+                # Run test scenarios if requested
+                if ($RunTest) {
+                    foreach ($scenario in $RunTest) {
+                        Test-Win32ToolkitProject -ProjectPath $projectFullPath -Scenario $scenario
+                    }
                 }
 
                 # Open the project folder in Explorer
