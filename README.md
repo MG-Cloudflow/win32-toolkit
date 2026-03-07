@@ -116,6 +116,8 @@ Test-Win32ToolkitProject
     [-ProjectPath <string>]
     [-BasePath <string>]
     [-Scenario <string>]
+    [-VersionsBack <int>]
+    [-SpecificVersion <string>]
 ```
 
 ---
@@ -333,13 +335,15 @@ Invoke-Win32Toolkit -NewTemplate -TemplateName 'Contoso'
 
 ## Test-Win32ToolkitProject
 
-Tests a PSADT project by launching a **Windows Sandbox** session that runs a full install/uninstall cycle (or another scenario). This can be called standalone after packaging, as part of a pipeline via `-RunTest` on `Invoke-Win32Toolkit`, or at any time against any existing PSADT project folder.
+Tests a PSADT project by launching a **Windows Sandbox** session that runs a chosen test scenario. Can be called standalone after packaging, as part of a pipeline via `-RunTest` on `Invoke-Win32Toolkit`, or at any time against any existing PSADT project folder.
 
 ```powershell
 Test-Win32ToolkitProject
     [-ProjectPath <string>]
     [-BasePath <string>]
     [-Scenario <string>]
+    [-VersionsBack <int>]
+    [-SpecificVersion <string>]
 ```
 
 ### Parameters
@@ -367,30 +371,52 @@ Test-Win32ToolkitProject -BasePath 'D:\Packaging\Projects'
 
 #### `-Scenario <string>`
 
-The test scenario to execute. Defaults to `InstallUninstall`.
+The test scenario to execute. If omitted, an interactive menu is shown.
 
 | Value | Description |
 |---|---|
 | `InstallUninstall` | Install → 2-minute countdown (skippable) → Uninstall. Sandbox stays open for verification. |
-| `Update` | *Reserved — placeholder for a future update-over-existing-install test.* |
+| `Update` | Download and silently install an older baseline version → 2-minute countdown → run the PSADT package to perform an update. |
 
 ```powershell
 Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0' -Scenario InstallUninstall
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0' -Scenario Update
 ```
 
 ---
 
-### How InstallUninstall works
+#### `-VersionsBack <int>`
 
-When this scenario runs the function:
+*(Update scenario only)* Automatically selects the version that is *N* positions older than the currently packaged version in the Winget version list. For example, `1` picks the immediately previous release, `2` picks the one before that.
 
-1. Creates `<ProjectPath>\Sandbox\Countdown.ps1` — a WinForms countdown dialog (2 minutes, skippable) displayed between install and uninstall
-2. Writes `<ProjectPath>\Sandbox\FinalDemo.wsb` — the Windows Sandbox configuration that maps the project folder to `C:\PSADT` inside the sandbox
-3. Launches Windows Sandbox with the `.wsb` file; the sandbox automatically:
+If both `-VersionsBack` and `-SpecificVersion` are supplied, `-SpecificVersion` takes priority.
+
+```powershell
+# Use the immediately previous release as the baseline
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0' -Scenario Update -VersionsBack 1
+```
+
+---
+
+#### `-SpecificVersion <string>`
+
+*(Update scenario only)* Installs this exact version string as the baseline, bypassing the version list menu and `-VersionsBack` logic.
+
+```powershell
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0' -Scenario Update -SpecificVersion '2.47.0'
+```
+
+---
+
+### How `InstallUninstall` works
+
+1. Creates `<ProjectPath>\Sandbox\Countdown.ps1` — a WinForms countdown dialog (2 minutes, skippable) shown between install and uninstall
+2. Writes `<ProjectPath>\Sandbox\FinalDemo.wsb` — maps the project folder to `C:\PSADT` inside the sandbox
+3. Launches Windows Sandbox; the sandbox automatically:
    - Runs `Invoke-AppDeployToolkit.ps1` (install)
    - Shows the countdown dialog
    - Runs `Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall`
-   - Keeps the sandbox window open for manual verification
+   - Keeps the sandbox open for manual verification
 
 ```
 Sandbox\
@@ -398,20 +424,58 @@ Sandbox\
   FinalDemo.wsb      Sandbox config — double-click to re-run the test
 ```
 
+---
+
+### How `Update` works
+
+1. Reads the `PackageIdentifier` and current version from the YAML in `<ProjectPath>\Files\`
+2. Calls `winget show <id> --versions` and filters the list to versions older than the packaged version
+3. Resolves the target baseline version via `-SpecificVersion`, `-VersionsBack`, or an interactive numbered menu
+4. Downloads the old installer to `<ProjectPath>\Sandbox\OldVersion\` using `winget download`
+5. Resolves silent install switches from the downloaded YAML manifest; falls back to type-based defaults (Inno: `/VERYSILENT /NORESTART /SP-`, NSIS: `/S`, MSI: `/qn /norestart`, WiX/Burn: `/quiet /norestart`)
+6. Creates `Countdown.ps1` (same WinForms dialog as `InstallUninstall`)
+7. Writes `<ProjectPath>\Sandbox\UpdateDemo.wsb` with a `<LogonCommand>` that:
+   - Silently installs the old baseline version
+   - Shows the countdown dialog (verify the old version works)
+   - Runs `Invoke-AppDeployToolkit.ps1` to perform the update over the installed baseline
+   - Keeps the sandbox open for final verification
+
+```
+Sandbox\
+  OldVersion\        Downloaded old-version installer
+  Countdown.ps1      WinForms dialog with 2-min timer and Skip button
+  UpdateDemo.wsb     Sandbox config — double-click to re-run the update test
+```
+
+---
+
 ### Examples
 
 ```powershell
-# Interactive project picker (scans C:\Win32Apps)
+# Interactive scenario + project picker (scans C:\Win32Apps)
 Test-Win32ToolkitProject
 
-# Direct path
+# Direct path, interactive scenario picker
 Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0'
 
-# Interactive picker over a custom folder
+# InstallUninstall — direct path
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0' -Scenario InstallUninstall
+
+# Update — interactive version picker
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0' -Scenario Update
+
+# Update — auto-select 1 version back
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0' -Scenario Update -VersionsBack 1
+
+# Update — pin to a specific old version
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0' -Scenario Update -SpecificVersion '2.47.0'
+
+# Interactive picker over a custom base folder
 Test-Win32ToolkitProject -BasePath 'D:\Packaging'
 
 # Called automatically at the end of a packaging run
 Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall
+Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall, Update
 ```
 
 ---
