@@ -34,6 +34,12 @@ function Export-Win32ToolkitIntuneWin {
     Export-Win32ToolkitIntuneWin -BasePath 'D:\Packaging'
 .EXAMPLE
     Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0'
+.PARAMETER PublishIntune
+    After packaging, upload the .intunewin file directly to Microsoft Intune via Graph API.
+    Requires the Microsoft.Graph.Authentication module. You will be prompted to authenticate
+    interactively on the first run.
+.EXAMPLE
+    Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0' -PublishIntune
 #>
     [CmdletBinding()]
     param(
@@ -41,7 +47,10 @@ function Export-Win32ToolkitIntuneWin {
         [string]$ProjectPath,
 
         [Parameter(Mandatory = $false)]
-        [string]$BasePath = 'C:\Win32Apps'
+        [string]$BasePath = 'C:\Win32Apps',
+
+        [Parameter(Mandatory = $false)]
+        [switch]$PublishIntune
     )
 
     try {
@@ -181,7 +190,18 @@ function Export-Win32ToolkitIntuneWin {
             Write-Warning 'IntuneWinAppUtil.exe completed but the expected .intunewin file was not found.'
         }
 
-
+        # ── Step 7: Publish to Intune ─────────────────────────────────────────────
+        if ($intuneWinFile) {
+            $shouldPublish = $PublishIntune
+            if (-not $shouldPublish) {
+                Write-Host ''
+                $answer = Read-Host 'Upload to Microsoft Intune now? (Y/N)'
+                $shouldPublish = $answer -match '^[Yy]'
+            }
+            if ($shouldPublish) {
+                Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath
+            }
+        }
     }
     catch {
         Write-Error "Export-Win32ToolkitIntuneWin failed: $($_.Exception.Message)"

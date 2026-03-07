@@ -29,6 +29,13 @@ function Invoke-Win32Toolkit {
     Invoke-Win32Toolkit -SearchTerm 'visual studio code' -BasePath 'D:\Packaging'
 .EXAMPLE
     Invoke-Win32Toolkit -NewTemplate -TemplateName 'Contoso'
+.PARAMETER PackageIntune
+    After creating the project, package it into a .intunewin file using IntuneWinAppUtil.exe.
+.PARAMETER PublishIntune
+    After packaging, upload the .intunewin file to Microsoft Intune via Graph API.
+    Implies -PackageIntune. Requires the Microsoft.Graph.Authentication module.
+.EXAMPLE
+    Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -PackageIntune -PublishIntune
 #>
     [CmdletBinding()]
     param(
@@ -58,7 +65,10 @@ function Invoke-Win32Toolkit {
         [string[]]$RunTest,
 
         [Parameter(Mandatory = $false)]
-        [switch]$PackageIntune
+        [switch]$PackageIntune,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$PublishIntune
     )
 
     try {
@@ -252,9 +262,9 @@ function Invoke-Win32Toolkit {
                     }
                 }
 
-                # Package as .intunewin if requested
-                if ($PackageIntune) {
-                    Export-Win32ToolkitIntuneWin -ProjectPath $projectFullPath
+                # Package as .intunewin if requested (-PublishIntune also implies packaging)
+                if ($PackageIntune -or $PublishIntune) {
+                    Export-Win32ToolkitIntuneWin -ProjectPath $projectFullPath -PublishIntune:$PublishIntune
                 }
 
 

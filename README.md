@@ -6,9 +6,10 @@ The module exposes three public commands that cover the full packaging pipeline:
 
 | Command | Purpose |
 |---|---|
-| `Invoke-Win32Toolkit` | Search, download, scaffold, document, and optionally test and package an app |
+| `Invoke-Win32Toolkit` | Search, download, scaffold, document, and optionally test, package, and publish an app |
 | `Test-Win32ToolkitProject` | Run sandbox-based test scenarios against any existing PSADT project |
 | `Export-Win32ToolkitIntuneWin` | Clean up and compile a project into a ready-to-upload `.intunewin` file |
+| `Publish-Win32ToolkitIntuneApp` | Upload a `.intunewin` file directly to Microsoft Intune via the Graph API |
 
 ---
 
@@ -22,6 +23,7 @@ The module exposes three public commands that cover the full packaging pipeline:
 | **Windows Sandbox** | Required for documentation and test scenarios. Enable via *Windows Features → Windows Sandbox*. Available on Windows 10/11 Pro, Enterprise, and Education only. |
 | **Internet access** | Required to search Winget, download packages, check PSGallery, and download IntuneWinAppUtil.exe. |
 | **Administrator rights** | Recommended. Required if `BasePath` is under a system-protected location. |
+| **Microsoft.Graph.Authentication** | Required only for `Publish-Win32ToolkitIntuneApp` / `-PublishIntune`. Installed automatically on first use when you agree to the prompt. Install manually with `Install-Module -Name Microsoft.Graph.Authentication -Scope CurrentUser`. |
 
 ---
 
@@ -48,6 +50,10 @@ Get-Command -Module win32-toolkit
 
 # CommandType  Name
 # -----------  ----
+# Function     Export-Win32ToolkitIntuneWin
+# Function     Invoke-Win32Toolkit
+# Function     Publish-Win32ToolkitIntuneApp
+# Function     Test-Win32ToolkitProject
 # Function     Export-Win32ToolkitIntuneWin
 # Function     Invoke-Win32Toolkit
 # Function     Test-Win32ToolkitProject
@@ -127,6 +133,7 @@ Invoke-Win32Toolkit
     [-BasePath <string>]
     [-RunTest <string[]>]
     [-PackageIntune]
+    [-PublishIntune]
 ```
 
 ### Parameters
@@ -237,6 +244,22 @@ Invoke-Win32Toolkit -Id 'Mozilla.Firefox' -Architecture x64 -Force -PackageIntun
 
 ---
 
+#### `-PublishIntune`
+
+After packaging, calls `Publish-Win32ToolkitIntuneApp` to upload the `.intunewin` file directly to Microsoft Intune via the Graph API. **Implies `-PackageIntune`** — you do not need to specify both.
+
+On first use you are prompted to install the `Microsoft.Graph.Authentication` module (if absent) and to sign in interactively. The credential is cached for the session.
+
+```powershell
+# Full pipeline: build → package → publish
+Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -PublishIntune
+
+# Full pipeline including test
+Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -PublishIntune
+```
+
+---
+
 ### Pipeline steps
 
 ```
@@ -256,7 +279,9 @@ Invoke-Win32Toolkit -Id 'Mozilla.Firefox' -Architecture x64 -Force -PackageIntun
        b. Populates uninstall logic in Invoke-AppDeployToolkit.ps1 (EXE only)
        c. Sets AppProcessesToClose from App Paths registry entries
 13.  -RunTest (optional)       Launches sandbox test scenarios (InstallUninstall / Update)
-14.  -PackageIntune (optional) Copies to Staging\, cleans, runs IntuneWinAppUtil.exe → IntuneWin\
+14.  -PackageIntune /           Copies to Staging\, cleans, runs IntuneWinAppUtil.exe → IntuneWin\
+     -PublishIntune (optional)
+15.  -PublishIntune (optional)  Uploads .intunewin to Intune via Graph API (see below)
 ```
 
 ---
@@ -296,6 +321,12 @@ Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUnins
 
 # Full pipeline: build → test → package
 Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -PackageIntune
+
+# Full pipeline: build → package → publish to Intune
+Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -PublishIntune
+
+# Full pipeline: build → test → package → publish to Intune
+Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -PublishIntune
 
 # Create org template only
 Invoke-Win32Toolkit -NewTemplate -TemplateName 'Contoso'
@@ -460,6 +491,7 @@ Compiles a PSADT project into a `.intunewin` file ready for Intune upload. The o
 Export-Win32ToolkitIntuneWin
     [-ProjectPath <string>]
     [-BasePath <string>]
+    [-PublishIntune]
 ```
 
 ### Parameters
@@ -480,6 +512,17 @@ Root folder containing the tier structure when `-ProjectPath` is not provided. D
 
 ```powershell
 Export-Win32ToolkitIntuneWin -BasePath 'D:\Packaging'
+```
+
+---
+
+#### `-PublishIntune`
+
+After packaging completes, immediately calls `Publish-Win32ToolkitIntuneApp` to upload the resulting `.intunewin` to Microsoft Intune. On first use you are prompted to install `Microsoft.Graph.Authentication` (if absent) and to authenticate interactively.
+
+```powershell
+Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0' -PublishIntune
+Export-Win32ToolkitIntuneWin -PublishIntune   # interactive picker + publish
 ```
 
 ---
@@ -530,8 +573,119 @@ Export-Win32ToolkitIntuneWin -BasePath 'D:\Packaging'
 # Direct project path
 Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0'
 
+# Package and publish to Intune in one step
+Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0' -PublishIntune
+
 # Chained from Invoke-Win32Toolkit
 Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -PackageIntune
+```
+
+---
+
+---
+
+## Publish-Win32ToolkitIntuneApp
+
+Uploads a `.intunewin` file to Microsoft Intune using the Microsoft Graph `/beta` endpoint. Can be called standalone (useful if the file was produced by a different tool), or is invoked automatically when `-PublishIntune` is passed to `Export-Win32ToolkitIntuneWin` or `Invoke-Win32Toolkit`.
+
+### Syntax
+
+```powershell
+Publish-Win32ToolkitIntuneApp
+    -IntuneWinPath <string>
+    -ProjectPath   <string>
+```
+
+### Parameters
+
+#### `-IntuneWinPath <string>` *(required)*
+
+Full path to the `.intunewin` file to upload.
+
+```powershell
+Publish-Win32ToolkitIntuneApp \
+    -IntuneWinPath 'C:\Win32Apps\IntuneWin\Git_x64_2.53.0.intunewin' \
+    -ProjectPath   'C:\Win32Apps\Projects\Git_x64_2.53.0'
+```
+
+---
+
+#### `-ProjectPath <string>` *(required)*
+
+Full path to the raw PSADT project folder. Used to read the Winget YAML manifest for app metadata (display name, publisher, description, information URL) and to locate `Documentation\InstallationChanges_*.json` for detection rule generation.
+
+---
+
+### What it does
+
+| Step | Action |
+|------|--------|
+| 1 | Reads `Files\*.yaml` for display name, publisher, description, and information URL |
+| 2 | Parses architecture from the project folder name (`_x64_`, `_x86_`, `_arm64_`) |
+| 3 | Authenticates to Microsoft Graph — installs `Microsoft.Graph.Authentication` on prompt, skips if already connected with the right scope |
+| 4 | Opens the `.intunewin` ZIP and reads `IntuneWinPackage/metadata.xml` for all encryption fields |
+| 5 | Builds 1 detection rule from `Documentation\InstallationChanges_*.json` — registry key preferred (Uninstall key first), file system path as fallback |
+| 6 | `POST /beta/deviceAppManagement/mobileApps` — creates the Win32 app shell |
+| 7 | `POST .../contentVersions` — creates a content version |
+| 8 | `POST .../files` — registers the file entry with encrypted and unencrypted sizes |
+| 9 | Polls until the Azure Storage SAS URI is ready |
+| 10 | Extracts the inner encrypted content file from the `.intunewin` ZIP to a temp location |
+| 11 | Uploads the encrypted file to Azure Blob Storage using chunked Put Block (4 MB chunks) + Put Block List commit |
+| 12 | `POST .../files/{id}/commit` — sends all `fileEncryptionInfo` fields |
+| 13 | Polls until the commit is confirmed |
+| 14 | `PATCH /mobileApps/{appId}` — links the committed content version to the app |
+| 15 | Deletes the temp file; prints the app ID and a direct Intune portal URL |
+
+### App shell defaults
+
+| Property | Value |
+|---|---|
+| `installCommandLine` | `powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Install -DeployMode Silent` |
+| `uninstallCommandLine` | same with `-DeploymentType Uninstall` |
+| `runAsAccount` | `system` |
+| `deviceRestartBehavior` | `suppress` |
+| Return codes | 0 success, 1707 success, 3010 soft reboot, 1641 hard reboot, 1618 retry |
+| Minimum OS | Windows 10 1607 |
+
+All of these can be adjusted in the Intune portal after upload.
+
+### Authentication
+
+The module requests only the `DeviceManagementApps.ReadWrite.All` scope. Authentication is interactive (browser pop-up via `Connect-MgGraph`). Once the token is cached for the session, subsequent calls in the same PowerShell session do not re-prompt.
+
+```powershell
+# If you want to pre-connect with a specific account
+Connect-MgGraph -Scopes 'DeviceManagementApps.ReadWrite.All'
+
+# Then call the uploader — it detects the existing connection and skips re-auth
+Publish-Win32ToolkitIntuneApp \
+    -IntuneWinPath 'C:\Win32Apps\IntuneWin\Git_x64_2.53.0.intunewin' \
+    -ProjectPath   'C:\Win32Apps\Projects\Git_x64_2.53.0'
+```
+
+### Detection rule logic
+
+The function reads `Documentation\InstallationChanges_*.json` produced by the sandbox documentation run and applies this priority:
+
+1. **Registry** — look in `NewRegistryKeys`; prefer any entry whose path contains `Uninstall` (reliable app-presence indicator); fall back to the first `HKEY_LOCAL_MACHINE\SOFTWARE` entry
+2. **File system** — if no registry candidates, look in `NewFiles` for a path under `C:\Program Files`
+3. **None** — the app is created with an empty detection rule list; a warning is shown. Add a rule manually in the Intune portal.
+
+Only 1 detection rule is created. Additional rules can be added in the portal.
+
+### Examples
+
+```powershell
+# Standalone upload
+Publish-Win32ToolkitIntuneApp `
+    -IntuneWinPath 'C:\Win32Apps\IntuneWin\Git_x64_2.53.0.intunewin' `
+    -ProjectPath   'C:\Win32Apps\Projects\Git_x64_2.53.0'
+
+# Via Export-Win32ToolkitIntuneWin
+Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0' -PublishIntune
+
+# Via Invoke-Win32Toolkit (full pipeline)
+Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -PublishIntune
 ```
 
 ---
