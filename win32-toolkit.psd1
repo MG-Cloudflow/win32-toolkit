@@ -2,9 +2,9 @@
     RootModule        = 'win32-toolkit.psm1'
     ModuleVersion     = '1.0.0'
     GUID              = '87252f46-6d9c-4d65-b2ec-6af8e915b40c'
-    Author            = 'IT Packaging Team'
-    CompanyName       = 'Your Organisation'
-    Copyright         = '(c) 2026. All rights reserved.'
+    Author            = 'Maxime Guillemin'
+    CompanyName       = 'CloudFlow'
+    Copyright         = '(c) 2026 CloudFlow. All rights reserved.'
     Description       = 'End-to-end Win32 app packaging automation: Winget discovery, download, PSADT V4 project creation, and Intune requirement script generation.'
     PowerShellVersion = '5.1'
 
@@ -20,5 +20,5 @@
             Tags       = @('Intune', 'PSADT', 'Win32', 'Winget', 'Packaging')
             ProjectUri = ''
         }
-    }
+    }   
 }
