@@ -55,11 +55,13 @@ function Configure-PSADTForInstaller {
         # ---- Write App + Installer sections into AppConfig.json (merge-preserving) ----
         $cfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
         $cfg | Add-Member -NotePropertyName App -NotePropertyValue ([pscustomobject]@{
-            Vendor     = $vendor
-            Name       = $name
-            Version    = $version
-            Arch       = $Architecture
-            ScriptDate = (Get-Date -Format 'yyyy-MM-dd')
+            Vendor         = $vendor
+            Name           = $name
+            Version        = $version
+            Arch           = $Architecture
+            ScriptDate     = (Get-Date -Format 'yyyy-MM-dd')
+            Description    = if ($yamlInfo -and $yamlInfo.Description)    { $yamlInfo.Description }    else { '' }
+            InformationUrl = if ($yamlInfo -and $yamlInfo.InformationUrl) { $yamlInfo.InformationUrl } else { '' }
         }) -Force
         $cfg | Add-Member -NotePropertyName Installer -NotePropertyValue ([pscustomobject]@{
             Type       = $fileInfo.Type

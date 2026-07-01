@@ -6,7 +6,7 @@ function Publish-Win32ToolkitIntuneApp {
     Authenticates to Microsoft Graph with the DeviceManagementApps.ReadWrite.All scope,
     then executes the full Win32 Lob App upload sequence:
 
-    1. Reads app metadata (name, publisher, version) from the Winget YAML file.
+    1. Reads app metadata (name, publisher, version, description, URL) from AppConfig.json (winget YAML fallback).
     2. Extracts encryption metadata from the .intunewin archive (metadata.xml).
     3. Builds a detection rule from the InstallationChanges_*.json in Documentation\.
     4. Creates the app shell in Intune.
@@ -47,35 +47,46 @@ function Publish-Win32ToolkitIntuneApp {
         Write-Host 'Intune App Upload' -ForegroundColor Cyan
         Write-Host '=================' -ForegroundColor Cyan
 
-        # ── App metadata ─────────────────────────────────────────────────────────
+        # ── App metadata (AppConfig.json first, winget YAML fallback) ─────────────
         $projectName = Split-Path $ProjectPath -Leaf
         $filesPath   = Join-Path $ProjectPath 'Files'
-        $yamlInfo    = Get-YAMLInstallerInfo -FilesPath $filesPath
 
+        $appCfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
+        $app    = if ($appCfg.PSObject.Properties.Name -contains 'App') { $appCfg.App } else { $null }
+
+        $yamlInfo = Get-YAMLInstallerInfo -FilesPath $filesPath
         $rawYaml  = ''
         $yamlFile = Get-ChildItem -Path $filesPath -Filter '*.yaml' -File -ErrorAction SilentlyContinue |
             Select-Object -First 1
         if ($yamlFile) { $rawYaml = Get-Content $yamlFile.FullName -Raw }
 
-        $displayName = if ($yamlInfo -and $yamlInfo.PackageName) { $yamlInfo.PackageName } else { $projectName }
-        $publisher   = if ($yamlInfo -and $yamlInfo.Publisher)   { $yamlInfo.Publisher }   else { 'Unknown' }
-
-        $informationUrl = ''
-        if    ($rawYaml -match '(?m)^\s*PackageUrl:\s*(.+)')   { $informationUrl = $matches[1].Trim() }
-        elseif ($rawYaml -match '(?m)^\s*PublisherUrl:\s*(.+)') { $informationUrl = $matches[1].Trim() }
-
-        $description = ''
-        if    ($rawYaml -match '(?m)^\s*ShortDescription:\s*(.+)') { $description = $matches[1].Trim() }
-        elseif ($rawYaml -match '(?m)^\s*Description:\s*(.+)')     { $description = $matches[1].Trim() }
+        $displayName = if     ($app -and $app.Name)                      { $app.Name }
+                       elseif ($yamlInfo -and $yamlInfo.PackageName)     { $yamlInfo.PackageName }
+                       else                                              { $projectName }
+        $publisher   = if     ($app -and $app.Vendor)                    { $app.Vendor }
+                       elseif ($yamlInfo -and $yamlInfo.Publisher)       { $yamlInfo.Publisher }
+                       else                                              { 'Unknown' }
+        $displayVersion = if     ($app -and $app.Version)                { $app.Version }
+                          elseif ($yamlInfo -and $yamlInfo.PackageVersion) { $yamlInfo.PackageVersion }
+                          else                                           { '' }
+        $description = if     ($app -and $app.Description)               { $app.Description }
+                       elseif ($rawYaml -match '(?m)^\s*ShortDescription:\s*(.+)') { $matches[1].Trim() }
+                       elseif ($rawYaml -match '(?m)^\s*Description:\s*(.+)')      { $matches[1].Trim() }
+                       else                                              { '' }
+        $informationUrl = if     ($app -and $app.InformationUrl)         { $app.InformationUrl }
+                          elseif ($rawYaml -match '(?m)^\s*PackageUrl:\s*(.+)')   { $matches[1].Trim() }
+                          elseif ($rawYaml -match '(?m)^\s*PublisherUrl:\s*(.+)') { $matches[1].Trim() }
+                          else                                           { '' }
 
         $wingetId = ''
         if ($rawYaml -match '(?m)^\s*PackageIdentifier:\s*(.+)') { $wingetId = $matches[1].Trim() }
 
-        # ── Architecture from project folder name ─────────────────────────────────
+        # ── Architecture: AppConfig.App.Arch, else parse the project folder name ──
         $arch = 'x64'
-        if    ($projectName -match '_x86_')   { $arch = 'x86'   }
+        if     ($app -and $app.Arch)           { $arch = $app.Arch }
+        elseif ($projectName -match '_x86_')   { $arch = 'x86'   }
         elseif ($projectName -match '_arm64_') { $arch = 'arm64' }
-        elseif ($projectName -match '_x64_')  { $arch = 'x64'   }
+        elseif ($projectName -match '_x64_')   { $arch = 'x64'   }
 
         Write-Host "  App name     : $displayName" -ForegroundColor Gray
         Write-Host "  Publisher    : $publisher"   -ForegroundColor Gray
@@ -103,7 +114,7 @@ function Publish-Win32ToolkitIntuneApp {
         $appBody = @{
             '@odata.type'                      = '#microsoft.graph.win32LobApp'
             'displayName'                      = $displayName
-            'displayVersion'                   = if ($yamlInfo -and $yamlInfo.PackageVersion) { $yamlInfo.PackageVersion } else { '' }
+            'displayVersion'                   = $displayVersion
             'description'                      = $description
             'publisher'                        = $publisher
             'informationUrl'                   = $informationUrl
