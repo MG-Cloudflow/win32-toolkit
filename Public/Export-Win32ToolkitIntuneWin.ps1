@@ -220,7 +220,15 @@ function Export-Win32ToolkitIntuneWin {
                 Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath
             }
             if ($doUpdate) {
-                Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath -AsUpdate
+                # Pre-check: if no reliable "already installed" signal exists (e.g. an MSI with no
+                # UpgradeCode), skip the update gracefully with a warning instead of throwing — which
+                # matters most in "both" mode, where the install app has already uploaded.
+                if (Get-Win32ToolkitRequirementRule -ProjectPath $ProjectPath) {
+                    Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath -AsUpdate
+                }
+                else {
+                    Write-Warning 'Skipped the update app: this project has no reliable "already installed" signal (no install tattoo, MSI UpgradeCode, or app name). Publish the install app, or use supersedence.'
+                }
             }
         }
     }

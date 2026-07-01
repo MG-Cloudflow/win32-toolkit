@@ -10,15 +10,17 @@ function Get-Win32ToolkitRequirementRule {
         STDOUT = 1" (detectionType integer, operator equal, value 1) as "requirement met", and a
         non-zero exit as "not met" — so the update app is applicable only where the app already exists.
 
-        Presence uses EXACT/LITERAL signals only, so it never matches unrelated products and never
-        misses due to wildcard characters in the name:
-          1. the install tattoo key (Test-Path -LiteralPath; version-agnostic, the primary signal),
-          2. any captured MSI product code (Test-Path -LiteralPath), and
-          3. an exact Add/Remove-Programs DisplayName -eq the clean App.Name.
+        Presence uses EXACT/LITERAL, version-agnostic signals only, so it never matches unrelated
+        products and never misses due to wildcard characters in the name:
+          1. the install tattoo key (Test-Path -LiteralPath; the primary signal for EXE apps),
+          2. the MSI UpgradeCode (version-stable) via WindowsInstaller RelatedProducts — read from the
+             MSI in Files\ so MSI Zero-Config apps (empty App.Name, no tattoo) are covered,
+          3. any captured MSI product code (Test-Path -LiteralPath), and
+          4. an exact Add/Remove-Programs DisplayName -eq the clean App.Name (or the MSI ProductName).
         A first-word substring "-like" match is deliberately NOT used (it matched e.g. every
-        "Microsoft *" product). If neither a tattoo key nor an App.Name is available (e.g. MSI
-        Zero-Config), no reliable cross-version signal exists and the function returns $null so the
-        caller aborts rather than shipping an over- or under-matching update app.
+        "Microsoft *" product). If none of a tattoo key, an UpgradeCode, or a name is available, no
+        reliable cross-version signal exists and the function returns $null so the caller aborts rather
+        than shipping an over- or under-matching update app.
 
         Presence (not version >=) is deliberate: the update app's detection rule already checks the
         exact version, so the requirement only needs to gate on "the app is here to be updated". A
@@ -64,11 +66,6 @@ function Get-Win32ToolkitRequirementRule {
         $tattooKey = "HKLM:\SOFTWARE\$($app.ScriptAuthor)\$($app.Vendor)\$($app.Name)"
     }
 
-    # Version-independent product name for an EXACT (safe) Add/Remove-Programs match. Deliberately the
-    # clean App.Name (NOT the captured, version-decorated Uninstall DisplayName), matched with -eq and
-    # never a substring wildcard, so it cannot match unrelated products (e.g. 'Microsoft *').
-    $cleanName = if ($app -and $app.Name) { $app.Name } else { $null }
-
     $productCodes = @()
     if ($uninstall) {
         foreach ($pc in @($uninstall.ProductCodes)) { if ($pc) { $productCodes += $pc } }
@@ -76,11 +73,32 @@ function Get-Win32ToolkitRequirementRule {
     }
     $productCodes = @($productCodes | Where-Object { Test-Win32ToolkitProductCode $_ } | Select-Object -Unique)
 
-    # Require a signal that can identify the app across versions: the tattoo key (version-agnostic) or a
-    # clean app name for an exact ARP match. Product codes alone are per-version, so they never gate the
-    # rule on their own (an MSI Zero-Config app has neither a tattoo nor an App.Name -> abort).
-    if (-not $tattooKey -and -not $cleanName) {
-        Write-Warning 'Cannot build a reliable update requirement rule (no install tattoo key and no app name — e.g. MSI Zero-Config). Use the install app, or supersedence.'
+    # MSI: the version-STABLE identity is the UpgradeCode. Read it (and the ProductName) from the MSI in
+    # Files\, so an MSI Zero-Config app (empty App.Name, no tattoo) still gets a reliable, version-agnostic
+    # presence signal (checked on-device via WindowsInstaller RelatedProducts).
+    $upgradeCode = $null
+    $msiName     = $null
+    $installerType = if (($cfg.PSObject.Properties.Name -contains 'Installer') -and $cfg.Installer) { $cfg.Installer.Type } else { $null }
+    if ($installerType -eq 'msi' -or -not ($app -and $app.Name)) {
+        $msiFile = Get-ChildItem -Path (Join-Path $ProjectPath 'Files') -Filter '*.msi' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($msiFile) {
+            $uc = Get-Win32ToolkitMsiProperty -Path $msiFile.FullName -Property 'UpgradeCode'
+            if (Test-Win32ToolkitProductCode $uc) { $upgradeCode = $uc }
+            $pn = Get-Win32ToolkitMsiProperty -Path $msiFile.FullName -Property 'ProductName'
+            if ($pn) { $msiName = $pn }
+        }
+    }
+
+    # Version-independent product name for an EXACT (safe) Add/Remove-Programs match: the clean App.Name,
+    # or (for MSI Zero-Config, where App.Name is empty) the MSI ProductName. Matched with -eq and never a
+    # substring wildcard, so it cannot match unrelated products (e.g. 'Microsoft *').
+    $cleanName = if ($app -and $app.Name) { $app.Name } elseif ($msiName) { $msiName } else { $null }
+
+    # Require a signal that can identify the app across versions: the tattoo key, the MSI UpgradeCode, or a
+    # clean name for an exact ARP match. Product codes alone are per-version, so they never gate the rule on
+    # their own. If none exist (e.g. an MSI with no UpgradeCode), abort rather than ship a bad rule.
+    if (-not $tattooKey -and -not $cleanName -and -not $upgradeCode) {
+        Write-Warning 'Cannot build a reliable update requirement rule (no install tattoo, MSI UpgradeCode, or app name). Use the install app, or supersedence.'
         return $null
     }
 
@@ -94,6 +112,15 @@ function Get-Win32ToolkitRequirementRule {
     if ($tattooKey) {
         # -LiteralPath so a name with [ ] * ? (e.g. "App [x64]") is matched literally, not as a wildcard.
         $lines.Add("if (-not `$found -and (Test-Path -LiteralPath '$(ConvertTo-PSSingleQuoted $tattooKey)')) { `$found = `$true }")
+    }
+    if ($upgradeCode) {
+        # MSI UpgradeCode is stable across versions; RelatedProducts lists installed products sharing it.
+        $lines.Add('if (-not $found) {')
+        $lines.Add('    try {')
+        $lines.Add('        $wi = New-Object -ComObject WindowsInstaller.Installer')
+        $lines.Add("        if (@(`$wi.RelatedProducts('$(ConvertTo-PSSingleQuoted $upgradeCode)')).Count -gt 0) { `$found = `$true }")
+        $lines.Add('    } catch { }')
+        $lines.Add('}')
     }
     if ($productCodes.Count -gt 0) {
         $lines.Add('if (-not $found) {')
@@ -135,7 +162,7 @@ function Get-Win32ToolkitRequirementRule {
 
     return @{
         '@odata.type'           = '#microsoft.graph.win32LobAppPowerShellScriptRequirement'
-        'displayName'           = if ($app -and $app.Name) { "$($app.Name) is installed" } else { 'App is installed' }
+        'displayName'           = if ($cleanName) { "$cleanName is installed" } else { 'App is installed' }
         'enforceSignatureCheck' = $false
         'runAs32Bit'            = [bool]$RunAs32Bit
         'runAsAccount'          = $RunAsAccount

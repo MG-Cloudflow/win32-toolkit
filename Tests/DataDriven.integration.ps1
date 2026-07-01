@@ -169,6 +169,27 @@ InstallerSwitches:
     if ($rrScript -notmatch '-like' -and $rrScript -match [regex]::Escape('$_.DisplayName -eq $target') -and $rrScript -match 'Test-Path -LiteralPath') {
         Ok 'exact/literal presence only (no substring -like; -LiteralPath tattoo/product-code)'
     } else { Bad 'presence match not exact/literal' }
+
+    Write-Host "`n[9] MSI update requirement uses the UpgradeCode (stubbed MSI read)" -ForegroundColor Cyan
+    # Override the COM MSI reader so no real .msi is needed; confirms the MSI Zero-Config path builds a rule.
+    function Get-Win32ToolkitMsiProperty { param([string]$Path, [string]$Property)
+        if ($Property -eq 'UpgradeCode') { return '{CDB13460-04DF-4708-A7FD-4CB4A0684605}' }
+        if ($Property -eq 'ProductName') { return 'Stub MSI App' }
+        return ''
+    }
+    $mproj = Join-Path $base 'MsiApp'
+    New-Item -ItemType Directory -Path (Join-Path $mproj 'Files') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $mproj 'SupportFiles') -Force | Out-Null
+    Set-Content -Path (Join-Path $mproj 'Files\stub.msi') -Value 'x'   # presence only; the read is stubbed
+    $mcfg = [pscustomobject]@{ App = [pscustomobject]@{ Name=''; Version='1.0'; Vendor='' }; Installer = [pscustomobject]@{ Type='msi'; FileName='stub.msi' } }
+    [System.IO.File]::WriteAllText((Join-Path $mproj 'SupportFiles\AppConfig.json'), ($mcfg | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
+    $mrule = Get-Win32ToolkitRequirementRule -ProjectPath $mproj
+    if ($mrule) { Ok 'MSI Zero-Config builds a rule (no abort)' } else { Bad 'MSI aborted despite UpgradeCode' }
+    if ($mrule) {
+        $ms = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($mrule['scriptContent']))
+        if ($ms -match 'RelatedProducts' -and $ms -match [regex]::Escape('{CDB13460-04DF-4708-A7FD-4CB4A0684605}')) { Ok 'RelatedProducts + real UpgradeCode embedded' } else { Bad 'UpgradeCode presence check missing' }
+        if ($mrule['displayName'] -eq 'Stub MSI App is installed') { Ok 'displayName from MSI ProductName' } else { Bad "displayName: $($mrule['displayName'])" }
+    }
 }
 finally { Remove-Item -Path $base -Recurse -Force -ErrorAction SilentlyContinue }
 
