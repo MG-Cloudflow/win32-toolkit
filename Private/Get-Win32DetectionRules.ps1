@@ -4,6 +4,31 @@ function Get-Win32DetectionRules {
         [string]$ProjectPath
     )
 
+    # ── Tattoo detection (preferred) ──────────────────────────────────────────────
+    # The generated deploy script writes HKLM:\SOFTWARE\<Author>\<Vendor>\<Name>\Version at install
+    # (see Set-PSADTDataDrivenScript). Detect on that value so Intune confirms the app is installed
+    # AND at the correct version. This is independent of the sandbox capture, so it also covers hard
+    # (manual-install) apps. The condition mirrors the deploy-script guard exactly, so the key path
+    # here is identical to what the device writes.
+    $cfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
+    $app = if ($cfg.PSObject.Properties.Name -contains 'App') { $cfg.App } else { $null }
+    if ($app -and $app.ScriptAuthor -and $app.Vendor -and $app.Name -and $app.Version) {
+        $tattooKey = "HKEY_LOCAL_MACHINE\SOFTWARE\$($app.ScriptAuthor)\$($app.Vendor)\$($app.Name)"
+        Write-Host "  Detection rule (Registry version): $tattooKey\Version = $($app.Version)" -ForegroundColor Gray
+        return @(
+            [ordered]@{
+                '@odata.type'          = '#microsoft.graph.win32LobAppRegistryDetection'
+                'keyPath'              = $tattooKey
+                'valueName'            = 'Version'
+                'detectionType'        = 'version'
+                'operator'             = 'equal'
+                'detectionValue'       = "$($app.Version)"
+                'check32BitOn64System' = $false
+            }
+        )
+    }
+
+    # ── Capture-based fallback (MSI Zero-Config / apps without a tattoo) ────────────
     $docPath = Join-Path $ProjectPath 'Documentation'
     if (-not (Test-Path $docPath)) {
         Write-Host '  No Documentation folder found — no detection rules generated.' -ForegroundColor Yellow
