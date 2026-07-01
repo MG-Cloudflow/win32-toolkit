@@ -420,7 +420,9 @@ Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0' -Sc
 ```
 Sandbox\
   Countdown.ps1    WinForms 2-min countdown with Skip button
+  CollectLogs.ps1  Copies PSADT/MSI logs into Sandbox\Logs after the run
   FinalDemo.wsb    Sandbox config — double-click to re-run
+  Logs\            PSADT + MSI logs copied back from the sandbox (for troubleshooting)
 ```
 
 ---
@@ -443,7 +445,9 @@ Sandbox\
 Sandbox\
   OldVersion\      Downloaded old-version installer
   Countdown.ps1    WinForms 2-min countdown with Skip button
+  CollectLogs.ps1  Copies PSADT/MSI logs into Sandbox\Logs after the run
   UpdateDemo.wsb   Sandbox config — double-click to re-run
+  Logs\            PSADT + MSI logs copied back from the sandbox (for troubleshooting)
 ```
 
 ---

@@ -94,6 +94,10 @@ function Test-Win32ToolkitProject {
                 $countdownPath = New-CountdownScript -ProjectPath $ProjectPath
                 Write-Host "✓ Countdown script : $countdownPath" -ForegroundColor Green
 
+                # Log collector — copies PSADT/MSI logs back to the project after the run
+                $logCollectorPath = New-LogCollectorScript -ProjectPath $ProjectPath
+                Write-Host "✓ Log collector    : $logCollectorPath" -ForegroundColor Green
+
                 # Build sandbox configuration
                 $sandboxFolder     = Join-Path $ProjectPath 'Sandbox'
                 $sandboxConfigFile = Join-Path $sandboxFolder 'FinalDemo.wsb'
@@ -110,7 +114,7 @@ function Test-Win32ToolkitProject {
         </MappedFolder>
     </MappedFolders>
     <LogonCommand>
-        <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { C:\PSADT\Invoke-AppDeployToolkit.ps1; C:\PSADT\Sandbox\Countdown.ps1; C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall }&quot;</Command>
+        <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { C:\PSADT\Invoke-AppDeployToolkit.ps1; C:\PSADT\Sandbox\Countdown.ps1; C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1 } }&quot;</Command>
     </LogonCommand>
 </Configuration>
 "@
@@ -125,7 +129,8 @@ function Test-Win32ToolkitProject {
                 Write-Host '  1. Install the application'                 -ForegroundColor Green
                 Write-Host '  2. Show a 2-minute countdown for testing'   -ForegroundColor Yellow
                 Write-Host '  3. Uninstall the application'               -ForegroundColor Red
-                Write-Host '  4. Keep the sandbox open for verification'  -ForegroundColor Cyan
+                Write-Host '  4. Copy PSADT/MSI logs to project\Sandbox\Logs' -ForegroundColor Cyan
+                Write-Host '  5. Keep the sandbox open for verification'  -ForegroundColor Cyan
                 Write-Host '=============================================' -ForegroundColor Cyan
 
                 Start-Process -FilePath 'WindowsSandbox.exe' -ArgumentList $sandboxConfigFile
@@ -189,6 +194,10 @@ function Test-Win32ToolkitProject {
                 $countdownPath = New-CountdownScript -ProjectPath $ProjectPath
                 Write-Host "✓ Countdown script : $countdownPath" -ForegroundColor Green
 
+                # Log collector — copies PSADT/MSI logs back to the project after the run
+                $logCollectorPath = New-LogCollectorScript -ProjectPath $ProjectPath
+                Write-Host "✓ Log collector    : $logCollectorPath" -ForegroundColor Green
+
                 # ── Step 6: Build the sandbox WSB config ──────────────────────────────────
                 $sandboxFolder     = Join-Path $ProjectPath 'Sandbox'
                 $sandboxConfigFile = Join-Path $sandboxFolder 'UpdateDemo.wsb'
@@ -220,7 +229,7 @@ function Test-Win32ToolkitProject {
         </MappedFolder>
     </MappedFolders>
     <LogonCommand>
-        <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { $installCmdXml; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1' }&quot;</Command>
+        <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { $installCmdXml; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1' } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1' } }&quot;</Command>
     </LogonCommand>
 </Configuration>
 "@
@@ -235,7 +244,8 @@ function Test-Win32ToolkitProject {
                 Write-Host "  1. Silently install v$targetVersion (old baseline)"      -ForegroundColor Green
                 Write-Host '  2. Show a 2-minute countdown — verify the old install'   -ForegroundColor Yellow
                 Write-Host '  3. Run the PSADT package to perform the update'          -ForegroundColor Cyan
-                Write-Host '  4. Keep the sandbox open for final verification'         -ForegroundColor White
+                Write-Host '  4. Copy PSADT/MSI logs to project\Sandbox\Logs'          -ForegroundColor Cyan
+                Write-Host '  5. Keep the sandbox open for final verification'         -ForegroundColor White
                 Write-Host '================================================'          -ForegroundColor Cyan
 
                 Start-Process -FilePath 'WindowsSandbox.exe' -ArgumentList $sandboxConfigFile
