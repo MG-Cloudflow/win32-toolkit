@@ -17,14 +17,28 @@ function Publish-Win32ToolkitIntuneApp {
     9. Links the content version to the app.
 
     Requires the Microsoft.Graph.Authentication module (installed automatically on prompt).
+
+    With -AsUpdate the same .intunewin is published as a SECOND app of the same version whose
+    requirement rule (a PowerShell presence check, built by Get-Win32ToolkitRequirementRule) makes it
+    applicable only to devices that already have the app — the classic Intune "install app + update
+    app" pattern. Detection stays the version-aware tattoo rule, so the update installs on machines
+    with an older version and is detected once they reach this version. (Supersedence is separate.)
 .PARAMETER IntuneWinPath
     Full path to the .intunewin file produced by Export-Win32ToolkitIntuneWin.
 .PARAMETER ProjectPath
     Full path to the raw PSADT project folder. Used for YAML metadata and detection rules.
+.PARAMETER AsUpdate
+    Publish the update variant: append -UpdateNameSuffix to the display name and attach the
+    "app already installed" requirement rule. Fails fast if no requirement rule can be built.
+.PARAMETER UpdateNameSuffix
+    Display-name suffix for the update app (default ' (Update)').
 .EXAMPLE
     Publish-Win32ToolkitIntuneApp `
         -IntuneWinPath 'C:\Win32Apps\IntuneWin\Git_x64_2.53.0.intunewin' `
         -ProjectPath   'C:\Win32Apps\Projects\Git_x64_2.53.0'
+.EXAMPLE
+    # Publish the update app (2nd app, requirement-gated to devices that already have it)
+    Publish-Win32ToolkitIntuneApp -IntuneWinPath $win -ProjectPath $proj -AsUpdate
 #>
     [CmdletBinding()]
     param(
@@ -32,7 +46,15 @@ function Publish-Win32ToolkitIntuneApp {
         [string]$IntuneWinPath,
 
         [Parameter(Mandatory = $true)]
-        [string]$ProjectPath
+        [string]$ProjectPath,
+
+        # Publish this as the "update" app: a second Intune app of the same version whose requirement
+        # rule (a PowerShell presence check) makes it applicable ONLY to devices that already have the
+        # app — so it updates existing installs without installing on machines that shouldn't have it.
+        [switch]$AsUpdate,
+
+        # Display-name suffix that distinguishes the update app from the install app.
+        [string]$UpdateNameSuffix = ' (Update)'
     )
 
     $baseUri  = 'https://graph.microsoft.com/beta/deviceAppManagement'
@@ -88,9 +110,23 @@ function Publish-Win32ToolkitIntuneApp {
         elseif ($projectName -match '_arm64_') { $arch = 'arm64' }
         elseif ($projectName -match '_x64_')   { $arch = 'x64'   }
 
+        # ── Update app: name suffix + requirement rule (applicable only where already installed) ──
+        $requirementRules = @()
+        if ($AsUpdate) {
+            $reqRule = Get-Win32ToolkitRequirementRule -ProjectPath $ProjectPath
+            if (-not $reqRule) {
+                throw 'Update app requested, but no requirement rule could be built (AppConfig has no tattoo key, product code, or app name). Refusing to publish an update app that would apply to every device.'
+            }
+            $requirementRules = @($reqRule)
+            $displayName      = "$displayName$UpdateNameSuffix"
+        }
+
         Write-Host "  App name     : $displayName" -ForegroundColor Gray
         Write-Host "  Publisher    : $publisher"   -ForegroundColor Gray
         Write-Host "  Architecture : $arch"        -ForegroundColor Gray
+        if ($AsUpdate) {
+            Write-Host '  Mode         : UPDATE app (requirement: app already installed)' -ForegroundColor Gray
+        }
 
         # ── Graph authentication ──────────────────────────────────────────────────
         Connect-Win32ToolkitGraph
@@ -119,7 +155,7 @@ function Publish-Win32ToolkitIntuneApp {
             'publisher'                        = $publisher
             'informationUrl'                   = $informationUrl
             'privacyInformationUrl'            = ''
-            'notes'                            = if ($wingetId) { "win32-toolkit; $wingetId" } else { 'win32-toolkit' }
+            'notes'                            = (@('win32-toolkit'; if ($AsUpdate) { 'update' }; if ($wingetId) { $wingetId }) | Where-Object { $_ }) -join '; '
             'isFeatured'                       = $false
             'fileName'                         = 'Invoke-AppDeployToolkit.ps1'
             'setupFilePath'                    = 'Invoke-AppDeployToolkit.ps1'
@@ -140,7 +176,8 @@ function Publish-Win32ToolkitIntuneApp {
                 @{ 'returnCode' = 1641; 'type' = 'hardReboot' }
                 @{ 'returnCode' = 1618; 'type' = 'retry'      }
             )
-            'detectionRules' = @($detectionRules)
+            'detectionRules'   = @($detectionRules)
+            'requirementRules' = @($requirementRules)
         }
 
         $appResponse = Invoke-MgGraphRequest -Method POST -Uri "$baseUri/mobileApps" `

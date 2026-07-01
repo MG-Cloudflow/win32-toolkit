@@ -151,6 +151,24 @@ InstallerSwitches:
     if ($ps1b -match [regex]::Escape("AppScriptAuthor = 'O''Brien IT'")) { Ok "author literal escaped (O''Brien IT)" } else { Bad 'author literal not escaped' }
     if ($ps1b -match [regex]::Escape("-StatusMessage 'It''s installing'")) { Ok 'progress StatusMessage escaped' } else { Bad 'StatusMessage not escaped' }
     if (([regex]::Matches($ps1b,'Set-ADTRegistryKey')).Count -eq 1) { Ok 'tattoo survived org-template branding' } else { Bad 'tattoo clobbered by branding' }
+
+    Write-Host "`n[8] Update requirement rule (presence check; hostile values escaped)" -ForegroundColor Cyan
+    $rr = Get-Win32ToolkitRequirementRule -ProjectPath $proj
+    if ($rr -and $rr['@odata.type'] -eq '#microsoft.graph.win32LobAppPowerShellScriptRequirement' -and
+        $rr['detectionType'] -eq 'integer' -and $rr['operator'] -eq 'equal' -and $rr['detectionValue'] -eq '1' -and
+        $rr['runAsAccount'] -eq 'system') {
+        Ok 'requirement rule shape (script requirement, integer/equal/1, system)'
+    } else { Bad "requirement rule: $($rr | ConvertTo-Json -Compress)" }
+    $rrScript = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($rr['scriptContent']))
+    $rrErrs=$null; [System.Management.Automation.Language.Parser]::ParseInput($rrScript,[ref]$null,[ref]$rrErrs)|Out-Null
+    if (-not ($rrErrs -and $rrErrs.Count)) { Ok 'requirement script parses' } else { Bad "req parse: $($rrErrs[0].Message)" }
+    if ($rrScript -notmatch [regex]::Escape($UNINST_PAYLOAD) -and $rrScript -notmatch 'PWNED' -and $rrScript -notmatch 'calc\.exe') {
+        Ok 'no injection payload in requirement script (values escaped as data)'
+    } else { Bad 'payload leaked into requirement script' }
+    if ($rrScript -match 'Write-Output 1; exit 0' -and $rrScript -match 'ErrorActionPreference') { Ok 'presence logic + STDERR suppression present' } else { Bad 'presence/stderr logic missing' }
+    if ($rrScript -notmatch '-like' -and $rrScript -match [regex]::Escape('$_.DisplayName -eq $target') -and $rrScript -match 'Test-Path -LiteralPath') {
+        Ok 'exact/literal presence only (no substring -like; -LiteralPath tattoo/product-code)'
+    } else { Bad 'presence match not exact/literal' }
 }
 finally { Remove-Item -Path $base -Recurse -Force -ErrorAction SilentlyContinue }
 
