@@ -140,6 +140,7 @@ function New-Win32ToolkitManualApp {
             Name           = if ($isMsi) { '' } else { $Name }   # empty ⇒ Zero-Config MSI
             Version        = $Version
             Arch           = $Architecture
+            ScriptAuthor   = if ($script:OrgTemplate -and $script:OrgTemplate.AppScriptAuthor) { $script:OrgTemplate.AppScriptAuthor } else { '' }
             ScriptDate     = (Get-Date -Format 'yyyy-MM-dd')
             Description    = if ($Description) { $Description } else { '' }
             InformationUrl = if ($InformationUrl) { $InformationUrl } else { '' }

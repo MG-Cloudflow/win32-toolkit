@@ -80,6 +80,10 @@ InstallerSwitches:
     $ps1 = Get-Content -LiteralPath $scriptPath -Raw
     if ($ps1 -match [regex]::Escape('$appConfig =')) { Ok 'loader present' } else { Bad 'no loader' }
     if ($ps1 -match 'Data-driven install' -and $ps1 -match 'Data-driven uninstall') { Ok 'routines present' } else { Bad 'routines' }
+    if ($ps1 -match 'Set-ADTRegistryKey' -and $ps1 -match 'Remove-ADTRegistryKey -Key' -and
+        $ps1 -match [regex]::Escape('$($adtSession.AppScriptAuthor)\$($adtSession.AppVendor)\$($adtSession.AppName)')) {
+        Ok 'install tattoo present (post-install write + post-uninstall remove, value-free)'
+    } else { Bad 'install tattoo missing' }
 
     Write-Host "`n[4] KEY PROOF: payloads only in data, never in code" -ForegroundColor Cyan
     if ($ps1 -notmatch [regex]::Escape($INSTALL_PAYLOAD)) { Ok 'install payload absent from .ps1' } else { Bad 'install payload LEAKED' }
@@ -96,6 +100,46 @@ InstallerSwitches:
     $procs = @($cfg.ProcessesToClose)
     if ($procs -contains 'evil') { Ok "valid process kept" } else { Bad "procs=[$($procs -join ',')]" }
     if (-not ($procs | Where-Object { $_ -like '*calc*' -or $_ -like "*'*" })) { Ok 'malicious process rejected' } else { Bad 'bad proc leaked' }
+
+    Write-Host "`n[6] Detection rule keys off the tattoo (installed + correct version)" -ForegroundColor Cyan
+    # The org template normally supplies AppScriptAuthor; inject it here to exercise the rule.
+    $cfg6 = Get-Win32ToolkitAppConfig -ProjectPath $proj
+    $cfg6.App.ScriptAuthor = 'Contoso IT'
+    Set-Win32ToolkitAppConfig -ProjectPath $proj -Config $cfg6 | Out-Null
+    $rules = @(Get-Win32DetectionRules -ProjectPath $proj)
+    if ($rules.Count -eq 1 -and
+        $rules[0]['detectionType']  -eq 'version' -and
+        $rules[0]['operator']       -eq 'equal'   -and
+        $rules[0]['valueName']      -eq 'Version'  -and
+        $rules[0]['keyPath']        -eq "HKEY_LOCAL_MACHINE\SOFTWARE\Contoso IT\O'Reilly\Evil'App" -and
+        $rules[0]['detectionValue'] -eq '1.2.3') {
+        Ok 'registry version detection built from tattoo'
+    } else { Bad "detection rule: $($rules[0] | ConvertTo-Json -Compress)" }
+
+    Write-Host "`n[7] Org-template author with an apostrophe does not break the tattooed deploy script" -ForegroundColor Cyan
+    # AppScriptAuthor now drives the on-device tattoo + detection key, so a free-text author with a
+    # quote must stay a valid single-quoted literal (regression for the Apply-OrgTemplate splice).
+    $escTmpl = [pscustomobject]@{
+        CompanyName            = 'Contoso'
+        DialogStyle            = 'Fluent'
+        FluentAccentColor      = ''
+        LogPath                = ''
+        AppScriptAuthor        = "O'Brien IT"
+        TemplateName           = 'EscTest'
+        BalloonComplete        = [pscustomobject]@{ Install=''; Repair=''; Uninstall='' }
+        ProgressMessage        = [pscustomobject]@{ Install=''; Repair=''; Uninstall='' }
+        ProgressMessageDetail  = [pscustomobject]@{ Install=''; Repair=''; Uninstall='' }
+        WelcomeDialog          = [pscustomobject]@{ Enabled=$false }
+        ProgressDialog         = [pscustomobject]@{ Enabled=$false }
+        CompletionPrompt       = [pscustomobject]@{ Enabled=$false }
+        UninstallWelcomeDialog = [pscustomobject]@{ Enabled=$false }
+    }
+    Apply-OrgTemplate -ProjectPath $proj -Template $escTmpl | Out-Null
+    $errsB=$null; [System.Management.Automation.Language.Parser]::ParseFile($scriptPath,[ref]$null,[ref]$errsB)|Out-Null
+    if (-not ($errsB -and $errsB.Count)) { Ok 'deploy script still parses with apostrophe author' } else { Bad "parse: $($errsB[0].Message)" }
+    $ps1b = Get-Content -LiteralPath $scriptPath -Raw
+    if ($ps1b -match [regex]::Escape("AppScriptAuthor = 'O''Brien IT'")) { Ok "author literal escaped (O''Brien IT)" } else { Bad 'author literal not escaped' }
+    if (([regex]::Matches($ps1b,'Set-ADTRegistryKey')).Count -eq 1) { Ok 'tattoo survived org-template branding' } else { Bad 'tattoo clobbered by branding' }
 }
 finally { Remove-Item -Path $base -Recurse -Force -ErrorAction SilentlyContinue }
 

@@ -12,9 +12,13 @@ function Set-PSADTDataDrivenScript {
              $appConfig instead of literal values.
           3. A generic install routine is placed at the '## <Perform Installation tasks here>' marker.
           4. A generic uninstall routine is placed at the '## <Perform Uninstallation tasks here>' marker.
+          5. An install "tattoo" is placed at the Post-Install/Post-Uninstall markers: it writes
+             HKLM:\SOFTWARE\<AppScriptAuthor>\<AppVendor>\<AppName>\Version at install and removes it
+             at uninstall, so the Intune detection rule can confirm install state + correct version.
 
-        MSI installers are untouched (empty App.Name keeps PSADT Zero-Config MSI). The function is
-        idempotent — a script that already contains the loader is left unchanged.
+        MSI installers are untouched (empty App.Name keeps PSADT Zero-Config MSI, and the tattoo is
+        skipped for them). The function is idempotent — a script that already contains the loader is
+        left unchanged.
 
         See knowledge-base/designs/data-driven-generation.md.
     .PARAMETER ScriptPath
@@ -105,6 +109,27 @@ $adtSession = @{
     }
 '@
 
+    # Install "tattoo": write HKLM:\SOFTWARE\<Author>\<Vendor>\<Name>\Version at install and remove
+    # it at uninstall. The Intune detection rule keys off this value (installed AND correct version).
+    # Guarded so no empty path segment is created and Zero-Config MSI (empty AppName) is skipped.
+    $postInstallTattoo = @'
+## <Perform Post-Installation tasks here>
+
+    ## win32-toolkit install tattoo - records install state + version for the Intune detection rule.
+    if ($adtSession.AppName -and $adtSession.AppVendor -and $adtSession.AppVersion -and $adtSession.AppScriptAuthor -and -not $adtSession.UseDefaultMsi) {
+        Set-ADTRegistryKey -Key "HKLM:\SOFTWARE\$($adtSession.AppScriptAuthor)\$($adtSession.AppVendor)\$($adtSession.AppName)" -Name 'Version' -Value "$($adtSession.AppVersion)" -Type 'String'
+    }
+'@
+
+    $postUninstallTattoo = @'
+## <Perform Post-Uninstallation tasks here>
+
+    ## win32-toolkit install tattoo - remove the key written during install.
+    if ($adtSession.AppName -and $adtSession.AppVendor -and $adtSession.AppVersion -and $adtSession.AppScriptAuthor -and -not $adtSession.UseDefaultMsi) {
+        Remove-ADTRegistryKey -Key "HKLM:\SOFTWARE\$($adtSession.AppScriptAuthor)\$($adtSession.AppVendor)\$($adtSession.AppName)" -Recurse
+    }
+'@
+
     # ---- Apply patches with ordinal String.Replace (no regex/$-token pitfalls) ----
     $content = $content.Replace('$adtSession = @{', $loader)
     $content = $content.Replace("AppVendor = ''",  'AppVendor = $appConfig.App.Vendor')
@@ -129,6 +154,10 @@ $adtSession = @{
         $content = $content.Replace('## <Perform Installation tasks here>', $installSnippet)
     }
     $content = $content.Replace('## <Perform Uninstallation tasks here>', $uninstallSnippet)
+
+    # Install tattoo (both install modes, incl. manual/hard apps) — value-free, safe to splice.
+    $content = $content.Replace('## <Perform Post-Installation tasks here>',   $postInstallTattoo)
+    $content = $content.Replace('## <Perform Post-Uninstallation tasks here>', $postUninstallTattoo)
 
     # Match the module's existing encoding for this file (UTF-8 w/ BOM — safe for PS 5.1 on-device).
     Set-Content -LiteralPath $ScriptPath -Value $content -Encoding UTF8

@@ -59,6 +59,7 @@ function Configure-PSADTForInstaller {
             Name           = $name
             Version        = $version
             Arch           = $Architecture
+            ScriptAuthor   = if ($script:OrgTemplate -and $script:OrgTemplate.AppScriptAuthor) { $script:OrgTemplate.AppScriptAuthor } else { '' }
             ScriptDate     = (Get-Date -Format 'yyyy-MM-dd')
             Description    = if ($yamlInfo -and $yamlInfo.Description)    { $yamlInfo.Description }    else { '' }
             InformationUrl = if ($yamlInfo -and $yamlInfo.InformationUrl) { $yamlInfo.InformationUrl } else { '' }

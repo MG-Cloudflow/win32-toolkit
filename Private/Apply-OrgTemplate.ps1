@@ -65,8 +65,13 @@ function Apply-OrgTemplate {
         if (Test-Path $scriptPath) {
             $scr = Get-Content $scriptPath -Raw -Encoding UTF8
 
-            # AppScriptAuthor
-            $scr = $scr -replace "AppScriptAuthor = '[^']*'", "AppScriptAuthor = '$($Template.AppScriptAuthor)'"
+            # AppScriptAuthor — escape single quotes so a free-text author like "O'Brien IT" stays a
+            # valid single-quoted literal. This value now drives the on-device install tattoo and the
+            # Intune detection key (see Set-PSADTDataDrivenScript / Get-Win32DetectionRules), so a
+            # broken literal here would fail the whole deploy script on the device. Set-TextBlock does
+            # literal insertion (index math), so a '$' in the author is never treated as a backreference.
+            $authorLiteral = "AppScriptAuthor = '" + ($Template.AppScriptAuthor -replace "'", "''") + "'"
+            $scr = Set-TextBlock -Text $scr -Pattern "AppScriptAuthor = '[^']*'" -Replacement $authorLiteral
 
             # ── Install Welcome dialog ──
             if ($Template.WelcomeDialog.Enabled) {
