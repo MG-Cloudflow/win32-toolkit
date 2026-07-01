@@ -60,7 +60,7 @@ function Show-Win32Toolkit {
             'manual'    { Invoke-Win32ToolkitManualWizard -BasePath $base }
             'project'   { Show-Win32ToolkitProjectActions -BasePath $base }
             'browse'    { Show-Win32ToolkitBrowse   -BasePath $base }
-            'templates' { Show-Win32ToolkitStub -Title 'Org templates' }
+            'templates' { Show-Win32ToolkitTemplates -BasePath $base }
             'settings'  { $base = Show-Win32ToolkitSettings -BasePath $base }
             'exit'      { Write-SpectreHost '[grey]Goodbye.[/]'; return }
             default     { return }
