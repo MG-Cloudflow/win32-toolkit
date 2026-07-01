@@ -580,6 +580,18 @@ try {
     Write-Log "Failed to copy log file to documentation folder: $($_.Exception.Message)" "WARNING"
 }
 
+# Copy PSADT / MSI install logs back to the project (survives sandbox teardown)
+try {
+    if (Test-Path 'C:\PSADT\Sandbox\CollectLogs.ps1') {
+        & 'C:\PSADT\Sandbox\CollectLogs.ps1'
+        Write-Log "Install logs collected to Sandbox\Logs" "SUCCESS"
+    } else {
+        Write-Log "CollectLogs.ps1 not found in Sandbox folder" "WARNING"
+    }
+} catch {
+    Write-Log "Failed to collect install logs: $($_.Exception.Message)" "WARNING"
+}
+
 Write-Host "`n======================================"
 Write-Host "Targeted Documentation completed successfully!" -ForegroundColor Green
 Write-Log "========================================" "SUCCESS"
@@ -628,6 +640,11 @@ Stop-Computer
         $docScriptPath = Join-Path $supportFilesFolder "TargetedDocumentationScript.ps1"
         $documentationScript | Set-Content -Path $docScriptPath -Encoding UTF8
         Write-Host "✓ Targeted documentation script created: $docScriptPath" -ForegroundColor Green
+
+        # Create the log collector used inside the sandbox (Sandbox\CollectLogs.ps1),
+        # so the documentation run's PSADT/MSI install logs are copied back to the project.
+        $null = New-LogCollectorScript -ProjectPath $ProjectPath
+        Write-Host "✓ Log collector created for documentation sandbox" -ForegroundColor Green
 
         # Create the sandbox configuration file content
         $sandboxConfigContent = @"
