@@ -27,7 +27,11 @@ function Set-PSADTDataDrivenScript {
     param(
         [Parameter(Mandatory)]
         [ValidateNotNullOrEmpty()]
-        [string]$ScriptPath
+        [string]$ScriptPath,
+
+        # Hard apps: leave the Install region for the operator to author instead of
+        # inserting the data-driven install routine. Uninstall stays automated.
+        [switch]$ManualInstall
     )
 
     if (-not (Test-Path -LiteralPath $ScriptPath)) {
@@ -115,7 +119,15 @@ $adtSession = @{
         $content = $content.Replace($dateMatch.Value, 'AppScriptDate = $appConfig.App.ScriptDate')
     }
 
-    $content = $content.Replace('## <Perform Installation tasks here>',   $installSnippet)
+    if ($ManualInstall) {
+        # Hard app — leave the Install region markers for the operator to author.
+        $content = $content.Replace(
+            '## <Perform Installation tasks here>',
+            "## <Perform Installation tasks here>`r`n    ## MANUAL APP: write your Pre-Install / Install / Post-Install logic in these regions.`r`n    ## The uninstall is auto-generated from the sandbox capture — no action needed there.")
+    }
+    else {
+        $content = $content.Replace('## <Perform Installation tasks here>', $installSnippet)
+    }
     $content = $content.Replace('## <Perform Uninstallation tasks here>', $uninstallSnippet)
 
     # Match the module's existing encoding for this file (UTF-8 w/ BOM — safe for PS 5.1 on-device).
