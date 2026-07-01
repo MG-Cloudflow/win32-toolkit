@@ -116,29 +116,40 @@ InstallerSwitches:
         Ok 'registry version detection built from tattoo'
     } else { Bad "detection rule: $($rules[0] | ConvertTo-Json -Compress)" }
 
-    Write-Host "`n[7] Org-template author with an apostrophe does not break the tattooed deploy script" -ForegroundColor Cyan
-    # AppScriptAuthor now drives the on-device tattoo + detection key, so a free-text author with a
-    # quote must stay a valid single-quoted literal (regression for the Apply-OrgTemplate splice).
+    Write-Host "`n[7] Apostrophes in org-template fields never break the generated files" -ForegroundColor Cyan
+    # Every free-text template value is spliced into a single-quoted literal in config.psd1 / strings.psd1 /
+    # the deploy script; a quote must stay escaped (regression for the Apply-OrgTemplate splices).
     $escTmpl = [pscustomobject]@{
-        CompanyName            = 'Contoso'
+        CompanyName            = "O'Reilly Media"
         DialogStyle            = 'Fluent'
         FluentAccentColor      = ''
-        LogPath                = ''
+        LogPath                = "C:\Logs\O'Brien"
         AppScriptAuthor        = "O'Brien IT"
         TemplateName           = 'EscTest'
-        BalloonComplete        = [pscustomobject]@{ Install=''; Repair=''; Uninstall='' }
-        ProgressMessage        = [pscustomobject]@{ Install=''; Repair=''; Uninstall='' }
-        ProgressMessageDetail  = [pscustomobject]@{ Install=''; Repair=''; Uninstall='' }
+        BalloonComplete        = [pscustomobject]@{ Install="Installed O'Reilly"; Repair="Repair's done"; Uninstall="Removed O'Brien" }
+        ProgressMessage        = [pscustomobject]@{ Install="Installing O'Brien's app"; Repair="Repairin'"; Uninstall="Uninstallin'" }
+        ProgressMessageDetail  = [pscustomobject]@{ Install="It's working"; Repair="almost'"; Uninstall="bye'" }
         WelcomeDialog          = [pscustomobject]@{ Enabled=$false }
-        ProgressDialog         = [pscustomobject]@{ Enabled=$false }
+        ProgressDialog         = [pscustomobject]@{ Enabled=$true; StatusMessage="It's installing"; StatusMessageDetail="Please wait, it's almost done" }
         CompletionPrompt       = [pscustomobject]@{ Enabled=$false }
         UninstallWelcomeDialog = [pscustomobject]@{ Enabled=$false }
     }
     Apply-OrgTemplate -ProjectPath $proj -Template $escTmpl | Out-Null
+
+    # config.psd1 + strings.psd1 must parse AND round-trip their apostrophe values
+    try { $cfgData = Import-PowerShellDataFile -Path (Join-Path $proj 'Config\config.psd1')
+          if ($cfgData.Toolkit.CompanyName -eq "O'Reilly Media" -and $cfgData.Toolkit.LogPath -eq "C:\Logs\O'Brien") { Ok 'config.psd1 parses + CompanyName/LogPath round-trip' } else { Bad "config values: [$($cfgData.Toolkit.CompanyName)] [$($cfgData.Toolkit.LogPath)]" } }
+    catch { Bad "config.psd1 parse: $($_.Exception.Message)" }
+    try { $strData = Import-PowerShellDataFile -Path (Join-Path $proj 'Strings\strings.psd1')
+          if ($strData.BalloonTip.Complete.Install -eq "Installed O'Reilly" -and $strData.ProgressPrompt.Message.Install -eq "Installing O'Brien's app") { Ok 'strings.psd1 parses + balloon/progress round-trip' } else { Bad 'strings values did not round-trip' } }
+    catch { Bad "strings.psd1 parse: $($_.Exception.Message)" }
+
+    # deploy script must parse; author + status message escaped; tattoo survives branding
     $errsB=$null; [System.Management.Automation.Language.Parser]::ParseFile($scriptPath,[ref]$null,[ref]$errsB)|Out-Null
-    if (-not ($errsB -and $errsB.Count)) { Ok 'deploy script still parses with apostrophe author' } else { Bad "parse: $($errsB[0].Message)" }
+    if (-not ($errsB -and $errsB.Count)) { Ok 'deploy script parses with apostrophe author + status message' } else { Bad "parse: $($errsB[0].Message)" }
     $ps1b = Get-Content -LiteralPath $scriptPath -Raw
     if ($ps1b -match [regex]::Escape("AppScriptAuthor = 'O''Brien IT'")) { Ok "author literal escaped (O''Brien IT)" } else { Bad 'author literal not escaped' }
+    if ($ps1b -match [regex]::Escape("-StatusMessage 'It''s installing'")) { Ok 'progress StatusMessage escaped' } else { Bad 'StatusMessage not escaped' }
     if (([regex]::Matches($ps1b,'Set-ADTRegistryKey')).Count -eq 1) { Ok 'tattoo survived org-template branding' } else { Bad 'tattoo clobbered by branding' }
 }
 finally { Remove-Item -Path $base -Recurse -Force -ErrorAction SilentlyContinue }

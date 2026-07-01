@@ -15,12 +15,18 @@ function Apply-OrgTemplate {
             $Text.Substring(0, $m.Index) + $Replacement + $Text.Substring($m.Index + $m.Length)
         }
 
+        # Escape single quotes so a free-text template value (company name, dialog messages, log path,
+        # author) stays a valid single-quoted literal in the generated config.psd1 / strings.psd1 /
+        # deploy script. Used everywhere a value is spliced into a '...' literal below. [string]$null -> ''.
+        function Esc { param([string]$s) $s -replace "'", "''" }
+
         #── config.psd1 ────────────────────────────────────────────────────
         $configPath = Join-Path $ProjectPath 'Config\config.psd1'
         if (Test-Path $configPath) {
             $cfg = Get-Content $configPath -Raw -Encoding UTF8
 
-            $cfg = $cfg -replace "CompanyName = '[^']*'",        "CompanyName = '$($Template.CompanyName)'"
+            $companyEsc = Esc $Template.CompanyName
+            $cfg = [regex]::Replace($cfg, "CompanyName = '[^']*'", { "CompanyName = '$companyEsc'" })
             $cfg = $cfg -replace "DialogStyle = '(Fluent|Classic)'", "DialogStyle = '$($Template.DialogStyle)'"
 
             if ($Template.FluentAccentColor -and $Template.FluentAccentColor.Trim() -ne '') {
@@ -30,8 +36,10 @@ function Apply-OrgTemplate {
             }
 
             if ($Template.LogPath -and $Template.LogPath.Trim() -ne '') {
-                # Only target the Toolkit.LogPath (line after its specific comment)
-                $cfg = $cfg -replace '(?m)(# Log path used for Toolkit logging\.\r?\n\s*LogPath = )[^\r\n]+', "`${1}'$($Template.LogPath)'"
+                # Only target the Toolkit.LogPath (line after its specific comment). A MatchEvaluator keeps
+                # the comment prefix (group 1) and inserts the escaped value literally (no $-token pitfalls).
+                $logEsc = Esc $Template.LogPath
+                $cfg = [regex]::Replace($cfg, '(?m)(# Log path used for Toolkit logging\.\r?\n\s*LogPath = )[^\r\n]+', { param($m) $m.Groups[1].Value + "'$logEsc'" })
             }
 
             Set-Content -Path $configPath -Value $cfg -Encoding UTF8
@@ -44,14 +52,14 @@ function Apply-OrgTemplate {
             $str = Get-Content $strPath -Raw -Encoding UTF8
 
             # BalloonTip.Complete sub-block
-            $newBalloon = "        # Text displayed in the balloon tip for successful completion of a deployment type.`r`n        Complete = @{`r`n            Install = '$($Template.BalloonComplete.Install)'`r`n            Repair = '$($Template.BalloonComplete.Repair)'`r`n            Uninstall = '$($Template.BalloonComplete.Uninstall)'`r`n        }"
+            $newBalloon = "        # Text displayed in the balloon tip for successful completion of a deployment type.`r`n        Complete = @{`r`n            Install = '$(Esc $Template.BalloonComplete.Install)'`r`n            Repair = '$(Esc $Template.BalloonComplete.Repair)'`r`n            Uninstall = '$(Esc $Template.BalloonComplete.Uninstall)'`r`n        }"
             $str = Set-TextBlock -Text $str `
                 -Pattern '(?s)        # Text displayed in the balloon tip for successful completion of a deployment type\.\r?\n        Complete = @\{[^}]*\}' `
                 -Replacement $newBalloon -Multiline
 
             # ProgressPrompt — entire block up to RestartPrompt
             $nl = if ($str -match '\r\n') { "`r`n" } else { "`n" }
-            $newProg = "    ProgressPrompt = @{${nl}        # Default message displayed in the progress bar.${nl}        Message = @{${nl}            Install = '$($Template.ProgressMessage.Install)'${nl}            Repair = '$($Template.ProgressMessage.Repair)'${nl}            Uninstall = '$($Template.ProgressMessage.Uninstall)'${nl}        }${nl}${nl}        # Default message detail displayed in the progress bar.${nl}        MessageDetail = @{${nl}            Install = '$($Template.ProgressMessageDetail.Install)'${nl}            Repair = '$($Template.ProgressMessageDetail.Repair)'${nl}            Uninstall = '$($Template.ProgressMessageDetail.Uninstall)'${nl}        }${nl}${nl}        # The subtitle underneath the Install Title, e.g. Company Name. Only for Fluent dialogs.${nl}        Subtitle = @{${nl}            Install = '{Toolkit\CompanyName} - App Installation'${nl}            Repair = '{Toolkit\CompanyName} - App Repair'${nl}            Uninstall = '{Toolkit\CompanyName} - App Uninstallation'${nl}        }${nl}    }"
+            $newProg = "    ProgressPrompt = @{${nl}        # Default message displayed in the progress bar.${nl}        Message = @{${nl}            Install = '$(Esc $Template.ProgressMessage.Install)'${nl}            Repair = '$(Esc $Template.ProgressMessage.Repair)'${nl}            Uninstall = '$(Esc $Template.ProgressMessage.Uninstall)'${nl}        }${nl}${nl}        # Default message detail displayed in the progress bar.${nl}        MessageDetail = @{${nl}            Install = '$(Esc $Template.ProgressMessageDetail.Install)'${nl}            Repair = '$(Esc $Template.ProgressMessageDetail.Repair)'${nl}            Uninstall = '$(Esc $Template.ProgressMessageDetail.Uninstall)'${nl}        }${nl}${nl}        # The subtitle underneath the Install Title, e.g. Company Name. Only for Fluent dialogs.${nl}        Subtitle = @{${nl}            Install = '{Toolkit\CompanyName} - App Installation'${nl}            Repair = '{Toolkit\CompanyName} - App Repair'${nl}            Uninstall = '{Toolkit\CompanyName} - App Uninstallation'${nl}        }${nl}    }"
             $str = Set-TextBlock -Text $str `
                 -Pattern '(?s)    ProgressPrompt = @\{.*?(?=\r?\n    RestartPrompt)' `
                 -Replacement $newProg -Multiline
@@ -127,10 +135,10 @@ function Apply-OrgTemplate {
             if ($Template.ProgressDialog.Enabled) {
                 $progressArgs = ''
                 if ($Template.ProgressDialog.StatusMessage -and $Template.ProgressDialog.StatusMessage.Trim() -ne '') {
-                    $progressArgs += " -StatusMessage '$($Template.ProgressDialog.StatusMessage)'"
+                    $progressArgs += " -StatusMessage '$(Esc $Template.ProgressDialog.StatusMessage)'"
                 }
                 if ($Template.ProgressDialog.StatusMessageDetail -and $Template.ProgressDialog.StatusMessageDetail.Trim() -ne '') {
-                    $progressArgs += " -StatusMessageDetail '$($Template.ProgressDialog.StatusMessageDetail)'"
+                    $progressArgs += " -StatusMessageDetail '$(Esc $Template.ProgressDialog.StatusMessageDetail)'"
                 }
                 $newProgress = "    ## Show Progress Message (with the default message).`n    Show-ADTInstallationProgress$progressArgs"
             } else {
