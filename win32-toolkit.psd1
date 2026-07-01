@@ -6,7 +6,7 @@
     CompanyName       = 'CloudFlow'
     Copyright         = '(c) 2026 CloudFlow. All rights reserved.'
     Description       = 'End-to-end Win32 app packaging automation: Winget discovery, download, PSADT V4 project creation, and Intune requirement script generation.'
-    PowerShellVersion = '5.1'
+    PowerShellVersion = '7.2'
 
     # Only the single entry-point command is exported to the caller.
     # All helper functions in Private\ remain invisible outside the module.
