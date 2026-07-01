@@ -1,10 +1,12 @@
 function New-OrgTemplate {
     param(
         [PSCustomObject]$ExistingTemplate = $null,
-        [string]$TemplateName = ''
+        [string]$TemplateName = '',
+        [string]$BasePath
     )
 
-    $templateFolder = Join-Path $env:APPDATA 'IntuneToolkit'
+    if ([string]::IsNullOrWhiteSpace($BasePath)) { $BasePath = Get-Win32ToolkitBasePath }
+    $templateFolder = (Get-Win32ToolkitPaths -BasePath $BasePath).Templates
     if (-not (Test-Path $templateFolder)) {
         New-Item -ItemType Directory -Path $templateFolder -Force | Out-Null
     }

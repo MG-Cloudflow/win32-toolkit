@@ -1,7 +1,11 @@
 function Get-OrgTemplate {
-    param([string]$TemplateName = '')
+    param(
+        [string]$TemplateName = '',
+        [string]$BasePath
+    )
 
-    $templateFolder = Join-Path $env:APPDATA 'IntuneToolkit'
+    if ([string]::IsNullOrWhiteSpace($BasePath)) { $BasePath = Get-Win32ToolkitBasePath }
+    $templateFolder = (Get-Win32ToolkitPaths -BasePath $BasePath).Templates
     if (-not (Test-Path $templateFolder)) {
         New-Item -ItemType Directory -Path $templateFolder -Force | Out-Null
     }
@@ -16,7 +20,7 @@ function Get-OrgTemplate {
             return $t
         } else {
             Write-Host "Template '$TemplateName' not found. Creating it now..." -ForegroundColor Cyan
-            return New-OrgTemplate -TemplateName $TemplateName
+            return New-OrgTemplate -TemplateName $TemplateName -BasePath $BasePath
         }
     }
 
@@ -25,7 +29,7 @@ function Get-OrgTemplate {
     if ($templates.Count -eq 0) {
         Write-Host ''
         Write-Host 'No org template found. Creating one now...' -ForegroundColor Cyan
-        return New-OrgTemplate
+        return New-OrgTemplate -BasePath $BasePath
     }
 
     if ($templates.Count -eq 1) {
@@ -61,7 +65,7 @@ function Get-OrgTemplate {
         if (-not $valid) { Write-Host "Please enter a number between 1 and $editIdx." -ForegroundColor Red }
     } while (-not $valid)
 
-    if ($parsed -eq $newIdx)  { return New-OrgTemplate }
+    if ($parsed -eq $newIdx)  { return New-OrgTemplate -BasePath $BasePath }
     if ($parsed -eq $editIdx) {
         # Pick which one to edit then open wizard pre-filled
         do {
@@ -71,7 +75,7 @@ function Get-OrgTemplate {
             if (-not $v2) { Write-Host "Please enter a number between 1 and $($templates.Count)." -ForegroundColor Red }
         } while (-not $v2)
         $existing = Get-Content -Path $templates[$parsed2 - 1].FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-        return New-OrgTemplate -ExistingTemplate $existing
+        return New-OrgTemplate -ExistingTemplate $existing -BasePath $BasePath
     }
 
     $t = Get-Content -Path $templates[$parsed - 1].FullName -Raw -Encoding UTF8 | ConvertFrom-Json

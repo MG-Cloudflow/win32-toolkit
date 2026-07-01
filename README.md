@@ -63,28 +63,34 @@ Get-Command -Module win32-toolkit
 
 ## Folder layout
 
-All output lives under a single `BasePath` (default `C:\Win32Apps`) organised into three tiers:
+All output lives under a single **BasePath**. On first run the toolkit prompts for this folder and saves it to the registry (`HKCU:\Software\CloudFlow\win32-toolkit`); pass `-BasePath` to override per-call, or `-Reconfigure` to re-prompt. Output is grouped **by org template**, so the same app can be packaged for multiple clients side by side:
 
 ```
-C:\Win32Apps\
+C:\Win32Apps\                            BasePath (saved in the registry)
+  Templates\
+    Contoso.json                         org template — branding + PSADT dialog prefs
   Projects\
-    Git_x64_2.53.0\          raw project — never modified after creation
-      Files\
-        Git_x64_2.53.0.exe
-        installer.yaml
-      SupportFiles\
-        RequirementScript.ps1
-      Sandbox\               test artifacts: WSB configs, Countdown.ps1, OldVersion\
-      Documentation\         sandbox capture JSON and log
-      Config\
-      Strings\
-      Assets\
-        AppIcon.png
-      Invoke-AppDeployToolkit.ps1
+    Contoso\                             template the project was built with
+      Git_x64_2.53.0\                    raw project — never modified after creation
+        Files\
+          Git_x64_2.53.0.exe
+          installer.yaml
+        SupportFiles\
+          AppConfig.json                 data-driven install/uninstall values
+          RequirementScript.ps1
+        Sandbox\                         test artifacts: WSB configs, Countdown.ps1, Logs\, OldVersion\
+        Documentation\                   sandbox capture JSON and log
+        Config\
+        Strings\
+        Assets\
+          AppIcon.png
+        Invoke-AppDeployToolkit.ps1
   Staging\
-    Git_x64_2.53.0\          cleaned copy produced during .intunewin packaging
+    Contoso\
+      Git_x64_2.53.0\                    cleaned copy produced during .intunewin packaging
   IntuneWin\
-    Git_x64_2.53.0.intunewin ready-to-upload Intune package
+    Contoso\
+      Git_x64_2.53.0.intunewin           ready-to-upload Intune package
 ```
 
 The `Projects\` tier is **never touched** after creation — the optimizer only runs against the `Staging\` copy.
@@ -95,7 +101,7 @@ The `Projects\` tier is **never touched** after creation — the optimizer only 
 
 Before packaging apps, create an **org template** — a JSON file that stores your company branding and PSADT dialog preferences. Once created, it is applied automatically to every project.
 
-Templates are stored in `$env:APPDATA\IntuneToolkit\`.
+Templates are stored under **BasePath** in `Templates\` (e.g. `C:\Win32Apps\Templates\`). The BasePath is chosen on first run and saved to the registry.
 
 ### Create a new template
 
