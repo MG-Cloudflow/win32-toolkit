@@ -247,40 +247,10 @@ function Invoke-Win32Toolkit {
                 Write-Host "Project location: $projectFullPath" -ForegroundColor Cyan
                 Write-Host "Downloaded files:  $downloadPath"   -ForegroundColor Cyan
 
-                # Generate targeted installation documentation and launch Windows Sandbox
-                Write-Host "`nGenerating targeted installation documentation..." -ForegroundColor Yellow
-                $docSuccess = New-TargetedDocumentation -ProjectPath $projectFullPath -ProjectName $projectName -AppInfo $selectedApp
-
-                if ($docSuccess) {
-                    Write-Host '✓ Targeted documentation setup completed!' -ForegroundColor Green
-                    Write-Host 'Use the generated Windows Sandbox configuration to document installation changes.' -ForegroundColor Cyan
-
-                    Write-Host "`nWaiting for documentation completion..." -ForegroundColor Yellow
-                    $fileInfo      = Get-InstallerFileInfo -FilesPath $downloadPath
-                    $jsonProcessed = Wait-ForDocumentationAndProcess -ProjectPath $projectFullPath -InstallerType $fileInfo.Type
-
-                    if ($jsonProcessed) {
-                        Write-Host '✓ Documentation processing completed successfully!' -ForegroundColor Green
-                    }
-                    else {
-                        Write-Warning 'Documentation processing had issues - please review manually'
-                    }
-                }
-                else {
-                    Write-Warning 'Documentation generation had issues - please review manually'
-                }
-
-                # Run test scenarios if requested
-                if ($RunTest) {
-                    foreach ($scenario in $RunTest) {
-                        Test-Win32ToolkitProject -ProjectPath $projectFullPath -Scenario $scenario
-                    }
-                }
-
-                # Package as .intunewin if requested (-PublishIntune also implies packaging)
-                if ($PackageIntune -or $PublishIntune) {
-                    Export-Win32ToolkitIntuneWin -ProjectPath $projectFullPath -PublishIntune:$PublishIntune
-                }
+                # Documentation capture, uninstall automation, and optional test/package/publish
+                # (shared with the manual-app flow — see Invoke-Win32ToolkitFinalize).
+                Invoke-Win32ToolkitFinalize -ProjectPath $projectFullPath -ProjectName $projectName -AppInfo $selectedApp `
+                    -RunTest $RunTest -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune
 
 
             }

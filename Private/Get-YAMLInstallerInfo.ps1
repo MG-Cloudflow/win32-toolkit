@@ -16,6 +16,8 @@ function Get-YAMLInstallerInfo {
             SilentArgs = $null
             ProductCode = $null
             Scope = $null
+            Description = $null
+            InformationUrl = $null
         }
         
         # Parse basic package info
@@ -42,7 +44,13 @@ function Get-YAMLInstallerInfo {
         if ($yamlContent -match '(?s)InstallerSwitches:.*?\n\s+Silent:\s*([^\n]+)') {
             $installerInfo.SilentArgs = $matches[1].Trim()
         }
-        
+
+        # Description and information URL (used for the Intune app shell)
+        if     ($yamlContent -match '(?m)^\s*ShortDescription:\s*(.+)') { $installerInfo.Description = $matches[1].Trim() }
+        elseif ($yamlContent -match '(?m)^\s*Description:\s*(.+)')      { $installerInfo.Description = $matches[1].Trim() }
+        if     ($yamlContent -match '(?m)^\s*PackageUrl:\s*(.+)')       { $installerInfo.InformationUrl = $matches[1].Trim() }
+        elseif ($yamlContent -match '(?m)^\s*PublisherUrl:\s*(.+)')     { $installerInfo.InformationUrl = $matches[1].Trim() }
+
         return $installerInfo
     }
     catch {
