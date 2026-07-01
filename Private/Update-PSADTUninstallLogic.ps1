@@ -52,10 +52,10 @@ function Update-PSADTUninstallLogic {
                         }
                     }
                     
-                    # Extract product codes
+                    # Extract product codes (strict GUID only — Test-Win32ToolkitProductCode)
                     if ($regKey.Path -match '\{[A-F0-9-]{36}\}') {
                         $pc = [regex]::Match($regKey.Path, '\{[A-F0-9-]{36}\}').Value
-                        if ($pc -notin $productCodes) {
+                        if ((Test-Win32ToolkitProductCode $pc) -and $pc -notin $productCodes) {
                             $productCodes += $pc
                         }
                     }
@@ -81,12 +81,15 @@ function Update-PSADTUninstallLogic {
         Write-Host "  Uninstall Strings: $($uninstallStrings.Count)" -ForegroundColor White
         Write-Host "  Install Paths: $($installPaths.Count)" -ForegroundColor White
         
-        # Generate uninstall code using exact logic from working script
+        # Generate uninstall code using exact logic from working script.
+        # $appName is emitted into double-quoted log messages in the generated script,
+        # so escape it (untrusted DisplayName must not expand/inject at runtime).
+        $appNameDq = ConvertTo-PSDoubleQuoted $appName
         $codeLines = @()
-        $codeLines += "        # Auto-generated uninstall code for $appName"
+        $codeLines += "        # Auto-generated uninstall code for $appNameDq"
         $codeLines += "        # Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
         $codeLines += ""
-        $codeLines += "        Write-ADTLogEntry -Message `"Starting uninstall of $appName`""
+        $codeLines += "        Write-ADTLogEntry -Message `"Starting uninstall of $appNameDq`""
         $codeLines += "        `$uninstallSuccess = `$false"
         $codeLines += ""
         
@@ -122,8 +125,8 @@ function Update-PSADTUninstallLogic {
             foreach ($us in $uninstallStrings) {
                 # Determine installer type and generate appropriate code
                 if ($us -like '*msiexec*') {
-                    # MSI-based uninstaller - extract product code
-                    if ($us -match '\{[A-F0-9-]{36}\}') {
+                    # MSI-based uninstaller - extract product code (strict GUID only)
+                    if ($us -match '\{[A-F0-9-]{36}\}' -and (Test-Win32ToolkitProductCode $matches[0])) {
                         $productCode = $matches[0]
                         $codeLines += "        # Try MSI uninstall with product code"
                         $codeLines += "        if (-not `$uninstallSuccess) {"
@@ -158,12 +161,17 @@ function Update-PSADTUninstallLogic {
                     } else {
                         $exePath = $us
                     }
-                    
+
+                    # Untrusted (registry-captured) — escape for each target context.
+                    $exePathSq   = ConvertTo-PSSingleQuoted $exePath
+                    $exeParamsSq = ConvertTo-PSSingleQuoted $exeParams
+                    $exePathDq   = ConvertTo-PSDoubleQuoted $exePath
+
                     $codeLines += "        # Try EXE uninstall"
                     $codeLines += "        if (-not `$uninstallSuccess) {"
                     $codeLines += "            try {"
-                    $codeLines += "                Write-ADTLogEntry -Message `"Attempting EXE uninstallation: $exePath`""
-                    $codeLines += "                `$result = Start-ADTProcess -FilePath '$exePath' -ArgumentList '$exeParams' -PassThru"
+                    $codeLines += "                Write-ADTLogEntry -Message `"Attempting EXE uninstallation: $exePathDq`""
+                    $codeLines += "                `$result = Start-ADTProcess -FilePath '$exePathSq' -ArgumentList '$exeParamsSq' -PassThru"
                     $codeLines += "                `$exitCode = `$result.ExitCode"
                     $codeLines += "                if (`$exitCode -eq 0 -or `$exitCode -eq 3010) {"
                     $codeLines += "                    Write-ADTLogEntry -Message `"EXE uninstallation completed successfully (Exit Code: `$exitCode)`""
@@ -186,16 +194,19 @@ function Update-PSADTUninstallLogic {
             $codeLines += "        Write-ADTLogEntry -Message `"Performing cleanup of installation directories`""
             
             foreach ($path in $installPaths) {
-                $codeLines += "        if (Test-Path '$path') {"
+                # Untrusted (captured install location) — escape for each target context.
+                $pathSq = ConvertTo-PSSingleQuoted $path
+                $pathDq = ConvertTo-PSDoubleQuoted $path
+                $codeLines += "        if (Test-Path '$pathSq') {"
                 $codeLines += "            try {"
-                $codeLines += "                Write-ADTLogEntry -Message `"Removing directory: $path`""
-                $codeLines += "                Remove-ADTFolder -Path '$path'"
-                $codeLines += "                Write-ADTLogEntry -Message `"Successfully removed directory: $path`""
+                $codeLines += "                Write-ADTLogEntry -Message `"Removing directory: $pathDq`""
+                $codeLines += "                Remove-ADTFolder -Path '$pathSq'"
+                $codeLines += "                Write-ADTLogEntry -Message `"Successfully removed directory: $pathDq`""
                 $codeLines += "            } catch {"
-                $codeLines += "                Write-ADTLogEntry -Message `"Failed to remove directory $path`: `$(`$_.Exception.Message)`" -Severity 2"
+                $codeLines += "                Write-ADTLogEntry -Message `"Failed to remove directory $pathDq`: `$(`$_.Exception.Message)`" -Severity 2"
                 $codeLines += "            }"
                 $codeLines += "        } else {"
-                $codeLines += "            Write-ADTLogEntry -Message `"Directory not found (already removed): $path`""
+                $codeLines += "            Write-ADTLogEntry -Message `"Directory not found (already removed): $pathDq`""
                 $codeLines += "        }"
             }
             $codeLines += ""
@@ -203,7 +214,7 @@ function Update-PSADTUninstallLogic {
         
         $codeLines += "        # Verify uninstallation"
         $codeLines += "        if (`$uninstallSuccess) {"
-        $codeLines += "            Write-ADTLogEntry -Message `"Uninstallation completed successfully for $appName`""
+        $codeLines += "            Write-ADTLogEntry -Message `"Uninstallation completed successfully for $appNameDq`""
         $codeLines += "        } else {"
         $codeLines += "            Write-ADTLogEntry -Message `"Warning: Uninstallation may not have completed successfully - manual verification recommended`" -Severity 2"
         $codeLines += "        }"

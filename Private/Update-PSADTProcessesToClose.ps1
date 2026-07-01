@@ -29,7 +29,7 @@ function Update-PSADTProcessesToClose {
         foreach ($regKey in $data.NewRegistryKeys) {
             if ($regKey.Path -like '*App Paths*' -and $regKey.KeyName -like '*.exe') {
                 $procName = [System.IO.Path]::GetFileNameWithoutExtension($regKey.KeyName)
-                if ($procName -and $procName -notmatch $excludePattern -and $procName -notin $candidates) {
+                if ($procName -and $procName -notmatch $excludePattern -and (Test-Win32ToolkitProcessName $procName) -and $procName -notin $candidates) {
                     $candidates.Add($procName)
                 }
             }
@@ -41,7 +41,7 @@ function Update-PSADTProcessesToClose {
                 if ($regKey.Path -like '*Uninstall*' -and $regKey.Values -and $regKey.Values.DisplayIcon) {
                     $iconPath = $regKey.Values.DisplayIcon -replace ',\d+$', ''  # strip icon index
                     $procName = [System.IO.Path]::GetFileNameWithoutExtension($iconPath)
-                    if ($procName -and $procName -notmatch $excludePattern -and $procName -notin $candidates) {
+                    if ($procName -and $procName -notmatch $excludePattern -and (Test-Win32ToolkitProcessName $procName) -and $procName -notin $candidates) {
                         $candidates.Add($procName)
                     }
                     break
@@ -59,7 +59,7 @@ function Update-PSADTProcessesToClose {
                     $fileDir = [System.IO.Path]::GetDirectoryName($file.Path)
                     if ($fileDir -ieq $installLocation) {
                         $procName = [System.IO.Path]::GetFileNameWithoutExtension($file.Path)
-                        if ($procName -and $procName -notmatch $excludePattern -and $procName -notin $candidates) {
+                        if ($procName -and $procName -notmatch $excludePattern -and (Test-Win32ToolkitProcessName $procName) -and $procName -notin $candidates) {
                             $candidates.Add($procName)
                         }
                     }
@@ -67,10 +67,11 @@ function Update-PSADTProcessesToClose {
             }
         }
 
-        # Sort and build the replacement string
+        # Sort and build the replacement string. Names are validated above; escape as
+        # well (defense-in-depth) since each is emitted into a single-quoted literal.
         $sorted = $candidates | Sort-Object
         $arrayContent = if ($sorted.Count -gt 0) {
-            ($sorted | ForEach-Object { "'$_'" }) -join ', '
+            ($sorted | ForEach-Object { "'$(ConvertTo-PSSingleQuoted $_)'" }) -join ', '
         } else { '' }
         $replacement = "AppProcessesToClose = @($arrayContent)"
 

@@ -193,14 +193,20 @@ function Test-Win32ToolkitProject {
                 $sandboxFolder     = Join-Path $ProjectPath 'Sandbox'
                 $sandboxConfigFile = Join-Path $sandboxFolder 'UpdateDemo.wsb'
 
-                # Installer path as seen inside the sandbox (project maps to C:\PSADT)
+                # Installer path as seen inside the sandbox (project maps to C:\PSADT).
+                # InstallerName and SilentArgs are untrusted (winget download / YAML):
+                # escape for the single-quoted PowerShell literal (ConvertTo-PSSingleQuoted),
+                # then XML-encode the whole command for the .wsb <Command> (ConvertTo-XmlEncoded).
                 $installerSandboxPath = "C:\PSADT\Sandbox\OldVersion\$($oldInstaller.InstallerName)"
+                $installerPathSq = ConvertTo-PSSingleQuoted $installerSandboxPath
+                $silentArgsSq    = ConvertTo-PSSingleQuoted $oldInstaller.SilentArgs
 
                 $installCmd = if ($oldInstaller.SilentArgs) {
-                    "Start-Process '$installerSandboxPath' -ArgumentList '$($oldInstaller.SilentArgs)' -Wait"
+                    "Start-Process '$installerPathSq' -ArgumentList '$silentArgsSq' -Wait"
                 } else {
-                    "Start-Process '$installerSandboxPath' -Wait"
+                    "Start-Process '$installerPathSq' -Wait"
                 }
+                $installCmdXml = ConvertTo-XmlEncoded $installCmd
 
                 $sandboxConfigContent = @"
 <Configuration>
@@ -214,7 +220,7 @@ function Test-Win32ToolkitProject {
         </MappedFolder>
     </MappedFolders>
     <LogonCommand>
-        <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { $installCmd; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1' }&quot;</Command>
+        <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { $installCmdXml; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1' }&quot;</Command>
     </LogonCommand>
 </Configuration>
 "@

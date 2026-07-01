@@ -87,7 +87,15 @@ function New-IntuneRequirementScript {
         
         # Generate requirement script using exact logic from original
         Write-Host "Generating requirement script..." -ForegroundColor White
-        
+
+        # Untrusted values (DisplayName/version from the capture JSON or YAML) are emitted
+        # into single-quoted literals in the generated requirement script — escape them
+        # (ConvertTo-PSSingleQuoted), and keep only strict-GUID product codes.
+        $appNameSq      = ConvertTo-PSSingleQuoted $appName
+        $appNameTokenSq = ConvertTo-PSSingleQuoted ($appName.Split(' ')[0])
+        $appVersionSq   = ConvertTo-PSSingleQuoted $appVersion
+        $productCodes   = @($productCodes | Where-Object { Test-Win32ToolkitProductCode $_ })
+
         $requirementScript = @"
 <#
 .SYNOPSIS
@@ -103,7 +111,7 @@ function New-IntuneRequirementScript {
 try {
     `$appFound = `$false
     `$installedVersion = `$null
-    `$requiredVersion = '$appVersion'
+    `$requiredVersion = '$appVersionSq'
     
     # Registry paths to check for installed applications
     `$registryPaths = @(
@@ -121,7 +129,7 @@ try {
     `$productCodes = @(
 "@
             foreach ($pc in $productCodes) {
-                $requirementScript += "        '$pc'`n"
+                $requirementScript += "        '$(ConvertTo-PSSingleQuoted $pc)'`n"
             }
             $requirementScript += @"
     )
@@ -130,7 +138,7 @@ try {
         `$msiPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\`$productCode"
         if (Test-Path `$msiPath) {
             `$msiApp = Get-ItemProperty -Path `$msiPath -ErrorAction SilentlyContinue
-            if (`$msiApp -and `$msiApp.DisplayName -like '*$($appName.Split(' ')[0])*') {
+            if (`$msiApp -and `$msiApp.DisplayName -like '*$appNameTokenSq*') {
                 `$appFound = `$true
                 `$installedVersion = `$msiApp.DisplayVersion
                 Write-Host "Found via MSI Product Code: `$(`$msiApp.DisplayName) v`$installedVersion"
@@ -149,8 +157,8 @@ try {
         foreach (`$regPath in `$registryPaths) {
             try {
                 `$apps = Get-ItemProperty -Path `$regPath -ErrorAction SilentlyContinue | Where-Object {
-                    `$_.DisplayName -like '*$($appName.Split(' ')[0])*' -or
-                    `$_.DisplayName -eq '$appName'
+                    `$_.DisplayName -like '*$appNameTokenSq*' -or
+                    `$_.DisplayName -eq '$appNameSq'
                 }
                 
                 foreach (`$app in `$apps) {
