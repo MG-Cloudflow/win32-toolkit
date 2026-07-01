@@ -190,8 +190,9 @@ function New-Win32ToolkitManualApp {
 
         # ── Easy app: finalise inline if asked ────────────────────────────────────
         if ($Continue -or $RunTest -or $PackageIntune -or $PublishIntune) {
-            Invoke-Win32ToolkitFinalize -ProjectPath $projectFullPath -ProjectName $projectName -AppInfo $appInfo `
-                -RunTest $RunTest -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune
+            $finalize = @{ ProjectPath = $projectFullPath; ProjectName = $projectName; AppInfo = $appInfo }
+            if ($RunTest) { $finalize['RunTest'] = $RunTest }   # omit when null (ValidateSet rejects $null)
+            Invoke-Win32ToolkitFinalize @finalize -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune
         }
         else {
             Write-Host "`nEasy app scaffolded. Finalise with:" -ForegroundColor Cyan

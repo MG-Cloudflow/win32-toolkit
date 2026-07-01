@@ -58,8 +58,9 @@ function Complete-Win32ToolkitManualApp {
         }
 
         Write-Host "Finalising project: $projectName" -ForegroundColor Cyan
-        Invoke-Win32ToolkitFinalize -ProjectPath $ProjectPath -ProjectName $projectName -AppInfo $appInfo `
-            -RunTest $RunTest -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune
+        $finalize = @{ ProjectPath = $ProjectPath; ProjectName = $projectName; AppInfo = $appInfo }
+        if ($RunTest) { $finalize['RunTest'] = $RunTest }   # omit when null (ValidateSet rejects $null)
+        Invoke-Win32ToolkitFinalize @finalize -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune
     }
     catch {
         Write-Error "Complete-Win32ToolkitManualApp failed: $($_.Exception.Message)"

@@ -50,7 +50,11 @@ function Export-Win32ToolkitIntuneWin {
         [string]$BasePath,
 
         [Parameter(Mandatory = $false)]
-        [switch]$PublishIntune
+        [switch]$PublishIntune,
+
+        # Suppress the interactive "Upload to Intune now?" prompt (used by the TUI / automation).
+        [Parameter(Mandatory = $false)]
+        [switch]$NoPublishPrompt
     )
 
     try {
@@ -194,7 +198,7 @@ function Export-Win32ToolkitIntuneWin {
         # ── Step 7: Publish to Intune ─────────────────────────────────────────────
         if ($intuneWinFile) {
             $shouldPublish = $PublishIntune
-            if (-not $shouldPublish) {
+            if (-not $shouldPublish -and -not $NoPublishPrompt) {
                 Write-Host ''
                 $answer = Read-Host 'Upload to Microsoft Intune now? (Y/N)'
                 $shouldPublish = $answer -match '^[Yy]'

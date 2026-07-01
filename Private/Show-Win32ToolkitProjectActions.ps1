@@ -1,0 +1,100 @@
+function Show-Win32ToolkitProjectActions {
+    <#
+    .SYNOPSIS
+        "Work with an existing project" screen (Spectre): pick a project, then test / finalize /
+        package / publish (gated) / open. Thin front-end over the existing commands.
+        See knowledge-base/designs/tui.md.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$BasePath)
+
+    while ($true) {
+        Clear-Host
+        Write-SpectreRule -Title 'Work with an existing project' -Color Blue
+
+        $projects = @(Get-PSADTProjects -BasePath $BasePath)
+        if ($projects.Count -eq 0) {
+            Format-SpectrePanel -Data 'No projects yet — create one with [blue]Package an app[/].' -Header 'No projects' -Border Rounded -Color Yellow
+            Read-SpectrePause -Message 'Press any key to return' -AnyKey | Out-Null
+            return
+        }
+
+        # Select a project (string label + lookup)
+        $map = [ordered]@{}
+        $labels = foreach ($p in ($projects | Sort-Object Template, Name)) {
+            $label = Get-SpectreEscapedText -Text ('{0}  /  {1}' -f $p.Template, $p.Name)
+            $map[$label] = $p
+            $label
+        }
+        $chosen = Read-SpectreSelection -Message 'Select a project (type to filter)' -Choices @($labels) -Color Blue -EnableSearch -PageSize 15
+        $project = $map[$chosen]
+        if (-not $project) { return }
+
+        $reselect = $false
+        while (-not $reselect) {
+            Clear-Host
+            Write-SpectreRule -Title (Get-SpectreEscapedText -Text ('{0} / {1}' -f $project.Template, $project.Name)) -Color Blue
+
+            $act = Read-SpectreSelection -Message 'What would you like to do?' -Choices @(
+                [pscustomobject]@{ Key = 'test';    Label = 'Run a test in Windows Sandbox' }
+                [pscustomobject]@{ Key = 'finish';  Label = 'Finalize / refresh (Sandbox capture -> auto uninstall)' }
+                [pscustomobject]@{ Key = 'package'; Label = 'Package to .intunewin' }
+                [pscustomobject]@{ Key = 'publish'; Label = 'Publish to Intune' }
+                [pscustomobject]@{ Key = 'open';    Label = 'Open the project folder' }
+                [pscustomobject]@{ Key = 'another'; Label = 'Pick another project' }
+                [pscustomobject]@{ Key = 'back';    Label = 'Back to the main menu' }
+            ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 10
+
+            switch ($act.Key) {
+                'test' {
+                    $sc = Read-SpectreSelection -Message 'Test scenario' -Choices @(
+                        [pscustomobject]@{ Key = 'InstallUninstall'; Label = 'Install then uninstall (any app)' }
+                        [pscustomobject]@{ Key = 'Update';           Label = 'Update from an older version (winget apps only)' }
+                    ) -ChoiceLabelProperty 'Label' -Color Blue
+                    Clear-Host; Write-SpectreRule -Title 'Launching test sandbox…' -Color Blue
+                    try { Test-Win32ToolkitProject -ProjectPath $project.Path -Scenario $sc.Key }
+                    catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
+                    Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                }
+                'finish' {
+                    Clear-Host; Write-SpectreRule -Title 'Finalizing…' -Color Blue
+                    try { Complete-Win32ToolkitManualApp -ProjectPath $project.Path }
+                    catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
+                    Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                }
+                'package' {
+                    Clear-Host; Write-SpectreRule -Title 'Packaging…' -Color Blue
+                    try {
+                        Export-Win32ToolkitIntuneWin -ProjectPath $project.Path -NoPublishPrompt
+                        Format-SpectrePanel -Data 'Package created. See the messages above for the .intunewin path.' -Header 'Done' -Border Rounded -Color Green
+                    }
+                    catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
+                    Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                }
+                'publish' {
+                    $cfg = Get-Win32ToolkitAppConfig -ProjectPath $project.Path
+                    $app = if ($cfg.PSObject.Properties.Name -contains 'App') { $cfg.App } else { $null }
+                    $summary = @(
+                        "Application : $(if ($app.Name) { $app.Name } else { $project.Name })"
+                        "Version     : $($app.Version)"
+                        "Publisher   : $($app.Vendor)"
+                    ) -join "`n"
+                    Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $summary) -Header 'About to PUBLISH to Intune' -Border Rounded -Color Yellow
+                    Write-SpectreHost "[yellow]You will sign in to Microsoft Graph — the target tenant is shown during sign-in.[/]"
+                    if (Read-SpectreConfirm -Message 'Package and upload this to Intune?' -DefaultAnswer 'n') {
+                        Clear-Host; Write-SpectreRule -Title 'Publishing to Intune…' -Color Blue
+                        try {
+                            Export-Win32ToolkitIntuneWin -ProjectPath $project.Path -PublishIntune
+                            Format-SpectrePanel -Data 'Published. See the messages above for the app ID and portal link.' -Header 'Done' -Border Rounded -Color Green
+                        }
+                        catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
+                        Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                    }
+                }
+                'open' { try { Invoke-Item -LiteralPath $project.Path } catch { } }
+                'another' { $reselect = $true }
+                'back'    { return }
+            }
+        }
+    }
+}

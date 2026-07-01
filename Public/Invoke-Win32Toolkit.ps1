@@ -249,8 +249,9 @@ function Invoke-Win32Toolkit {
 
                 # Documentation capture, uninstall automation, and optional test/package/publish
                 # (shared with the manual-app flow — see Invoke-Win32ToolkitFinalize).
-                Invoke-Win32ToolkitFinalize -ProjectPath $projectFullPath -ProjectName $projectName -AppInfo $selectedApp `
-                    -RunTest $RunTest -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune
+                $finalize = @{ ProjectPath = $projectFullPath; ProjectName = $projectName; AppInfo = $selectedApp }
+                if ($RunTest) { $finalize['RunTest'] = $RunTest }   # omit when null (ValidateSet rejects $null)
+                Invoke-Win32ToolkitFinalize @finalize -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune
 
 
             }
