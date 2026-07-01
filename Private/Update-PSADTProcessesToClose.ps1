@@ -1,22 +1,36 @@
 function Update-PSADTProcessesToClose {
+    <#
+    .SYNOPSIS
+        Writes the ProcessesToClose section of SupportFiles\AppConfig.json from sandbox capture data.
+    .DESCRIPTION
+        Detects user-launchable executables installed by the app (App Paths registry keys, then a
+        DisplayIcon fallback, then EXEs directly under InstallLocation), validates each name
+        (Test-Win32ToolkitProcessName), and records them as DATA in AppConfig.json. The data-driven
+        deploy script reads them into AppProcessesToClose at runtime — no code is generated.
+
+        See knowledge-base/designs/data-driven-generation.md.
+    .PARAMETER ProjectPath
+        Full path to the PSADT project folder.
+    .PARAMETER JsonFilePath
+        Full path to the InstallationChanges_*.json capture file.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
     param(
+        [Parameter(Mandatory)]
         [string]$ProjectPath,
+
+        [Parameter(Mandatory)]
         [string]$JsonFilePath
     )
 
     try {
-        $scriptPath = Join-Path $ProjectPath "Invoke-AppDeployToolkit.ps1"
-        if (-not (Test-Path $scriptPath)) {
-            Write-Warning "PSADT script not found: $scriptPath"
-            return $false
-        }
-
         $data = Get-Content -Path $JsonFilePath -Raw -Encoding UTF8 | ConvertFrom-Json
 
-        $candidates  = [System.Collections.Generic.List[string]]::new()
+        $candidates     = [System.Collections.Generic.List[string]]::new()
         $excludePattern = 'uninstall|uninst|setup|install|update|patch|redist'
 
-        # Get InstallLocation from Uninstall registry key (used as scope filter for fallback)
+        # InstallLocation (used as scope filter for the file fallback).
         $installLocation = $null
         foreach ($regKey in $data.NewRegistryKeys) {
             if ($regKey.Path -like '*Uninstall*' -and $regKey.Values -and $regKey.Values.InstallLocation) {
@@ -25,7 +39,7 @@ function Update-PSADTProcessesToClose {
             }
         }
 
-        # Source 1 (preferred): App Paths registry keys — these are user-launchable executables
+        # Source 1 (preferred): App Paths registry keys.
         foreach ($regKey in $data.NewRegistryKeys) {
             if ($regKey.Path -like '*App Paths*' -and $regKey.KeyName -like '*.exe') {
                 $procName = [System.IO.Path]::GetFileNameWithoutExtension($regKey.KeyName)
@@ -35,11 +49,11 @@ function Update-PSADTProcessesToClose {
             }
         }
 
-        # Source 2 (fallback): DisplayIcon from Uninstall registry key
+        # Source 2 (fallback): DisplayIcon from the Uninstall key.
         if ($candidates.Count -eq 0) {
             foreach ($regKey in $data.NewRegistryKeys) {
                 if ($regKey.Path -like '*Uninstall*' -and $regKey.Values -and $regKey.Values.DisplayIcon) {
-                    $iconPath = $regKey.Values.DisplayIcon -replace ',\d+$', ''  # strip icon index
+                    $iconPath = $regKey.Values.DisplayIcon -replace ',\d+$', ''
                     $procName = [System.IO.Path]::GetFileNameWithoutExtension($iconPath)
                     if ($procName -and $procName -notmatch $excludePattern -and (Test-Win32ToolkitProcessName $procName) -and $procName -notin $candidates) {
                         $candidates.Add($procName)
@@ -49,13 +63,12 @@ function Update-PSADTProcessesToClose {
             }
         }
 
-        # Source 3 (fallback): EXE files under InstallLocation
+        # Source 3 (fallback): EXE files directly under InstallLocation.
         if ($candidates.Count -eq 0 -and $installLocation) {
             foreach ($file in $data.NewFiles) {
                 if ($file.Type -eq 'File' -and
                     $file.Path -like '*.exe' -and
                     $file.Path.StartsWith($installLocation, [System.StringComparison]::OrdinalIgnoreCase)) {
-                    # Only files directly in InstallLocation, not subfolders
                     $fileDir = [System.IO.Path]::GetDirectoryName($file.Path)
                     if ($fileDir -ieq $installLocation) {
                         $procName = [System.IO.Path]::GetFileNameWithoutExtension($file.Path)
@@ -67,29 +80,21 @@ function Update-PSADTProcessesToClose {
             }
         }
 
-        # Sort and build the replacement string. Names are validated above; escape as
-        # well (defense-in-depth) since each is emitted into a single-quoted literal.
-        $sorted = $candidates | Sort-Object
-        $arrayContent = if ($sorted.Count -gt 0) {
-            ($sorted | ForEach-Object { "'$(ConvertTo-PSSingleQuoted $_)'" }) -join ', '
-        } else { '' }
-        $replacement = "AppProcessesToClose = @($arrayContent)"
+        $sorted = @($candidates | Sort-Object)
 
-        # Regex-replace the existing AppProcessesToClose line (idempotent)
-        $content = Get-Content -Path $scriptPath -Raw -Encoding UTF8
-        $content = $content -replace 'AppProcessesToClose\s*=\s*@\([^)]*\)', $replacement
-        Set-Content -Path $scriptPath -Value $content -Encoding UTF8
+        $cfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
+        $cfg | Add-Member -NotePropertyName ProcessesToClose -NotePropertyValue $sorted -Force
+        Set-Win32ToolkitAppConfig -ProjectPath $ProjectPath -Config $cfg | Out-Null
 
         if ($sorted.Count -gt 0) {
-            Write-Host "✓ AppProcessesToClose set: @($arrayContent)" -ForegroundColor Green
+            Write-Host "✓ ProcessesToClose data written: $($sorted -join ', ')" -ForegroundColor Green
         } else {
-            Write-Host "AppProcessesToClose: no user-launchable processes detected, left as @()" -ForegroundColor DarkYellow
+            Write-Host 'ProcessesToClose: no user-launchable processes detected, wrote @()' -ForegroundColor DarkYellow
         }
-
         return $true
     }
     catch {
-        Write-Warning "Failed to update AppProcessesToClose: $($_.Exception.Message)"
+        Write-Warning "Failed to write ProcessesToClose data: $($_.Exception.Message)"
         return $false
     }
 }
