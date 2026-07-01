@@ -58,7 +58,7 @@ function Show-Win32Toolkit {
         switch (Show-Win32ToolkitMainMenu) {
             'winget'    { Invoke-Win32ToolkitWingetWizard -BasePath $base }
             'manual'    { Invoke-Win32ToolkitManualWizard -BasePath $base }
-            'project'   { Show-Win32ToolkitStub -Title 'Work with an existing project' }
+            'project'   { Show-Win32ToolkitProjectActions -BasePath $base }
             'browse'    { Show-Win32ToolkitBrowse   -BasePath $base }
             'templates' { Show-Win32ToolkitStub -Title 'Org templates' }
             'settings'  { $base = Show-Win32ToolkitSettings -BasePath $base }
