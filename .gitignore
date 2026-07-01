@@ -1,0 +1,5 @@
+# Claude Code / AI-assistant working artifacts — kept local, not tracked in the repo.
+# (CLAUDE.md is included because it references the local knowledge-base/ pages.)
+.claude/
+CLAUDE.md
+knowledge-base/

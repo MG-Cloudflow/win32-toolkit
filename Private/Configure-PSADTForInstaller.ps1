@@ -29,12 +29,13 @@ function Configure-PSADTForInstaller {
         # Read current script content
         $scriptContent = Get-Content $scriptPath -Raw
         
-        # Prepare app variables
-        $appVendor = if ($yamlInfo.Publisher) { "'$($yamlInfo.Publisher)'" } else { "''" }
-        $appVersion = if ($yamlInfo.PackageVersion -or $AppInfo.Version) { 
-            "'$(if ($yamlInfo.PackageVersion) { $yamlInfo.PackageVersion } else { $AppInfo.Version })'" 
-        } else { "''" }
-        $appArch = "'$Architecture'"
+        # Prepare app variables.
+        # Every value below is emitted into a single-quoted literal inside the generated
+        # Invoke-AppDeployToolkit.ps1, so it must be quote-escaped (ConvertTo-PSLiteral).
+        $appVendor  = ConvertTo-PSLiteral $yamlInfo.Publisher
+        $verRaw     = if ($yamlInfo.PackageVersion) { $yamlInfo.PackageVersion } elseif ($AppInfo.Version) { $AppInfo.Version } else { '' }
+        $appVersion = ConvertTo-PSLiteral $verRaw
+        $appArch    = ConvertTo-PSLiteral $Architecture
         
         # Configure based on installer type
         if ($fileInfo.Type -eq 'msi') {
@@ -54,7 +55,7 @@ function Configure-PSADTForInstaller {
             Write-Host "Configuring for EXE installer" -ForegroundColor Yellow
             
             # For EXE: Set AppName to disable Zero-Config and add install logic
-            $appName = if ($yamlInfo.PackageName) { "'$($yamlInfo.PackageName)'" } else { "'$($AppInfo.Name)'" }
+            $appName = if ($yamlInfo.PackageName) { ConvertTo-PSLiteral $yamlInfo.PackageName } else { ConvertTo-PSLiteral $AppInfo.Name }
             
             # Update app variables  
             $scriptContent = $scriptContent -replace "AppVendor = ''", "AppVendor = $appVendor"
@@ -62,21 +63,28 @@ function Configure-PSADTForInstaller {
             $scriptContent = $scriptContent -replace "AppVersion = ''", "AppVersion = $appVersion"
             $scriptContent = $scriptContent -replace "AppArch = ''", "AppArch = $appArch"
             
-            # Add EXE installation logic using proven approach from Update-PSADTForEXE.ps1
-            $silentArgs = if ($yamlInfo.SilentArgs) { $yamlInfo.SilentArgs } else { "/S" }
-            $packageName = if ($yamlInfo.PackageName) { $yamlInfo.PackageName } else { $AppInfo.Name }
-            
+            # Add EXE installation logic using proven approach from Update-PSADTForEXE.ps1.
+            # These values are untrusted (winget YAML): $silentArgs and the installer file
+            # name are emitted into single-quoted literals; $packageName is emitted into
+            # double-quoted log messages — escape each for its target context so it cannot
+            # break out of the literal or expand a variable/subexpression at runtime.
+            $silentArgsRaw   = if ($yamlInfo.SilentArgs) { $yamlInfo.SilentArgs } else { "/S" }
+            $packageNameRaw  = if ($yamlInfo.PackageName) { $yamlInfo.PackageName } else { $AppInfo.Name }
+            $silentArgs      = ConvertTo-PSSingleQuoted $silentArgsRaw
+            $packageName     = ConvertTo-PSDoubleQuoted $packageNameRaw
+            $installerFileSq = ConvertTo-PSSingleQuoted $fileInfo.FileName
+
             $installLogic = @"
 
     ## Install EXE Application
-    `$installerPath = Join-Path `$adtSession.DirFiles '$($fileInfo.FileName)'
+    `$installerPath = Join-Path `$adtSession.DirFiles '$installerFileSq'
     if (Test-Path `$installerPath) {
         Write-ADTLogEntry -Message "Installing $packageName from: `$installerPath" -Severity 1
-        
+
         # Silent installation
         `$installArgs = '$silentArgs'
         Start-ADTProcess -FilePath `$installerPath -ArgumentList `$installArgs
-        
+
         Write-ADTLogEntry -Message "$packageName installation completed" -Severity 1
     } else {
         Write-ADTLogEntry -Message "Installer file not found: `$installerPath" -Severity 3
@@ -100,7 +108,7 @@ function Configure-PSADTForInstaller {
             Write-Host "Configuring for $($fileInfo.Type.ToUpper()) installer" -ForegroundColor Yellow
             
             # For other types: Set AppName and basic variables
-            $appName = if ($yamlInfo.PackageName) { "'$($yamlInfo.PackageName)'" } else { "'$($AppInfo.Name)'" }
+            $appName = if ($yamlInfo.PackageName) { ConvertTo-PSLiteral $yamlInfo.PackageName } else { ConvertTo-PSLiteral $AppInfo.Name }
             
             $scriptContent = $scriptContent -replace "AppVendor = ''", "AppVendor = $appVendor"
             $scriptContent = $scriptContent -replace "AppName = ''", "AppName = $appName"
