@@ -2,14 +2,38 @@
 
 A PowerShell module that automates the end-to-end process of packaging Win32 applications for Microsoft Intune deployment using the **PSAppDeployToolkit (PSADT) v4** framework.
 
-The module exposes three public commands that cover the full packaging pipeline:
+The module exposes an interactive UI plus a set of commands that cover the full packaging pipeline:
 
 | Command | Purpose |
 |---|---|
-| `Invoke-Win32Toolkit` | Search, download, scaffold, document, and optionally test, package, and publish an app |
+| `Show-Win32Toolkit` | **Launch the interactive, menu-driven UI over the whole pipeline** |
+| `Invoke-Win32Toolkit` | Search, download, scaffold, document, and optionally test, package, and publish a winget app |
+| `New-Win32ToolkitManualApp` | Package an app that is **not** in winget (you supply the installer) |
+| `Complete-Win32ToolkitManualApp` | Finalise a scaffolded project (sandbox capture → uninstall → test/package/upload) |
 | `Test-Win32ToolkitProject` | Run sandbox-based test scenarios against any existing PSADT project |
 | `Export-Win32ToolkitIntuneWin` | Clean up and compile a project into a ready-to-upload `.intunewin` file |
 | `Publish-Win32ToolkitIntuneApp` | Upload a `.intunewin` file directly to Microsoft Intune via the Graph API |
+
+---
+
+## Interactive UI (recommended)
+
+Prefer not to remember parameters? Launch the guided, menu-driven UI:
+
+```powershell
+Import-Module C:\path\to\win32-toolkit\win32-toolkit.psd1
+Show-Win32Toolkit
+```
+
+…or **double-click `Launch-Win32Toolkit.cmd`** — it opens straight into the menu, no PowerShell knowledge needed.
+
+Built on [PwshSpectreConsole](https://pwshspectreconsole.com/) (offered for a one-time install on first launch), the UI covers the whole pipeline with validated prompts, confirmations, and a prerequisite health check:
+
+- **Package an app** — from winget (search) or a **manual** installer (easy, or advanced where you write the install logic)
+- **Work with an existing project** — test / package / publish (publishing is gated behind a confirmation)
+- **Browse projects**, **manage org templates**, and **Settings** (base folder)
+
+Requires PowerShell 7.2+ and an interactive console window.
 
 ---
 
