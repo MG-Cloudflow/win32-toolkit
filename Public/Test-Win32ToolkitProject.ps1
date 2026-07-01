@@ -13,8 +13,8 @@ function Test-Win32ToolkitProject {
     Full path to the PSADT project folder (the folder that contains
     Invoke-AppDeployToolkit.ps1). If omitted, a numbered selection menu is shown.
 .PARAMETER BasePath
-    Root folder to scan for PSADT projects when ProjectPath is not provided.
-    Defaults to 'C:\Win32Apps'.
+    Root folder to scan for PSADT projects when ProjectPath is not provided. If omitted, the
+    registry-saved value is used (see Invoke-Win32Toolkit).
 .PARAMETER Scenario
     The test scenario to execute. If omitted, an interactive menu is shown.
     - InstallUninstall : Install → 2-minute countdown → Uninstall
@@ -43,7 +43,7 @@ function Test-Win32ToolkitProject {
         [string]$ProjectPath,
 
         [Parameter(Mandatory = $false)]
-        [string]$BasePath = 'C:\Win32Apps',
+        [string]$BasePath,
 
         [Parameter(Mandatory = $false)]
         [ValidateSet('InstallUninstall', 'Update')]
@@ -64,6 +64,7 @@ function Test-Win32ToolkitProject {
 
         # Resolve the project to test
         if (-not $ProjectPath) {
+            $BasePath = Get-Win32ToolkitBasePath -BasePath $BasePath
             Write-Host 'Scanning for PSADT projects...' -ForegroundColor Yellow
             $projects = Get-PSADTProjects -BasePath $BasePath
 

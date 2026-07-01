@@ -22,7 +22,11 @@ function Invoke-Win32Toolkit {
     Skip the PSGallery update prompt and the project overwrite prompt.
     Useful for unattended / automated runs.
 .PARAMETER BasePath
-    Base path where downloads, PSADT projects, and documentation will be created.
+    Base folder for all output (Templates, Projects, Staging, IntuneWin). If omitted, the value
+    saved in the registry (HKCU:\Software\CloudFlow\win32-toolkit) is used; on first run you are
+    prompted for it and the choice is saved. An explicit value overrides but is not persisted.
+.PARAMETER Reconfigure
+    Re-prompt for the base folder and save the new value to the registry, ignoring any stored value.
 .EXAMPLE
     Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force
 .EXAMPLE
@@ -58,7 +62,10 @@ function Invoke-Win32Toolkit {
         [switch]$Force,
 
         [Parameter(Mandatory = $false)]
-        [string]$BasePath = 'C:\Win32Apps',
+        [string]$BasePath,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$Reconfigure,
 
         [Parameter(Mandatory = $false)]
         [ValidateSet('InstallUninstall', 'Update')]
@@ -80,9 +87,13 @@ function Invoke-Win32Toolkit {
             throw 'Winget is not installed or not available in PATH'
         }
 
+        # Resolve the base folder (registry-backed; prompts and saves on first run)
+        $BasePath = Get-Win32ToolkitBasePath -BasePath $BasePath -Reconfigure:$Reconfigure
+        Write-Host "Base folder: $BasePath" -ForegroundColor DarkGray
+
         # -NewTemplate: create/update a template then exit, without packaging anything
         if ($NewTemplate) {
-            $newTpl = New-OrgTemplate -TemplateName $TemplateName
+            $newTpl = New-OrgTemplate -TemplateName $TemplateName -BasePath $BasePath
             if ($newTpl) {
                 Write-Host "`n✓ Template '$($newTpl.TemplateName)' created successfully." -ForegroundColor Green
             }
@@ -90,7 +101,7 @@ function Invoke-Win32Toolkit {
         }
 
         # Load (or create) org template once for this run
-        $script:OrgTemplate = Get-OrgTemplate -TemplateName $TemplateName
+        $script:OrgTemplate = Get-OrgTemplate -TemplateName $TemplateName -BasePath $BasePath
 
         # -Id fast path: skip search entirely
         if ($Id) {
@@ -185,14 +196,18 @@ function Invoke-Win32Toolkit {
 
         Write-Host "`nProject name will be: $projectName" -ForegroundColor Cyan
 
-        # Ensure the Projects tier exists before scaffolding
+        # Ensure the template-scoped Projects tier exists before scaffolding:
+        #   <BasePath>\Projects\<Template>\<Project>
         $paths       = Get-Win32ToolkitPaths -BasePath $BasePath
-        $projectsDir = $paths.Projects
+        $templateSeg = Sanitize-ProjectName -Name $script:OrgTemplate.TemplateName
+        if ([string]::IsNullOrWhiteSpace($templateSeg)) { $templateSeg = 'Default' }
+        $projectsDir = Join-Path $paths.Projects $templateSeg
         if (-not (Test-Path $projectsDir)) {
             New-Item -Path $projectsDir -ItemType Directory -Force | Out-Null
         }
+        Write-Host "Template folder: $templateSeg" -ForegroundColor DarkGray
 
-        # Create the PSADT project scaffold inside Projects\
+        # Create the PSADT project scaffold inside Projects\<Template>\
         $projectCreated = Create-PSADTProject -ProjectName $projectName -ProjectPath $projectsDir -Force:$Force
 
         if ($projectCreated) {

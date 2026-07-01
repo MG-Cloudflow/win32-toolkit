@@ -1,24 +1,26 @@
 function Show-ProjectSelection {
+    [CmdletBinding()]
     param([array]$Projects)
 
     Write-Host "`n========================================" -ForegroundColor Cyan
     Write-Host 'PSADT Project Selection'                   -ForegroundColor Cyan
     Write-Host "========================================`n" -ForegroundColor Cyan
-    Write-Host 'Available PSADT Projects:' -ForegroundColor Yellow
-    Write-Host ''
+    Write-Host ("  {0,-4} {1,-22} {2}" -f '#', 'Template', 'Application') -ForegroundColor Gray
+    Write-Host ("  " + ('-' * 60)) -ForegroundColor DarkGray
 
     for ($i = 0; $i -lt $Projects.Count; $i++) {
-        Write-Host "  $($i + 1). $($Projects[$i].Name)" -ForegroundColor White
+        $tpl   = if ($Projects[$i].PSObject.Properties.Name -contains 'Template') { $Projects[$i].Template } else { '' }
+        $color = if ($i % 2 -eq 0) { 'Cyan' } else { 'White' }
+        Write-Host ("  {0,-4} {1,-22} {2}" -f ($i + 1), $tpl, $Projects[$i].Name) -ForegroundColor $color
     }
 
     Write-Host ''
     do {
-        $selection = Read-Host "Select project to test (1-$($Projects.Count))"
+        $rawInput = Read-Host "Select project (1-$($Projects.Count))"
+        $parsed   = 0
+        $valid    = [int]::TryParse($rawInput.Trim(), [ref]$parsed) -and $parsed -ge 1 -and $parsed -le $Projects.Count
+        if (-not $valid) { Write-Host "Please enter a number between 1 and $($Projects.Count)." -ForegroundColor Red }
+    } while (-not $valid)
 
-        if ([int]$selection -ge 1 -and [int]$selection -le $Projects.Count) {
-            return $Projects[$selection - 1]
-        }
-
-        Write-Host 'Invalid selection. Please try again.' -ForegroundColor Red
-    } while ($true)
+    return $Projects[$parsed - 1]
 }

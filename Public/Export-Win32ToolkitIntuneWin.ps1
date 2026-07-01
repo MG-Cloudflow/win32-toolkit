@@ -25,9 +25,9 @@ function Export-Win32ToolkitIntuneWin {
     Full path to the raw PSADT project folder under Projects\.
     If omitted, an interactive numbered list is shown.
 .PARAMETER BasePath
-    Root folder containing the Projects\, Staging\, and IntuneWin\ tiers.
-    Defaults to 'C:\Win32Apps'.
-    Ignored when ProjectPath is supplied — the BasePath is derived automatically.
+    Root folder containing the Templates\, Projects\, Staging\, and IntuneWin\ tiers. If omitted,
+    the registry-saved value is used (see Invoke-Win32Toolkit). Ignored when ProjectPath is supplied
+    — the BasePath and template are derived from the path.
 .EXAMPLE
     Export-Win32ToolkitIntuneWin
 .EXAMPLE
@@ -47,7 +47,7 @@ function Export-Win32ToolkitIntuneWin {
         [string]$ProjectPath,
 
         [Parameter(Mandatory = $false)]
-        [string]$BasePath = 'C:\Win32Apps',
+        [string]$BasePath,
 
         [Parameter(Mandatory = $false)]
         [switch]$PublishIntune
@@ -56,6 +56,7 @@ function Export-Win32ToolkitIntuneWin {
     try {
         # ── Project resolution ────────────────────────────────────────────────────
         if (-not $ProjectPath) {
+            $BasePath = Get-Win32ToolkitBasePath -BasePath $BasePath
             Write-Host 'Scanning for PSADT projects...' -ForegroundColor Yellow
             $projects = Get-PSADTProjects -BasePath $BasePath
 
@@ -76,11 +77,11 @@ function Export-Win32ToolkitIntuneWin {
             throw "Setup file not found: $setupFile`nVerify this is a valid PSADT v4 project folder."
         }
 
-        # Derive BasePath from ProjectPath when it was supplied directly.
-        # Expected layout: <BasePath>\Projects\<ProjectName>
+        # Derive layout from ProjectPath: <BasePath>\Projects\<Template>\<ProjectName>
         $projectName   = Split-Path $ProjectPath -Leaf
-        $projectsDir   = Split-Path $ProjectPath -Parent
-        $derivedBase   = Split-Path $projectsDir  -Parent
+        $templateSeg   = Split-Path (Split-Path $ProjectPath -Parent) -Leaf
+        $projectsRoot  = Split-Path (Split-Path $ProjectPath -Parent) -Parent
+        $derivedBase   = Split-Path $projectsRoot -Parent
         $paths         = Get-Win32ToolkitPaths -BasePath $derivedBase
 
         # ── Step 1: Locate IntuneWinAppUtil.exe ──────────────────────────────────
@@ -128,8 +129,8 @@ function Export-Win32ToolkitIntuneWin {
             Write-Host "✓ Using IntuneWinAppUtil.exe from: $toolsFolder" -ForegroundColor Gray
         }
 
-        # ── Step 2: Copy raw project → Staging ───────────────────────────────────
-        $stagingDir  = $paths.Staging
+        # ── Step 2: Copy raw project → Staging\<Template>\ ───────────────────────
+        $stagingDir  = Join-Path $paths.Staging $templateSeg
         $stagingPath = Join-Path $stagingDir $projectName
 
         if (-not (Test-Path $stagingDir)) {
@@ -148,8 +149,8 @@ function Export-Win32ToolkitIntuneWin {
         # ── Step 3: Clean up the Staging copy ────────────────────────────────────
         Optimize-Win32ToolkitProject -ProjectPath $stagingPath
 
-        # ── Step 4: Ensure output folder exists ───────────────────────────────────
-        $intuneWinDir = $paths.IntuneWin
+        # ── Step 4: Ensure output folder exists (IntuneWin\<Template>\) ───────────
+        $intuneWinDir = Join-Path $paths.IntuneWin $templateSeg
         if (-not (Test-Path $intuneWinDir)) {
             New-Item -Path $intuneWinDir -ItemType Directory -Force | Out-Null
         }
