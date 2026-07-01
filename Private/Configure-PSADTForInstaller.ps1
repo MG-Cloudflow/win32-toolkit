@@ -1,137 +1,91 @@
 function Configure-PSADTForInstaller {
+    <#
+    .SYNOPSIS
+        Configures a scaffolded PSADT v4 project for its installer (data-driven).
+    .DESCRIPTION
+        Writes the App and Installer sections of SupportFiles\AppConfig.json (values are stored as
+        DATA via ConvertTo-Json, never interpolated into generated code) and patches
+        Invoke-AppDeployToolkit.ps1 with fixed, value-free routines that read that data at runtime
+        (see Set-PSADTDataDrivenScript). MSI installers keep an empty App.Name so PSADT Zero-Config
+        MSI still applies. Org-template branding is applied afterwards, unchanged.
+
+        See knowledge-base/designs/data-driven-generation.md.
+    .PARAMETER ProjectPath
+        Full path to the PSADT project folder (contains Invoke-AppDeployToolkit.ps1 and Files\).
+    .PARAMETER AppInfo
+        App metadata resolved from winget (used as a fallback for Name/Version).
+    .PARAMETER Architecture
+        Target architecture string (x64/x86/arm64).
+    #>
+    [CmdletBinding()]
     param(
         [string]$ProjectPath,
         [PSCustomObject]$AppInfo,
         [string]$Architecture
     )
-    
+
     try {
-        $filesPath = Join-Path $ProjectPath "Files"
-        $scriptPath = Join-Path $ProjectPath "Invoke-AppDeployToolkit.ps1"
-        
+        $filesPath  = Join-Path $ProjectPath 'Files'
+        $scriptPath = Join-Path $ProjectPath 'Invoke-AppDeployToolkit.ps1'
+
         if (-not (Test-Path $scriptPath)) {
             Write-Warning "PSADT script not found: $scriptPath"
             return $false
         }
-        
+
         # Detect installer type
         $fileInfo = Get-InstallerFileInfo -FilesPath $filesPath
         if (-not $fileInfo.FileName) {
-            Write-Warning "No installer files detected in Files folder"
+            Write-Warning 'No installer files detected in Files folder'
             return $false
         }
-        
         Write-Host "Detected installer: $($fileInfo.FileName) ($($fileInfo.Type.ToUpper()))" -ForegroundColor Green
-        
-        # Get YAML info if available
+
+        # Winget manifest metadata (may be absent)
         $yamlInfo = Get-YAMLInstallerInfo -FilesPath $filesPath
-        
-        # Read current script content
-        $scriptContent = Get-Content $scriptPath -Raw
-        
-        # Prepare app variables.
-        # Every value below is emitted into a single-quoted literal inside the generated
-        # Invoke-AppDeployToolkit.ps1, so it must be quote-escaped (ConvertTo-PSLiteral).
-        $appVendor  = ConvertTo-PSLiteral $yamlInfo.Publisher
-        $verRaw     = if ($yamlInfo.PackageVersion) { $yamlInfo.PackageVersion } elseif ($AppInfo.Version) { $AppInfo.Version } else { '' }
-        $appVersion = ConvertTo-PSLiteral $verRaw
-        $appArch    = ConvertTo-PSLiteral $Architecture
-        
-        # Configure based on installer type
-        if ($fileInfo.Type -eq 'msi') {
-            Write-Host "Configuring for MSI installer (Zero-Config MSI)" -ForegroundColor Yellow
-            
-            # For MSI: Keep AppName empty to enable Zero-Config MSI
-            $appName = "''"
-            
-            # Update app variables
-            $scriptContent = $scriptContent -replace "AppVendor = ''", "AppVendor = $appVendor"
-            $scriptContent = $scriptContent -replace "AppVersion = ''", "AppVersion = $appVersion"
-            $scriptContent = $scriptContent -replace "AppArch = ''", "AppArch = $appArch"
-            
-            Write-Host "✓ MSI Zero-Config enabled (AppName left empty)" -ForegroundColor Green
+
+        # ---- Resolve values (kept as DATA — never emitted as code) ----
+        $isMsi   = ($fileInfo.Type -eq 'msi')
+        $vendor  = if ($yamlInfo.Publisher) { $yamlInfo.Publisher } else { '' }
+        $version = if ($yamlInfo.PackageVersion) { $yamlInfo.PackageVersion } elseif ($AppInfo.Version) { $AppInfo.Version } else { '' }
+        # Empty AppName for MSI => Zero-Config MSI stays enabled.
+        $name    = if ($isMsi) { '' } elseif ($yamlInfo.PackageName) { $yamlInfo.PackageName } else { $AppInfo.Name }
+        $silent  = if ($isMsi) { '' } elseif ($yamlInfo.SilentArgs) { $yamlInfo.SilentArgs } else { '/S' }
+
+        # ---- Write App + Installer sections into AppConfig.json (merge-preserving) ----
+        $cfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
+        $cfg | Add-Member -NotePropertyName App -NotePropertyValue ([pscustomobject]@{
+            Vendor     = $vendor
+            Name       = $name
+            Version    = $version
+            Arch       = $Architecture
+            ScriptDate = (Get-Date -Format 'yyyy-MM-dd')
+        }) -Force
+        $cfg | Add-Member -NotePropertyName Installer -NotePropertyValue ([pscustomobject]@{
+            Type       = $fileInfo.Type
+            FileName   = $fileInfo.FileName
+            SilentArgs = $silent
+        }) -Force
+        if (-not ($cfg.PSObject.Properties.Name -contains 'ProcessesToClose')) {
+            $cfg | Add-Member -NotePropertyName ProcessesToClose -NotePropertyValue @() -Force
         }
-        elseif ($fileInfo.Type -eq 'exe') {
-            Write-Host "Configuring for EXE installer" -ForegroundColor Yellow
-            
-            # For EXE: Set AppName to disable Zero-Config and add install logic
-            $appName = if ($yamlInfo.PackageName) { ConvertTo-PSLiteral $yamlInfo.PackageName } else { ConvertTo-PSLiteral $AppInfo.Name }
-            
-            # Update app variables  
-            $scriptContent = $scriptContent -replace "AppVendor = ''", "AppVendor = $appVendor"
-            $scriptContent = $scriptContent -replace "AppName = ''", "AppName = $appName"
-            $scriptContent = $scriptContent -replace "AppVersion = ''", "AppVersion = $appVersion"
-            $scriptContent = $scriptContent -replace "AppArch = ''", "AppArch = $appArch"
-            
-            # Add EXE installation logic using proven approach from Update-PSADTForEXE.ps1.
-            # These values are untrusted (winget YAML): $silentArgs and the installer file
-            # name are emitted into single-quoted literals; $packageName is emitted into
-            # double-quoted log messages — escape each for its target context so it cannot
-            # break out of the literal or expand a variable/subexpression at runtime.
-            $silentArgsRaw   = if ($yamlInfo.SilentArgs) { $yamlInfo.SilentArgs } else { "/S" }
-            $packageNameRaw  = if ($yamlInfo.PackageName) { $yamlInfo.PackageName } else { $AppInfo.Name }
-            $silentArgs      = ConvertTo-PSSingleQuoted $silentArgsRaw
-            $packageName     = ConvertTo-PSDoubleQuoted $packageNameRaw
-            $installerFileSq = ConvertTo-PSSingleQuoted $fileInfo.FileName
+        Set-Win32ToolkitAppConfig -ProjectPath $ProjectPath -Config $cfg | Out-Null
+        Write-Host '✓ Wrote SupportFiles\AppConfig.json (App + Installer)' -ForegroundColor Green
 
-            $installLogic = @"
-
-    ## Install EXE Application
-    `$installerPath = Join-Path `$adtSession.DirFiles '$installerFileSq'
-    if (Test-Path `$installerPath) {
-        Write-ADTLogEntry -Message "Installing $packageName from: `$installerPath" -Severity 1
-
-        # Silent installation
-        `$installArgs = '$silentArgs'
-        Start-ADTProcess -FilePath `$installerPath -ArgumentList `$installArgs
-
-        Write-ADTLogEntry -Message "$packageName installation completed" -Severity 1
-    } else {
-        Write-ADTLogEntry -Message "Installer file not found: `$installerPath" -Severity 3
-        throw "Installer file not found"
-    }
-"@
-            
-            # Replace installation section - handle both new and existing installations  
-            if ($scriptContent -match [regex]::Escape('## <Perform Installation tasks here>')) {
-                $scriptContent = $scriptContent -replace [regex]::Escape('## <Perform Installation tasks here>'), $installLogic
-                Write-Host "✓ EXE installation logic added" -ForegroundColor Green
-            }
-            elseif ($scriptContent -match '## Install EXE Application') {
-                # Find and replace the entire EXE installation block
-                $pattern = '## Install EXE Application[\s\S]*?(?=\n\s*##\s*=|\z)'
-                $scriptContent = $scriptContent -replace $pattern, ($installLogic + "`n")
-                Write-Host "✓ EXE installation logic updated" -ForegroundColor Green
-            }
+        # ---- Patch the deploy script to be data-driven (fixed, value-free) ----
+        if (Set-PSADTDataDrivenScript -ScriptPath $scriptPath) {
+            Write-Host '✓ Deploy script patched to data-driven' -ForegroundColor Green
+        } else {
+            Write-Warning 'Data-driven patching of the deploy script did not complete cleanly'
         }
-        else {
-            Write-Host "Configuring for $($fileInfo.Type.ToUpper()) installer" -ForegroundColor Yellow
-            
-            # For other types: Set AppName and basic variables
-            $appName = if ($yamlInfo.PackageName) { ConvertTo-PSLiteral $yamlInfo.PackageName } else { ConvertTo-PSLiteral $AppInfo.Name }
-            
-            $scriptContent = $scriptContent -replace "AppVendor = ''", "AppVendor = $appVendor"
-            $scriptContent = $scriptContent -replace "AppName = ''", "AppName = $appName"
-            $scriptContent = $scriptContent -replace "AppVersion = ''", "AppVersion = $appVersion"
-            $scriptContent = $scriptContent -replace "AppArch = ''", "AppArch = $appArch"
-            
-            Write-Host "✓ Basic app variables configured" -ForegroundColor Green
-        }
-        
-        # Update script date
-        $currentDate = Get-Date -Format 'yyyy-MM-dd'
-        $scriptContent = $scriptContent -replace "AppScriptDate = '2025-09-23'", "AppScriptDate = '$currentDate'"
-        
-        # Write updated content back to file
-        Set-Content -Path $scriptPath -Value $scriptContent -Encoding UTF8
 
-        # Apply org template branding and dialog settings
+        # ---- Org template branding and dialog settings (unchanged) ----
         if ($script:OrgTemplate) {
             Write-Host 'Applying org template...' -ForegroundColor Cyan
             Apply-OrgTemplate -ProjectPath $ProjectPath -Template $script:OrgTemplate | Out-Null
         }
 
-        Write-Host "✓ PSADT script configured successfully!" -ForegroundColor Green
+        Write-Host '✓ PSADT project configured (data-driven)!' -ForegroundColor Green
         return $true
     }
     catch {
