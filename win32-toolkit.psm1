@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 7.2
 
 # Module-scope state variables.
 # In a .psm1, $script: is module scope — persists for the module lifetime,
@@ -7,9 +7,8 @@ $script:OrgTemplate           = $null
 $script:TemplateSchemaVersion = '2.0'
 
 # Ensure downloads (winget icons, IntuneWinAppUtil.exe, GitHub/PSGallery, Graph/Azure)
-# negotiate a modern TLS version. Windows PowerShell 5.1 may otherwise default to
-# TLS 1.0/1.1. Add TLS 1.2 (and 1.3 where the OS supports it) without disturbing any
-# protocols the host already enabled.
+# negotiate a modern TLS version — add TLS 1.2 (and 1.3 where the OS supports it)
+# without disturbing any protocols the host already enabled.
 try {
     [Net.ServicePointManager]::SecurityProtocol =
         [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12

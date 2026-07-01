@@ -17,7 +17,7 @@ The module exposes three public commands that cover the full packaging pipeline:
 
 | Requirement | Details |
 |---|---|
-| **PowerShell** | 5.1 or later (Windows PowerShell or PowerShell 7+) |
+| **PowerShell** | **7.2 or later** (PowerShell 7). Windows PowerShell 5.1 is not supported for running the module. |
 | **Winget** | Windows Package Manager must be installed and in `$PATH`. Included in Windows 10 21H1+ and Windows 11. |
 | **PSAppDeployToolkit** | v4.x from the PowerShell Gallery. Prompted to install automatically on first run if absent. |
 | **Windows Sandbox** | Required for documentation and test scenarios. Enable via *Windows Features → Windows Sandbox*. Available on Windows 10/11 Pro, Enterprise, and Education only. |

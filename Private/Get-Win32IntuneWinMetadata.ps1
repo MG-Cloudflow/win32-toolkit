@@ -4,9 +4,7 @@ function Get-Win32IntuneWinMetadata {
         [string]$IntuneWinPath
     )
 
-    # System.IO.Compression is built-in on PS7; needed on PS5.1
-    Add-Type -AssemblyName 'System.IO.Compression.FileSystem' -ErrorAction SilentlyContinue
-
+    # System.IO.Compression.ZipFile is available by default on PowerShell 7.
     $zip = [System.IO.Compression.ZipFile]::OpenRead($IntuneWinPath)
     try {
         # ── Read Detection.xml ──────────────────────────────────────────────────
