@@ -56,7 +56,7 @@ function Show-Win32Toolkit {
         Show-Win32ToolkitHealth -BasePath $base
 
         switch (Show-Win32ToolkitMainMenu) {
-            'winget'    { Show-Win32ToolkitStub -Title 'Package from winget' }
+            'winget'    { Invoke-Win32ToolkitWingetWizard -BasePath $base }
             'manual'    { Show-Win32ToolkitStub -Title 'Package a manual app' }
             'project'   { Show-Win32ToolkitStub -Title 'Work with an existing project' }
             'browse'    { Show-Win32ToolkitBrowse   -BasePath $base }
