@@ -29,15 +29,25 @@ function Invoke-Win32ToolkitWingetWizard {
         Read-SpectrePause -Message 'Press any key to return' -AnyKey | Out-Null
         return
     }
-    $appChoices = $apps | ForEach-Object {
-        [pscustomobject]@{ App = $_; Label = ('{0}  ({1})  v{2}' -f $_.Name, $_.Id, $_.Version) }
+    # Use plain string choices + a lookup (robust regardless of how selection returns objects).
+    $labelMap = [ordered]@{}
+    $labels = foreach ($a in $apps) {
+        $label = '{0}  ({1})  v{2}' -f $a.Name, $a.Id, $a.Version
+        $labelMap[$label] = $a
+        $label
     }
-    $picked = (Read-SpectreSelection -Message 'Select the application (type to filter)' -Choices $appChoices -ChoiceLabelProperty 'Label' -Color Blue -EnableSearch -PageSize 15).App
+    $chosen = Read-SpectreSelection -Message 'Select the application (type to filter)' -Choices @($labels) -Color Blue -EnableSearch -PageSize 15
+    $picked = $labelMap[$chosen]
+    if (-not $picked -or [string]::IsNullOrWhiteSpace($picked.Id)) {
+        Write-SpectreHost '[yellow]No application selected.[/]'
+        Read-SpectrePause -Message 'Press any key to return' -AnyKey | Out-Null
+        return
+    }
 
-    # 3. Architecture
-    $archs = @(Get-WingetAppDetails -AppId $picked.Id) | Where-Object { $_ -in @('x64', 'x86', 'arm64') }
-    if (-not $archs) { $archs = @('x64', 'x86', 'arm64') }
-    $arch = if ($archs.Count -eq 1) { $archs[0] } else { Read-SpectreSelection -Message 'Target architecture' -Choices $archs -Color Blue }
+    # 3. Architecture (Get-WingetAppDetails may return a single string; force an array; 6>$null quiets it)
+    $archs = @(@(Get-WingetAppDetails -AppId $picked.Id 6>$null) | Where-Object { $_ -in @('x64', 'x86', 'arm64') })
+    if ($archs.Count -eq 0) { $archs = @('x64', 'x86', 'arm64') }
+    $arch = if ($archs.Count -eq 1) { $archs[0] } else { Read-SpectreSelection -Message 'Target architecture' -Choices @($archs) -Color Blue }
 
     # 4. Template (client)
     $template = Get-Win32ToolkitTemplateChoice -BasePath $BasePath
