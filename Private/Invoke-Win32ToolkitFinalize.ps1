@@ -37,7 +37,10 @@ function Invoke-Win32ToolkitFinalize {
 
         [switch]$PackageIntune,
 
-        [switch]$PublishIntune
+        [switch]$PublishIntune,
+
+        # Also publish the update app (2nd app, same version, requirement-gated to installed devices).
+        [switch]$PublishUpdate
     )
 
     $filesPath = Join-Path $ProjectPath 'Files'
@@ -69,8 +72,8 @@ function Invoke-Win32ToolkitFinalize {
         }
     }
 
-    # 3. Optional package / publish (-PublishIntune implies packaging).
-    if ($PackageIntune -or $PublishIntune) {
-        Export-Win32ToolkitIntuneWin -ProjectPath $ProjectPath -PublishIntune:$PublishIntune
+    # 3. Optional package / publish (-PublishIntune / -PublishUpdate imply packaging).
+    if ($PackageIntune -or $PublishIntune -or $PublishUpdate) {
+        Export-Win32ToolkitIntuneWin -ProjectPath $ProjectPath -PublishIntune:$PublishIntune -PublishUpdate:$PublishUpdate
     }
 }

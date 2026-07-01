@@ -40,6 +40,12 @@ function Export-Win32ToolkitIntuneWin {
     interactively on the first run.
 .EXAMPLE
     Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0' -PublishIntune
+.PARAMETER PublishUpdate
+    Also (or instead of -PublishIntune) publish the update app — a 2nd Intune app of the same version
+    with an "app already installed" requirement rule. Use with -PublishIntune to publish both.
+.EXAMPLE
+    # Publish both the install app and the requirement-gated update app
+    Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0' -PublishIntune -PublishUpdate
 #>
     [CmdletBinding()]
     param(
@@ -51,6 +57,12 @@ function Export-Win32ToolkitIntuneWin {
 
         [Parameter(Mandatory = $false)]
         [switch]$PublishIntune,
+
+        # Also (or instead) publish the update app — a 2nd Intune app of the same version whose
+        # requirement rule makes it applicable only to devices that already have the app.
+        # Combine with -PublishIntune to publish both the install app and the update app.
+        [Parameter(Mandatory = $false)]
+        [switch]$PublishUpdate,
 
         # Suppress the interactive "Upload to Intune now?" prompt (used by the TUI / automation).
         [Parameter(Mandatory = $false)]
@@ -197,18 +209,25 @@ function Export-Win32ToolkitIntuneWin {
 
         # ── Step 7: Publish to Intune ─────────────────────────────────────────────
         if ($intuneWinFile) {
-            $shouldPublish = $PublishIntune
-            if (-not $shouldPublish -and -not $NoPublishPrompt) {
+            $doInstall = [bool]$PublishIntune
+            $doUpdate  = [bool]$PublishUpdate
+            if (-not $doInstall -and -not $doUpdate -and -not $NoPublishPrompt) {
                 Write-Host ''
                 $answer = Read-Host 'Upload to Microsoft Intune now? (Y/N)'
-                $shouldPublish = $answer -match '^[Yy]'
+                $doInstall = $answer -match '^[Yy]'
             }
-            if ($shouldPublish) {
+            if ($doInstall) {
                 Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath
+            }
+            if ($doUpdate) {
+                Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath -AsUpdate
             }
         }
     }
     catch {
-        Write-Error "Export-Win32ToolkitIntuneWin failed: $($_.Exception.Message)"
+        # Re-throw (terminating) so failures — including the -AsUpdate "no requirement rule, refusing to
+        # publish" guard — reach callers (the TUI catch, automation) instead of being downgraded to a
+        # non-terminating error that looks like success.
+        throw "Export-Win32ToolkitIntuneWin failed: $($_.Exception.Message)"
     }
 }

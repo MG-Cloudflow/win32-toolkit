@@ -75,7 +75,11 @@ function Invoke-Win32Toolkit {
         [switch]$PackageIntune,
 
         [Parameter(Mandatory = $false)]
-        [switch]$PublishIntune
+        [switch]$PublishIntune,
+
+        # Also publish the update app (2nd app, same version, requirement-gated to installed devices).
+        [Parameter(Mandatory = $false)]
+        [switch]$PublishUpdate
     )
 
     try {
@@ -251,7 +255,7 @@ function Invoke-Win32Toolkit {
                 # (shared with the manual-app flow — see Invoke-Win32ToolkitFinalize).
                 $finalize = @{ ProjectPath = $projectFullPath; ProjectName = $projectName; AppInfo = $selectedApp }
                 if ($RunTest) { $finalize['RunTest'] = $RunTest }   # omit when null (ValidateSet rejects $null)
-                Invoke-Win32ToolkitFinalize @finalize -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune
+                Invoke-Win32ToolkitFinalize @finalize -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune -PublishUpdate:$PublishUpdate
 
 
             }

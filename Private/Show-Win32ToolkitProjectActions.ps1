@@ -80,15 +80,31 @@ function Show-Win32ToolkitProjectActions {
                         "Publisher   : $($app.Vendor)"
                     ) -join "`n"
                     Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $summary) -Header 'About to PUBLISH to Intune' -Border Rounded -Color Yellow
-                    Write-SpectreHost "[yellow]You will sign in to Microsoft Graph — the target tenant is shown during sign-in.[/]"
-                    if (Read-SpectreConfirm -Message 'Package and upload this to Intune?' -DefaultAnswer 'n') {
-                        Clear-Host; Write-SpectreRule -Title 'Publishing to Intune…' -Color Blue
-                        try {
-                            Export-Win32ToolkitIntuneWin -ProjectPath $project.Path -PublishIntune
-                            Format-SpectrePanel -Data 'Published. See the messages above for the app ID and portal link.' -Header 'Done' -Border Rounded -Color Green
+
+                    $which = Read-SpectreSelection -Message 'Publish which app?' -Choices @(
+                        [pscustomobject]@{ Key = 'install'; Label = 'Install app — normal deployment (assign to target devices)' }
+                        [pscustomobject]@{ Key = 'both';    Label = 'Install app + Update app (2nd app, only where already installed)' }
+                        [pscustomobject]@{ Key = 'update';  Label = 'Update app only — applies only where the app is already installed' }
+                        [pscustomobject]@{ Key = 'cancel';  Label = 'Cancel' }
+                    ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 10
+
+                    if ($which.Key -ne 'cancel') {
+                        Write-SpectreHost "[yellow]You will sign in to Microsoft Graph — the target tenant is shown during sign-in.[/]"
+                        if (Read-SpectreConfirm -Message 'Package and upload now?' -DefaultAnswer 'n') {
+                            Clear-Host; Write-SpectreRule -Title 'Publishing to Intune…' -Color Blue
+                            try {
+                                $splat = @{ ProjectPath = $project.Path }
+                                switch ($which.Key) {
+                                    'install' { $splat['PublishIntune'] = $true }
+                                    'update'  { $splat['PublishUpdate'] = $true }
+                                    'both'    { $splat['PublishIntune'] = $true; $splat['PublishUpdate'] = $true }
+                                }
+                                Export-Win32ToolkitIntuneWin @splat
+                                Format-SpectrePanel -Data 'Published. See the messages above for the app ID(s) and portal link.' -Header 'Done' -Border Rounded -Color Green
+                            }
+                            catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
+                            Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
                         }
-                        catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
-                        Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
                     }
                 }
                 'open' { try { Invoke-Item -LiteralPath $project.Path } catch { } }
