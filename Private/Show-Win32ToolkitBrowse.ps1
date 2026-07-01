@@ -14,7 +14,7 @@ function Show-Win32ToolkitBrowse {
     else {
         $projects | Sort-Object Template, Name |
             Select-Object @{ n = 'Template'; e = { $_.Template } }, @{ n = 'Application'; e = { $_.Name } } |
-            Format-SpectreTable -Border Rounded -Color Grey -Title "$($projects.Count) project(s) under $BasePath"
+            Format-SpectreTable -Border Rounded -Color Grey -Title "$($projects.Count) project(s) under $(Get-SpectreEscapedText -Text $BasePath)"
     }
     Read-SpectrePause -Message 'Press any key to return to the menu' -AnyKey | Out-Null
 }

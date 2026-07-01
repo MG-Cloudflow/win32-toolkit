@@ -22,17 +22,19 @@ function Invoke-Win32ToolkitWingetWizard {
     if ([string]::IsNullOrWhiteSpace($term)) { return }
 
     # 2. Search + select
-    Write-SpectreHost "[grey]Searching winget for '$([string]$term)'…[/]"
+    Write-SpectreHost "[grey]Searching winget for '$(Get-SpectreEscapedText -Text ([string]$term))'…[/]"
     $apps = @(Search-WingetApps -SearchTerm $term | Where-Object { $_.Source -ne 'msstore' })
     if ($apps.Count -eq 0) {
-        Format-SpectrePanel -Data "No winget results for [yellow]$([string]$term)[/]." -Header 'Nothing found' -Border Rounded -Color Yellow
+        Format-SpectrePanel -Data "No winget results for [yellow]$(Get-SpectreEscapedText -Text ([string]$term))[/]." -Header 'Nothing found' -Border Rounded -Color Yellow
         Read-SpectrePause -Message 'Press any key to return' -AnyKey | Out-Null
         return
     }
     # Use plain string choices + a lookup (robust regardless of how selection returns objects).
+    # Choice labels render as Spectre markup — escape names that may contain [ ]; key the lookup
+    # by the same (escaped) label so the returned selection maps back to the app.
     $labelMap = [ordered]@{}
     $labels = foreach ($a in $apps) {
-        $label = '{0}  ({1})  v{2}' -f $a.Name, $a.Id, $a.Version
+        $label = Get-SpectreEscapedText -Text ('{0}  ({1})  v{2}' -f $a.Name, $a.Id, $a.Version)
         $labelMap[$label] = $a
         $label
     }
@@ -90,14 +92,14 @@ function Invoke-Win32ToolkitWingetWizard {
 
     # 8. Run (Invoke shows its own progress + launches Windows Sandbox)
     Clear-Host
-    Write-SpectreRule -Title "Building $($picked.Name)…" -Color Blue
+    Write-SpectreRule -Title "Building $(Get-SpectreEscapedText -Text $picked.Name)…" -Color Blue
     $p = @{ Id = $picked.Id; Architecture = $arch; TemplateName = $template; BasePath = $BasePath; Force = $true }
     if ($doTest)    { $p.RunTest = 'InstallUninstall' }
     if ($doPackage) { $p.PackageIntune = $true }
     if ($doPublish) { $p.PublishIntune = $true }
     try {
         Invoke-Win32Toolkit @p
-        Format-SpectrePanel -Data "Finished [green]$($picked.Name)[/].`nUse [blue]Browse projects[/] to find it; review the messages above for details." -Header 'Done' -Border Rounded -Color Green
+        Format-SpectrePanel -Data "Finished [green]$(Get-SpectreEscapedText -Text $picked.Name)[/].`nUse [blue]Browse projects[/] to find it; review the messages above for details." -Header 'Done' -Border Rounded -Color Green
     }
     catch {
         Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Something went wrong' -Border Rounded -Color Red
