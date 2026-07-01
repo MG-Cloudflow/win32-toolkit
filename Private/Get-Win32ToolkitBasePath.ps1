@@ -23,10 +23,23 @@ function Get-Win32ToolkitBasePath {
     [OutputType([string])]
     param(
         [string]$BasePath,
-        [switch]$Reconfigure
+        [switch]$Reconfigure,
+        [switch]$NonInteractive,
+        [string]$Set
     )
 
     $regKey = 'HKCU:\Software\CloudFlow\win32-toolkit'
+
+    # 0. Persist an explicit value (used by the TUI settings screen) — no prompt.
+    if (-not [string]::IsNullOrWhiteSpace($Set)) {
+        $val = $Set.Trim().TrimEnd('\')
+        try {
+            if (-not (Test-Path $regKey)) { New-Item -Path $regKey -Force | Out-Null }
+            Set-ItemProperty -Path $regKey -Name 'BasePath' -Value $val
+        }
+        catch { Write-Warning "Could not save BasePath to the registry: $($_.Exception.Message)" }
+        return $val
+    }
 
     # 1. Explicit override always wins (not persisted).
     if (-not [string]::IsNullOrWhiteSpace($BasePath)) {
@@ -42,7 +55,10 @@ function Get-Win32ToolkitBasePath {
         catch { }
     }
 
-    # 3. First run / -Reconfigure: prompt and persist.
+    # 3. Not configured. Non-interactive callers (e.g. the TUI health check) get $null.
+    if ($NonInteractive) { return $null }
+
+    # 4. First run / -Reconfigure: prompt and persist.
     $default = 'C:\Win32Apps'
     Write-Host ''
     Write-Host '=== win32-toolkit setup ===' -ForegroundColor Cyan
