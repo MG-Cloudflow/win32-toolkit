@@ -1,17 +1,25 @@
 function Apply-OrgTemplate {
+    [CmdletBinding()]
     param(
         [string]$ProjectPath,
         [PSCustomObject]$Template
     )
 
     try {
-        # Helper: replace first regex match in string using index maths (avoids $ capture-group issues)
+        # Helper: replace first regex match in string using index maths (avoids $ capture-group issues).
+        # A pattern miss is a silent no-op by design (returns input unchanged) — the -Label warning is
+        # the drift signal: it means the installed PSADT template no longer matches what we expect.
+        # Scope note: the config.psd1 patches below use broad `-replace` patterns and are deliberately
+        # not label-verified here.
         function Set-TextBlock {
-            param([string]$Text, [string]$Pattern, [string]$Replacement, [switch]$Multiline)
+            param([string]$Text, [string]$Pattern, [string]$Replacement, [switch]$Multiline, [string]$Label)
             $opts = if ($Multiline) { [System.Text.RegularExpressions.RegexOptions]::Singleline } `
                                     else { [System.Text.RegularExpressions.RegexOptions]::None }
             $m = [regex]::Match($Text, $Pattern, $opts)
-            if (-not $m.Success) { return $Text }
+            if (-not $m.Success) {
+                if ($Label) { Write-Warning "Org template: '$Label' pattern not found — section skipped (PSADT template drift?)." }
+                return $Text
+            }
             $Text.Substring(0, $m.Index) + $Replacement + $Text.Substring($m.Index + $m.Length)
         }
 
@@ -55,14 +63,14 @@ function Apply-OrgTemplate {
             $newBalloon = "        # Text displayed in the balloon tip for successful completion of a deployment type.`r`n        Complete = @{`r`n            Install = '$(Esc $Template.BalloonComplete.Install)'`r`n            Repair = '$(Esc $Template.BalloonComplete.Repair)'`r`n            Uninstall = '$(Esc $Template.BalloonComplete.Uninstall)'`r`n        }"
             $str = Set-TextBlock -Text $str `
                 -Pattern '(?s)        # Text displayed in the balloon tip for successful completion of a deployment type\.\r?\n        Complete = @\{[^}]*\}' `
-                -Replacement $newBalloon -Multiline
+                -Replacement $newBalloon -Multiline -Label 'balloon-complete messages'
 
             # ProgressPrompt — entire block up to RestartPrompt
             $nl = if ($str -match '\r\n') { "`r`n" } else { "`n" }
             $newProg = "    ProgressPrompt = @{${nl}        # Default message displayed in the progress bar.${nl}        Message = @{${nl}            Install = '$(Esc $Template.ProgressMessage.Install)'${nl}            Repair = '$(Esc $Template.ProgressMessage.Repair)'${nl}            Uninstall = '$(Esc $Template.ProgressMessage.Uninstall)'${nl}        }${nl}${nl}        # Default message detail displayed in the progress bar.${nl}        MessageDetail = @{${nl}            Install = '$(Esc $Template.ProgressMessageDetail.Install)'${nl}            Repair = '$(Esc $Template.ProgressMessageDetail.Repair)'${nl}            Uninstall = '$(Esc $Template.ProgressMessageDetail.Uninstall)'${nl}        }${nl}${nl}        # The subtitle underneath the Install Title, e.g. Company Name. Only for Fluent dialogs.${nl}        Subtitle = @{${nl}            Install = '{Toolkit\CompanyName} - App Installation'${nl}            Repair = '{Toolkit\CompanyName} - App Repair'${nl}            Uninstall = '{Toolkit\CompanyName} - App Uninstallation'${nl}        }${nl}    }"
             $str = Set-TextBlock -Text $str `
                 -Pattern '(?s)    ProgressPrompt = @\{.*?(?=\r?\n    RestartPrompt)' `
-                -Replacement $newProg -Multiline
+                -Replacement $newProg -Multiline -Label 'progress-prompt messages'
 
             Set-Content -Path $strPath -Value $str -Encoding UTF8
             Write-Host '  ✓ strings.psd1 updated' -ForegroundColor Green
@@ -79,7 +87,7 @@ function Apply-OrgTemplate {
             # broken literal here would fail the whole deploy script on the device. Set-TextBlock does
             # literal insertion (index math), so a '$' in the author is never treated as a backreference.
             $authorLiteral = "AppScriptAuthor = '" + ($Template.AppScriptAuthor -replace "'", "''") + "'"
-            $scr = Set-TextBlock -Text $scr -Pattern "AppScriptAuthor = '[^']*'" -Replacement $authorLiteral
+            $scr = Set-TextBlock -Text $scr -Pattern "AppScriptAuthor = '[^']*'" -Replacement $authorLiteral -Label 'AppScriptAuthor'
 
             # ── Install Welcome dialog ──
             if ($Template.WelcomeDialog.Enabled) {
@@ -113,7 +121,7 @@ function Apply-OrgTemplate {
             # Pattern matches both original PSADT format and our re-applied format
             $scr = Set-TextBlock -Text $scr `
                 -Pattern '(?s)    ## (?:Show Welcome Message[^\n]*\r?\n    \$saiwParams = @\{.*?    Show-ADTInstallationWelcome @saiwParams|Welcome dialog disabled by org template\.)' `
-                -Replacement $newWelcome -Multiline
+                -Replacement $newWelcome -Multiline -Label 'install welcome dialog'
 
             # ── Uninstall Welcome dialog ──
             $uwSettings = if ($Template.PSObject.Properties['UninstallWelcomeDialog']) { $Template.UninstallWelcomeDialog } else { $null }
@@ -129,7 +137,7 @@ function Apply-OrgTemplate {
             }
             $scr = Set-TextBlock -Text $scr `
                 -Pattern '(?s)    ## (?:If there are processes to close.*?\r?\n    \}|Uninstall welcome dialog disabled by org template\.)' `
-                -Replacement $newUninstallWelcome -Multiline
+                -Replacement $newUninstallWelcome -Multiline -Label 'uninstall welcome dialog'
 
             # ── Progress dialog (all 3 occurrences: Install, Uninstall, Repair) ──
             if ($Template.ProgressDialog.Enabled) {
@@ -154,6 +162,9 @@ function Apply-OrgTemplate {
                 $offset = $absIdx + $newProgress.Length
                 $replaced++
             }
+            if ($replaced -eq 0) {
+                Write-Warning "Org template: 'progress dialog' pattern not found — section skipped (PSADT template drift?)."
+            }
 
             # ── Completion prompt (Post-Install) ──
             if ($Template.CompletionPrompt.Enabled) {
@@ -165,7 +176,7 @@ function Apply-OrgTemplate {
             }
             $scr = Set-TextBlock -Text $scr `
                 -Pattern '(?s)    ## (?:Display a message at the end[^\n]*\r?\n    if \(!\$adtSession\.UseDefaultMsi\)\r?\n    \{[\s\S]*?\}|Completion prompt disabled by org template\.)' `
-                -Replacement $newCompletion -Multiline
+                -Replacement $newCompletion -Multiline -Label 'completion prompt'
 
             Set-Content -Path $scriptPath -Value $scr -Encoding UTF8
             Write-Host '  ✓ Invoke-AppDeployToolkit.ps1 updated' -ForegroundColor Green
