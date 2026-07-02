@@ -653,7 +653,7 @@ Stop-Computer
     <Networking>Enable</Networking>
     <MappedFolders>
         <MappedFolder>
-            <HostFolder>$ProjectPath</HostFolder>
+            <HostFolder>$(ConvertTo-XmlEncoded $ProjectPath)</HostFolder>
             <SandboxFolder>C:\PSADT</SandboxFolder>
             <ReadOnly>false</ReadOnly>
         </MappedFolder>
@@ -699,7 +699,7 @@ Stop-Computer
         Write-Host "===============================================" -ForegroundColor Cyan
 
         try {
-            Start-Process -FilePath "WindowsSandbox.exe" -ArgumentList $sandboxConfigFile -ErrorAction Stop
+            Start-Process -FilePath 'WindowsSandbox.exe' -ArgumentList "`"$sandboxConfigFile`"" -ErrorAction Stop
             Write-Host "✓ Windows Sandbox launched successfully!" -ForegroundColor Green
             Write-Host "`nThe targeted documentation will be available in the sandbox at:" -ForegroundColor Cyan
             Write-Host "C:\PSADT\Documentation" -ForegroundColor White

@@ -21,6 +21,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Wait-Win32ToolkitUpdateAssertion.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitAppConfig.ps1')
 . (Join-Path $repo 'Private\ConvertTo-PSSingleQuoted.ps1')
+. (Join-Path $repo 'Private\ConvertTo-XmlEncoded.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitBaselineInstallCommand.ps1')
 
 $base = Join-Path ([System.IO.Path]::GetTempPath()) ("w32upd_" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $base -Force | Out-Null
@@ -140,6 +142,38 @@ try {
     $pj = Join-Path $base 'wait-partial-fail'
     New-AssertLog $pj @('[t] ASSERT Requirement-PreUpdate = FAIL (x)')
     if ((Wait-Win32ToolkitUpdateAssertion -ProjectPath $pj -TimeoutMinutes 0.04 -PollSeconds 1 6>$null 3>$null) -eq $false) { Ok 'partial run with FAIL -> $false (failures are conclusive)' } else { Bad 'partial FAIL not conclusive' }
+
+    Write-Host "`n[4] Get-Win32ToolkitBaselineInstallCommand" -ForegroundColor Cyan
+    $c = Get-Win32ToolkitBaselineInstallCommand -InstallerSandboxPath 'C:\PSADT\Sandbox\OldVersion\app.exe' -InstallerType exe -SilentArgs '/S'
+    if ($c -eq "Start-Process 'C:\PSADT\Sandbox\OldVersion\app.exe' -ArgumentList '/S' -Wait") { Ok 'exe + args -> Start-Process -ArgumentList' } else { Bad "exe: [$c]" }
+    $c = Get-Win32ToolkitBaselineInstallCommand -InstallerSandboxPath 'C:\PSADT\Sandbox\OldVersion\app.exe' -InstallerType exe
+    if ($c -eq "Start-Process 'C:\PSADT\Sandbox\OldVersion\app.exe' -Wait") { Ok 'exe no args -> no -ArgumentList' } else { Bad "exe-noargs: [$c]" }
+    $c = Get-Win32ToolkitBaselineInstallCommand -InstallerSandboxPath 'C:\PSADT\Sandbox\OldVersion\app.msix' -InstallerType msix -SilentArgs '/qn'
+    if ($c -eq "Add-AppxPackage -Path 'C:\PSADT\Sandbox\OldVersion\app.msix'") { Ok 'msix -> Add-AppxPackage (no Start-Process, args ignored)' } else { Bad "msix: [$c]" }
+    # Hostile values: apostrophes doubled, double quotes argv-escaped as \"
+    $c = Get-Win32ToolkitBaselineInstallCommand -InstallerSandboxPath "C:\PSADT\Sandbox\OldVersion\O'Brien.exe" -InstallerType exe -SilentArgs 'INSTALLDIR="C:\Program Files\App"'
+    if ($c -match [regex]::Escape("O''Brien.exe") -and $c -match [regex]::Escape('INSTALLDIR=\"C:\Program Files\App\"')) { Ok 'apostrophes doubled + double quotes argv-escaped' } else { Bad "hostile: [$c]" }
+    # The command (with argv \" collapsed back to ") must parse as PowerShell
+    $errsC = $null; [System.Management.Automation.Language.Parser]::ParseInput($c.Replace('\"', '"'), [ref]$null, [ref]$errsC) | Out-Null
+    if (-not ($errsC -and $errsC.Count)) { Ok 'decoded command parses as PowerShell' } else { Bad "cmd parse: $($errsC[0].Message)" }
+
+    # CRT argv rule: a backslash BEFORE an embedded quote must be doubled (INSTALLDIR="C:\App\" /qn),
+    # or the quote toggles early and /qn is swallowed. Verify against a real argv decoder.
+    $c2 = Get-Win32ToolkitBaselineInstallCommand -InstallerSandboxPath 'C:\PSADT\Sandbox\OldVersion\a.msi' -InstallerType msi -SilentArgs 'INSTALLDIR="C:\App\" /qn'
+    if ($c2 -match [regex]::Escape('C:\App\\\"')) { Ok 'backslash-before-quote doubled per CRT rule' } else { Bad "crt: [$c2]" }
+    Add-Type -AssemblyName System.Runtime.InteropServices -ErrorAction SilentlyContinue
+    $sig = '[DllImport("shell32.dll", SetLastError = true)] public static extern IntPtr CommandLineToArgvW([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string lpCmdLine, out int pNumArgs);'
+    $w32 = Add-Type -MemberDefinition $sig -Name 'ArgvProbe' -Namespace 'W32T' -PassThru
+    $numArgs = 0
+    $argvPtr = $w32::CommandLineToArgvW("powershell.exe -Command `"$c2`"", [ref]$numArgs)
+    $args2 = for ($ai = 0; $ai -lt $numArgs; $ai++) { [System.Runtime.InteropServices.Marshal]::PtrToStringUni([System.Runtime.InteropServices.Marshal]::ReadIntPtr($argvPtr, $ai * [IntPtr]::Size)) }
+    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($argvPtr) 2>$null
+    $decoded = $args2[2]
+    if ($decoded -match [regex]::Escape('INSTALLDIR="C:\App\" /qn')) { Ok 'CommandLineToArgvW round-trip preserves quote + /qn' } else { Bad "argv decode: [$decoded]" }
+    # XML layer: encodes cleanly and round-trips
+    $xml = "<Command>powershell.exe -Command &quot;&amp; { $(ConvertTo-XmlEncoded $c) }&quot;</Command>"
+    try { [xml]("<root>$xml</root>") | Out-Null; Ok 'XML-encoded command yields valid XML' } catch { Bad "xml: $($_.Exception.Message)" }
+    if ((ConvertTo-XmlEncoded 'C:\Win32 Apps & Co\X') -eq 'C:\Win32 Apps &amp; Co\X') { Ok 'HostFolder path encoding (& -> &amp;)' } else { Bad 'xml-encode path' }
 }
 finally { Remove-Item -Path $base -Recurse -Force -ErrorAction SilentlyContinue }
 

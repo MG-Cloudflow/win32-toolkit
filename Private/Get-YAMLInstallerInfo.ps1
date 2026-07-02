@@ -16,6 +16,8 @@ function Get-YAMLInstallerInfo {
             SilentArgs = $null
             ProductCode = $null
             Scope = $null
+            InstallerType = $null
+            InstallerLocale = $null
             Description = $null
             InformationUrl = $null
         }
@@ -38,6 +40,12 @@ function Get-YAMLInstallerInfo {
         }
         if ($yamlContent -match '(?m)^\s*Scope:\s*(.+)') {
             $installerInfo.Scope = $matches[1].Trim().ToLower()
+        }
+        if ($yamlContent -match '(?m)^\s*InstallerType:\s*(\S+)') {
+            $installerInfo.InstallerType = $matches[1].Trim().ToLower()
+        }
+        if ($yamlContent -match '(?m)^\s*InstallerLocale:\s*(\S+)') {
+            $installerInfo.InstallerLocale = $matches[1].Trim()
         }
         
         # Parse installer switches (Silent: may appear after other keys under InstallerSwitches:)
