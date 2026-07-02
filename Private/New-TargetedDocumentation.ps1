@@ -1,15 +1,23 @@
 function New-TargetedDocumentation {
+    # Returns the EXPECTED capture path (a truthy string) on success — the caller passes it to
+    # Wait-ForDocumentationAndProcess -ExpectedJsonPath so the wait can never be satisfied by a
+    # stale capture from a previous run. Failure paths return $false.
     param(
         [string]$ProjectPath,
         [string]$ProjectName,
-        [object]$AppInfo
+        [object]$AppInfo,
+
+        # Tests only: prepare everything (incl. clearing stale captures) but do not launch the sandbox.
+        [switch]$SkipLaunch
     )
-    
+
     try {
         Write-Host "Creating targeted documentation configuration..." -ForegroundColor Yellow
-        
-        # Create unique timestamp for this documentation session
+
+        # Create unique timestamp for this documentation session; the sandbox script writes
+        # Documentation\InstallationChanges_<timestamp>.json with this exact name.
         $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        $expectedJson = Join-Path $ProjectPath "Documentation\InstallationChanges_$timestamp.json"
 
         # Detect installer scope from YAML (user vs machine) to target the right registry paths
         $installerScope = 'unknown'
@@ -668,6 +676,22 @@ Stop-Computer
         $sandboxConfigContent | Set-Content -Path $sandboxConfigFile -Encoding UTF8
         Write-Host "✓ Targeted documentation sandbox configuration created!" -ForegroundColor Green
 
+        # Clear stale captures from previous runs BEFORE launching, so any capture file present after
+        # this point postdates this launch (re-finalize previously picked up the old JSON instantly).
+        # Only the two generated patterns are removed — user notes in Documentation\ survive.
+        $docFolder = Join-Path $ProjectPath 'Documentation'
+        if (Test-Path -LiteralPath $docFolder) {
+            $stale = @(Get-ChildItem -Path $docFolder -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -like 'InstallationChanges_*.json' -or $_.Name -like 'Targeted_Documentation_Log_*.txt' })
+            foreach ($f in $stale) {
+                try { Remove-Item -LiteralPath $f.FullName -Force }
+                catch { Write-Warning "Could not remove stale capture '$($f.Name)': $($_.Exception.Message)" }
+            }
+            if ($stale.Count -gt 0) {
+                Write-Host "✓ Cleared $($stale.Count) stale capture file(s) from Documentation\" -ForegroundColor Green
+            }
+        }
+
         # Check if Windows Sandbox is available
         try {
             $sandboxFeature = Get-WindowsOptionalFeature -Online -FeatureName "Containers-DisposableClientVM" -ErrorAction SilentlyContinue
@@ -698,17 +722,26 @@ Stop-Computer
         Write-Host "• Much faster than full system scans (2-5 minutes vs 10-30!)" -ForegroundColor Green
         Write-Host "===============================================" -ForegroundColor Cyan
 
+        if ($SkipLaunch) {
+            Write-Host '(Sandbox launch skipped — test mode.)' -ForegroundColor DarkYellow
+            return $expectedJson
+        }
+
         try {
             Start-Process -FilePath 'WindowsSandbox.exe' -ArgumentList "`"$sandboxConfigFile`"" -ErrorAction Stop
             Write-Host "✓ Windows Sandbox launched successfully!" -ForegroundColor Green
             Write-Host "`nThe targeted documentation will be available in the sandbox at:" -ForegroundColor Cyan
             Write-Host "C:\PSADT\Documentation" -ForegroundColor White
         } catch {
+            # Stale captures were just cleared, so nothing will satisfy the wait until a capture from
+            # THIS run appears — if the operator doesn't launch manually, the wait times out (30 min).
             Write-Warning "Failed to start Windows Sandbox automatically: $($_.Exception.Message)"
-            Write-Host "You can manually launch the sandbox by double-clicking: $sandboxConfigFile" -ForegroundColor Yellow
+            Write-Host "The sandbox did NOT auto-launch — start it manually by double-clicking:" -ForegroundColor Yellow
+            Write-Host "  $sandboxConfigFile" -ForegroundColor Yellow
+            Write-Host 'Otherwise the documentation wait will time out after 30 minutes.' -ForegroundColor Yellow
         }
-        
-        return $true
+
+        return $expectedJson
     }
     catch {
         Write-Warning "Failed to create targeted documentation: $($_.Exception.Message)"

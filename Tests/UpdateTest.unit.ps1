@@ -174,6 +174,53 @@ try {
     $xml = "<Command>powershell.exe -Command &quot;&amp; { $(ConvertTo-XmlEncoded $c) }&quot;</Command>"
     try { [xml]("<root>$xml</root>") | Out-Null; Ok 'XML-encoded command yields valid XML' } catch { Bad "xml: $($_.Exception.Message)" }
     if ((ConvertTo-XmlEncoded 'C:\Win32 Apps & Co\X') -eq 'C:\Win32 Apps &amp; Co\X') { Ok 'HostFolder path encoding (& -> &amp;)' } else { Bad 'xml-encode path' }
+
+    Write-Host "`n[5] Stale capture selection" -ForegroundColor Cyan
+    . (Join-Path $repo 'Private\Get-LatestInstallationCapture.ps1')
+    . (Join-Path $repo 'Private\Get-Win32DetectionRules.ps1')
+    . (Join-Path $repo 'Private\New-TargetedDocumentation.ps1')
+    . (Join-Path $repo 'Private\New-LogCollectorScript.ps1')
+
+    # (a) newest-by-LastWriteTime wins even when NAME order disagrees
+    $sp = Join-Path $base 'stale-proj'
+    New-Item -ItemType Directory -Path (Join-Path $sp 'Documentation') -Force | Out-Null
+    $nameNewest = Join-Path $sp 'Documentation\InstallationChanges_20991231_235959.json'
+    $timeNewest = Join-Path $sp 'Documentation\InstallationChanges_20200101_000000.json'
+    Set-Content $nameNewest '{"NewRegistryKeys":[]}'; Set-Content $timeNewest '{"NewRegistryKeys":[]}'
+    (Get-Item $nameNewest).LastWriteTime = (Get-Date).AddHours(-2)
+    (Get-Item $timeNewest).LastWriteTime = (Get-Date)
+    $sel = Get-LatestInstallationCapture -ProjectPath $sp
+    if ($sel.Name -eq 'InstallationChanges_20200101_000000.json') { Ok 'newest-by-LastWriteTime wins over name order' } else { Bad "selector picked $($sel.Name)" }
+    $tie = Get-Date; (Get-Item $nameNewest).LastWriteTime = $tie; (Get-Item $timeNewest).LastWriteTime = $tie
+    $sel2 = Get-LatestInstallationCapture -ProjectPath $sp
+    if ($sel2.Name -eq 'InstallationChanges_20991231_235959.json') { Ok 'equal timestamps -> name-descending tie-break' } else { Bad "tie-break picked $($sel2.Name)" }
+
+    # (b) detection-rule fallback keys off the FRESH capture (regression for the old -First 1 pick)
+    $dp = Join-Path $base 'det-recency'
+    New-Item -ItemType Directory -Path (Join-Path $dp 'Documentation') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $dp 'SupportFiles') -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $dp 'SupportFiles\AppConfig.json'), '{"SchemaVersion":"1.0"}', (New-Object System.Text.UTF8Encoding($false)))
+    $staleCap = Join-Path $dp 'Documentation\InstallationChanges_11111111_111111.json'
+    $freshCap = Join-Path $dp 'Documentation\InstallationChanges_00000000_000000.json'   # name-order would pick this LAST
+    ([pscustomobject]@{ NewRegistryKeys = @([pscustomobject]@{ Path = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{STALE}'; Values = @{} }) } | ConvertTo-Json -Depth 6) | Set-Content $staleCap
+    ([pscustomobject]@{ NewRegistryKeys = @([pscustomobject]@{ Path = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{FRESH}'; Values = @{} }) } | ConvertTo-Json -Depth 6) | Set-Content $freshCap
+    (Get-Item $staleCap).LastWriteTime = (Get-Date).AddDays(-1)
+    (Get-Item $freshCap).LastWriteTime = (Get-Date)
+    $rules = @(Get-Win32DetectionRules -ProjectPath $dp 6>$null)
+    if ($rules.Count -eq 1 -and $rules[0]['keyPath'] -match 'FRESH') { Ok 'detection rule built from the FRESH capture' } else { Bad "detection keyPath: $($rules[0]['keyPath'])" }
+
+    # (c) New-TargetedDocumentation -SkipLaunch: clears stale patterns, keeps user notes, returns expected path
+    $tp = Join-Path $base 'doc-proj'
+    New-Item -ItemType Directory -Path (Join-Path $tp 'Documentation') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $tp 'Files') -Force | Out-Null
+    Set-Content (Join-Path $tp 'Documentation\InstallationChanges_stale.json') '{}'
+    Set-Content (Join-Path $tp 'Documentation\Targeted_Documentation_Log_stale.txt') 'x'
+    Set-Content (Join-Path $tp 'Documentation\notes.md') 'keep me'
+    $ret = New-TargetedDocumentation -ProjectPath $tp -ProjectName 'DocTest' -AppInfo ([pscustomobject]@{ Name = 'X'; Version = '1'; Id = 'X' }) -SkipLaunch 6>$null 3>$null
+    if ($ret -is [string] -and $ret -match 'InstallationChanges_\d{8}_\d{6}\.json$') { Ok 'returns the expected capture path (truthy string)' } else { Bad "returned [$ret]" }
+    if (-not (Test-Path (Join-Path $tp 'Documentation\InstallationChanges_stale.json'))) { Ok 'stale capture JSON cleared before launch' } else { Bad 'stale JSON survived' }
+    if (-not (Test-Path (Join-Path $tp 'Documentation\Targeted_Documentation_Log_stale.txt'))) { Ok 'stale capture log cleared' } else { Bad 'stale log survived' }
+    if (Test-Path (Join-Path $tp 'Documentation\notes.md')) { Ok 'user notes in Documentation\ survive' } else { Bad 'user notes deleted!' }
 }
 finally { Remove-Item -Path $base -Recurse -Force -ErrorAction SilentlyContinue }
 

@@ -8,7 +8,8 @@ function Publish-Win32ToolkitIntuneApp {
 
     1. Reads app metadata (name, publisher, version, description, URL) from AppConfig.json (winget YAML fallback).
     2. Extracts encryption metadata from the .intunewin archive (metadata.xml).
-    3. Builds a detection rule from the InstallationChanges_*.json in Documentation\.
+    3. Builds a detection rule (install-tattoo version rule preferred; else from the NEWEST
+       InstallationChanges_*.json capture in Documentation\).
     4. Creates the app shell in Intune.
     5. Registers a content version and file entry.
     6. Waits for the Azure Storage SAS URI.

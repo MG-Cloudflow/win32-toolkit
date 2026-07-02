@@ -7,9 +7,11 @@ function Invoke-Win32ToolkitFinalize {
         Complete-Win32ToolkitManualApp (manual flow), so the two cannot drift:
 
           1. New-TargetedDocumentation — launch the documentation sandbox (installs via the
-             project's Invoke-AppDeployToolkit.ps1 and captures the install changes).
-          2. Wait-ForDocumentationAndProcess — from the captured JSON, write AppConfig.Uninstall,
-             the requirement script, and processes-to-close.
+             project's Invoke-AppDeployToolkit.ps1 and captures the install changes). Returns the
+             expected capture path (truthy string) on success, $false on failure.
+          2. Wait-ForDocumentationAndProcess -ExpectedJsonPath — waits for exactly this run's
+             capture (never a stale one), then writes AppConfig.Uninstall, the requirement script,
+             and processes-to-close from it.
           3. Optional -RunTest scenarios, then -PackageIntune / -PublishIntune.
 
         See knowledge-base/designs/manual-app-packaging.md.
@@ -46,6 +48,8 @@ function Invoke-Win32ToolkitFinalize {
     $filesPath = Join-Path $ProjectPath 'Files'
 
     # 1-2. Sandbox documentation capture → uninstall / requirement / processes.
+    # New-TargetedDocumentation returns the EXPECTED capture path (truthy) on success, $false on
+    # failure; passing it to the waiter makes the wait immune to stale captures from earlier runs.
     Write-Host "`nGenerating targeted installation documentation..." -ForegroundColor Yellow
     $docSuccess = New-TargetedDocumentation -ProjectPath $ProjectPath -ProjectName $ProjectName -AppInfo $AppInfo
 
@@ -53,7 +57,7 @@ function Invoke-Win32ToolkitFinalize {
         Write-Host '✓ Targeted documentation setup completed!' -ForegroundColor Green
         Write-Host "`nWaiting for documentation completion..." -ForegroundColor Yellow
         $fileInfo      = Get-InstallerFileInfo -FilesPath $filesPath
-        $jsonProcessed = Wait-ForDocumentationAndProcess -ProjectPath $ProjectPath -InstallerType $fileInfo.Type
+        $jsonProcessed = Wait-ForDocumentationAndProcess -ProjectPath $ProjectPath -InstallerType $fileInfo.Type -ExpectedJsonPath $docSuccess
         if ($jsonProcessed) {
             Write-Host '✓ Documentation processing completed successfully!' -ForegroundColor Green
         }
