@@ -12,15 +12,18 @@ function Get-Win32DetectionRules {
     # here is identical to what the device writes.
     $cfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
     $app = if ($cfg.PSObject.Properties.Name -contains 'App') { $cfg.App } else { $null }
-    if ($app -and $app.ScriptAuthor -and $app.Vendor -and $app.Name -and $app.Version) {
+    # DisplayName is the tattoo/detection name (populated even for MSI Zero-Config, where Name is empty);
+    # fall back to Name for projects generated before DisplayName existed.
+    $detName = if ($app) { if ($app.PSObject.Properties['DisplayName'] -and $app.DisplayName) { $app.DisplayName } else { $app.Name } } else { $null }
+    if ($app -and $app.ScriptAuthor -and $app.Vendor -and $detName -and $app.Version) {
         # Only emit the tattoo rule if the deploy script actually writes the tattoo — otherwise Intune
         # would detect on a key the device never creates. Projects generated before the tattoo (no
-        # Set-ADTRegistryKey line) fall through to the capture-based rules below.
+        # tattoo block) fall through to the capture-based rules below.
         $deployScript = Join-Path $ProjectPath 'Invoke-AppDeployToolkit.ps1'
         $hasTattoo = (Test-Path -LiteralPath $deployScript) -and
-                     ((Get-Content -LiteralPath $deployScript -Raw) -match [regex]::Escape('Set-ADTRegistryKey -Key "HKLM:\SOFTWARE\$($adtSession.AppScriptAuthor)'))
+                     ((Get-Content -LiteralPath $deployScript -Raw) -match [regex]::Escape('win32-toolkit install tattoo - records'))
         if ($hasTattoo) {
-            $tattooKey = "HKEY_LOCAL_MACHINE\SOFTWARE\$($app.ScriptAuthor)\$($app.Vendor)\$($app.Name)"
+            $tattooKey = "HKEY_LOCAL_MACHINE\SOFTWARE\$($app.ScriptAuthor)\$($app.Vendor)\$detName"
             Write-Host "  Detection rule (Registry version): $tattooKey\Version = $($app.Version)" -ForegroundColor Gray
             return @(
                 [ordered]@{
@@ -40,7 +43,7 @@ function Get-Win32DetectionRules {
         $missing = @()
         if (-not $app.ScriptAuthor) { $missing += 'App.ScriptAuthor (regenerate with an org template)' }
         if (-not $app.Vendor)       { $missing += 'App.Vendor (winget Publisher / manual -Publisher)' }
-        if (-not $app.Name)         { $missing += 'App.Name (empty for MSI Zero-Config)' }
+        if (-not $detName)          { $missing += 'App.DisplayName/Name (regenerate to populate)' }
         if (-not $app.Version)      { $missing += 'App.Version' }
         if ($missing.Count) {
             Write-Host "  Tattoo/version detection unavailable — missing $($missing -join ', '). Using capture-based detection." -ForegroundColor Yellow

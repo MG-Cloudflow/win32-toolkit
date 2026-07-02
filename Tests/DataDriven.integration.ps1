@@ -81,8 +81,9 @@ InstallerSwitches:
     if ($ps1 -match [regex]::Escape('$appConfig =')) { Ok 'loader present' } else { Bad 'no loader' }
     if ($ps1 -match 'Data-driven install' -and $ps1 -match 'Data-driven uninstall') { Ok 'routines present' } else { Bad 'routines' }
     if ($ps1 -match 'Set-ADTRegistryKey' -and $ps1 -match 'Remove-ADTRegistryKey -Key' -and
-        $ps1 -match [regex]::Escape('$($adtSession.AppScriptAuthor)\$($adtSession.AppVendor)\$($adtSession.AppName)')) {
-        Ok 'install tattoo present (post-install write + post-uninstall remove, value-free)'
+        $ps1 -match [regex]::Escape('$($appConfig.App.ScriptAuthor)\$($appConfig.App.Vendor)\$w32tName') -and
+        $ps1 -match [regex]::Escape('$appConfig.App.DisplayName')) {
+        Ok 'install tattoo present (DisplayName-driven, value-free, no MSI exclusion)'
     } else { Bad 'install tattoo missing' }
 
     Write-Host "`n[4] KEY PROOF: payloads only in data, never in code" -ForegroundColor Cyan
@@ -166,7 +167,7 @@ InstallerSwitches:
         Ok 'no injection payload in requirement script (values escaped as data)'
     } else { Bad 'payload leaked into requirement script' }
     if ($rrScript -match 'Write-Output 1; exit 0' -and $rrScript -match 'ErrorActionPreference') { Ok 'presence logic + STDERR suppression present' } else { Bad 'presence/stderr logic missing' }
-    if ($rrScript -notmatch '-like' -and $rrScript -match [regex]::Escape('$_.DisplayName -eq $target') -and $rrScript -match 'Test-Path -LiteralPath') {
+    if ($rrScript -notmatch '-like' -and $rrScript -match [regex]::Escape('$targets -contains $_.DisplayName') -and $rrScript -match 'Test-Path -LiteralPath') {
         Ok 'exact/literal presence only (no substring -like; -LiteralPath tattoo/product-code)'
     } else { Bad 'presence match not exact/literal' }
 
@@ -190,6 +191,19 @@ InstallerSwitches:
         if ($ms -match 'RelatedProducts' -and $ms -match [regex]::Escape('{CDB13460-04DF-4708-A7FD-4CB4A0684605}')) { Ok 'RelatedProducts + real UpgradeCode embedded' } else { Bad 'UpgradeCode presence check missing' }
         if ($mrule['displayName'] -eq 'Stub MSI App is installed') { Ok 'displayName from MSI ProductName' } else { Bad "displayName: $($mrule['displayName'])" }
     }
+
+    Write-Host "`n[10] MSI Zero-Config gets the tattoo + version detection via DisplayName" -ForegroundColor Cyan
+    $msiP = Join-Path $base 'MsiTattoo'
+    New-Item -ItemType Directory -Path (Join-Path $msiP 'SupportFiles') -Force | Out-Null
+    $mtCfg = [pscustomobject]@{ App = [pscustomobject]@{ Vendor='Notepad++ Team'; Name=''; DisplayName='Notepad++'; Version='8.9.6.4'; ScriptAuthor='Contoso IT' } }
+    [System.IO.File]::WriteAllText((Join-Path $msiP 'SupportFiles\AppConfig.json'), ($mtCfg | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
+    Copy-Item -LiteralPath $scriptPath -Destination (Join-Path $msiP 'Invoke-AppDeployToolkit.ps1') -Force   # deploy script carries the tattoo
+    $mdet = @(Get-Win32DetectionRules -ProjectPath $msiP 6>$null)
+    if ($mdet.Count -eq 1 -and $mdet[0]['detectionType'] -eq 'version' -and
+        $mdet[0]['keyPath'] -eq 'HKEY_LOCAL_MACHINE\SOFTWARE\Contoso IT\Notepad++ Team\Notepad++' -and
+        $mdet[0]['detectionValue'] -eq '8.9.6.4') {
+        Ok 'MSI (empty Name) -> version tattoo rule via DisplayName'
+    } else { Bad "MSI detection: $($mdet[0] | ConvertTo-Json -Compress)" }
 }
 finally { Remove-Item -Path $base -Recurse -Force -ErrorAction SilentlyContinue }
 

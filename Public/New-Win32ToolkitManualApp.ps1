@@ -140,6 +140,7 @@ function New-Win32ToolkitManualApp {
         $cfg | Add-Member -NotePropertyName App -NotePropertyValue ([pscustomobject]@{
             Vendor         = if ($Publisher) { $Publisher } else { '' }
             Name           = if ($isMsi) { '' } else { $Name }   # empty ⇒ Zero-Config MSI
+            DisplayName    = $Name                                # always populated (drives tattoo + detection)
             Version        = $Version
             Arch           = $Architecture
             ScriptAuthor   = if ($script:OrgTemplate -and $script:OrgTemplate.AppScriptAuthor) { $script:OrgTemplate.AppScriptAuthor } else { '' }

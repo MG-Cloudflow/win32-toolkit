@@ -13,11 +13,13 @@ function Set-PSADTDataDrivenScript {
           3. A generic install routine is placed at the '## <Perform Installation tasks here>' marker.
           4. A generic uninstall routine is placed at the '## <Perform Uninstallation tasks here>' marker.
           5. An install "tattoo" is placed at the Post-Install/Post-Uninstall markers: it writes
-             HKLM:\SOFTWARE\<AppScriptAuthor>\<AppVendor>\<AppName>\Version at install and removes it
-             at uninstall, so the Intune detection rule can confirm install state + correct version.
+             HKLM:\SOFTWARE\<AppScriptAuthor>\<AppVendor>\<App.DisplayName>\Version at install and
+             removes it at uninstall, so the Intune detection rule can confirm install state + correct
+             version. Driven from $appConfig (App.DisplayName is populated even for MSI Zero-Config,
+             where App.Name is empty), so it works for both EXE and MSI.
 
-        MSI installers are untouched (empty App.Name keeps PSADT Zero-Config MSI, and the tattoo is
-        skipped for them). The function is idempotent — a script that already contains the loader is
+        MSI installers keep PSADT Zero-Config (empty App.Name); the tattoo uses App.DisplayName so it
+        still records the MSI. The function is idempotent — a script that already contains the loader is
         left unchanged.
 
         See knowledge-base/designs/data-driven-generation.md.
@@ -109,15 +111,18 @@ $adtSession = @{
     }
 '@
 
-    # Install "tattoo": write HKLM:\SOFTWARE\<Author>\<Vendor>\<Name>\Version at install and remove
-    # it at uninstall. The Intune detection rule keys off this value (installed AND correct version).
-    # Guarded so no empty path segment is created and Zero-Config MSI (empty AppName) is skipped.
+    # Install "tattoo": write HKLM:\SOFTWARE\<Author>\<Vendor>\<Name>\Version at install and remove it at
+    # uninstall. The Intune detection rule keys off this value (installed AND correct version). Values come
+    # from $appConfig (App.DisplayName is always populated — including MSI Zero-Config, where App.Name is
+    # empty), so the key is byte-identical to what Get-Win32DetectionRules computes and every empty-segment
+    # case is guarded out. Works for both EXE and MSI (no UseDefaultMsi exclusion).
     $postInstallTattoo = @'
 ## <Perform Post-Installation tasks here>
 
     ## win32-toolkit install tattoo - records install state + version for the Intune detection rule.
-    if ($adtSession.AppName -and $adtSession.AppVendor -and $adtSession.AppVersion -and $adtSession.AppScriptAuthor -and -not $adtSession.UseDefaultMsi) {
-        Set-ADTRegistryKey -Key "HKLM:\SOFTWARE\$($adtSession.AppScriptAuthor)\$($adtSession.AppVendor)\$($adtSession.AppName)" -Name 'Version' -Value "$($adtSession.AppVersion)" -Type 'String'
+    $w32tName = if ($appConfig.App.DisplayName) { $appConfig.App.DisplayName } else { $appConfig.App.Name }
+    if ($w32tName -and $appConfig.App.Vendor -and $appConfig.App.Version -and $appConfig.App.ScriptAuthor) {
+        Set-ADTRegistryKey -Key "HKLM:\SOFTWARE\$($appConfig.App.ScriptAuthor)\$($appConfig.App.Vendor)\$w32tName" -Name 'Version' -Value "$($appConfig.App.Version)" -Type 'String'
     }
 '@
 
@@ -125,8 +130,9 @@ $adtSession = @{
 ## <Perform Post-Uninstallation tasks here>
 
     ## win32-toolkit install tattoo - remove the key written during install.
-    if ($adtSession.AppName -and $adtSession.AppVendor -and $adtSession.AppVersion -and $adtSession.AppScriptAuthor -and -not $adtSession.UseDefaultMsi) {
-        Remove-ADTRegistryKey -Key "HKLM:\SOFTWARE\$($adtSession.AppScriptAuthor)\$($adtSession.AppVendor)\$($adtSession.AppName)" -Recurse
+    $w32tName = if ($appConfig.App.DisplayName) { $appConfig.App.DisplayName } else { $appConfig.App.Name }
+    if ($w32tName -and $appConfig.App.Vendor -and $appConfig.App.ScriptAuthor) {
+        Remove-ADTRegistryKey -Key "HKLM:\SOFTWARE\$($appConfig.App.ScriptAuthor)\$($appConfig.App.Vendor)\$w32tName" -Recurse
     }
 '@
 
