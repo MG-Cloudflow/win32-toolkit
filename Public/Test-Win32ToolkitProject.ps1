@@ -60,6 +60,7 @@ function Test-Win32ToolkitProject {
         [string]$Scenario,
 
         [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 1000)]
         [int]$VersionsBack,
 
         [Parameter(Mandatory = $false)]
@@ -131,7 +132,7 @@ function Test-Win32ToolkitProject {
     <Networking>Enable</Networking>
     <MappedFolders>
         <MappedFolder>
-            <HostFolder>$ProjectPath</HostFolder>
+            <HostFolder>$(ConvertTo-XmlEncoded $ProjectPath)</HostFolder>
             <SandboxFolder>C:\PSADT</SandboxFolder>
             <ReadOnly>false</ReadOnly>
         </MappedFolder>
@@ -156,7 +157,7 @@ function Test-Win32ToolkitProject {
                 Write-Host '  5. Keep the sandbox open for verification'  -ForegroundColor Cyan
                 Write-Host '=============================================' -ForegroundColor Cyan
 
-                Start-Process -FilePath 'WindowsSandbox.exe' -ArgumentList $sandboxConfigFile
+                Start-Process -FilePath 'WindowsSandbox.exe' -ArgumentList "`"$sandboxConfigFile`""
 
                 Write-Host "`n✓ Final demo sandbox launched successfully!" -ForegroundColor Green
                 Write-Host 'Monitor the sandbox for the complete install/uninstall cycle.' -ForegroundColor White
@@ -173,7 +174,7 @@ function Test-Win32ToolkitProject {
 
                 $wingetId = Get-WingetIdFromProject -FilesPath $filesPath
                 if (-not $wingetId) {
-                    throw "Could not read PackageIdentifier from YAML in: $filesPath"
+                    throw "No winget PackageIdentifier found in: $filesPath`nThe Update scenario needs a winget-based project (it downloads the older baseline from winget). For manual (non-winget) apps, use -Scenario InstallUninstall."
                 }
 
                 $yamlInfo       = Get-YAMLInstallerInfo -FilesPath $filesPath
@@ -213,12 +214,19 @@ function Test-Win32ToolkitProject {
 
                 Write-Host "Target version   : $targetVersion" -ForegroundColor Yellow
 
-                # ── Step 4: Download the old-version installer ────────────────────────────
-                $oldInstaller = Download-OldVersionInstaller `
-                    -AppId        $wingetId     `
-                    -Version      $targetVersion `
-                    -ProjectPath  $ProjectPath  `
-                    -Architecture $architecture
+                # ── Step 4: Download the old-version installer (pinned to the packaged variant) ──
+                $dl = @{
+                    AppId        = $wingetId
+                    Version      = $targetVersion
+                    ProjectPath  = $ProjectPath
+                    Architecture = $architecture
+                }
+                if ($yamlInfo) {
+                    if ($yamlInfo.Scope)           { $dl['Scope']         = $yamlInfo.Scope }
+                    if ($yamlInfo.InstallerType)   { $dl['InstallerType'] = $yamlInfo.InstallerType }
+                    if ($yamlInfo.InstallerLocale) { $dl['Locale']        = $yamlInfo.InstallerLocale }
+                }
+                $oldInstaller = Download-OldVersionInstaller @dl
 
                 # ── Step 5: Ensure Countdown.ps1 exists ──────────────────────────────────
                 Write-Host 'Creating countdown script...' -ForegroundColor Yellow
@@ -263,19 +271,13 @@ function Test-Win32ToolkitProject {
                 $sandboxFolder     = Join-Path $ProjectPath 'Sandbox'
                 $sandboxConfigFile = Join-Path $sandboxFolder 'UpdateDemo.wsb'
 
-                # Installer path as seen inside the sandbox (project maps to C:\PSADT).
-                # InstallerName and SilentArgs are untrusted (winget download / YAML):
-                # escape for the single-quoted PowerShell literal (ConvertTo-PSSingleQuoted),
-                # then XML-encode the whole command for the .wsb <Command> (ConvertTo-XmlEncoded).
-                $installerSandboxPath = "C:\PSADT\Sandbox\OldVersion\$($oldInstaller.InstallerName)"
-                $installerPathSq = ConvertTo-PSSingleQuoted $installerSandboxPath
-                $silentArgsSq    = ConvertTo-PSSingleQuoted $oldInstaller.SilentArgs
-
-                $installCmd = if ($oldInstaller.SilentArgs) {
-                    "Start-Process '$installerPathSq' -ArgumentList '$silentArgsSq' -Wait"
-                } else {
-                    "Start-Process '$installerPathSq' -Wait"
-                }
+                # Baseline install command (handles exe/msi via Start-Process, msix/appx via
+                # Add-AppxPackage; untrusted values escaped as data + argv-safe double quotes),
+                # then XML-encoded for the .wsb <Command> (ConvertTo-XmlEncoded).
+                $installCmd = Get-Win32ToolkitBaselineInstallCommand `
+                    -InstallerSandboxPath "C:\PSADT\Sandbox\OldVersion\$($oldInstaller.InstallerName)" `
+                    -InstallerType $oldInstaller.InstallerType `
+                    -SilentArgs    $oldInstaller.SilentArgs
                 $installCmdXml = ConvertTo-XmlEncoded $installCmd
 
                 $sandboxConfigContent = @"
@@ -284,7 +286,7 @@ function Test-Win32ToolkitProject {
     <Networking>Enable</Networking>
     <MappedFolders>
         <MappedFolder>
-            <HostFolder>$ProjectPath</HostFolder>
+            <HostFolder>$(ConvertTo-XmlEncoded $ProjectPath)</HostFolder>
             <SandboxFolder>C:\PSADT</SandboxFolder>
             <ReadOnly>false</ReadOnly>
         </MappedFolder>
@@ -315,7 +317,7 @@ function Test-Win32ToolkitProject {
                 Write-Host '  7. Keep the sandbox open for final verification'         -ForegroundColor White
                 Write-Host '================================================'          -ForegroundColor Cyan
 
-                Start-Process -FilePath 'WindowsSandbox.exe' -ArgumentList $sandboxConfigFile
+                Start-Process -FilePath 'WindowsSandbox.exe' -ArgumentList "`"$sandboxConfigFile`""
 
                 Write-Host "`n✓ Update test sandbox launched." -ForegroundColor Green
 
