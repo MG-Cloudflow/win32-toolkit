@@ -224,6 +224,45 @@ InstallerSwitches:
     if ($waitOk) { Ok 'wait satisfied by the exact expected file' } else { Bad 'exact-path wait failed' }
     $cfgW = Get-Win32ToolkitAppConfig -ProjectPath $proj
     if ($cfgW.Uninstall.AppName -eq 'FreshApp') { Ok 'AppConfig.Uninstall driven by the EXPECTED capture, not the decoy' } else { Bad "Uninstall.AppName = $($cfgW.Uninstall.AppName)" }
+
+    Write-Host "`n[12] Anchor verification (PSADT template drift protection)" -ForegroundColor Cyan
+    New-ADTTemplate -Destination $base -Name 'Drift' | Out-Null
+    $drift = Join-Path $base 'Drift'
+
+    # (1) any scaffold date is handled (item-5 regression) + clean run has zero warnings + idempotent
+    $p1 = Join-Path $base 'Drift1'; Copy-Item $drift $p1 -Recurse
+    $dep1 = Join-Path $p1 'Invoke-AppDeployToolkit.ps1'
+    Set-Content $dep1 -Value ([regex]::Replace((Get-Content $dep1 -Raw), "AppScriptDate = '\d{4}-\d{2}-\d{2}'", "AppScriptDate = '2031-01-15'")) -Encoding UTF8
+    $r1 = Set-PSADTDataDrivenScript -ScriptPath $dep1 -WarningVariable wv1 -WarningAction SilentlyContinue
+    $c1 = Get-Content $dep1 -Raw
+    if ($r1 -and $c1 -match [regex]::Escape('AppScriptDate = $appConfig.App.ScriptDate') -and $c1 -notmatch '2031-01-15') { Ok 'any scaffold date -> data-driven (item-5 regression)' } else { Bad "date test: r=$r1" }
+    if (-not $wv1) { Ok 'clean scaffold patches with zero warnings' } else { Bad "unexpected warnings: $($wv1 -join '; ')" }
+    $r1b = Set-PSADTDataDrivenScript -ScriptPath $dep1 -WarningVariable wv1b -WarningAction SilentlyContinue
+    if ($r1b -and -not $wv1b) { Ok 'idempotent re-run: $true, no warnings' } else { Bad 're-run regressed' }
+
+    # (2) NON-critical anchor removed -> $false + named warning, file still written/patched
+    $p2 = Join-Path $base 'Drift2'; Copy-Item $drift $p2 -Recurse
+    $dep2 = Join-Path $p2 'Invoke-AppDeployToolkit.ps1'
+    Set-Content $dep2 -Value ((Get-Content $dep2 -Raw).Replace('## <Perform Post-Installation tasks here>', '## drifted away')) -Encoding UTF8
+    $r2 = Set-PSADTDataDrivenScript -ScriptPath $dep2 -WarningVariable wv2 -WarningAction SilentlyContinue
+    if (-not $r2 -and (@($wv2) -match 'Post-Install marker')) { Ok 'non-critical miss -> $false + warning naming the anchor' } else { Bad "r2=$r2 wv=[$($wv2 -join ';')]" }
+    if ((Get-Content $dep2 -Raw) -match [regex]::Escape('$appConfig =')) { Ok 'non-critical miss still writes the patched file' } else { Bad 'file not patched on non-critical miss' }
+
+    # (3) CRITICAL anchor removed -> $false + file left byte-identical (no half-patch)
+    $p3 = Join-Path $base 'Drift3'; Copy-Item $drift $p3 -Recurse
+    $dep3 = Join-Path $p3 'Invoke-AppDeployToolkit.ps1'
+    Set-Content $dep3 -Value ((Get-Content $dep3 -Raw).Replace('$adtSession = @{', '$adtSessionDrifted = @{')) -Encoding UTF8
+    $before3 = Get-Content $dep3 -Raw
+    $r3 = Set-PSADTDataDrivenScript -ScriptPath $dep3 -WarningVariable wv3 -WarningAction SilentlyContinue
+    if (-not $r3 -and ((Get-Content $dep3 -Raw) -eq $before3) -and (@($wv3) -match 'Critical anchor')) { Ok 'critical miss -> $false, file UNCHANGED' } else { Bad "r3=$r3" }
+
+    # (4) org-template: re-apply is warning-free; a genuinely drifted script warns
+    $null = Apply-OrgTemplate -ProjectPath $proj -Template $escTmpl -WarningVariable wv4 -WarningAction SilentlyContinue 6>$null
+    if (-not (@($wv4) -match 'drift')) { Ok 're-applying the org template raises no drift warnings' } else { Bad "re-apply warned: $($wv4 -join ';')" }
+    $p5 = Join-Path $base 'Drift5'; New-Item -ItemType Directory -Path $p5 -Force | Out-Null
+    Set-Content (Join-Path $p5 'Invoke-AppDeployToolkit.ps1') -Value ((Get-Content $dep1 -Raw).Replace('Show-ADTInstallationProgress', 'X-NoProgress')) -Encoding UTF8
+    $null = Apply-OrgTemplate -ProjectPath $p5 -Template $escTmpl -WarningVariable wv5 -WarningAction SilentlyContinue 6>$null
+    if (@($wv5) -match 'progress dialog') { Ok 'drifted script -> org-template drift warning fired' } else { Bad "no drift warning: [$($wv5 -join ';')]" }
 }
 finally { Remove-Item -Path $base -Recurse -Force -ErrorAction SilentlyContinue }
 

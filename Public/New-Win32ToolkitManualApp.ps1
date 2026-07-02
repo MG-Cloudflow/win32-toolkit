@@ -162,8 +162,13 @@ function New-Win32ToolkitManualApp {
         # ── Patch deploy script. Hard app = manual install region; uninstall always automated.
         #    EXE without silent args is treated as hard (nothing to run automatically).
         $manual = [bool]$Advanced -or (-not $isMsi -and [string]::IsNullOrWhiteSpace($SilentArgs))
-        Set-PSADTDataDrivenScript -ScriptPath (Join-Path $projectFullPath 'Invoke-AppDeployToolkit.ps1') -ManualInstall:$manual | Out-Null
-        Write-Host ("✓ Deploy script patched ({0})" -f ($(if ($manual) { 'manual install region' } else { 'data-driven install' }))) -ForegroundColor Green
+        $patched = Set-PSADTDataDrivenScript -ScriptPath (Join-Path $projectFullPath 'Invoke-AppDeployToolkit.ps1') -ManualInstall:$manual
+        if ($patched) {
+            Write-Host ("✓ Deploy script patched ({0})" -f ($(if ($manual) { 'manual install region' } else { 'data-driven install' }))) -ForegroundColor Green
+        }
+        else {
+            Write-Warning 'Deploy-script patching did not complete cleanly (see warnings above) — review the project before packaging.'
+        }
 
         # ── Org template + optional icon ──────────────────────────────────────────
         if ($script:OrgTemplate) {

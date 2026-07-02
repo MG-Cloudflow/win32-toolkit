@@ -136,6 +136,38 @@ $adtSession = @{
     }
 '@
 
+    # ---- Verify every anchor BEFORE patching (PSADT template drift protection) ----
+    # A missed String.Replace is a silent no-op: the project would LOOK configured but isn't.
+    # CRITICAL anchors abort without writing (a half-patched script whose snippets reference an
+    # undefined $appConfig, or that installs nothing, must never ship). Non-critical misses still
+    # write but warn + return $false so callers surface "did not complete cleanly".
+    # NOTE: verification only runs on first patch — the idempotency early-return above means a
+    # previously patched script is not re-validated on re-runs.
+    $anchors = @(
+        @{ Anchor = '$adtSession = @{';                          Label = 'session loader';           Critical = $true }
+        @{ Anchor = '## <Perform Installation tasks here>';      Label = 'Install marker';           Critical = $true }
+        @{ Anchor = "AppVendor = ''";                            Label = 'AppVendor';                Critical = $false }
+        @{ Anchor = "AppName = ''";                              Label = 'AppName';                  Critical = $false }
+        @{ Anchor = "AppVersion = ''";                           Label = 'AppVersion';               Critical = $false }
+        @{ Anchor = "AppArch = ''";                              Label = 'AppArch';                  Critical = $false }
+        @{ Anchor = 'AppProcessesToClose = @()';                 Label = 'AppProcessesToClose';      Critical = $false }
+        @{ Anchor = '## <Perform Uninstallation tasks here>';    Label = 'Uninstall marker';         Critical = $false }
+        @{ Anchor = '## <Perform Post-Installation tasks here>'; Label = 'Post-Install marker (tattoo)';   Critical = $false }
+        @{ Anchor = '## <Perform Post-Uninstallation tasks here>'; Label = 'Post-Uninstall marker (tattoo)'; Critical = $false }
+    )
+    $missed = @($anchors | Where-Object { -not $content.Contains($_.Anchor) })
+    $dateMatch = [regex]::Match($content, "AppScriptDate = '\d{4}-\d{2}-\d{2}'")
+    if (-not $dateMatch.Success) {
+        $missed += @{ Anchor = "AppScriptDate = '<date>'"; Label = 'AppScriptDate'; Critical = $false }
+    }
+    foreach ($m in $missed) {
+        Write-Warning "Data-driven patch anchor not found: $($m.Label) — the installed PSADT template may have drifted from what this module expects."
+    }
+    if (@($missed | Where-Object { $_.Critical }).Count -gt 0) {
+        Write-Warning "Critical anchor(s) missing — leaving $ScriptPath UNCHANGED. Update the module for this PSADT version, or pin the PSADT template version."
+        return $false
+    }
+
     # ---- Apply patches with ordinal String.Replace (no regex/$-token pitfalls) ----
     $content = $content.Replace('$adtSession = @{', $loader)
     $content = $content.Replace("AppVendor = ''",  'AppVendor = $appConfig.App.Vendor')
@@ -145,7 +177,6 @@ $adtSession = @{
     $content = $content.Replace('AppProcessesToClose = @()', 'AppProcessesToClose = @($appConfig.ProcessesToClose | Where-Object { $_ })')
 
     # AppScriptDate default varies per scaffold — extract the literal, then ordinal-replace it.
-    $dateMatch = [regex]::Match($content, "AppScriptDate = '\d{4}-\d{2}-\d{2}'")
     if ($dateMatch.Success) {
         $content = $content.Replace($dateMatch.Value, 'AppScriptDate = $appConfig.App.ScriptDate')
     }
@@ -175,5 +206,6 @@ $adtSession = @{
         Write-Warning "Data-driven patch produced parse errors in $ScriptPath : $($errs[0].Message)"
         return $false
     }
-    return $true
+    # Non-critical anchor misses: the file was written, but signal "not cleanly configured".
+    return ($missed.Count -eq 0)
 }
