@@ -1,35 +1,51 @@
 function Wait-ForDocumentationAndProcess {
+    [CmdletBinding()]
     param(
         [string]$ProjectPath,
-        [string]$InstallerType
+        [string]$InstallerType,
+
+        # Exact capture file this run's sandbox will produce (returned by New-TargetedDocumentation).
+        # When provided, the wait is satisfied ONLY by this file — immune to stale captures from
+        # previous runs. When omitted (back-compat), the newest capture is selected
+        # (Get-LatestInstallationCapture; note: filter is 'InstallationChanges_*.json', with underscore).
+        [string]$ExpectedJsonPath
     )
-    
+
     try {
         Write-Host "Monitoring for documentation completion..." -ForegroundColor Yellow
-        
-        # Look for JSON files in Documentation folder
-        $docPath = Join-Path $ProjectPath "Documentation"
+
         $jsonFound = $false
         $jsonFile = $null
         $maxWaitMinutes = 30
         $checkIntervalSeconds = 10
         $totalChecks = ($maxWaitMinutes * 60) / $checkIntervalSeconds
-        
-        Write-Host "Checking for InstallationChanges JSON file every $checkIntervalSeconds seconds..." -ForegroundColor Cyan
+
+        if ($ExpectedJsonPath) {
+            Write-Host "Waiting for this run's capture: $(Split-Path $ExpectedJsonPath -Leaf)" -ForegroundColor Cyan
+        } else {
+            Write-Host "Checking for InstallationChanges JSON file every $checkIntervalSeconds seconds..." -ForegroundColor Cyan
+        }
         Write-Host "Maximum wait time: $maxWaitMinutes minutes" -ForegroundColor Gray
-        
+
         for ($i = 1; $i -le $totalChecks; $i++) {
-            if (Test-Path $docPath) {
-                $jsonFiles = Get-ChildItem -Path $docPath -Filter "InstallationChanges*.json" -File -ErrorAction SilentlyContinue
-                
-                if ($jsonFiles.Count -gt 0) {
-                    $jsonFile = $jsonFiles[0].FullName
+            if ($ExpectedJsonPath) {
+                if (Test-Path -LiteralPath $ExpectedJsonPath) {
+                    $jsonFile = $ExpectedJsonPath
                     $jsonFound = $true
-                    Write-Host "✓ JSON documentation file found: $($jsonFiles[0].Name)" -ForegroundColor Green
+                    Write-Host "✓ JSON documentation file found: $(Split-Path $ExpectedJsonPath -Leaf)" -ForegroundColor Green
                     break
                 }
             }
-            
+            else {
+                $latest = Get-LatestInstallationCapture -ProjectPath $ProjectPath
+                if ($latest) {
+                    $jsonFile = $latest.FullName
+                    $jsonFound = $true
+                    Write-Host "✓ JSON documentation file found: $($latest.Name)" -ForegroundColor Green
+                    break
+                }
+            }
+
             $minutesWaited = ($i * $checkIntervalSeconds) / 60
             Write-Host "Waiting... ($([math]::Round($minutesWaited, 1)) minutes elapsed)" -ForegroundColor Gray
             Start-Sleep -Seconds $checkIntervalSeconds

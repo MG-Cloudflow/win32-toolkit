@@ -51,16 +51,11 @@ function Get-Win32DetectionRules {
     }
 
     # ── Capture-based fallback (MSI Zero-Config / apps without a tattoo) ────────────
-    $docPath = Join-Path $ProjectPath 'Documentation'
-    if (-not (Test-Path $docPath)) {
-        Write-Host '  No Documentation folder found — no detection rules generated.' -ForegroundColor Yellow
-        return @()
-    }
-
-    $jsonFile = Get-ChildItem -Path $docPath -Filter 'InstallationChanges_*.json' -File |
-        Select-Object -First 1
+    # Newest capture wins (shared selector) — the old first-in-name-order pick could build the
+    # detection rule from a STALE capture of a previous version.
+    $jsonFile = Get-LatestInstallationCapture -ProjectPath $ProjectPath
     if (-not $jsonFile) {
-        Write-Host '  No InstallationChanges_*.json found — no detection rules generated.' -ForegroundColor Yellow
+        Write-Host '  No InstallationChanges_*.json capture found — no detection rules generated.' -ForegroundColor Yellow
         return @()
     }
 

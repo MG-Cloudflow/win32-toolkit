@@ -204,6 +204,26 @@ InstallerSwitches:
         $mdet[0]['detectionValue'] -eq '8.9.6.4') {
         Ok 'MSI (empty Name) -> version tattoo rule via DisplayName'
     } else { Bad "MSI detection: $($mdet[0] | ConvertTo-Json -Compress)" }
+
+    Write-Host "`n[11] Exact-path wait ignores decoy/stale captures" -ForegroundColor Cyan
+    # A decoy capture that any glob would satisfy the wait with; the expected file describes FreshApp.
+    $docDir = Join-Path $proj 'Documentation'
+    New-Item -ItemType Directory -Path $docDir -Force | Out-Null
+    $decoyCap = Join-Path $docDir 'InstallationChanges_00000000_000000.json'
+    ([pscustomobject]@{ NewRegistryKeys = @([pscustomobject]@{
+        Path = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\DecoyApp'; KeyName = 'DecoyApp'
+        Values = @{ DisplayName = 'DecoyApp'; UninstallString = '"C:\Program Files\Decoy\unins000.exe" /S' } }) } |
+        ConvertTo-Json -Depth 8) | Set-Content $decoyCap -Encoding UTF8
+    $freshCap2 = Join-Path $docDir 'InstallationChanges_99999999_999999.json'
+    ([pscustomobject]@{ NewRegistryKeys = @([pscustomobject]@{
+        Path = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\FreshApp'; KeyName = 'FreshApp'
+        Values = @{ DisplayName = 'FreshApp'; UninstallString = '"C:\Program Files\Fresh\unins000.exe" /S' } }) } |
+        ConvertTo-Json -Depth 8) | Set-Content $freshCap2 -Encoding UTF8
+    (Get-Item $decoyCap).LastWriteTime = (Get-Date)   # decoy is even NEWER by time — exact path must still win
+    $waitOk = Wait-ForDocumentationAndProcess -ProjectPath $proj -InstallerType exe -ExpectedJsonPath $freshCap2 6>$null
+    if ($waitOk) { Ok 'wait satisfied by the exact expected file' } else { Bad 'exact-path wait failed' }
+    $cfgW = Get-Win32ToolkitAppConfig -ProjectPath $proj
+    if ($cfgW.Uninstall.AppName -eq 'FreshApp') { Ok 'AppConfig.Uninstall driven by the EXPECTED capture, not the decoy' } else { Bad "Uninstall.AppName = $($cfgW.Uninstall.AppName)" }
 }
 finally { Remove-Item -Path $base -Recurse -Force -ErrorAction SilentlyContinue }
 
