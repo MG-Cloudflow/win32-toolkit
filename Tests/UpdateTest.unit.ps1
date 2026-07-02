@@ -221,6 +221,42 @@ try {
     if (-not (Test-Path (Join-Path $tp 'Documentation\InstallationChanges_stale.json'))) { Ok 'stale capture JSON cleared before launch' } else { Bad 'stale JSON survived' }
     if (-not (Test-Path (Join-Path $tp 'Documentation\Targeted_Documentation_Log_stale.txt'))) { Ok 'stale capture log cleared' } else { Bad 'stale log survived' }
     if (Test-Path (Join-Path $tp 'Documentation\notes.md')) { Ok 'user notes in Documentation\ survive' } else { Bad 'user notes deleted!' }
+
+    Write-Host "`n[6] Capture script: Win32_Product removed, NewPrograms derived from registry diff" -ForegroundColor Cyan
+    $ntdRaw = Get-Content (Join-Path $repo 'Private\New-TargetedDocumentation.ps1') -Raw
+    if ($ntdRaw -notmatch 'Win32_Product' -and $ntdRaw -notmatch 'Get-WmiObject') { Ok 'no Win32_Product / Get-WmiObject anywhere (regression guard)' } else { Bad 'WMI product enumeration still present' }
+
+    # The embedded 5.1 sandbox script must still parse after the edits
+    $hsMatch = [regex]::Match($ntdRaw, "(?s)\`$documentationScript = @'\r?\n(.*?)\r?\n'@")
+    if ($hsMatch.Success) {
+        $errsHS = $null
+        [System.Management.Automation.Language.Parser]::ParseInput($hsMatch.Groups[1].Value, [ref]$null, [ref]$errsHS) | Out-Null
+        if (-not ($errsHS -and $errsHS.Count)) { Ok 'embedded capture script parses (5.1 sandbox safety)' } else { Bad "capture script parse: $($errsHS[0].Message)" }
+    } else { Bad 'could not extract the capture here-string' }
+
+    # Execute the derivation block (between its BEGIN/END markers) against a fixture
+    $derMatch = [regex]::Match($ntdRaw, '(?s)# BEGIN NewPrograms derivation.*?# END NewPrograms derivation')
+    if ($derMatch.Success) {
+        function Write-Log { param($m, $l) }   # stub — defined only inside the sandbox script
+        $jsonData = @{
+            NewPrograms = @()
+            NewRegistryKeys = @(
+                @{ Path = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\EvilApp'
+                   Values = @{ DisplayName = "Evil'App"; DisplayVersion = '1.2.3'; Publisher = "O'Reilly"
+                               UninstallString = '"C:\Program Files\EvilApp\unins000.exe" /SILENT'; InstallLocation = 'C:\Program Files\EvilApp' } }
+                @{ Path = 'HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\EvilApp'
+                   Values = @{ DisplayName = "Evil'App"; DisplayVersion = '1.2.3' } }   # dup in 2nd hive -> deduped
+                @{ Path = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\evil.exe'; Values = @{ DisplayName = 'NotAProgram' } }
+                @{ Path = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\NoName'; Values = @{} }
+            )
+        }
+        & ([scriptblock]::Create($derMatch.Value))
+        if (@($jsonData.NewPrograms).Count -eq 1) { Ok 'exactly 1 derived program (dedupe + filters work)' } else { Bad "derived count: $(@($jsonData.NewPrograms).Count)" }
+        $np = @($jsonData.NewPrograms)[0]
+        if ($np.Name -eq "Evil'App" -and $np.DisplayName -eq $np.Name -and $np.DisplayVersion -eq '1.2.3' -and $np.Path -eq 'C:\Program Files\EvilApp' -and $np.ContainsKey('UninstallString')) { Ok 'derived shape: Name/DisplayName/DisplayVersion/Publisher/UninstallString/Path' } else { Bad "shape: $($np | ConvertTo-Json -Compress)" }
+        $rt = ($jsonData | ConvertTo-Json -Depth 8) | ConvertFrom-Json
+        if (@($rt.NewPrograms).Count -eq 1 -and $rt.NewPrograms[0].DisplayName -eq "Evil'App") { Ok 'derived data round-trips through JSON' } else { Bad 'JSON round-trip failed' }
+    } else { Bad 'derivation block markers not found' }
 }
 finally { Remove-Item -Path $base -Recurse -Force -ErrorAction SilentlyContinue }
 

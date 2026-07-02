@@ -274,11 +274,10 @@ Write-Log "Beginning baseline services scan" "INFO"
 $preServices = Get-Service | Select-Object Name, DisplayName, Status, StartType
 Write-Log "Pre-installation services captured: $($preServices.Count) services" "INFO"
 
-# Capture baseline programs (keep in memory only)
-Write-Host "Capturing baseline programs..." -ForegroundColor Gray
-Write-Log "Beginning baseline programs scan" "INFO"
-$prePrograms = Get-WmiObject -Class Win32_Product -ErrorAction SilentlyContinue | Select-Object Name, Version, Vendor, InstallDate
-Write-Log "Pre-installation programs captured: $($prePrograms.Count) programs" "INFO"
+# NOTE: deliberately NO WMI product-class baseline here — enumerating the installer product class
+# makes Windows Installer run a consistency check/reconfigure of EVERY registered MSI (minutes of
+# wall-clock, repair side effects, event-log spam). New programs are derived from the Uninstall
+# registry diff instead (see the NewPrograms derivation block below).
 
 Write-Host "`nStarting PSADT installation..." -ForegroundColor Yellow
 Write-Log "Starting PSADT installation phase" "INFO"
@@ -333,12 +332,6 @@ Write-Host "Scanning post-installation services..." -ForegroundColor Gray
 Write-Log "Beginning post-installation services scan" "INFO"
 $postServices = Get-Service | Select-Object Name, DisplayName, Status, StartType
 Write-Log "Post-installation services captured: $($postServices.Count) services" "INFO"
-
-# Capture post-installation programs
-Write-Host "Scanning post-installation programs..." -ForegroundColor Gray
-Write-Log "Beginning post-installation programs scan" "INFO"
-$postPrograms = Get-WmiObject -Class Win32_Product -ErrorAction SilentlyContinue | Select-Object Name, Version, Vendor, InstallDate
-Write-Log "Post-installation programs captured: $($postPrograms.Count) programs" "INFO"
 
 Write-Host "`nAnalyzing changes..." -ForegroundColor Yellow
 Write-Log "Starting change analysis" "INFO"
@@ -426,21 +419,6 @@ try {
 } catch {
     Write-Host "Warning: Could not compare service changes" -ForegroundColor Yellow
     Write-Log "Warning: Could not compare service changes: $($_.Exception.Message)" "WARNING"
-}
-
-# Compare programs
-try {
-    Write-Log "Comparing program changes" "INFO"
-    if ($prePrograms -and $postPrograms) {
-        $newPrograms = Compare-Object -ReferenceObject $prePrograms.Name -DifferenceObject $postPrograms.Name | 
-                        Where-Object { $_.SideIndicator -eq '=>' } | Select-Object @{Name='NewProgram';Expression={$_.InputObject}}
-        Write-Log "Found $($newPrograms.Count) new programs" "INFO"
-    } else {
-        Write-Log "Warning: Unable to compare programs - insufficient baseline data" "WARNING"
-    }
-} catch {
-    Write-Host "Warning: Could not compare program changes" -ForegroundColor Yellow
-    Write-Log "Warning: Could not compare program changes: $($_.Exception.Message)" "WARNING"
 }
 
 # Create JSON output for automation (ONLY output besides log)
@@ -556,16 +534,31 @@ if ($newServices -and $newServices.Count -gt 0) {
     }
 }
 
-# Process new programs for JSON
-if ($newPrograms -and $newPrograms.Count -gt 0) {
-    foreach ($program in $newPrograms) {
-        $programInfo = @{
-            Name = $program.NewProgram
-            Path = $null  # Could be enhanced to find installation path
+# BEGIN NewPrograms derivation (from Uninstall registry diff — replaces the WMI product-class scan)
+# Derived after the NewRegistryKeys loop has settled. Keeps the legacy Name/Path keys for schema
+# compatibility; the other fields are additive. Note: the recursive registry snapshot can include
+# SUBKEYS of a new Uninstall entry — any subkey with its own DisplayName yields an extra row, which
+# the DisplayName|DisplayVersion dedupe below tolerates.
+$seenPrograms = @{}
+foreach ($regKey in $jsonData.NewRegistryKeys) {
+    if ($regKey.Path -match '\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\' -and $regKey.Values -and $regKey.Values['DisplayName']) {
+        $dedupeKey = "$($regKey.Values['DisplayName'])|$($regKey.Values['DisplayVersion'])"
+        if (-not $seenPrograms.ContainsKey($dedupeKey)) {
+            $seenPrograms[$dedupeKey] = $true
+            $jsonData.NewPrograms += @{
+                Name            = $regKey.Values['DisplayName']
+                DisplayName     = $regKey.Values['DisplayName']
+                DisplayVersion  = $regKey.Values['DisplayVersion']
+                Publisher       = $regKey.Values['Publisher']
+                UninstallString = $regKey.Values['UninstallString']
+                Path            = $regKey.Values['InstallLocation']
+                Source          = 'UninstallRegistry'
+            }
         }
-        $jsonData.NewPrograms += $programInfo
     }
 }
+Write-Log "Derived $($jsonData.NewPrograms.Count) new programs from Uninstall registry diff" "INFO"
+# END NewPrograms derivation
 
 # Export JSON data
 try {
@@ -715,7 +708,7 @@ Stop-Computer
         Write-Host "The sandbox will:" -ForegroundColor White
         Write-Host "• Scan targeted directories (Program Files, ProgramData, AppData)" -ForegroundColor Green
         Write-Host "• Monitor key registry locations (Uninstall, App Paths)" -ForegroundColor Green
-        Write-Host "• Capture services and programs baseline" -ForegroundColor Green
+        Write-Host "• Capture services baseline (programs derived from the registry diff)" -ForegroundColor Green
         Write-Host "• Run your PSADT installation" -ForegroundColor Green
         Write-Host "• Compare before/after states to identify changes" -ForegroundColor Green
         Write-Host "• Generate detailed change reports" -ForegroundColor Green
