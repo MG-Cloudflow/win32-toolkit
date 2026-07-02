@@ -51,12 +51,16 @@ function Configure-PSADTForInstaller {
         # Empty AppName for MSI => Zero-Config MSI stays enabled.
         $name    = if ($isMsi) { '' } elseif ($yamlInfo.PackageName) { $yamlInfo.PackageName } else { $AppInfo.Name }
         $silent  = if ($isMsi) { '' } elseif ($yamlInfo.SilentArgs) { $yamlInfo.SilentArgs } else { '/S' }
+        # DisplayName is the real product name — always populated (incl. MSI, where App.Name is empty for
+        # Zero-Config). Drives the install tattoo + Intune detection key so both cover MSI.
+        $display = if ($yamlInfo.PackageName) { $yamlInfo.PackageName } elseif ($AppInfo.Name) { $AppInfo.Name } else { '' }
 
         # ---- Write App + Installer sections into AppConfig.json (merge-preserving) ----
         $cfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
         $cfg | Add-Member -NotePropertyName App -NotePropertyValue ([pscustomobject]@{
             Vendor         = $vendor
             Name           = $name
+            DisplayName    = $display
             Version        = $version
             Arch           = $Architecture
             ScriptAuthor   = if ($script:OrgTemplate -and $script:OrgTemplate.AppScriptAuthor) { $script:OrgTemplate.AppScriptAuthor } else { '' }

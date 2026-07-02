@@ -61,9 +61,12 @@ function Get-Win32ToolkitRequirementRule {
     $uninstall = if ($cfg.PSObject.Properties.Name -contains 'Uninstall') { $cfg.Uninstall } else { $null }
 
     # ── Collect presence signals (all optional; need at least one) ────────────────
+    # DisplayName is the tattoo name (populated even for MSI Zero-Config, where Name is empty); fall back
+    # to Name for projects generated before DisplayName existed.
+    $appName = if ($app) { if ($app.PSObject.Properties['DisplayName'] -and $app.DisplayName) { $app.DisplayName } else { $app.Name } } else { $null }
     $tattooKey = $null
-    if ($app -and $app.ScriptAuthor -and $app.Vendor -and $app.Name) {
-        $tattooKey = "HKLM:\SOFTWARE\$($app.ScriptAuthor)\$($app.Vendor)\$($app.Name)"
+    if ($app -and $app.ScriptAuthor -and $app.Vendor -and $appName) {
+        $tattooKey = "HKLM:\SOFTWARE\$($app.ScriptAuthor)\$($app.Vendor)\$appName"
     }
 
     $productCodes = @()
@@ -89,10 +92,12 @@ function Get-Win32ToolkitRequirementRule {
         }
     }
 
-    # Version-independent product name for an EXACT (safe) Add/Remove-Programs match: the clean App.Name,
-    # or (for MSI Zero-Config, where App.Name is empty) the MSI ProductName. Matched with -eq and never a
-    # substring wildcard, so it cannot match unrelated products (e.g. 'Microsoft *').
-    $cleanName = if ($app -and $app.Name) { $app.Name } elseif ($msiName) { $msiName } else { $null }
+    # Version-independent product names for an EXACT (safe) Add/Remove-Programs match: App.DisplayName/Name
+    # AND, for MSI, the MSI ProductName (authoritative — Windows Installer writes it verbatim as the ARP
+    # DisplayName, and it often differs from the winget name, e.g. 'Notepad++' vs 'Notepad++ (64-bit x64)').
+    # Matched with exact equality and never a substring wildcard, so it cannot match unrelated products.
+    $cleanNames = @(@($appName; $msiName) | Where-Object { $_ } | Select-Object -Unique)
+    $cleanName  = if ($cleanNames.Count) { $cleanNames[0] } else { $null }   # display/reporting name
 
     # Require a signal that can identify the app across versions: the tattoo key, the MSI UpgradeCode, or a
     # clean name for an exact ARP match. Product codes alone are per-version, so they never gate the rule on
@@ -132,16 +137,19 @@ function Get-Win32ToolkitRequirementRule {
         $lines.Add('    }')
         $lines.Add('}')
     }
-    if ($cleanName) {
-        # Exact DisplayName equality (no wildcard) — matches the app at any version whose ARP name equals
-        # App.Name, and cannot match unrelated products.
+    if ($cleanNames.Count -gt 0) {
+        # Exact DisplayName equality (no wildcard) against each candidate name (App.DisplayName and, for
+        # MSI, the authoritative MSI ProductName) — matches the app at any version, and cannot match
+        # unrelated products.
         $lines.Add('if (-not $found) {')
-        $lines.Add("    `$target = '$(ConvertTo-PSSingleQuoted $cleanName)'")
+        $lines.Add('    $targets = @(')
+        foreach ($n in $cleanNames) { $lines.Add("        '$(ConvertTo-PSSingleQuoted $n)'") }
+        $lines.Add('    )')
         $lines.Add('    foreach ($p in @(')
         $lines.Add("        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',")
         $lines.Add("        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'")
         $lines.Add('    )) {')
-        $lines.Add('        if (Get-ItemProperty -Path $p -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $target }) { $found = $true; break }')
+        $lines.Add('        if (Get-ItemProperty -Path $p -ErrorAction SilentlyContinue | Where-Object { $targets -contains $_.DisplayName }) { $found = $true; break }')
         $lines.Add('    }')
         $lines.Add('}')
     }
