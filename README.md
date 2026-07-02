@@ -67,6 +67,11 @@ Copy-Item -Path C:\path\to\win32-toolkit -Destination $dest -Recurse
 Import-Module win32-toolkit
 ```
 
+> **Downloaded as a ZIP?** Extracted files carry the Mark-of-the-Web, so under `RemoteSigned` the very
+> first `Import-Module` may show a single "Do you want to run?" prompt — answer **[R] Run once** and the
+> module unblocks all of its own files; every later file and session loads silently. (Using
+> `Launch-Win32Toolkit.cmd` or `git clone` never prompts.)
+
 ### Verify
 
 ```powershell
