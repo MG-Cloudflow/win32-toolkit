@@ -51,8 +51,21 @@ function Show-Win32ToolkitProjectActions {
                         [pscustomobject]@{ Key = 'InstallUninstall'; Label = 'Install then uninstall (any app)' }
                         [pscustomobject]@{ Key = 'Update';           Label = 'Update from an older version (winget apps only)' }
                     ) -ChoiceLabelProperty 'Label' -Color Blue
+                    $testSplat = @{ ProjectPath = $project.Path; Scenario = $sc.Key }
+                    if ($sc.Key -eq 'Update') {
+                        if (-not (Read-SpectreConfirm -Message 'Also verify the update-app requirement rule during the test? (recommended)' -DefaultAnswer 'y')) {
+                            $testSplat['SkipRequirementCheck'] = $true
+                        }
+                    }
                     Clear-Host; Write-SpectreRule -Title 'Launching test sandbox…' -Color Blue
-                    try { Test-Win32ToolkitProject -ProjectPath $project.Path -Scenario $sc.Key }
+                    try {
+                        $verdict = Test-Win32ToolkitProject @testSplat
+                        if ($sc.Key -eq 'Update') {
+                            if     ($verdict -eq $true)  { Format-SpectrePanel -Data 'All in-sandbox assertions passed.' -Header 'UPDATE TEST PASSED' -Border Rounded -Color Green }
+                            elseif ($verdict -eq $false) { Format-SpectrePanel -Data 'One or more assertions FAILED - see Sandbox\Logs\UpdateAssertions.log in the project folder.' -Header 'UPDATE TEST FAILED' -Border Rounded -Color Red }
+                            else                         { Format-SpectrePanel -Data 'No conclusive assertion results (sandbox closed early, timeout, or everything skipped).' -Header 'Inconclusive' -Border Rounded -Color Yellow }
+                        }
+                    }
                     catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
                     Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
                 }

@@ -156,11 +156,13 @@ function Get-Win32ToolkitRequirementRule {
     $lines.Add('if ($found) { Write-Output 1; exit 0 } else { exit 1 }')
     $scriptText = ($lines -join "`r`n") + "`r`n"
 
-    # Save a plaintext copy for transparency (does not affect the upload, which uses base64 below).
+    # Save a plaintext copy for transparency and for the sandbox Update test (which runs it under
+    # Windows PowerShell 5.1 — write UTF-8 WITH BOM so non-ASCII names don't mojibake; PS7's
+    # Set-Content -Encoding UTF8 writes no BOM).
     try {
         $supportFiles = Join-Path $ProjectPath 'SupportFiles'
         if (-not (Test-Path -LiteralPath $supportFiles)) { New-Item -ItemType Directory -Path $supportFiles -Force | Out-Null }
-        Set-Content -LiteralPath (Join-Path $supportFiles 'UpdateRequirement.ps1') -Value $scriptText -Encoding UTF8
+        [System.IO.File]::WriteAllText((Join-Path $supportFiles 'UpdateRequirement.ps1'), $scriptText, (New-Object System.Text.UTF8Encoding($true)))
     } catch { Write-Verbose "Could not write UpdateRequirement.ps1: $($_.Exception.Message)" }
 
     # UTF-8 with BOM (Intune-recommended for Win32 requirement/detection scripts), then base64.
