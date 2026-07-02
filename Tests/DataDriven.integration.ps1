@@ -65,6 +65,11 @@ InstallerSwitches:
             @{ Path='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\bad.exe';  KeyName="bad'; calc.exe"; Values=@{} }
         )
         NewFiles = @( @{ Type='File'; Path='C:\Program Files\EvilApp\evil.exe' } )
+        # Shape produced by the registry-diff NewPrograms derivation (replaces Win32_Product) —
+        # present in the fixture to prove all writers tolerate the field end-to-end.
+        NewPrograms = @( @{ Name=$DISPLAYNAME; DisplayName=$DISPLAYNAME; DisplayVersion='1.2.3'; Publisher="O'Reilly"
+                            UninstallString="`"C:\Program Files\EvilApp\unins000.exe`" $UNINST_PAYLOAD"
+                            Path='C:\Program Files\EvilApp'; Source='UninstallRegistry' } )
     }
     $capPath = Join-Path $proj 'InstallationChanges_test.json'
     ($capture | ConvertTo-Json -Depth 8) | Set-Content -Path $capPath -Encoding UTF8
