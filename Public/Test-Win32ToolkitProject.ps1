@@ -18,7 +18,11 @@ function Test-Win32ToolkitProject {
 .PARAMETER Scenario
     The test scenario to execute. If omitted, an interactive menu is shown.
     - InstallUninstall : Install → 2-minute countdown → Uninstall
-    - Update           : Install an older baseline → 2-minute countdown → run PSADT update
+    - Update           : Install an older baseline → assert the update-app requirement rule detects
+                         it → 2-minute countdown → run the PSADT update → assert the requirement is
+                         still met and the install tattoo holds the new version. Assertion results
+                         stream back to the host (Sandbox\Logs\UpdateAssertions.log) and the command
+                         reports a real PASS/FAIL verdict.
 .PARAMETER VersionsBack
     Update scenario only. Automatically selects the version that is X positions older
     than the currently packaged version (e.g. 1 = the immediately previous release).
@@ -26,6 +30,12 @@ function Test-Win32ToolkitProject {
 .PARAMETER SpecificVersion
     Update scenario only. Installs this exact version as the baseline. Overrides
     VersionsBack if both are supplied.
+.PARAMETER SkipRequirementCheck
+    Update scenario only. Skip generating/running the update-app requirement script in the sandbox
+    (its assertions report SKIP); the tattoo/detection assertion still runs. Use when the project
+    has no usable requirement rule yet or you only want the plain install-over-old check.
+.EXAMPLE
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0' -Scenario Update -VersionsBack 1 -SkipRequirementCheck
 .EXAMPLE
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0'
 .EXAMPLE
@@ -53,7 +63,12 @@ function Test-Win32ToolkitProject {
         [int]$VersionsBack,
 
         [Parameter(Mandatory = $false)]
-        [string]$SpecificVersion
+        [string]$SpecificVersion,
+
+        # Update scenario only: don't generate/run the update-app requirement script in the sandbox —
+        # its assertions are reported as SKIP. The tattoo/detection assertion still runs.
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipRequirementCheck
     )
 
     try {
@@ -84,6 +99,13 @@ function Test-Win32ToolkitProject {
         Write-Host "`nSelected project : $projectName"  -ForegroundColor Green
         Write-Host "Project path     : $ProjectPath"   -ForegroundColor Gray
         Write-Host "Scenario         : $Scenario"      -ForegroundColor Cyan
+
+        # Windows Sandbox allows a single running instance — fail fast (before any download work)
+        # instead of launching a doomed sandbox and waiting on assertions that will never come.
+        $runningWsb = @(Get-Process -Name 'WindowsSandbox', 'WindowsSandboxClient', 'WindowsSandboxRemoteSession' -ErrorAction SilentlyContinue)
+        if ($runningWsb.Count -gt 0) {
+            throw 'Another Windows Sandbox is already running (only one instance is allowed). Close it — e.g. the documentation-capture sandbox from a previous step — and re-run the test.'
+        }
 
         switch ($Scenario) {
 
@@ -161,24 +183,32 @@ function Test-Win32ToolkitProject {
                 Write-Host "Package ID       : $wingetId"       -ForegroundColor Gray
                 Write-Host "Packaged version : $currentVersion" -ForegroundColor Gray
 
-                # ── Step 2: Resolve list of older versions ────────────────────────────────
-                $olderVersions = Get-WingetVersions -AppId $wingetId -CurrentVersion $currentVersion
-
-                # ── Step 3: Pick the target baseline version ──────────────────────────────
+                # ── Step 2-3: Pick the target baseline version ────────────────────────────
                 if ($SpecificVersion) {
-                    if ($olderVersions -notcontains $SpecificVersion) {
-                        Write-Warning "'$SpecificVersion' was not found in the filtered older-version list but will be used as requested."
-                    }
+                    # Explicit baseline: usable even when winget lists no (or no older) versions —
+                    # the older-version lookup is advisory only here.
                     $targetVersion = $SpecificVersion
-
-                } elseif ($VersionsBack -gt 0) {
-                    if ($VersionsBack -gt $olderVersions.Count) {
-                        throw "Requested $VersionsBack version(s) back but only $($olderVersions.Count) older version(s) are available for '$wingetId'."
+                    try {
+                        $known = @(Get-WingetVersions -AppId $wingetId -CurrentVersion $currentVersion)
+                        if ($known -notcontains $SpecificVersion) {
+                            Write-Warning "'$SpecificVersion' was not found in the filtered older-version list but will be used as requested."
+                        }
                     }
-                    $targetVersion = $olderVersions[$VersionsBack - 1]
+                    catch { Write-Verbose "Older-version lookup skipped: $($_.Exception.Message)" }
 
                 } else {
-                    $targetVersion = Show-VersionSelection -Versions $olderVersions
+                    # @() guard: a single older version must stay an array, or indexing below would
+                    # slice characters out of the version STRING.
+                    $olderVersions = @(Get-WingetVersions -AppId $wingetId -CurrentVersion $currentVersion)
+
+                    if ($VersionsBack -gt 0) {
+                        if ($VersionsBack -gt $olderVersions.Count) {
+                            throw "Requested $VersionsBack version(s) back but only $($olderVersions.Count) older version(s) are available for '$wingetId'."
+                        }
+                        $targetVersion = $olderVersions[$VersionsBack - 1]
+                    } else {
+                        $targetVersion = Show-VersionSelection -Versions $olderVersions
+                    }
                 }
 
                 Write-Host "Target version   : $targetVersion" -ForegroundColor Yellow
@@ -198,6 +228,36 @@ function Test-Win32ToolkitProject {
                 # Log collector — copies PSADT/MSI logs back to the project after the run
                 $logCollectorPath = New-LogCollectorScript -ProjectPath $ProjectPath
                 Write-Host "✓ Log collector    : $logCollectorPath" -ForegroundColor Green
+
+                # ── Step 5b: Requirement script + in-sandbox assertions ──────────────────
+                # Generate the update app's requirement script now (Get-Win32ToolkitRequirementRule
+                # writes SupportFiles\UpdateRequirement.ps1 as a side effect) so the sandbox can prove
+                # it detects a REAL old install: PreUpdate = requirement met on the old baseline,
+                # PostUpdate = still met + tattoo holds the NEW version (the Intune detection rule).
+                # With -SkipRequirementCheck the requirement assertions are SKIPped (tattoo still runs).
+                if (-not $SkipRequirementCheck) {
+                    $reqRule = Get-Win32ToolkitRequirementRule -ProjectPath $ProjectPath
+                    if (-not $reqRule) {
+                        Write-Warning 'No update requirement rule could be built for this project — the requirement assertions will be SKIPPED in the sandbox.'
+                        # Remove a stale UpdateRequirement.ps1 from an earlier packaging so the sandbox
+                        # doesn't assert against a rule that will not ship.
+                        $staleReq = Join-Path $ProjectPath 'SupportFiles\UpdateRequirement.ps1'
+                        if (Test-Path -LiteralPath $staleReq) {
+                            Remove-Item -LiteralPath $staleReq -Force -ErrorAction SilentlyContinue
+                        }
+                    }
+                }
+                else {
+                    Write-Host 'Requirement check disabled (-SkipRequirementCheck).' -ForegroundColor DarkYellow
+                }
+                $assertionPath = New-UpdateAssertionScript -ProjectPath $ProjectPath -SkipRequirement:$SkipRequirementCheck
+                Write-Host "✓ Assertion script : $assertionPath" -ForegroundColor Green
+
+                # Fresh assertions log per run (the waiter parses it host-side).
+                $assertLog = Join-Path $ProjectPath 'Sandbox\Logs\UpdateAssertions.log'
+                if (Test-Path -LiteralPath $assertLog) {
+                    Remove-Item -LiteralPath $assertLog -Force -ErrorAction SilentlyContinue
+                }
 
                 # ── Step 6: Build the sandbox WSB config ──────────────────────────────────
                 $sandboxFolder     = Join-Path $ProjectPath 'Sandbox'
@@ -230,7 +290,7 @@ function Test-Win32ToolkitProject {
         </MappedFolder>
     </MappedFolders>
     <LogonCommand>
-        <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { $installCmdXml; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1' } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1' } }&quot;</Command>
+        <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1'; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1' } }&quot;</Command>
     </LogonCommand>
 </Configuration>
 "@
@@ -239,20 +299,30 @@ function Test-Win32ToolkitProject {
 
                 # ── Step 7: Launch Windows Sandbox ────────────────────────────────────────
                 Write-Host ''
-                Write-Host 'Launching Windows Sandbox for Update Demo...'              -ForegroundColor Cyan
+                Write-Host 'Launching Windows Sandbox for the Update test...'           -ForegroundColor Cyan
                 Write-Host '================================================'          -ForegroundColor Cyan
                 Write-Host 'The sandbox will:'                                          -ForegroundColor White
                 Write-Host "  1. Silently install v$targetVersion (old baseline)"      -ForegroundColor Green
-                Write-Host '  2. Show a 2-minute countdown — verify the old install'   -ForegroundColor Yellow
-                Write-Host '  3. Run the PSADT package to perform the update'          -ForegroundColor Cyan
-                Write-Host '  4. Copy PSADT/MSI logs to project\Sandbox\Logs'          -ForegroundColor Cyan
-                Write-Host '  5. Keep the sandbox open for final verification'         -ForegroundColor White
+                if ($SkipRequirementCheck) {
+                Write-Host '  2. (requirement-rule check skipped by request)'          -ForegroundColor DarkYellow
+                } else {
+                Write-Host '  2. ASSERT: update requirement rule detects the old install' -ForegroundColor Cyan
+                }
+                Write-Host '  3. Show a 2-minute countdown — verify the old install'   -ForegroundColor Yellow
+                Write-Host '  4. Run the PSADT package to perform the update'          -ForegroundColor Cyan
+                Write-Host '  5. ASSERT: requirement still met + tattoo = new version' -ForegroundColor Cyan
+                Write-Host '  6. Copy PSADT/MSI logs to project\Sandbox\Logs'          -ForegroundColor Cyan
+                Write-Host '  7. Keep the sandbox open for final verification'         -ForegroundColor White
                 Write-Host '================================================'          -ForegroundColor Cyan
 
                 Start-Process -FilePath 'WindowsSandbox.exe' -ArgumentList $sandboxConfigFile
 
-                Write-Host "`n✓ Update demo sandbox launched successfully!" -ForegroundColor Green
-                Write-Host 'Monitor the sandbox for the complete update cycle.'        -ForegroundColor White
+                Write-Host "`n✓ Update test sandbox launched." -ForegroundColor Green
+
+                # ── Step 8: Wait for the in-sandbox assertions and report pass/fail ──────
+                # The verdict is RETURNED ($true pass / $false fail / $null inconclusive) so callers
+                # (finalize pipeline, TUI, automation) can gate on a failed update test.
+                return (Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath)
             }
         }
     }

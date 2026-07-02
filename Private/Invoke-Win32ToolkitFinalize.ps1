@@ -65,10 +65,14 @@ function Invoke-Win32ToolkitFinalize {
         Write-Warning 'Documentation generation had issues - please review manually'
     }
 
-    # 3. Optional test scenarios.
+    # 3. Optional test scenarios. The Update scenario returns a verdict ($true/$false/$null) —
+    #    surface a failure loudly before any packaging/publishing continues.
     if ($RunTest) {
         foreach ($scenario in $RunTest) {
-            Test-Win32ToolkitProject -ProjectPath $ProjectPath -Scenario $scenario
+            $verdict = Test-Win32ToolkitProject -ProjectPath $ProjectPath -Scenario $scenario
+            if ($verdict -eq $false) {
+                Write-Warning "The $scenario test FAILED its assertions — review $ProjectPath\Sandbox\Logs\UpdateAssertions.log before publishing this package."
+            }
         }
     }
 
