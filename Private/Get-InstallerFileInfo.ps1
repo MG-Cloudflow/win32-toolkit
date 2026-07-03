@@ -1,4 +1,5 @@
 function Get-InstallerFileInfo {
+    [CmdletBinding()]
     param([string]$FilesPath)
     
     $installerInfo = @{
@@ -23,6 +24,15 @@ function Get-InstallerFileInfo {
         $_.Name -notlike "*ServiceUI*"
     }
     if ($exeFiles) {
+        # Visibility: an EXE outranks package files by design (detection order), but a vendor bundle
+        # with App.msix + helper.exe would silently get the EXE flow (no identity uninstall, possibly
+        # "hard app") — name the ignored package so the operator can remove the stray EXE if the
+        # package is the real installer.
+        $shadowed = @(Get-ChildItem -Path $FilesPath -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in '.msix', '.appx' })
+        if ($shadowed.Count -gt 0) {
+            Write-Warning "Files\ contains both an EXE and a package file ($(($shadowed | ForEach-Object Name) -join ', ')) — using the EXE '$($exeFiles[0].Name)' as the installer. If the MSIX/APPX is the real installer, remove the stray EXE from Files\."
+        }
         $installerInfo.FileName = $exeFiles[0].Name
         $installerInfo.Type = 'exe'
         $installerInfo.FullPath = $exeFiles[0].FullName

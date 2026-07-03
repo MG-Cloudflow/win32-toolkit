@@ -11,8 +11,9 @@ function New-Win32ToolkitManualApp {
     (Name, Version, Architecture, SourcePath).
 
     Two modes:
-    - Easy  — provide -SilentArgs (or an MSI, which uses Zero-Config): the install runs data-driven.
-              Add -Continue (or -RunTest/-PackageIntune/-PublishIntune) to finalise end-to-end.
+    - Easy  — provide -SilentArgs, or an MSI (Zero-Config), or an MSIX/APPX package (installed via
+              Add-AppxPackage/provisioning, uninstalled by package identity): the install runs
+              data-driven. Add -Continue (or -RunTest/-PackageIntune/-PublishIntune) to finalise.
     - Hard  — pass -Advanced (or an EXE with no -SilentArgs): the Install region of
               Invoke-AppDeployToolkit.ps1 is left for you to author. The uninstall stays automated.
               Finish later with Complete-Win32ToolkitManualApp.
@@ -148,10 +149,11 @@ function New-Win32ToolkitManualApp {
             Description    = if ($Description) { $Description } else { '' }
             InformationUrl = if ($InformationUrl) { $InformationUrl } else { '' }
         }) -Force
+        $isAppx = $fileInfo.Type -in @('msix', 'appx')
         $cfg | Add-Member -NotePropertyName Installer -NotePropertyValue ([pscustomobject]@{
             Type       = $fileInfo.Type
             FileName   = $fileInfo.FileName
-            SilentArgs = if ($isMsi) { '' } elseif ($SilentArgs) { $SilentArgs } else { '' }
+            SilentArgs = if ($isMsi -or $isAppx) { '' } elseif ($SilentArgs) { $SilentArgs } else { '' }
         }) -Force
         if (-not ($cfg.PSObject.Properties.Name -contains 'ProcessesToClose')) {
             $cfg | Add-Member -NotePropertyName ProcessesToClose -NotePropertyValue @() -Force
@@ -159,9 +161,17 @@ function New-Win32ToolkitManualApp {
         Set-Win32ToolkitAppConfig -ProjectPath $projectFullPath -Config $cfg | Out-Null
         Write-Host '✓ Wrote SupportFiles\AppConfig.json' -ForegroundColor Green
 
+        # MSIX/APPX: identity-driven uninstall data, written at configure time (capture-independent).
+        if ($isAppx) {
+            if (-not (Update-PSADTMsixUninstallLogic -ProjectPath $projectFullPath)) {
+                Write-Warning 'MSIX uninstall data could not be written — the package would have no working uninstall.'
+            }
+        }
+
         # ── Patch deploy script. Hard app = manual install region; uninstall always automated.
-        #    EXE without silent args is treated as hard (nothing to run automatically).
-        $manual = [bool]$Advanced -or (-not $isMsi -and [string]::IsNullOrWhiteSpace($SilentArgs))
+        #    Only an EXE without silent args is hard (nothing to run automatically) — MSI uses
+        #    Zero-Config and msix/appx install via Add-AppxPackage/provisioning, no switches needed.
+        $manual = [bool]$Advanced -or ($fileInfo.Type -eq 'exe' -and [string]::IsNullOrWhiteSpace($SilentArgs))
         $patched = Set-PSADTDataDrivenScript -ScriptPath (Join-Path $projectFullPath 'Invoke-AppDeployToolkit.ps1') -ManualInstall:$manual
         if ($patched) {
             Write-Host ("✓ Deploy script patched ({0})" -f ($(if ($manual) { 'manual install region' } else { 'data-driven install' }))) -ForegroundColor Green

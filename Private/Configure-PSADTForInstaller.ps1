@@ -50,7 +50,11 @@ function Configure-PSADTForInstaller {
         $version = if ($yamlInfo.PackageVersion) { $yamlInfo.PackageVersion } elseif ($AppInfo.Version) { $AppInfo.Version } else { '' }
         # Empty AppName for MSI => Zero-Config MSI stays enabled.
         $name    = if ($isMsi) { '' } elseif ($yamlInfo.PackageName) { $yamlInfo.PackageName } else { $AppInfo.Name }
-        $silent  = if ($isMsi) { '' } elseif ($yamlInfo.SilentArgs) { $yamlInfo.SilentArgs } else { '/S' }
+        # msix/appx never take silent switches (installed via Add-AppxPackage/provisioning) — storing
+        # YAML args for them would be dead, confusing data.
+        $silent  = if ($isMsi -or $fileInfo.Type -in @('msix', 'appx')) { '' }
+                   elseif ($yamlInfo.SilentArgs) { $yamlInfo.SilentArgs }
+                   else { '/S' }
         # DisplayName is the real product name — always populated (incl. MSI, where App.Name is empty for
         # Zero-Config). Drives the install tattoo + Intune detection key so both cover MSI.
         $display = if ($yamlInfo.PackageName) { $yamlInfo.PackageName } elseif ($AppInfo.Name) { $AppInfo.Name } else { '' }
@@ -78,6 +82,14 @@ function Configure-PSADTForInstaller {
         }
         Set-Win32ToolkitAppConfig -ProjectPath $ProjectPath -Config $cfg | Out-Null
         Write-Host '✓ Wrote SupportFiles\AppConfig.json (App + Installer)' -ForegroundColor Green
+
+        # MSIX/APPX: write the identity-driven Uninstall section NOW (host-manifest-driven — it needs
+        # nothing from the sandbox capture, so the uninstall works even if the capture times out).
+        if ($fileInfo.Type -in @('msix', 'appx')) {
+            if (-not (Update-PSADTMsixUninstallLogic -ProjectPath $ProjectPath)) {
+                Write-Warning 'MSIX uninstall data could not be written — the package would have no working uninstall.'
+            }
+        }
 
         # ---- Patch the deploy script to be data-driven (fixed, value-free) ----
         if (Set-PSADTDataDrivenScript -ScriptPath $scriptPath) {
