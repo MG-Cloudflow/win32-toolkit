@@ -36,6 +36,12 @@ function Download-OldVersionInstaller {
         [string]$Locale
     )
 
+    # Fail fast (before any download) on a pinned type that has no silent installer — otherwise the
+    # sandbox would launch the app itself and hang until the 30-minute assertion timeout.
+    if ($InstallerType -match '^(portable|zip|pwa)$') {
+        throw "The baseline for '$AppId' v$Version is a '$InstallerType' winget package — it has no silent installer (it would launch the app and hang the sandbox). Pick a different baseline with -SpecificVersion, or test with -Scenario InstallUninstall."
+    }
+
     $oldVersionDir = Join-Path $ProjectPath 'Sandbox\OldVersion'
 
     # Always start fresh so we don't accidentally pick up a stale installer. -LiteralPath enumeration
@@ -91,11 +97,8 @@ function Download-OldVersionInstaller {
         Where-Object { $_.Extension -in '.exe', '.msi', '.msix', '.appx' } |
         Select-Object -First 1
 
-    if (-not $installer) {
-        throw "winget download completed but no installer file (.exe/.msi/.msix/.appx) was found in: $oldVersionDir"
-    }
-
-    # Try to read installer type from the downloaded YAML manifest
+    # Read the manifest installer type first — it lets the "no installer found" message below name the
+    # type (e.g. a 'zip' package downloads no .exe/.msi/.msix/.appx), and drives the silent-args choice.
     $installerTypeName = $null
     $yamlFile = Get-ChildItem -Path $oldVersionDir -Filter '*.yaml' -File | Select-Object -First 1
     if ($yamlFile) {
@@ -105,31 +108,20 @@ function Download-OldVersionInstaller {
         }
     }
 
-    # Try to get silent args from the YAML (reuse existing module helper)
-    $yamlInfo   = Get-YAMLInstallerInfo -FilesPath $oldVersionDir
-    $silentArgs = if ($yamlInfo) { $yamlInfo.SilentArgs } else { $null }
+    if (-not $installer) {
+        $typeHint = if ($installerTypeName) { " (manifest InstallerType: '$installerTypeName')" } else { '' }
+        throw "winget download completed but no installer file (.exe/.msi/.msix/.appx) was found in $oldVersionDir$typeHint. This baseline may be a zip/portable/store package with no silent installer — use -SpecificVersion for a different version, or test with -Scenario InstallUninstall."
+    }
 
-    # Fallback: derive silent switches from installer type or file extension. Regexes are ANCHORED —
-    # an unanchored 'msi' also matched 'msix' and fed msiexec switches to App Installer.
-    if (-not $silentArgs) {
-        if ($installerTypeName) {
-            $silentArgs = switch -Regex ($installerTypeName) {
-                '^(nullsoft|nsis)$' { '/S';                          break }
-                '^inno$'            { '/VERYSILENT /NORESTART /SP-'; break }
-                '^(wix|burn)$'      { '/quiet /norestart';           break }
-                '^msi$'             { '/qn /norestart';              break }
-                '^(msix|appx)$'     { '';                            break }   # installed via Add-AppxPackage, no switches
-                default             { '/S' }
-            }
-        } else {
-            $ext = $installer.Extension.ToLower()
-            $silentArgs = switch ($ext) {
-                '.msi'  { '/qn /norestart' }
-                '.msix' { '' }
-                '.appx' { '' }
-                default { '/S' }
-            }
-        }
+    $yamlInfo   = Get-YAMLInstallerInfo -FilesPath $oldVersionDir
+    $yamlSilent = if ($yamlInfo) { $yamlInfo.SilentArgs } else { $null }
+    $resolved = Resolve-Win32ToolkitBaselineSilentArgs `
+        -InstallerTypeName $installerTypeName `
+        -Extension         $installer.Extension `
+        -YamlSilentArgs    $yamlSilent
+    $silentArgs = $resolved.SilentArgs
+    if ($resolved.Guessed) {
+        Write-Warning "No silent switches found in the winget manifest for '$($installer.Name)' — guessing '/S'. If the baseline install shows UI or hangs in the sandbox, the update run will be INCONCLUSIVE; use -SpecificVersion for a version whose manifest has silent switches, or watch the sandbox."
     }
 
     Write-Host "✓ Downloaded    : $($installer.Name)"  -ForegroundColor Green

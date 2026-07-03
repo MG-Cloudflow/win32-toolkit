@@ -5,8 +5,10 @@ function Wait-Win32ToolkitUpdateAssertion {
     .DESCRIPTION
         Polls <project>\Sandbox\Logs\UpdateAssertions.log (written live by the generated
         UpdateAssertions.ps1 running inside Windows Sandbox — the project folder is mapped
-        read/write). Streams each 'ASSERT <name> = PASS|FAIL|SKIP' line as it appears, stops at
-        'RESULT COMPLETE' (or the timeout), and prints a summary verdict.
+        read/write). Streams each 'ASSERT <name> = PASS|FAIL|SKIP' line as it appears (Requirement-*,
+        Tattoo-PostUpdate, OldArpGone-PostUpdate, and TattooBaseline-PreUpdate in -BaselineProjectPath
+        mode), stops at 'RESULT COMPLETE' (or the timeout), and prints a summary verdict. The regex is
+        name-agnostic, so new assertion names need no change here.
     .PARAMETER ProjectPath
         Full path to the PSADT project folder.
     .PARAMETER TimeoutMinutes

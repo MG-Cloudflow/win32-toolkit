@@ -23,6 +23,9 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\ConvertTo-PSSingleQuoted.ps1')
 . (Join-Path $repo 'Private\ConvertTo-XmlEncoded.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitBaselineInstallCommand.ps1')
+. (Join-Path $repo 'Private\Resolve-Win32ToolkitBaselineSilentArgs.ps1')
+. (Join-Path $repo 'Private\Download-OldVersionInstaller.ps1')
+. (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1')   # for -BaselineProjectPath validation (throws early)
 
 $base = Join-Path ([System.IO.Path]::GetTempPath()) ("w32upd_" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $base -Force | Out-Null
@@ -222,6 +225,30 @@ try {
     if (-not (Test-Path (Join-Path $tp 'Documentation\Targeted_Documentation_Log_stale.txt'))) { Ok 'stale capture log cleared' } else { Bad 'stale log survived' }
     if (Test-Path (Join-Path $tp 'Documentation\notes.md')) { Ok 'user notes in Documentation\ survive' } else { Bad 'user notes deleted!' }
 
+    Write-Host "`n[7] Resolve-Win32ToolkitBaselineSilentArgs (unknown/portable baseline types)" -ForegroundColor Cyan
+    foreach ($t in 'portable', 'zip', 'pwa') {
+        $threwT = $false
+        try { Resolve-Win32ToolkitBaselineSilentArgs -InstallerTypeName $t -YamlSilentArgs '/S' | Out-Null }
+        catch { $threwT = $_.Exception.Message -match 'no silent installer' }
+        if ($threwT) { Ok "'$t' throws (even with YAML args) — no silent path" } else { Bad "'$t' did not throw" }
+    }
+    $r = Resolve-Win32ToolkitBaselineSilentArgs -InstallerTypeName 'nullsoft'
+    if ($r.SilentArgs -eq '/S' -and -not $r.Guessed) { Ok 'known type nsis -> /S, Guessed=$false' } else { Bad "nsis: $($r | ConvertTo-Json -Compress)" }
+    $r = Resolve-Win32ToolkitBaselineSilentArgs -InstallerTypeName 'msix'
+    if ($r.SilentArgs -eq '' -and -not $r.Guessed) { Ok 'anchored msix -> empty (not /qn)' } else { Bad "msix: $($r | ConvertTo-Json -Compress)" }
+    $r = Resolve-Win32ToolkitBaselineSilentArgs -InstallerTypeName 'randomtool'
+    if ($r.SilentArgs -eq '/S' -and $r.Guessed) { Ok 'unknown type -> /S, Guessed=$true' } else { Bad "unknown: $($r | ConvertTo-Json -Compress)" }
+    $r = Resolve-Win32ToolkitBaselineSilentArgs -Extension '.exe'
+    if ($r.SilentArgs -eq '/S' -and $r.Guessed) { Ok 'typeless .exe -> /S, Guessed=$true' } else { Bad "exe: $($r | ConvertTo-Json -Compress)" }
+    $r = Resolve-Win32ToolkitBaselineSilentArgs -InstallerTypeName 'inno' -YamlSilentArgs '/CUSTOM'
+    if ($r.SilentArgs -eq '/CUSTOM' -and -not $r.Guessed) { Ok 'YAML args win over the type map' } else { Bad "yaml-win: $($r | ConvertTo-Json -Compress)" }
+
+    # Download-OldVersionInstaller fails fast on a portable pin — BEFORE touching winget
+    $dlThrew = $false
+    try { Download-OldVersionInstaller -AppId 'X.Y' -Version '1.0' -ProjectPath $base -InstallerType 'portable' | Out-Null }
+    catch { $dlThrew = $_.Exception.Message -match 'no silent installer' }
+    if ($dlThrew) { Ok 'Download-OldVersionInstaller portable pin -> throws pre-download' } else { Bad 'portable pin did not throw early' }
+
     Write-Host "`n[6] Capture script: Win32_Product removed, NewPrograms derived from registry diff" -ForegroundColor Cyan
     $ntdRaw = Get-Content (Join-Path $repo 'Private\New-TargetedDocumentation.ps1') -Raw
     if ($ntdRaw -notmatch 'Win32_Product' -and $ntdRaw -notmatch 'Get-WmiObject') { Ok 'no Win32_Product / Get-WmiObject anywhere (regression guard)' } else { Bad 'WMI product enumeration still present' }
@@ -233,6 +260,67 @@ try {
         [System.Management.Automation.Language.Parser]::ParseInput($hsMatch.Groups[1].Value, [ref]$null, [ref]$errsHS) | Out-Null
         if (-not ($errsHS -and $errsHS.Count)) { Ok 'embedded capture script parses (5.1 sandbox safety)' } else { Bad "capture script parse: $($errsHS[0].Message)" }
     } else { Bad 'could not extract the capture here-string' }
+
+    Write-Host "`n[8] OldArpGone assertion + Test-LooseVersionEqual + baseline tattoo" -ForegroundColor Cyan
+    $ap = Join-Path $base 'arp-proj'
+    New-Item -ItemType Directory -Path (Join-Path $ap 'SupportFiles') -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $ap 'SupportFiles\AppConfig.json'),
+        '{"App":{"DisplayName":"Git","Name":"","Vendor":"Git Dev","Version":"2.55.0","ScriptAuthor":"Contoso IT"},"Uninstall":{"AppName":"Git version 2.55.0"}}',
+        (New-Object System.Text.UTF8Encoding($false)))
+    # hostile old-version apostrophe
+    $ag = Get-Content -LiteralPath (New-UpdateAssertionScript -ProjectPath $ap -OldVersion "2.53'0") -Raw
+    $agErr = $null; [System.Management.Automation.Language.Parser]::ParseInput($ag, [ref]$null, [ref]$agErr) | Out-Null
+    if (-not ($agErr -and $agErr.Count)) { Ok 'assertion script with -OldVersion parses' } else { Bad "parse: $($agErr[0].Message)" }
+    if ($ag -match "'PreBaseline', 'PreUpdate', 'PostUpdate'") { Ok 'ValidateSet includes PreBaseline' } else { Bad 'PreBaseline phase missing' }
+    if ($ag -match 'ASSERT OldArpGone-PostUpdate' -and $ag -match 'PreUpdateArpBaseline.json' -and $ag -match 'HKCU:\\SOFTWARE' -and $ag -match 'WOW6432Node') { Ok 'OldArpGone block: 3 hives + identified-file' } else { Bad 'OldArpGone block incomplete' }
+    if ($ag -match [regex]::Escape("'2.53''0'")) { Ok 'OldVersion escaped as data' } else { Bad 'OldVersion not escaped' }
+    if ($ag -match [regex]::Escape("'Git version 2.55.0'")) { Ok 'captured Uninstall.AppName in candidate names' } else { Bad 'candidate name missing' }
+    # WITHOUT -OldVersion still parses + OldArpGone present (name-only identification)
+    $agNo = Get-Content -LiteralPath (New-UpdateAssertionScript -ProjectPath $ap) -Raw
+    $agNoErr = $null; [System.Management.Automation.Language.Parser]::ParseInput($agNo, [ref]$null, [ref]$agNoErr) | Out-Null
+    if (-not ($agNoErr -and $agNoErr.Count) -and $agNo -match 'ASSERT OldArpGone-PostUpdate') { Ok 'no -OldVersion: still parses + OldArpGone present' } else { Bad 'no-OldVersion generation broken' }
+    # 'Unknown App' sentinel must be filtered from candidates
+    [System.IO.File]::WriteAllText((Join-Path $ap 'SupportFiles\AppConfig.json'),
+        '{"App":{"DisplayName":"Git","Vendor":"V","Version":"2.55.0","ScriptAuthor":"A"},"Uninstall":{"AppName":"Unknown App"}}',
+        (New-Object System.Text.UTF8Encoding($false)))
+    $agUnk = Get-Content -LiteralPath (New-UpdateAssertionScript -ProjectPath $ap -OldVersion '2.53.0') -Raw
+    if ($agUnk -notmatch "'Unknown App'") { Ok "'Unknown App' sentinel filtered from candidate names" } else { Bad "sentinel leaked into candidates" }
+    # -ExpectBaselineTattoo adds the PreUpdate baseline-tattoo assertion
+    $agBt = Get-Content -LiteralPath (New-UpdateAssertionScript -ProjectPath $ap -OldVersion '2.53.0' -ExpectBaselineTattoo) -Raw
+    if ($agBt -match 'ASSERT TattooBaseline-PreUpdate') { Ok '-ExpectBaselineTattoo adds TattooBaseline-PreUpdate' } else { Bad 'baseline tattoo assertion missing' }
+    if ($agNo -notmatch 'ASSERT TattooBaseline') { Ok 'no baseline tattoo assertion without the switch' } else { Bad 'baseline tattoo present unexpectedly' }
+    # Extract Test-LooseVersionEqual and verify its rules
+    $lvFn = [regex]::Match($ag, '(?s)function Test-LooseVersionEqual.*?\n\}').Value
+    Invoke-Expression $lvFn
+    if ((Test-LooseVersionEqual '2.53.0' 'v2.53.0') -and (Test-LooseVersionEqual '2.5' '2.5.0') -and (Test-LooseVersionEqual '2.53.0' '2.53.0.windows.1') -and -not (Test-LooseVersionEqual '2.53.0' '2.54.0') -and -not (Test-LooseVersionEqual 'x' 'y')) { Ok 'Test-LooseVersionEqual: v-prefix, padding, suffix, mismatch, garbage' } else { Bad 'loose-version rules wrong' }
+    # Test-VersionUnchanged: strict — 2.5==2.5.0 (unchanged) but 2.5.1 != 2.5 (bumped -> NOT a false FAIL)
+    $vuFn = [regex]::Match($ag, '(?s)function Test-VersionUnchanged.*?\n\}').Value
+    Invoke-Expression $vuFn
+    if ((Test-VersionUnchanged '2.5.0' '2.5') -and (Test-VersionUnchanged '2.53.0' '2.53.0') -and -not (Test-VersionUnchanged '2.5.1' '2.5') -and -not (Test-VersionUnchanged '2.54.0' '2.53.0')) { Ok 'Test-VersionUnchanged: trailing-zero drift equal, prefix bump 2.5->2.5.1 NOT unchanged' } else { Bad 'version-unchanged rules wrong (prefix false-FAIL risk)' }
+    if ($ag -match [regex]::Escape('Test-VersionUnchanged "$($p.DisplayVersion)" $expectedOldVersion')) { Ok 'PostUpdate bump-decision uses strict Test-VersionUnchanged' } else { Bad 'PostUpdate still uses loose match for bump' }
+    if ($ag -match [regex]::Escape('ConvertFrom-Json | Where-Object { $_ -and $_.KeyPath }')) { Ok 'identified-set read filters the empty-array artifact (SKIP not false-PASS)' } else { Bad 'empty-array JSON guard missing' }
+    # Single-entry ConvertTo-Json round-trip (the 5.1 array-collapse trap the PreBaseline/identified files hit)
+    $one = @([pscustomobject]@{ KeyPath = 'k'; DisplayName = 'n'; DisplayVersion = 'v' })
+    $rtOne = @(ConvertTo-Json -InputObject @($one) | ConvertFrom-Json)
+    if ($rtOne.Count -eq 1 -and $rtOne[0].KeyPath -eq 'k') { Ok 'single-entry JSON round-trips as an array (-InputObject @())' } else { Bad "json array trap: count=$($rtOne.Count)" }
+
+    Write-Host "`n[9] -BaselineProjectPath validation (throws before any sandbox work)" -ForegroundColor Cyan
+    # Real project-under-test dir (must exist + have the deploy script) so resolution passes and we
+    # reach the baseline validation, which throws deterministically BEFORE the sandbox pre-flight.
+    $put = Join-Path $base 'put'; New-Item -ItemType Directory -Path $put -Force | Out-Null
+    Set-Content (Join-Path $put 'Invoke-AppDeployToolkit.ps1') '# stub'
+    function Test-BaselineErr($splat, $pattern) {
+        $ev = $null
+        try { Test-Win32ToolkitProject @splat -ErrorVariable ev -ErrorAction SilentlyContinue | Out-Null } catch { $ev = $_ }
+        return (@($ev) -match $pattern).Count -gt 0
+    }
+    if (Test-BaselineErr @{ ProjectPath = $put; Scenario = 'Update'; BaselineProjectPath = $put; VersionsBack = 1 } 'mutually exclusive') { Ok '-BaselineProjectPath + -VersionsBack -> error' } else { Bad 'mutual-exclusion not enforced' }
+    if (Test-BaselineErr @{ ProjectPath = $put; Scenario = 'Update'; BaselineProjectPath = (Join-Path $base 'does-not-exist') } 'not found') { Ok 'missing baseline path -> error' } else { Bad 'missing-path not caught' }
+    $noScript = Join-Path $base 'noscript'; New-Item -ItemType Directory -Path $noScript -Force | Out-Null
+    if (Test-BaselineErr @{ ProjectPath = $put; Scenario = 'Update'; BaselineProjectPath = $noScript } 'Not a PSADT project') { Ok 'baseline without Invoke-AppDeployToolkit.ps1 -> error' } else { Bad 'non-PSADT baseline not caught' }
+    $noVer = Join-Path $base 'nover'; New-Item -ItemType Directory -Path $noVer -Force | Out-Null
+    Set-Content (Join-Path $noVer 'Invoke-AppDeployToolkit.ps1') '# stub'   # exists, differs from $put, but no AppConfig App.Version
+    if (Test-BaselineErr @{ ProjectPath = $put; Scenario = 'Update'; BaselineProjectPath = $noVer } 'no App.Version') { Ok 'baseline without App.Version -> clear regenerate error' } else { Bad 'no-App.Version not caught' }
 
     # Execute the derivation block (between its BEGIN/END markers) against a fixture
     $derMatch = [regex]::Match($ntdRaw, '(?s)# BEGIN NewPrograms derivation.*?# END NewPrograms derivation')
