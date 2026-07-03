@@ -34,8 +34,16 @@ function Test-Win32ToolkitProject {
     Update scenario only. Skip generating/running the update-app requirement script in the sandbox
     (its assertions report SKIP); the tattoo/detection assertion still runs. Use when the project
     has no usable requirement rule yet or you only want the plain install-over-old check.
+.PARAMETER BaselineProjectPath
+    Update scenario only. Install a PREVIOUS toolkit package (this folder) as the baseline instead of
+    downloading the old vendor installer — exercises the tattoo-overwrite path (old tattoo → new
+    tattoo) and works for manual (non-winget) projects. Mutually exclusive with -VersionsBack /
+    -SpecificVersion. The baseline project is mapped READ-ONLY (its raw copy is never modified).
 .EXAMPLE
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0' -Scenario Update -VersionsBack 1 -SkipRequirementCheck
+.EXAMPLE
+    # Baseline with a previous toolkit package (tattoo-overwrite test)
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Contoso\Git_x64_2.55.0' -Scenario Update -BaselineProjectPath 'C:\Win32Apps\Contoso\Git_x64_2.53.0'
 .EXAMPLE
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0'
 .EXAMPLE
@@ -69,7 +77,13 @@ function Test-Win32ToolkitProject {
         # Update scenario only: don't generate/run the update-app requirement script in the sandbox —
         # its assertions are reported as SKIP. The tattoo/detection assertion still runs.
         [Parameter(Mandatory = $false)]
-        [switch]$SkipRequirementCheck
+        [switch]$SkipRequirementCheck,
+
+        # Update scenario only: install a PREVIOUS toolkit package (this project folder) as the baseline
+        # instead of downloading the old vendor installer — exercises the tattoo-overwrite path. Mutually
+        # exclusive with -VersionsBack / -SpecificVersion, and works for manual (non-winget) projects.
+        [Parameter(Mandatory = $false)]
+        [string]$BaselineProjectPath
     )
 
     try {
@@ -100,6 +114,29 @@ function Test-Win32ToolkitProject {
         Write-Host "`nSelected project : $projectName"  -ForegroundColor Green
         Write-Host "Project path     : $ProjectPath"   -ForegroundColor Gray
         Write-Host "Scenario         : $Scenario"      -ForegroundColor Cyan
+
+        # -BaselineProjectPath validation runs FIRST (before the sandbox pre-flight) so parameter
+        # errors are deterministic regardless of whether a sandbox is open.
+        $baselineApp = $null
+        if ($Scenario -eq 'Update' -and $BaselineProjectPath) {
+            if ($VersionsBack -or $SpecificVersion) {
+                throw '-BaselineProjectPath is mutually exclusive with -VersionsBack / -SpecificVersion (the baseline IS the supplied project).'
+            }
+            if (-not (Test-Path -LiteralPath $BaselineProjectPath)) {
+                throw "Baseline project not found: $BaselineProjectPath"
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $BaselineProjectPath 'Invoke-AppDeployToolkit.ps1'))) {
+                throw "Not a PSADT project (no Invoke-AppDeployToolkit.ps1): $BaselineProjectPath"
+            }
+            if ((Resolve-Path -LiteralPath $BaselineProjectPath).Path -eq (Resolve-Path -LiteralPath $ProjectPath).Path) {
+                throw '-BaselineProjectPath must be a DIFFERENT project than the one under test.'
+            }
+            $baseCfg     = Get-Win32ToolkitAppConfig -ProjectPath $BaselineProjectPath
+            $baselineApp = if ($baseCfg.PSObject.Properties.Name -contains 'App') { $baseCfg.App } else { $null }
+            if (-not ($baselineApp -and $baselineApp.Version)) {
+                throw "Baseline project has no App.Version in SupportFiles\AppConfig.json (it predates AppConfig — regenerate it): $BaselineProjectPath"
+            }
+        }
 
         # Windows Sandbox allows a single running instance — fail fast (before any download work)
         # instead of launching a doomed sandbox and waiting on assertions that will never come.
@@ -164,69 +201,101 @@ function Test-Win32ToolkitProject {
             }
 
             'Update' {
+                $useBaselineProject = [bool]$BaselineProjectPath
                 Write-Host "`nScenario: Install Old Version → Countdown → Run PSADT Update" -ForegroundColor Cyan
 
-                # ── Step 1: Read package info from the project's Files YAML ──────────────
-                $filesPath = Join-Path $ProjectPath 'Files'
-                if (-not (Test-Path $filesPath)) {
-                    throw "Files directory not found in: $filesPath`nEnsure this project was created with win32-toolkit."
-                }
+                if ($useBaselineProject) {
+                    # ── Baseline = a previous TOOLKIT package (no winget) ──────────────────
+                    $targetVersion = $baselineApp.Version
+                    Write-Host "Baseline project : $BaselineProjectPath" -ForegroundColor Gray
+                    Write-Host "Baseline version : $targetVersion (from its AppConfig)" -ForegroundColor Yellow
 
-                $wingetId = Get-WingetIdFromProject -FilesPath $filesPath
-                if (-not $wingetId) {
-                    throw "No winget PackageIdentifier found in: $filesPath`nThe Update scenario needs a winget-based project (it downloads the older baseline from winget). For manual (non-winget) apps, use -Scenario InstallUninstall."
-                }
-
-                $yamlInfo       = Get-YAMLInstallerInfo -FilesPath $filesPath
-                $currentVersion = if ($yamlInfo) { $yamlInfo.PackageVersion } else { $null }
-                $architecture   = if ($yamlInfo) { $yamlInfo.Architecture }   else { $null }
-
-                Write-Host "Package ID       : $wingetId"       -ForegroundColor Gray
-                Write-Host "Packaged version : $currentVersion" -ForegroundColor Gray
-
-                # ── Step 2-3: Pick the target baseline version ────────────────────────────
-                if ($SpecificVersion) {
-                    # Explicit baseline: usable even when winget lists no (or no older) versions —
-                    # the older-version lookup is advisory only here.
-                    $targetVersion = $SpecificVersion
-                    try {
-                        $known = @(Get-WingetVersions -AppId $wingetId -CurrentVersion $currentVersion)
-                        if ($known -notcontains $SpecificVersion) {
-                            Write-Warning "'$SpecificVersion' was not found in the filtered older-version list but will be used as requested."
+                    # Warn if the baseline is a different app (the tattoo-overwrite test would be meaningless).
+                    $cfgU = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
+                    $appU = if ($cfgU.PSObject.Properties.Name -contains 'App') { $cfgU.App } else { $null }
+                    $idU  = "$($appU.ScriptAuthor)|$($appU.Vendor)|$(if ($appU.DisplayName) { $appU.DisplayName } else { $appU.Name })"
+                    $idB  = "$($baselineApp.ScriptAuthor)|$($baselineApp.Vendor)|$(if ($baselineApp.DisplayName) { $baselineApp.DisplayName } else { $baselineApp.Name })"
+                    if ($idU -ne $idB) {
+                        Write-Warning "The baseline project's tattoo identity ($idB) differs from the project under test ($idU) — the tattoo-overwrite assertions may FAIL because it is a different app."
+                    }
+                    # The baseline is mapped ReadOnly; a LogPath that is relative or points inside the
+                    # baseline project folder would make its install fail — warn (best-effort; PSADT
+                    # variable paths like $envWinDir\... are left alone). The config always stores a HOST
+                    # path, so match the risky host shapes — NOT the C:\PSADTOld sandbox mount.
+                    $baseConfigPsd1 = Join-Path $BaselineProjectPath 'Config\config.psd1'
+                    if (Test-Path -LiteralPath $baseConfigPsd1) {
+                        if ((Get-Content -LiteralPath $baseConfigPsd1 -Raw) -match "(?m)LogPath\s*=\s*'([^']*)'") {
+                            $lp = $matches[1]
+                            $isVar = $lp -match '^\s*[\$%]'
+                            if ($lp -and -not $isVar -and ((-not [System.IO.Path]::IsPathRooted($lp)) -or ($lp -like "$BaselineProjectPath*"))) {
+                                Write-Warning "The baseline project's LogPath ('$lp') is relative or inside the project folder, which is mapped READ-ONLY — its install may fail. Use a template with an absolute default LogPath (e.g. C:\Windows\Logs\Software)."
+                            }
                         }
                     }
-                    catch { Write-Verbose "Older-version lookup skipped: $($_.Exception.Message)" }
+                }
+                else {
+                    # ── Step 1: Read package info from the project's Files YAML ──────────────
+                    $filesPath = Join-Path $ProjectPath 'Files'
+                    if (-not (Test-Path $filesPath)) {
+                        throw "Files directory not found in: $filesPath`nEnsure this project was created with win32-toolkit."
+                    }
 
-                } else {
-                    # @() guard: a single older version must stay an array, or indexing below would
-                    # slice characters out of the version STRING.
-                    $olderVersions = @(Get-WingetVersions -AppId $wingetId -CurrentVersion $currentVersion)
+                    $wingetId = Get-WingetIdFromProject -FilesPath $filesPath
+                    if (-not $wingetId) {
+                        throw "No winget PackageIdentifier found in: $filesPath`nThe Update scenario needs a winget-based project (it downloads the older baseline from winget). For a manual project, pass -BaselineProjectPath, or use -Scenario InstallUninstall."
+                    }
 
-                    if ($VersionsBack -gt 0) {
-                        if ($VersionsBack -gt $olderVersions.Count) {
-                            throw "Requested $VersionsBack version(s) back but only $($olderVersions.Count) older version(s) are available for '$wingetId'."
+                    $yamlInfo       = Get-YAMLInstallerInfo -FilesPath $filesPath
+                    $currentVersion = if ($yamlInfo) { $yamlInfo.PackageVersion } else { $null }
+                    $architecture   = if ($yamlInfo) { $yamlInfo.Architecture }   else { $null }
+
+                    Write-Host "Package ID       : $wingetId"       -ForegroundColor Gray
+                    Write-Host "Packaged version : $currentVersion" -ForegroundColor Gray
+
+                    # ── Step 2-3: Pick the target baseline version ────────────────────────────
+                    if ($SpecificVersion) {
+                        # Explicit baseline: usable even when winget lists no (or no older) versions —
+                        # the older-version lookup is advisory only here.
+                        $targetVersion = $SpecificVersion
+                        try {
+                            $known = @(Get-WingetVersions -AppId $wingetId -CurrentVersion $currentVersion)
+                            if ($known -notcontains $SpecificVersion) {
+                                Write-Warning "'$SpecificVersion' was not found in the filtered older-version list but will be used as requested."
+                            }
                         }
-                        $targetVersion = $olderVersions[$VersionsBack - 1]
+                        catch { Write-Verbose "Older-version lookup skipped: $($_.Exception.Message)" }
+
                     } else {
-                        $targetVersion = Show-VersionSelection -Versions $olderVersions
+                        # @() guard: a single older version must stay an array, or indexing below would
+                        # slice characters out of the version STRING.
+                        $olderVersions = @(Get-WingetVersions -AppId $wingetId -CurrentVersion $currentVersion)
+
+                        if ($VersionsBack -gt 0) {
+                            if ($VersionsBack -gt $olderVersions.Count) {
+                                throw "Requested $VersionsBack version(s) back but only $($olderVersions.Count) older version(s) are available for '$wingetId'."
+                            }
+                            $targetVersion = $olderVersions[$VersionsBack - 1]
+                        } else {
+                            $targetVersion = Show-VersionSelection -Versions $olderVersions
+                        }
                     }
-                }
 
-                Write-Host "Target version   : $targetVersion" -ForegroundColor Yellow
+                    Write-Host "Target version   : $targetVersion" -ForegroundColor Yellow
 
-                # ── Step 4: Download the old-version installer (pinned to the packaged variant) ──
-                $dl = @{
-                    AppId        = $wingetId
-                    Version      = $targetVersion
-                    ProjectPath  = $ProjectPath
-                    Architecture = $architecture
+                    # ── Step 4: Download the old-version installer (pinned to the packaged variant) ──
+                    $dl = @{
+                        AppId        = $wingetId
+                        Version      = $targetVersion
+                        ProjectPath  = $ProjectPath
+                        Architecture = $architecture
+                    }
+                    if ($yamlInfo) {
+                        if ($yamlInfo.Scope)           { $dl['Scope']         = $yamlInfo.Scope }
+                        if ($yamlInfo.InstallerType)   { $dl['InstallerType'] = $yamlInfo.InstallerType }
+                        if ($yamlInfo.InstallerLocale) { $dl['Locale']        = $yamlInfo.InstallerLocale }
+                    }
+                    $oldInstaller = Download-OldVersionInstaller @dl
                 }
-                if ($yamlInfo) {
-                    if ($yamlInfo.Scope)           { $dl['Scope']         = $yamlInfo.Scope }
-                    if ($yamlInfo.InstallerType)   { $dl['InstallerType'] = $yamlInfo.InstallerType }
-                    if ($yamlInfo.InstallerLocale) { $dl['Locale']        = $yamlInfo.InstallerLocale }
-                }
-                $oldInstaller = Download-OldVersionInstaller @dl
 
                 # ── Step 5: Ensure Countdown.ps1 exists ──────────────────────────────────
                 Write-Host 'Creating countdown script...' -ForegroundColor Yellow
@@ -258,27 +327,47 @@ function Test-Win32ToolkitProject {
                 else {
                     Write-Host 'Requirement check disabled (-SkipRequirementCheck).' -ForegroundColor DarkYellow
                 }
-                $assertionPath = New-UpdateAssertionScript -ProjectPath $ProjectPath -SkipRequirement:$SkipRequirementCheck
+                $assertionPath = New-UpdateAssertionScript -ProjectPath $ProjectPath `
+                    -SkipRequirement:$SkipRequirementCheck -OldVersion $targetVersion `
+                    -ExpectBaselineTattoo:$useBaselineProject
                 Write-Host "✓ Assertion script : $assertionPath" -ForegroundColor Green
 
-                # Fresh assertions log per run (the waiter parses it host-side).
-                $assertLog = Join-Path $ProjectPath 'Sandbox\Logs\UpdateAssertions.log'
-                if (Test-Path -LiteralPath $assertLog) {
-                    Remove-Item -LiteralPath $assertLog -Force -ErrorAction SilentlyContinue
+                # Fresh run: clear the assertions log and the ARP snapshot state from any previous run.
+                $logsDir = Join-Path $ProjectPath 'Sandbox\Logs'
+                foreach ($f in 'UpdateAssertions.log', 'PreBaselineArp.json', 'PreUpdateArpBaseline.json') {
+                    $fp = Join-Path $logsDir $f
+                    if (Test-Path -LiteralPath $fp) { Remove-Item -LiteralPath $fp -Force -ErrorAction SilentlyContinue }
                 }
 
                 # ── Step 6: Build the sandbox WSB config ──────────────────────────────────
                 $sandboxFolder     = Join-Path $ProjectPath 'Sandbox'
                 $sandboxConfigFile = Join-Path $sandboxFolder 'UpdateDemo.wsb'
 
-                # Baseline install command (handles exe/msi via Start-Process, msix/appx via
-                # Add-AppxPackage; untrusted values escaped as data + argv-safe double quotes),
-                # then XML-encoded for the .wsb <Command> (ConvertTo-XmlEncoded).
-                $installCmd = Get-Win32ToolkitBaselineInstallCommand `
-                    -InstallerSandboxPath "C:\PSADT\Sandbox\OldVersion\$($oldInstaller.InstallerName)" `
-                    -InstallerType $oldInstaller.InstallerType `
-                    -SilentArgs    $oldInstaller.SilentArgs
+                # Baseline install command. Vendor baseline: exe/msi via Start-Process, msix/appx via
+                # Add-AppxPackage (untrusted values escaped + argv-safe). Toolkit-package baseline: run
+                # its Invoke-AppDeployToolkit.ps1 from the second (read-only) mapped folder — a fixed
+                # sandbox-side path, no untrusted splice. Then XML-encode for the .wsb <Command>.
+                $installCmd = if ($useBaselineProject) {
+                    "& 'C:\PSADTOld\Invoke-AppDeployToolkit.ps1' -DeployMode Silent"
+                } else {
+                    Get-Win32ToolkitBaselineInstallCommand `
+                        -InstallerSandboxPath "C:\PSADT\Sandbox\OldVersion\$($oldInstaller.InstallerName)" `
+                        -InstallerType $oldInstaller.InstallerType `
+                        -SilentArgs    $oldInstaller.SilentArgs
+                }
                 $installCmdXml = ConvertTo-XmlEncoded $installCmd
+
+                # Second mapped folder (READ-ONLY — never mutate the raw Projects\ copy) for baseline mode.
+                $baselineMapping = if ($useBaselineProject) {
+                    @"
+
+        <MappedFolder>
+            <HostFolder>$(ConvertTo-XmlEncoded $BaselineProjectPath)</HostFolder>
+            <SandboxFolder>C:\PSADTOld</SandboxFolder>
+            <ReadOnly>true</ReadOnly>
+        </MappedFolder>
+"@
+                } else { '' }
 
                 $sandboxConfigContent = @"
 <Configuration>
@@ -289,10 +378,10 @@ function Test-Win32ToolkitProject {
             <HostFolder>$(ConvertTo-XmlEncoded $ProjectPath)</HostFolder>
             <SandboxFolder>C:\PSADT</SandboxFolder>
             <ReadOnly>false</ReadOnly>
-        </MappedFolder>
+        </MappedFolder>$baselineMapping
     </MappedFolders>
     <LogonCommand>
-        <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1'; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1' } }&quot;</Command>
+        <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline; $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1'; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1' } }&quot;</Command>
     </LogonCommand>
 </Configuration>
 "@
@@ -304,15 +393,22 @@ function Test-Win32ToolkitProject {
                 Write-Host 'Launching Windows Sandbox for the Update test...'           -ForegroundColor Cyan
                 Write-Host '================================================'          -ForegroundColor Cyan
                 Write-Host 'The sandbox will:'                                          -ForegroundColor White
-                Write-Host "  1. Silently install v$targetVersion (old baseline)"      -ForegroundColor Green
-                if ($SkipRequirementCheck) {
+                Write-Host '  0. Snapshot existing Add/Remove Programs entries (baseline)' -ForegroundColor DarkGray
+                if ($useBaselineProject) {
+                Write-Host "  1. Install the PREVIOUS toolkit package v$targetVersion (writes its tattoo)" -ForegroundColor Green
+                } else {
+                Write-Host "  1. Silently install v$targetVersion (old vendor baseline)" -ForegroundColor Green
+                }
+                if ($useBaselineProject) {
+                Write-Host '  2. ASSERT: baseline tattoo = old version; requirement detects the old install' -ForegroundColor Cyan
+                } elseif ($SkipRequirementCheck) {
                 Write-Host '  2. (requirement-rule check skipped by request)'          -ForegroundColor DarkYellow
                 } else {
                 Write-Host '  2. ASSERT: update requirement rule detects the old install' -ForegroundColor Cyan
                 }
                 Write-Host '  3. Show a 2-minute countdown — verify the old install'   -ForegroundColor Yellow
                 Write-Host '  4. Run the PSADT package to perform the update'          -ForegroundColor Cyan
-                Write-Host '  5. ASSERT: requirement still met + tattoo = new version' -ForegroundColor Cyan
+                Write-Host '  5. ASSERT: requirement still met; tattoo = new version; old ARP entry gone' -ForegroundColor Cyan
                 Write-Host '  6. Copy PSADT/MSI logs to project\Sandbox\Logs'          -ForegroundColor Cyan
                 Write-Host '  7. Keep the sandbox open for final verification'         -ForegroundColor White
                 Write-Host '================================================'          -ForegroundColor Cyan
