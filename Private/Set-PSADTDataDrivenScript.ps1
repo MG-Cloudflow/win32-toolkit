@@ -10,8 +10,12 @@ function Set-PSADTDataDrivenScript {
           1. A loader (`$appConfig = ... ConvertFrom-Json`) is inserted before the session hashtable.
           2. AppVendor/AppName/AppVersion/AppArch/AppScriptDate/AppProcessesToClose are pointed at
              $appConfig instead of literal values.
-          3. A generic install routine is placed at the '## <Perform Installation tasks here>' marker.
-          4. A generic uninstall routine is placed at the '## <Perform Uninstallation tasks here>' marker.
+          3. A generic install routine is placed at the '## <Perform Installation tasks here>' marker:
+             msix/appx via Add-AppxProvisionedPackage (SYSTEM) / Add-AppxPackage (interactive sandbox),
+             everything else non-MSI via Start-ADTProcess with the configured SilentArgs.
+          4. A generic uninstall routine is placed at the '## <Perform Uninstallation tasks here>'
+             marker: msi product codes, exe uninstallers, and msix identity-based removal
+             (Remove-AppxProvisionedPackage + Remove-AppxPackage -AllUsers, exact Name match).
           5. An install "tattoo" is placed at the Post-Install/Post-Uninstall markers: it writes
              HKLM:\SOFTWARE\<AppScriptAuthor>\<AppVendor>\<App.DisplayName>\Version at install and
              removes it at uninstall, so the Intune detection rule can confirm install state + correct
@@ -65,7 +69,27 @@ $adtSession = @{
 
     $installSnippet = @'
 ## Data-driven install (values from SupportFiles\AppConfig.json).
-    if ($appConfig.Installer -and $appConfig.Installer.Type -ne 'msi') {
+    if ($appConfig.Installer -and $appConfig.Installer.Type -in @('msix', 'appx')) {
+        $installerPath = Join-Path $adtSession.DirFiles $appConfig.Installer.FileName
+        if (Test-Path -LiteralPath $installerPath) {
+            Write-ADTLogEntry -Message "Installing AppX/MSIX package from: $installerPath" -Severity 1
+            # SYSTEM (Intune): provision for all users. Interactive (sandbox tests): register for the
+            # current user - a provisioned-only package would be invisible to the logged-on operator.
+            if ([Security.Principal.WindowsIdentity]::GetCurrent().IsSystem) {
+                try { Add-AppxProvisionedPackage -Online -PackagePath $installerPath -SkipLicense | Out-Null }
+                catch {
+                    Write-ADTLogEntry -Message "Provisioning failed ($($_.Exception.Message)) - falling back to Add-AppxPackage." -Severity 2
+                    Add-AppxPackage -Path $installerPath -ErrorAction Stop
+                }
+            } else {
+                Add-AppxPackage -Path $installerPath -ErrorAction Stop
+            }
+        } else {
+            Write-ADTLogEntry -Message "Installer file not found: $installerPath" -Severity 3
+            throw "Installer file not found: $installerPath"
+        }
+    }
+    elseif ($appConfig.Installer -and $appConfig.Installer.Type -ne 'msi') {
         $installerPath = Join-Path $adtSession.DirFiles $appConfig.Installer.FileName
         if (Test-Path -LiteralPath $installerPath) {
             Write-ADTLogEntry -Message "Installing $($appConfig.App.Name) from: $installerPath" -Severity 1
@@ -97,6 +121,23 @@ $adtSession = @{
                     $spUninstall = @{ FilePath = $u.Path; PassThru = $true }
                     if ($u.Args) { $spUninstall['ArgumentList'] = $u.Args }
                     $r = Start-ADTProcess @spUninstall
+                }
+                'msix' {
+                    # Identity-driven removal (exact Name match; Remove-AppxPackage has no exit code,
+                    # so success = the package is gone for ALL users afterwards; $r stays $null).
+                    if ($u.PackageName) {
+                        foreach ($prov in @(Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $u.PackageName })) {
+                            try { Remove-AppxProvisionedPackage -Online -PackageName $prov.PackageName | Out-Null }
+                            catch { Write-ADTLogEntry -Message "Deprovisioning failed: $($_.Exception.Message)" -Severity 2 }
+                        }
+                        foreach ($pkg in @(Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $u.PackageName })) {
+                            try { Remove-AppxPackage -Package $pkg.PackageFullName -AllUsers -ErrorAction Stop }
+                            catch { Write-ADTLogEntry -Message "Remove-AppxPackage failed: $($_.Exception.Message)" -Severity 2 }
+                        }
+                        if (@(Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $u.PackageName }).Count -eq 0) {
+                            $uninstallSuccess = $true
+                        }
+                    }
                 }
             }
             if ($r -and $r.ExitCode -in @(0, 3010)) { $uninstallSuccess = $true }

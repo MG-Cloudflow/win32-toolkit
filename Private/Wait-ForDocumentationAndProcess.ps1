@@ -68,18 +68,32 @@ function Wait-ForDocumentationAndProcess {
             Write-Warning "Failed to generate requirement script"
         }
         
-        # Generate uninstall logic (only for EXE installers, MSI uses Zero-Config)
-        if ($InstallerType -eq 'exe') {
-            Write-Host "Generating uninstall logic for EXE installer..." -ForegroundColor Cyan
-            $uninstallSuccess = Update-PSADTUninstallLogic -ProjectPath $ProjectPath -JsonFilePath $jsonFile
-            
-            if ($uninstallSuccess) {
-                Write-Host "✓ Uninstall logic generated for EXE installer" -ForegroundColor Green
-            } else {
-                Write-Warning "Failed to generate uninstall logic"
+        # Uninstall generation depends on installer type: EXE from the capture, MSI via PSADT
+        # Zero-Config, MSIX/APPX identity-driven (written at configure time; re-run here as
+        # belt-and-braces — it is an idempotent read-modify-write of AppConfig.json).
+        switch ($InstallerType) {
+            'exe' {
+                Write-Host "Generating uninstall logic for EXE installer..." -ForegroundColor Cyan
+                $uninstallSuccess = Update-PSADTUninstallLogic -ProjectPath $ProjectPath -JsonFilePath $jsonFile
+                if ($uninstallSuccess) {
+                    Write-Host "✓ Uninstall logic generated for EXE installer" -ForegroundColor Green
+                } else {
+                    Write-Warning "Failed to generate uninstall logic"
+                }
             }
-        } else {
-            Write-Host "✓ MSI installer detected - using Zero-Config uninstall (no manual logic needed)" -ForegroundColor Green
+            'msi' {
+                Write-Host "✓ MSI installer detected - PSADT Zero-Config uninstall handles removal" -ForegroundColor Green
+            }
+            { $_ -in @('msix', 'appx') } {
+                if (Update-PSADTMsixUninstallLogic -ProjectPath $ProjectPath) {
+                    Write-Host "✓ MSIX/APPX package - uninstall via Remove-AppxPackage (identity from AppxManifest)" -ForegroundColor Green
+                } else {
+                    Write-Warning 'Failed to write MSIX uninstall data'
+                }
+            }
+            default {
+                Write-Warning "Unknown installer type '$InstallerType' - no uninstall logic generated."
+            }
         }
 
         # Populate AppProcessesToClose for all installer types

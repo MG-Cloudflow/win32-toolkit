@@ -268,6 +268,43 @@ InstallerSwitches:
     Set-Content (Join-Path $p5 'Invoke-AppDeployToolkit.ps1') -Value ((Get-Content $dep1 -Raw).Replace('Show-ADTInstallationProgress', 'X-NoProgress')) -Encoding UTF8
     $null = Apply-OrgTemplate -ProjectPath $p5 -Template $escTmpl -WarningVariable wv5 -WarningAction SilentlyContinue 6>$null
     if (@($wv5) -match 'progress dialog') { Ok 'drifted script -> org-template drift warning fired' } else { Bad "no drift warning: [$($wv5 -join ';')]" }
+
+    Write-Host "`n[13] MSIX end-to-end: configure -> identity uninstall -> patched snippets -> tattoo detection" -ForegroundColor Cyan
+    New-ADTTemplate -Destination $base -Name 'MsixApp' | Out-Null
+    $mxProj = Join-Path $base 'MsixApp'
+    New-Item -ItemType Directory -Path (Join-Path $mxProj 'Files') -Force | Out-Null
+    # Synthetic .msix (zip with a root AppxManifest.xml; hostile publisher)
+    $mxMf = Join-Path $base 'mxmf'; New-Item -ItemType Directory -Path $mxMf -Force | Out-Null
+    @'
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">
+  <Identity Name="Evil.Msix" Publisher="CN=O'Evil, O=&quot;Q&quot;" Version="2.0.0.0" />
+</Package>
+'@ | Set-Content -Path (Join-Path $mxMf 'AppxManifest.xml') -Encoding UTF8
+    Compress-Archive -Path (Join-Path $mxMf 'AppxManifest.xml') -DestinationPath (Join-Path $base 'mx.zip') -Force
+    Move-Item (Join-Path $base 'mx.zip') (Join-Path $mxProj 'Files\EvilMsix.msix') -Force
+
+    $okMx = Configure-PSADTForInstaller -ProjectPath $mxProj -AppInfo ([pscustomobject]@{ Name = 'Evil Msix'; Version = '2.0.0'; Id = 'Evil.Msix' }) -Architecture 'x64'
+    if ($okMx) { Ok 'Configure succeeded for msix' } else { Bad 'Configure failed' }
+    $mxCfg = Get-Win32ToolkitAppConfig -ProjectPath $mxProj
+    if ($mxCfg.Installer.Type -eq 'msix' -and $mxCfg.Installer.SilentArgs -eq '') { Ok 'Installer.Type=msix, SilentArgs empty' } else { Bad "installer: $($mxCfg.Installer | ConvertTo-Json -Compress)" }
+    $mxU = @($mxCfg.Uninstall.Uninstallers)[0]
+    if ($mxU.Type -eq 'msix' -and $mxU.PackageName -eq 'Evil.Msix') { Ok 'identity uninstall written at CONFIGURE time (capture-independent)' } else { Bad "uninstall: $($mxU | ConvertTo-Json -Compress)" }
+
+    $mxScript = Join-Path $mxProj 'Invoke-AppDeployToolkit.ps1'
+    $errsMx = $null; [System.Management.Automation.Language.Parser]::ParseFile($mxScript, [ref]$null, [ref]$errsMx) | Out-Null
+    if (-not ($errsMx -and $errsMx.Count)) { Ok 'patched msix deploy script parses' } else { Bad "parse: $($errsMx[0].Message)" }
+    $mxPs1 = Get-Content $mxScript -Raw
+    if ($mxPs1 -match 'Add-AppxProvisionedPackage' -and $mxPs1 -match 'IsSystem') { Ok 'install snippet: SYSTEM provisioning + interactive Add-AppxPackage branch' } else { Bad 'msix install branch missing' }
+    if ($mxPs1 -match 'Remove-AppxPackage' -and $mxPs1 -match [regex]::Escape('Where-Object { $_.Name -eq $u.PackageName }')) { Ok 'uninstall snippet: exact-Name Remove-AppxPackage' } else { Bad 'msix uninstall branch missing' }
+    if ($mxPs1 -notmatch [regex]::Escape('O''Evil') -and $mxPs1 -notmatch 'Evil\.Msix') { Ok 'identity values only in AppConfig.json, never in the .ps1 (data-vs-code)' } else { Bad 'identity leaked into code' }
+
+    # Tattoo detection: inject ScriptAuthor+Vendor (org template is $null in this harness)
+    $mxCfg2 = Get-Win32ToolkitAppConfig -ProjectPath $mxProj
+    $mxCfg2.App.ScriptAuthor = 'Contoso IT'; $mxCfg2.App.Vendor = 'Evil Vendor'
+    Set-Win32ToolkitAppConfig -ProjectPath $mxProj -Config $mxCfg2 | Out-Null
+    $mxDet = @(Get-Win32DetectionRules -ProjectPath $mxProj 6>$null)
+    if ($mxDet.Count -eq 1 -and $mxDet[0]['detectionType'] -eq 'version') { Ok 'msix project gets the tattoo version detection rule' } else { Bad "detection: $($mxDet[0] | ConvertTo-Json -Compress)" }
 }
 finally { Remove-Item -Path $base -Recurse -Force -ErrorAction SilentlyContinue }
 
