@@ -707,15 +707,13 @@ Stop-Computer
             return $expectedJson
         }
 
-        try {
-            Start-Process -FilePath 'WindowsSandbox.exe' -ArgumentList "`"$sandboxConfigFile`"" -ErrorAction Stop
+        # Stale captures were just cleared, so nothing will satisfy the wait until a capture from THIS
+        # run appears — if the operator doesn't launch manually, the wait times out (30 min).
+        if ((Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched) {
             Write-Host "✓ Windows Sandbox launched successfully!" -ForegroundColor Green
             Write-Host "`nThe targeted documentation will be available in the sandbox at:" -ForegroundColor Cyan
             Write-Host "C:\PSADT\Documentation" -ForegroundColor White
-        } catch {
-            # Stale captures were just cleared, so nothing will satisfy the wait until a capture from
-            # THIS run appears — if the operator doesn't launch manually, the wait times out (30 min).
-            Write-Warning "Failed to start Windows Sandbox automatically: $($_.Exception.Message)"
+        } else {
             Write-Host "The sandbox did NOT auto-launch — start it manually by double-clicking:" -ForegroundColor Yellow
             Write-Host "  $sandboxConfigFile" -ForegroundColor Yellow
             Write-Host 'Otherwise the documentation wait will time out after 30 minutes.' -ForegroundColor Yellow

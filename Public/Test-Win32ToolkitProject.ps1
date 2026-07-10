@@ -140,8 +140,7 @@ function Test-Win32ToolkitProject {
 
         # Windows Sandbox allows a single running instance — fail fast (before any download work)
         # instead of launching a doomed sandbox and waiting on assertions that will never come.
-        $runningWsb = @(Get-Process -Name 'WindowsSandbox', 'WindowsSandboxClient', 'WindowsSandboxRemoteSession' -ErrorAction SilentlyContinue)
-        if ($runningWsb.Count -gt 0) {
+        if (Test-Win32ToolkitSandboxRunning) {
             throw 'Another Windows Sandbox is already running (only one instance is allowed). Close it — e.g. the documentation-capture sandbox from a previous step — and re-run the test.'
         }
 
@@ -182,10 +181,13 @@ function Test-Win32ToolkitProject {
                 Write-Host '  5. Keep the sandbox open for verification'  -ForegroundColor Cyan
                 Write-Host '=============================================' -ForegroundColor Cyan
 
-                Start-Process -FilePath 'WindowsSandbox.exe' -ArgumentList "`"$sandboxConfigFile`""
-
-                Write-Host "`n✓ Final demo sandbox launched successfully!" -ForegroundColor Green
-                Write-Host 'Monitor the sandbox for the complete install/uninstall cycle.' -ForegroundColor White
+                if ((Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched) {
+                    Write-Host "`n✓ Final demo sandbox launched successfully!" -ForegroundColor Green
+                    Write-Host 'Monitor the sandbox for the complete install/uninstall cycle.' -ForegroundColor White
+                } else {
+                    Write-Host 'The sandbox did NOT auto-launch — start it manually by double-clicking:' -ForegroundColor Yellow
+                    Write-Host "  $sandboxConfigFile" -ForegroundColor Yellow
+                }
             }
 
             'Update' {
@@ -384,9 +386,11 @@ function Test-Win32ToolkitProject {
                 Write-Host '  7. Keep the sandbox open for final verification'         -ForegroundColor White
                 Write-Host '================================================'          -ForegroundColor Cyan
 
-                Start-Process -FilePath 'WindowsSandbox.exe' -ArgumentList "`"$sandboxConfigFile`""
-
-                Write-Host "`n✓ Update test sandbox launched." -ForegroundColor Green
+                if ((Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched) {
+                    Write-Host "`n✓ Update test sandbox launched." -ForegroundColor Green
+                } else {
+                    Write-Host "The sandbox did NOT auto-launch — start it manually by double-clicking: $sandboxConfigFile" -ForegroundColor Yellow
+                }
 
                 # ── Step 8: Wait for the in-sandbox assertions and report pass/fail ──────
                 # The verdict is RETURNED ($true pass / $false fail / $null inconclusive) so callers
