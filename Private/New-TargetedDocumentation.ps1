@@ -647,23 +647,10 @@ Stop-Computer
         $null = New-LogCollectorScript -ProjectPath $ProjectPath
         Write-Host "✓ Log collector created for documentation sandbox" -ForegroundColor Green
 
-        # Create the sandbox configuration file content
-        $sandboxConfigContent = @"
-<Configuration>
-    <VGpu>Disable</VGpu>
-    <Networking>Enable</Networking>
-    <MappedFolders>
-        <MappedFolder>
-            <HostFolder>$(ConvertTo-XmlEncoded $ProjectPath)</HostFolder>
-            <SandboxFolder>C:\PSADT</SandboxFolder>
-            <ReadOnly>false</ReadOnly>
-        </MappedFolder>
-    </MappedFolders>
-    <LogonCommand>
-        <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -File C:\PSADT\SupportFiles\TargetedDocumentationScript.ps1</Command>
-    </LogonCommand>
-</Configuration>
-"@
+        # Build the sandbox configuration via the shared .wsb builder (test-backend seam, Phase 0).
+        $sandboxConfigContent = New-Win32ToolkitSandboxConfig `
+            -Mount @{ HostPath = $ProjectPath; GuestPath = 'C:\PSADT'; ReadOnly = $false } `
+            -LogonCommandXml 'powershell.exe -NoExit -ExecutionPolicy Bypass -File C:\PSADT\SupportFiles\TargetedDocumentationScript.ps1'
 
         # Write the sandbox configuration to the file
         $sandboxConfigContent | Set-Content -Path $sandboxConfigFile -Encoding UTF8
@@ -720,15 +707,13 @@ Stop-Computer
             return $expectedJson
         }
 
-        try {
-            Start-Process -FilePath 'WindowsSandbox.exe' -ArgumentList "`"$sandboxConfigFile`"" -ErrorAction Stop
+        # Stale captures were just cleared, so nothing will satisfy the wait until a capture from THIS
+        # run appears — if the operator doesn't launch manually, the wait times out (30 min).
+        if ((Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched) {
             Write-Host "✓ Windows Sandbox launched successfully!" -ForegroundColor Green
             Write-Host "`nThe targeted documentation will be available in the sandbox at:" -ForegroundColor Cyan
             Write-Host "C:\PSADT\Documentation" -ForegroundColor White
-        } catch {
-            # Stale captures were just cleared, so nothing will satisfy the wait until a capture from
-            # THIS run appears — if the operator doesn't launch manually, the wait times out (30 min).
-            Write-Warning "Failed to start Windows Sandbox automatically: $($_.Exception.Message)"
+        } else {
             Write-Host "The sandbox did NOT auto-launch — start it manually by double-clicking:" -ForegroundColor Yellow
             Write-Host "  $sandboxConfigFile" -ForegroundColor Yellow
             Write-Host 'Otherwise the documentation wait will time out after 30 minutes.' -ForegroundColor Yellow
