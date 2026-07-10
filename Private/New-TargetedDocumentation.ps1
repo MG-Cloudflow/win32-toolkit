@@ -647,23 +647,10 @@ Stop-Computer
         $null = New-LogCollectorScript -ProjectPath $ProjectPath
         Write-Host "✓ Log collector created for documentation sandbox" -ForegroundColor Green
 
-        # Create the sandbox configuration file content
-        $sandboxConfigContent = @"
-<Configuration>
-    <VGpu>Disable</VGpu>
-    <Networking>Enable</Networking>
-    <MappedFolders>
-        <MappedFolder>
-            <HostFolder>$(ConvertTo-XmlEncoded $ProjectPath)</HostFolder>
-            <SandboxFolder>C:\PSADT</SandboxFolder>
-            <ReadOnly>false</ReadOnly>
-        </MappedFolder>
-    </MappedFolders>
-    <LogonCommand>
-        <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -File C:\PSADT\SupportFiles\TargetedDocumentationScript.ps1</Command>
-    </LogonCommand>
-</Configuration>
-"@
+        # Build the sandbox configuration via the shared .wsb builder (test-backend seam, Phase 0).
+        $sandboxConfigContent = New-Win32ToolkitSandboxConfig `
+            -Mount @{ HostPath = $ProjectPath; GuestPath = 'C:\PSADT'; ReadOnly = $false } `
+            -LogonCommandXml 'powershell.exe -NoExit -ExecutionPolicy Bypass -File C:\PSADT\SupportFiles\TargetedDocumentationScript.ps1'
 
         # Write the sandbox configuration to the file
         $sandboxConfigContent | Set-Content -Path $sandboxConfigFile -Encoding UTF8

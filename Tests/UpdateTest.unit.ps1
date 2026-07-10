@@ -183,6 +183,7 @@ try {
     . (Join-Path $repo 'Private\Get-Win32DetectionRules.ps1')
     . (Join-Path $repo 'Private\New-TargetedDocumentation.ps1')
     . (Join-Path $repo 'Private\New-LogCollectorScript.ps1')
+    . (Join-Path $repo 'Private\New-Win32ToolkitSandboxConfig.ps1')   # .wsb builder used by New-TargetedDocumentation
 
     # (a) newest-by-LastWriteTime wins even when NAME order disagrees
     $sp = Join-Path $base 'stale-proj'

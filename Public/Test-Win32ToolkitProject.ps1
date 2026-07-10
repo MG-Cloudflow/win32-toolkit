@@ -163,22 +163,10 @@ function Test-Win32ToolkitProject {
                 $sandboxFolder     = Join-Path $ProjectPath 'Sandbox'
                 $sandboxConfigFile = Join-Path $sandboxFolder 'FinalDemo.wsb'
 
-                $sandboxConfigContent = @"
-<Configuration>
-    <VGpu>Disable</VGpu>
-    <Networking>Enable</Networking>
-    <MappedFolders>
-        <MappedFolder>
-            <HostFolder>$(ConvertTo-XmlEncoded $ProjectPath)</HostFolder>
-            <SandboxFolder>C:\PSADT</SandboxFolder>
-            <ReadOnly>false</ReadOnly>
-        </MappedFolder>
-    </MappedFolders>
-    <LogonCommand>
-        <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { C:\PSADT\Invoke-AppDeployToolkit.ps1; C:\PSADT\Sandbox\Countdown.ps1; C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1 } }&quot;</Command>
-    </LogonCommand>
-</Configuration>
-"@
+                $logonCommandXml = 'powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { C:\PSADT\Invoke-AppDeployToolkit.ps1; C:\PSADT\Sandbox\Countdown.ps1; C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1 } }&quot;'
+                $sandboxConfigContent = New-Win32ToolkitSandboxConfig `
+                    -Mount @{ HostPath = $ProjectPath; GuestPath = 'C:\PSADT'; ReadOnly = $false } `
+                    -LogonCommandXml $logonCommandXml
                 Set-Content -Path $sandboxConfigFile -Value $sandboxConfigContent -Encoding UTF8
                 Write-Host "✓ Sandbox config   : $sandboxConfigFile" -ForegroundColor Green
 
@@ -357,34 +345,17 @@ function Test-Win32ToolkitProject {
                 }
                 $installCmdXml = ConvertTo-XmlEncoded $installCmd
 
-                # Second mapped folder (READ-ONLY — never mutate the raw Projects\ copy) for baseline mode.
-                $baselineMapping = if ($useBaselineProject) {
-                    @"
+                # Mapped folders: project (RW) + optional read-only baseline (never mutate the raw
+                # Projects\ copy). Order preserved: project first, then baseline (C:\PSADTOld).
+                $mounts = @(@{ HostPath = $ProjectPath; GuestPath = 'C:\PSADT'; ReadOnly = $false })
+                if ($useBaselineProject) {
+                    $mounts += @{ HostPath = $BaselineProjectPath; GuestPath = 'C:\PSADTOld'; ReadOnly = $true }
+                }
 
-        <MappedFolder>
-            <HostFolder>$(ConvertTo-XmlEncoded $BaselineProjectPath)</HostFolder>
-            <SandboxFolder>C:\PSADTOld</SandboxFolder>
-            <ReadOnly>true</ReadOnly>
-        </MappedFolder>
-"@
-                } else { '' }
-
-                $sandboxConfigContent = @"
-<Configuration>
-    <VGpu>Disable</VGpu>
-    <Networking>Enable</Networking>
-    <MappedFolders>
-        <MappedFolder>
-            <HostFolder>$(ConvertTo-XmlEncoded $ProjectPath)</HostFolder>
-            <SandboxFolder>C:\PSADT</SandboxFolder>
-            <ReadOnly>false</ReadOnly>
-        </MappedFolder>$baselineMapping
-    </MappedFolders>
-    <LogonCommand>
-        <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline; $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1'; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1' } }&quot;</Command>
-    </LogonCommand>
-</Configuration>
-"@
+                # $installCmdXml is already XML-encoded (ConvertTo-XmlEncoded above); the rest of the
+                # LogonCommand is static, XML-safe text. The builder XML-encodes the host paths.
+                $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline; $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1'; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1' } }&quot;"
+                $sandboxConfigContent = New-Win32ToolkitSandboxConfig -Mount $mounts -LogonCommandXml $logonCommandXml
                 Set-Content -Path $sandboxConfigFile -Value $sandboxConfigContent -Encoding UTF8
                 Write-Host "✓ Sandbox config   : $sandboxConfigFile" -ForegroundColor Green
 
