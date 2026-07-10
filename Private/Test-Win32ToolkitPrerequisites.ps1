@@ -45,6 +45,13 @@ function Test-Win32ToolkitPrerequisites {
     $sandbox = Test-Path (Join-Path $env:WinDir 'System32\WindowsSandbox.exe')
     Add-Check 'Windows Sandbox' $sandbox ($(if ($sandbox) { 'available' } else { 'feature not enabled' })) $false 'testing & documentation'
 
+    # Hyper-V test backend — only surfaced when it is the CONFIGURED backend, so default (Sandbox)
+    # users see no change. Reports readiness or the specific missing prerequisites.
+    if ((Get-Win32ToolkitConfigValue -Name 'TestBackend' -Default 'Sandbox') -eq 'HyperV') {
+        $hvReasons = @(Test-Win32ToolkitHyperVReady)
+        Add-Check 'Hyper-V test backend' ($hvReasons.Count -eq 0) ($(if ($hvReasons.Count -eq 0) { 'ready' } else { $hvReasons -join '; ' })) $false 'Hyper-V testing'
+    }
+
     # Microsoft Graph (publish only)
     $graph = Get-Module -ListAvailable Microsoft.Graph.Authentication | Sort-Object Version -Descending | Select-Object -First 1
     Add-Check 'Microsoft.Graph.Authentication' ([bool]$graph) ($(if ($graph) { "v$($graph.Version)" } else { 'not installed' })) $true 'publishing to Intune'
