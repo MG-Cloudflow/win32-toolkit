@@ -178,15 +178,37 @@ function New-Win32ToolkitTestVM {
         # operator to sign in, run Windows Update, and let all reboots finish, then confirm. -Unattended
         # skips this and checkpoints immediately (CI / automation).
         if (-not $Unattended) {
-            try { Start-Process -FilePath 'vmconnect.exe' -ArgumentList 'localhost', $Name -ErrorAction Stop }
-            catch { Write-Warning "Could not open the VM console automatically (vmconnect). Open '$Name' from Hyper-V Manager to interact with it." }
+            # Try to pop the VM console. vmconnect.exe ships with the Hyper-V GUI tools, which can be ABSENT
+            # on a Server / Cloud PC that only has the Hyper-V PowerShell module — resolve it robustly and,
+            # if it's missing, tell the operator how to open the VM another way (a blind pause is useless).
+            $vmconnect = (Get-Command 'vmconnect.exe' -ErrorAction SilentlyContinue).Source
+            if (-not $vmconnect) {
+                $cand = Join-Path $env:SystemRoot 'System32\vmconnect.exe'
+                if (Test-Path -LiteralPath $cand) { $vmconnect = $cand }
+            }
+            $consoleOpened = $false
+            if ($vmconnect) {
+                try { Start-Process -FilePath $vmconnect -ArgumentList 'localhost', $Name -ErrorAction Stop; $consoleOpened = $true }
+                catch { }
+            }
 
             $sam = $Credential.UserName.Split('\')[-1]
             Write-Host ''
             Write-Host '──────────────────────────────────────────────────────────────────────────────' -ForegroundColor Yellow
             Write-Host '  PREPARE THE VM, THEN CONFIRM — the checkpoint freezes whatever state is live' -ForegroundColor Yellow
             Write-Host '──────────────────────────────────────────────────────────────────────────────' -ForegroundColor Yellow
-            Write-Host "  A console window opened for '$Name'. In that window:" -ForegroundColor Cyan
+            Write-Host "  The VM '$Name' IS created and running right now — this prompt is only waiting for you." -ForegroundColor Green
+            if ($consoleOpened) {
+                Write-Host "  A console window opened for '$Name'. In that window:" -ForegroundColor Cyan
+            }
+            else {
+                Write-Host '  Could NOT auto-open the VM console (vmconnect.exe not available on this host).' -ForegroundColor Yellow
+                Write-Host '  Open the VM yourself, any one of:' -ForegroundColor Yellow
+                Write-Host "     - Hyper-V Manager  ->  Connect to '$Name'" -ForegroundColor Yellow
+                Write-Host "     - run:  vmconnect.exe localhost $Name" -ForegroundColor Yellow
+                Write-Host '     - install the console:  Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Management-Clients -All' -ForegroundColor Yellow
+                Write-Host '  Then, in the VM:' -ForegroundColor Cyan
+            }
             Write-Host "    1. Sign in if you're not already (user: $sam)." -ForegroundColor Cyan
             Write-Host '    2. Run Windows Update until nothing is left; install everything.' -ForegroundColor Cyan
             Write-Host '    3. Let ALL reboots finish and return to the desktop (AutoLogon signs back in).' -ForegroundColor Cyan
