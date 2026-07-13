@@ -35,5 +35,11 @@ function Set-Win32ToolkitGuestAutoLogon {
         Set-ItemProperty -Path $k -Name 'DefaultPassword'   -Value $pass             -Type String
         Set-ItemProperty -Path $k -Name 'DefaultDomainName' -Value $env:COMPUTERNAME -Type String
         Remove-ItemProperty -Path $k -Name 'AutoLogonCount' -ErrorAction SilentlyContinue
+
+        # Windows 11 ships "passwordless" ON by default (DevicePasswordLessBuildVersion=2), which SUPPRESSES
+        # classic username/password AutoLogon even with AutoAdminLogon=1. Set it to 0 so AutoLogon fires.
+        $pl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device'
+        if (-not (Test-Path $pl)) { New-Item -Path $pl -Force | Out-Null }
+        Set-ItemProperty -Path $pl -Name 'DevicePasswordLessBuildVersion' -Value 0 -Type DWord
     } -ArgumentList $sam, $pw -ErrorAction Stop
 }
