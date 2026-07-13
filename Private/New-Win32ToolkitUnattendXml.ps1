@@ -74,6 +74,11 @@ function New-Win32ToolkitUnattendXml {
           <Path>reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE /v BypassNRO /t REG_DWORD /d 1 /f</Path>
           <Description>Enable offline OOBE path (bypass network requirement)</Description>
         </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>2</Order>
+          <Path>reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f</Path>
+          <Description>Give remote / PowerShell Direct local admins a FULL (elevated) token so HKLM writes and elevated tasks do not silently fail at medium integrity</Description>
+        </RunSynchronousCommand>
       </RunSynchronous>
     </component>
   </settings>
