@@ -10,7 +10,7 @@ The module exposes an interactive UI plus a set of commands that cover the full 
 | `Invoke-Win32Toolkit` | Search, download, scaffold, document, and optionally test, package, and publish a winget app |
 | `New-Win32ToolkitManualApp` | Package an app that is **not** in winget (you supply the installer) |
 | `Complete-Win32ToolkitManualApp` | Finalise a scaffolded project (sandbox capture → uninstall → test/package/upload) |
-| `Test-Win32ToolkitProject` | Run sandbox-based test scenarios against any existing PSADT project |
+| `Test-Win32ToolkitProject` | Run test scenarios (Windows Sandbox or a Hyper-V VM) against any existing PSADT project |
 | `Export-Win32ToolkitIntuneWin` | Clean up and compile a project into a ready-to-upload `.intunewin` file |
 | `Publish-Win32ToolkitIntuneApp` | Upload a `.intunewin` file directly to Microsoft Intune via the Graph API |
 
@@ -44,7 +44,7 @@ Requires PowerShell 7.2+ and an interactive console window.
 | **PowerShell** | **7.2 or later** (PowerShell 7). Windows PowerShell 5.1 is not supported for running the module. |
 | **Winget** | Windows Package Manager must be installed and in `$PATH`. Included in Windows 10 21H1+ and Windows 11. |
 | **PSAppDeployToolkit** | v4.x from the PowerShell Gallery. Prompted to install automatically on first run if absent. |
-| **Windows Sandbox** | Required for documentation and test scenarios. Enable via *Windows Features → Windows Sandbox*. Available on Windows 10/11 Pro, Enterprise, and Education only. |
+| **Test/capture backend** | Documentation capture and test scenarios run in a **backend**. Default: **Windows Sandbox** — enable via *Windows Features → Windows Sandbox* (Windows 10/11 Pro/Enterprise/Education). Opt-in alternative: a provisioned **Hyper-V VM** (faster; `New-Win32ToolkitTestVM` to provision, then `-Backend HyperV` or the TUI's *Hyper-V test VM* screen). The backend is resolved per run, falling back to Sandbox if the VM isn't ready. |
 | **Internet access** | Required to search Winget, download packages, check PSGallery, and download IntuneWinAppUtil.exe. |
 | **Administrator rights** | Recommended. Required if `BasePath` is under a system-protected location. |
 | **Microsoft.Graph.Authentication** | Required only for `Publish-Win32ToolkitIntuneApp` / `-PublishIntune`. Installed automatically on first use when you agree to the prompt. Install manually with `Install-Module -Name Microsoft.Graph.Authentication -Scope CurrentUser`. |
@@ -371,7 +371,7 @@ Invoke-Win32Toolkit -NewTemplate -TemplateName 'Contoso'
 
 ## Test-Win32ToolkitProject
 
-Runs sandbox-based test scenarios against a PSADT project. Can be called standalone, chained via `-RunTest` on `Invoke-Win32Toolkit`, or run at any time against any existing project.
+Runs test scenarios against a PSADT project in the configured backend — **Windows Sandbox** by default, or a **Hyper-V VM** via `-Backend HyperV` (opt-in; falls back to Sandbox if the VM isn't ready). Documentation capture follows the same backend. Can be called standalone, chained via `-RunTest` on `Invoke-Win32Toolkit`, or run at any time against any existing project.
 
 ### Syntax
 
