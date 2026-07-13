@@ -29,6 +29,8 @@ function Set-Win32ToolkitGuestAutoLogon {
 
     Invoke-Command -VMName $VMName -Credential $Credential -ScriptBlock {
         param($user, $pass)
+
+        # 1) Registry baseline (works offline).
         $k = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
         Set-ItemProperty -Path $k -Name 'AutoAdminLogon'    -Value '1'               -Type String
         Set-ItemProperty -Path $k -Name 'DefaultUserName'   -Value $user             -Type String
@@ -36,10 +38,25 @@ function Set-Win32ToolkitGuestAutoLogon {
         Set-ItemProperty -Path $k -Name 'DefaultDomainName' -Value $env:COMPUTERNAME -Type String
         Remove-ItemProperty -Path $k -Name 'AutoLogonCount' -ErrorAction SilentlyContinue
 
-        # Windows 11 ships "passwordless" ON by default (DevicePasswordLessBuildVersion=2), which SUPPRESSES
-        # classic username/password AutoLogon even with AutoAdminLogon=1. Set it to 0 so AutoLogon fires.
+        # Windows 11 ships "passwordless" ON (DevicePasswordLessBuildVersion=2), which SUPPRESSES classic
+        # username/password AutoLogon even with AutoAdminLogon=1. Set it to 0. Also drop the Ctrl+Alt+Del
+        # gate, which can interrupt AutoLogon.
         $pl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device'
         if (-not (Test-Path $pl)) { New-Item -Path $pl -Force | Out-Null }
         Set-ItemProperty -Path $pl -Name 'DevicePasswordLessBuildVersion' -Value 0 -Type DWord
+        Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name 'DisableCAD' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+
+        # 2) Sysinternals Autologon — stores the password as an LSA secret, which is far more reliable on
+        # Windows 11 than the plaintext DefaultPassword registry value alone. Best-effort (needs guest
+        # internet; the registry baseline above is the offline fallback).
+        try {
+            $exe = Join-Path $env:TEMP 'Autologon64.exe'
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -Uri 'https://live.sysinternals.com/Autologon64.exe' -OutFile $exe -UseBasicParsing -ErrorAction Stop
+            & $exe $user $env:COMPUTERNAME $pass /accepteula 2>&1 | Out-Null
+        }
+        catch {
+            Write-Warning "Sysinternals Autologon step skipped ($($_.Exception.Message)); using the registry method only."
+        }
     } -ArgumentList $sam, $pw -ErrorAction Stop
 }
