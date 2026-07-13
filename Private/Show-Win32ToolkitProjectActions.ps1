@@ -36,7 +36,7 @@ function Show-Win32ToolkitProjectActions {
             Write-SpectreRule -Title (Get-SpectreEscapedText -Text ('{0} / {1}' -f $project.Template, $project.Name)) -Color Blue
 
             $act = Read-SpectreSelection -Message 'What would you like to do?' -Choices @(
-                [pscustomobject]@{ Key = 'test';    Label = 'Run a test in Windows Sandbox' }
+                [pscustomobject]@{ Key = 'test';    Label = 'Run a test (Windows Sandbox or Hyper-V VM)' }
                 [pscustomobject]@{ Key = 'finish';  Label = 'Finalize / refresh (Sandbox capture -> auto uninstall)' }
                 [pscustomobject]@{ Key = 'package'; Label = 'Package to .intunewin' }
                 [pscustomobject]@{ Key = 'publish'; Label = 'Publish to Intune' }
@@ -47,17 +47,27 @@ function Show-Win32ToolkitProjectActions {
 
             switch ($act.Key) {
                 'test' {
-                    $sc = Read-SpectreSelection -Message 'Test scenario' -Choices @(
-                        [pscustomobject]@{ Key = 'InstallUninstall'; Label = 'Install then uninstall (any app)' }
-                        [pscustomobject]@{ Key = 'Update';           Label = 'Update from an older version (winget apps only)' }
+                    $backend = Read-SpectreSelection -Message 'Which test backend?' -Choices @(
+                        [pscustomobject]@{ Key = 'Sandbox'; Label = 'Windows Sandbox' }
+                        [pscustomobject]@{ Key = 'HyperV';  Label = 'Hyper-V VM (fast — needs a provisioned test VM; see Settings)' }
                     ) -ChoiceLabelProperty 'Label' -Color Blue
-                    $testSplat = @{ ProjectPath = $project.Path; Scenario = $sc.Key }
+
+                    # Hyper-V currently wires InstallUninstall; Update/capture still run on Sandbox.
+                    $scenChoices = @([pscustomobject]@{ Key = 'InstallUninstall'; Label = 'Install then uninstall (any app)' })
+                    if ($backend.Key -eq 'Sandbox') {
+                        $scenChoices += [pscustomobject]@{ Key = 'Update'; Label = 'Update from an older version (winget apps only)' }
+                    } else {
+                        Write-SpectreHost '[grey]Hyper-V currently supports Install/Uninstall. Update runs on Windows Sandbox for now.[/]'
+                    }
+                    $sc = Read-SpectreSelection -Message 'Test scenario' -Choices $scenChoices -ChoiceLabelProperty 'Label' -Color Blue
+
+                    $testSplat = @{ ProjectPath = $project.Path; Scenario = $sc.Key; Backend = $backend.Key }
                     if ($sc.Key -eq 'Update') {
                         if (-not (Read-SpectreConfirm -Message 'Also verify the update-app requirement rule during the test? (recommended)' -DefaultAnswer 'y')) {
                             $testSplat['SkipRequirementCheck'] = $true
                         }
                     }
-                    Clear-Host; Write-SpectreRule -Title 'Launching test sandbox…' -Color Blue
+                    Clear-Host; Write-SpectreRule -Title "Running the $($backend.Key) test…" -Color Blue
                     try {
                         $verdict = Test-Win32ToolkitProject @testSplat
                         if ($sc.Key -eq 'Update') {

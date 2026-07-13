@@ -13,6 +13,7 @@ function Show-Win32ToolkitSettings {
         Write-SpectreHost "Base folder: [blue]$(Get-SpectreEscapedText -Text $BasePath)[/]"
         $choices = @(
             [pscustomobject]@{ Key = 'basepath'; Label = 'Change the base folder' }
+            [pscustomobject]@{ Key = 'testvm';   Label = 'Hyper-V test VM (backend / provision / reset / remove)' }
             [pscustomobject]@{ Key = 'recheck';  Label = 'Re-run the system check' }
             [pscustomobject]@{ Key = 'back';     Label = 'Back to main menu' }
         )
@@ -25,6 +26,7 @@ function Show-Win32ToolkitSettings {
                     Write-SpectreHost "[green]Saved:[/] $(Get-SpectreEscapedText -Text $BasePath)"
                 }
             }
+            'testvm'  { Show-Win32ToolkitTestVM }
             'recheck' { Show-Win32ToolkitHealth -BasePath $BasePath }
             'back'    { return $BasePath }
         }
