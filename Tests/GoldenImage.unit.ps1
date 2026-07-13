@@ -53,6 +53,8 @@ if ($doc) {
     if ($doc.SelectNodes("//*[local-name()='SystemLocale']")[0].InnerText -eq 'en-GB') { Ok 'locale set' } else { Bad 'locale' }
     if ($xml -notmatch 'SkipMachineOOBE') { Ok 'does not use the unreliable SkipMachineOOBE' } else { Bad 'uses SkipMachineOOBE' }
 }
+try { New-Win32ToolkitUnattendXml -AdminCredential ([pscredential]::new('w32admin', (New-Object System.Security.SecureString))) | Out-Null; Bad 'empty password NOT rejected (blocks PS Direct + AutoLogon)' }
+catch { Ok 'empty password -> throws (blank pw breaks AutoLogon/PS Direct)' }
 
 Write-Host '[3] Get-Win32ToolkitInstallImage' -ForegroundColor Cyan
 $src = Join-Path $env:SystemDrive 'sources'   # use an existing drive so Join-Path can resolve the provider

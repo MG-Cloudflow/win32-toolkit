@@ -47,6 +47,9 @@ function New-Win32ToolkitUnattendXml {
     $sam     = $AdminCredential.UserName.Split('\')[-1]
     $user    = ConvertTo-XmlEncoded $sam
     $pwPlain = [System.Net.NetworkCredential]::new('', $AdminCredential.Password).Password
+    if ([string]::IsNullOrEmpty($pwPlain)) {
+        throw 'AdminCredential password must not be empty — a blank password breaks AutoLogon and PowerShell Direct on the guest.'
+    }
     $pw      = ConvertTo-XmlEncoded $pwPlain
     $cn      = ConvertTo-XmlEncoded $ComputerName
     $loc     = ConvertTo-XmlEncoded $Locale
