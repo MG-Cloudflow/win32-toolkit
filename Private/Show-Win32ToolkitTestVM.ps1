@@ -44,25 +44,55 @@ function Show-Win32ToolkitTestVM {
             'provision' {
                 $iso = Read-SpectreText -Message 'Path to a Windows 11 x64 ISO (blank to cancel)' -DefaultAnswer ''
                 if (-not [string]::IsNullOrWhiteSpace($iso)) {
-                    Clear-Host
-                    Write-SpectreRule -Title 'Provisioning the Hyper-V test VM…' -Color Blue
-                    Write-SpectreHost '[yellow]Requires an elevated session. You will be prompted for a guest admin password — it must NOT be blank.[/]'
-                    Write-SpectreHost '[grey]This runs once and takes ~30-60 minutes (ISO -> VHDX -> VM -> warm checkpoint).[/]'
-                    try {
-                        New-Win32ToolkitTestVM -IsoPath $iso -Verbose | Out-Null
-                        Format-SpectrePanel -Data 'Test VM provisioned and checkpointed. The default backend can now be Hyper-V.' -Header 'Done' -Border Rounded -Color Green
+                    # Detect a leftover VM / golden VHDX from a previous build. Without this, the underlying
+                    # New-Win32ToolkitGoldenVhdx throws "VHDX already exists (use -Force)" the instant it starts
+                    # — the TUI never passed -Force — so a repeat provisioning attempt appeared to "do nothing"
+                    # (it errored before any progress output). Offer a rebuild instead of dead-ending.
+                    $vmName    = Get-Win32ToolkitConfigValue -Name 'HyperVVMName' -Default 'win32tk-golden'
+                    $vhdxPath  = Join-Path (Get-Win32ToolkitHyperVPaths -BasePath (Get-Win32ToolkitBasePath)).Golden "$vmName.vhdx"
+                    $existingVhdx = Test-Path -LiteralPath $vhdxPath
+                    $existingVm   = $false
+                    try { $existingVm = [bool](Get-VM -Name $vmName -ErrorAction SilentlyContinue) } catch { }
+
+                    $proceed = $true
+                    $force   = $false
+                    if ($existingVm -or $existingVhdx) {
+                        $what = @(); if ($existingVm) { $what += "VM '$vmName'" }; if ($existingVhdx) { $what += 'golden VHDX' }
+                        Write-SpectreHost "[yellow]An existing $($what -join ' + ') from a previous build was found.[/]"
+                        Write-SpectreHost '[grey]Provisioning cannot proceed without rebuilding it — this is why a second attempt looked like it did nothing.[/]'
+                        if (Read-SpectreConfirm -Message 'Delete it and rebuild from scratch?' -DefaultAnswer 'y') {
+                            $force = $true
+                        }
+                        else {
+                            $proceed = $false
+                            Write-SpectreHost '[grey]Cancelled — nothing changed.[/]'
+                            Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                        }
                     }
-                    catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
-                    Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+
+                    if ($proceed) {
+                        Clear-Host
+                        Write-SpectreRule -Title 'Provisioning the Hyper-V test VM…' -Color Blue
+                        Write-SpectreHost '[yellow]Requires an elevated session. You will be prompted for a guest admin password — it must NOT be blank.[/]'
+                        Write-SpectreHost '[grey]This runs once and takes ~30-60 minutes (ISO -> VHDX -> VM -> warm checkpoint).[/]'
+                        try {
+                            $newArgs = @{ IsoPath = $iso; Verbose = $true }
+                            if ($force) { $newArgs['Force'] = $true }
+                            New-Win32ToolkitTestVM @newArgs | Out-Null
+                            Format-SpectrePanel -Data 'Test VM provisioned and checkpointed. The default backend can now be Hyper-V.' -Header 'Done' -Border Rounded -Color Green | Out-SpectreHost
+                        }
+                        catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red | Out-SpectreHost }
+                        Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                    }
                 }
             }
             'reset' {
                 Clear-Host; Write-SpectreRule -Title 'Reverting to clean-base…' -Color Blue
                 try {
                     Reset-Win32ToolkitTestVM
-                    Format-SpectrePanel -Data 'VM reverted to the clean checkpoint.' -Header 'Done' -Border Rounded -Color Green
+                    Format-SpectrePanel -Data 'VM reverted to the clean checkpoint.' -Header 'Done' -Border Rounded -Color Green | Out-SpectreHost
                 }
-                catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
+                catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red | Out-SpectreHost }
                 Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
             }
             'remove' {
@@ -70,9 +100,9 @@ function Show-Win32ToolkitTestVM {
                     Clear-Host; Write-SpectreRule -Title 'Removing the test VM…' -Color Blue
                     try {
                         Remove-Win32ToolkitTestVM -RemoveVhdx
-                        Format-SpectrePanel -Data 'Test VM removed.' -Header 'Done' -Border Rounded -Color Green
+                        Format-SpectrePanel -Data 'Test VM removed.' -Header 'Done' -Border Rounded -Color Green | Out-SpectreHost
                     }
-                    catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
+                    catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red | Out-SpectreHost }
                     Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
                 }
             }
@@ -89,12 +119,12 @@ function Show-Win32ToolkitTestVM {
                         Get-VMCheckpoint -VMName $vm -ErrorAction SilentlyContinue | Remove-VMCheckpoint -ErrorAction SilentlyContinue
                         Set-VM -Name $vm -CheckpointType Standard
                         Checkpoint-VM -VMName $vm -SnapshotName $cp
-                        Format-SpectrePanel -Data 'AutoLogon configured and the checkpoint re-taken at a logged-in desktop. Interactive GUI testing is now safe.' -Header 'Done' -Border Rounded -Color Green
+                        Format-SpectrePanel -Data 'AutoLogon configured and the checkpoint re-taken at a logged-in desktop. Interactive GUI testing is now safe.' -Header 'Done' -Border Rounded -Color Green | Out-SpectreHost
                     } else {
-                        Format-SpectrePanel -Data 'Could not reach a desktop to re-checkpoint. Log in once in the VM window, then run this again.' -Header 'Warning' -Border Rounded -Color Yellow
+                        Format-SpectrePanel -Data 'Could not reach a desktop to re-checkpoint. Log in once in the VM window, then run this again.' -Header 'Warning' -Border Rounded -Color Yellow | Out-SpectreHost
                     }
                 }
-                catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
+                catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red | Out-SpectreHost }
                 Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
             }
             'back' { return }

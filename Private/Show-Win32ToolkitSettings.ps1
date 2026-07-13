@@ -26,7 +26,9 @@ function Show-Win32ToolkitSettings {
                     Write-SpectreHost "[green]Saved:[/] $(Get-SpectreEscapedText -Text $BasePath)"
                 }
             }
-            'testvm'  { Show-Win32ToolkitTestVM }
+            # Out-Null so nothing this subtree emits leaks into $base (the caller captures
+            # Show-Win32ToolkitSettings's output). Panels inside render via Out-SpectreHost.
+            'testvm'  { Show-Win32ToolkitTestVM | Out-Null }
             'recheck' { Show-Win32ToolkitHealth -BasePath $BasePath }
             'back'    { return $BasePath }
         }
