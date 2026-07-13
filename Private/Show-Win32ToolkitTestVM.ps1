@@ -75,6 +75,7 @@ function Show-Win32ToolkitTestVM {
                         Write-SpectreRule -Title 'Provisioning the Hyper-V test VM…' -Color Blue
                         Write-SpectreHost '[yellow]Requires an elevated session. You will be prompted for a guest admin password — it must NOT be blank.[/]'
                         Write-SpectreHost '[grey]This runs once and takes ~30-60 minutes (ISO -> VHDX -> VM -> warm checkpoint).[/]'
+                        Write-SpectreHost '[grey]When the VM is up, its console opens and provisioning PAUSES: sign in, run Windows Update, let all reboots finish, then press Enter to confirm. The clean-base checkpoint captures that fully-patched desktop — every test run reverts to it.[/]'
                         try {
                             $newArgs = @{ IsoPath = $iso; Verbose = $true }
                             if ($force) { $newArgs['Force'] = $true }

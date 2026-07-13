@@ -7,9 +7,11 @@ function New-Win32ToolkitTestVM {
         One-time setup for the Hyper-V test backend. HOST-ONLY — requires an elevated session and the
         Hyper-V PowerShell module. Two sources: build from a Windows 11 ISO (-IsoPath) or attach an
         existing bootable Gen2 VHDX (-VhdxPath, BYO). The VM is created with Secure Boot + a vTPM (Win11
-        requirements), started, driven to readiness (Wait-Win32ToolkitVMReady), and frozen as a STANDARD
-        (memory-state) checkpoint so later runs revert to a warm, logged-in desktop with no boot. The VM
-        name, checkpoint name, and guest credential are saved to config for the resolver/provider.
+        requirements), started, and driven to readiness (Wait-Win32ToolkitVMReady). Then — unless
+        -Unattended — it PAUSES and hands you the VM console so you can sign in, run Windows Update and
+        let all reboots finish; once you confirm, it freezes a STANDARD (memory-state) checkpoint so later
+        runs revert to that warm, fully-patched, logged-in desktop with no boot. The VM name, checkpoint
+        name, and guest credential are saved to config for the resolver/provider.
         See knowledge-base/designs/hyperv-golden-image-build.md.
     .PARAMETER IsoPath
         Build the golden VHDX from this Windows 11 x64 ISO. Mutually exclusive with -VhdxPath.
@@ -36,6 +38,11 @@ function New-Win32ToolkitTestVM {
         Re-take the checkpoint on an existing VM.
     .PARAMETER Force
         Overwrite an existing VHDX / rebuild an existing VM.
+    .PARAMETER Unattended
+        Skip the manual-prep pause and checkpoint the fresh first-boot desktop automatically (CI /
+        automation). By default provisioning STOPS before the checkpoint, opens the VM console, and lets
+        you sign in, run Windows Update, and finish all reboots — then asks you to confirm, so 'clean-base'
+        captures a fully-patched, idle desktop instead of a bare first boot.
     .EXAMPLE
         New-Win32ToolkitTestVM -IsoPath 'C:\iso\Win11_x64.iso'
     .EXAMPLE
@@ -56,7 +63,8 @@ function New-Win32ToolkitTestVM {
         [string]$Edition,
         [bool]$EnableTPM = $true,
         [switch]$Recheckpoint,
-        [switch]$Force
+        [switch]$Force,
+        [switch]$Unattended
     )
 
     # --- Preconditions -----------------------------------------------------------------------------
@@ -159,10 +167,46 @@ function New-Win32ToolkitTestVM {
         Connect-VMNetworkAdapter -VMName $Name -SwitchName $SwitchName -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 8   # let the NIC acquire an address
 
-        # Safety net: configure guest AutoLogon so a future boot lands on the desktop (the -EnsureDesktop
-        # recovery path — the normal flow reverts the checkpoint and needs no login).
+        # Safety net: configure guest AutoLogon so any reboot during prep (Windows Update) lands back on
+        # the desktop, and so the -EnsureDesktop recovery path works later.
         try { Set-Win32ToolkitGuestAutoLogon -VMName $Name -Credential $Credential }
         catch { Write-Warning "Could not configure guest AutoLogon: $($_.Exception.Message)" }
+
+        # --- Manual prep window (default) --------------------------------------------------------------
+        # A STANDARD checkpoint freezes the LIVE state (memory + disk): every test run reverts to the
+        # EXACT moment captured here. So don't snapshot a bare first-boot desktop — hand the VM to the
+        # operator to sign in, run Windows Update, and let all reboots finish, then confirm. -Unattended
+        # skips this and checkpoints immediately (CI / automation).
+        if (-not $Unattended) {
+            try { Start-Process -FilePath 'vmconnect.exe' -ArgumentList 'localhost', $Name -ErrorAction Stop }
+            catch { Write-Warning "Could not open the VM console automatically (vmconnect). Open '$Name' from Hyper-V Manager to interact with it." }
+
+            $sam = $Credential.UserName.Split('\')[-1]
+            Write-Host ''
+            Write-Host '──────────────────────────────────────────────────────────────────────────────' -ForegroundColor Yellow
+            Write-Host '  PREPARE THE VM, THEN CONFIRM — the checkpoint freezes whatever state is live' -ForegroundColor Yellow
+            Write-Host '──────────────────────────────────────────────────────────────────────────────' -ForegroundColor Yellow
+            Write-Host "  A console window opened for '$Name'. In that window:" -ForegroundColor Cyan
+            Write-Host "    1. Sign in if you're not already (user: $sam)." -ForegroundColor Cyan
+            Write-Host '    2. Run Windows Update until nothing is left; install everything.' -ForegroundColor Cyan
+            Write-Host '    3. Let ALL reboots finish and return to the desktop (AutoLogon signs back in).' -ForegroundColor Cyan
+            Write-Host '    4. Close first-run app windows so the desktop is idle and clean.' -ForegroundColor Cyan
+            Write-Host ''
+            Write-Host '  Every test run reverts to exactly this moment — make it a fully patched, idle desktop.' -ForegroundColor Gray
+            Write-Host ''
+            Read-Host '  When the desktop is fully ready, press Enter to capture the clean-base checkpoint' | Out-Null
+
+            # After update reboots the guest may still be settling — re-confirm the shell before freezing.
+            Write-Host 'Confirming the desktop is up before checkpointing...' -ForegroundColor Cyan
+            $reDeadline = (Get-Date).AddMinutes(5)
+            do {
+                $shellUp = [bool](Invoke-Command -VMName $Name -Credential $Credential -ScriptBlock {
+                    [bool](Get-Process -Name explorer -ErrorAction SilentlyContinue)
+                } -ErrorAction SilentlyContinue)
+                if (-not $shellUp) { Start-Sleep -Seconds 5 }
+            } until ($shellUp -or (Get-Date) -gt $reDeadline)
+            if (-not $shellUp) { Write-Warning 'Desktop shell not detected (guest may be mid-reboot) — checkpointing anyway.' }
+        }
 
         Set-VM -Name $Name -CheckpointType Standard
         Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName
