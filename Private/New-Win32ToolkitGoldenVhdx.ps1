@@ -48,9 +48,12 @@ function New-Win32ToolkitGoldenVhdx {
     $vhdxDir = Split-Path -Parent $VhdxPath
     if ($vhdxDir -and -not (Test-Path -LiteralPath $vhdxDir)) { New-Item -ItemType Directory -Path $vhdxDir -Force | Out-Null }
 
+    $isoMount = $null
     try {
-        $mountedIso = Mount-DiskImage -ImagePath $IsoPath -StorageType ISO -PassThru -ErrorAction Stop
-        $isoDrive   = ($mountedIso | Get-Volume).DriveLetter
+        # Robust mount: stages a local copy when the ISO is a OneDrive placeholder (or the in-place mount
+        # times out — "The semaphore timeout period has expired") and retries transient failures.
+        $isoMount = Mount-Win32ToolkitIso -IsoPath $IsoPath
+        $isoDrive = $isoMount.DriveLetter
         if (-not $isoDrive) { throw 'Could not resolve the mounted ISO drive letter.' }
 
         $imgArgs = @{ SourcesPath = "${isoDrive}:\sources" }
@@ -82,8 +85,14 @@ function New-Win32ToolkitGoldenVhdx {
         Write-Host "✓ Golden VHDX built: $VhdxPath" -ForegroundColor Green
     }
     finally {
-        Dismount-VHD       -Path $VhdxPath -ErrorAction SilentlyContinue
-        Dismount-DiskImage -ImagePath $IsoPath -ErrorAction SilentlyContinue
+        Dismount-VHD -Path $VhdxPath -ErrorAction SilentlyContinue
+        if ($isoMount) {
+            Dismount-DiskImage -ImagePath $isoMount.ImagePath -ErrorAction SilentlyContinue
+            if ($isoMount.StagedPath) { Remove-Item -LiteralPath $isoMount.StagedPath -Force -ErrorAction SilentlyContinue }
+        }
+        else {
+            Dismount-DiskImage -ImagePath $IsoPath -ErrorAction SilentlyContinue
+        }
     }
 
     return $VhdxPath
