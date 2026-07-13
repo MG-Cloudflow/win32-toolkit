@@ -62,6 +62,20 @@ function New-Win32ToolkitUnattendXml {
       <ComputerName>$cn</ComputerName>
       <TimeZone>UTC</TimeZone>
     </component>
+    <!-- Win11 24H2/25H2 ASSIST (not the load-bearing mechanism): if OOBE presents the mandatory
+         "connect to a network" gate before the oobeSystem LocalAccount/AutoLogon pass is reached, this
+         offline-path flag lets it through. specialize runs before the OOBE pass, so it is set in time.
+         UNSUPPORTED / undocumented — Microsoft may reset it on newer builds; revalidate per 25H2 build.
+         The load-bearing skip is the pre-created LocalAccount + AutoLogon + a NON-BLANK password. -->
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Path>reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE /v BypassNRO /t REG_DWORD /d 1 /f</Path>
+          <Description>Enable offline OOBE path (bypass network requirement)</Description>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+    </component>
   </settings>
   <settings pass="oobeSystem">
     <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">

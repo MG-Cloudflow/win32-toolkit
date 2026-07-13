@@ -52,6 +52,9 @@ if ($doc) {
     if ($doc.SelectNodes("//*[local-name()='ComputerName']")[0].InnerText -eq 'GB01') { Ok 'ComputerName set' } else { Bad 'computername' }
     if ($doc.SelectNodes("//*[local-name()='SystemLocale']")[0].InnerText -eq 'en-GB') { Ok 'locale set' } else { Bad 'locale' }
     if ($xml -notmatch 'SkipMachineOOBE') { Ok 'does not use the unreliable SkipMachineOOBE' } else { Bad 'uses SkipMachineOOBE' }
+    $spec = $doc.unattend.settings | Where-Object { $_.pass -eq 'specialize' }
+    $depl = @($spec.component | Where-Object { $_.name -eq 'Microsoft-Windows-Deployment' })
+    if ($depl.Count -eq 1 -and ($xml -match 'BypassNRO')) { Ok 'specialize includes the BypassNRO offline-OOBE assist' } else { Bad 'BypassNRO assist missing from specialize' }
 }
 try { New-Win32ToolkitUnattendXml -AdminCredential ([pscredential]::new('w32admin', (New-Object System.Security.SecureString))) | Out-Null; Bad 'empty password NOT rejected (blocks PS Direct + AutoLogon)' }
 catch { Ok 'empty password -> throws (blank pw breaks AutoLogon/PS Direct)' }
