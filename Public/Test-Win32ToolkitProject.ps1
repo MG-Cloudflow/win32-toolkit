@@ -171,8 +171,8 @@ function Test-Win32ToolkitProject {
                     # session); install → uninstall run back-to-back. Interactive verification via
                     # vmconnect is a follow-up.
                     $phases = @(
-                        @{ Label = 'Install';     Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1'" }
-                        @{ Label = 'Uninstall';   Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeploymentType Uninstall" }
+                        @{ Label = 'Install';     Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Silent" }
+                        @{ Label = 'Uninstall';   Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeploymentType Uninstall -DeployMode Silent" }
                         @{ Label = 'CollectLogs'; Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
                     )
                     Write-Host 'Running Install → Uninstall in the Hyper-V VM over PowerShell Direct...' -ForegroundColor Cyan
