@@ -194,12 +194,26 @@ function New-Win32ToolkitTestVM {
                 catch { }
             }
 
+            # Windows Update needs real internet. Verify it (and repair the common nested Default-Switch DNS
+            # failure) BEFORE the operator relies on it, so "Windows Update just sits there" is caught here.
+            Write-Host 'Checking the guest has working internet (Windows Update needs it)...' -ForegroundColor Cyan
+            $guestNet = Confirm-Win32ToolkitGuestInternet -VMName $Name -Credential $Credential
+
             $sam = $Credential.UserName.Split('\')[-1]
             Write-Host ''
             Write-Host '──────────────────────────────────────────────────────────────────────────────' -ForegroundColor Yellow
             Write-Host '  PREPARE THE VM, THEN CONFIRM — the checkpoint freezes whatever state is live' -ForegroundColor Yellow
             Write-Host '──────────────────────────────────────────────────────────────────────────────' -ForegroundColor Yellow
             Write-Host "  The VM '$Name' IS created and running right now — this prompt is only waiting for you." -ForegroundColor Green
+            if ($guestNet) {
+                Write-Host '  Guest internet: OK (DNS + outbound reachable) — Windows Update should work.' -ForegroundColor Green
+            }
+            else {
+                Write-Host '  Guest internet: NOT confirmed — Windows Update will not download.' -ForegroundColor Red
+                Write-Host "     Tried DHCP renew + public DNS already. Check: Get-VMSwitch 'Default Switch', and in the" -ForegroundColor Yellow
+                Write-Host '     VM run  Test-NetConnection www.msftconnecttest.com -Port 80 . On a nested host the' -ForegroundColor Yellow
+                Write-Host "     Default Switch NAT must be up; you can also try  Set-VMNetworkAdapter -VMName $Name -MacAddressSpoofing On." -ForegroundColor Yellow
+            }
             if ($consoleOpened) {
                 Write-Host "  A console window opened for '$Name'. In that window:" -ForegroundColor Cyan
             }
