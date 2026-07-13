@@ -60,8 +60,7 @@ function Invoke-Win32ToolkitHyperVRun {
             Copy-Win32ToolkitProjectToGuest -Session $session -ProjectPath $BaselineProjectPath -GuestPath 'C:\PSADTOld'
         }
 
-        # If any phase is interactive, open the VM console so the operator can watch/drive the GUI.
-        $sam = $Credential.UserName.Split('\')[-1]
+        # If any phase is interactive, open the VM console so the operator can watch the PSADT GUI.
         if ($needsDesktop) {
             Write-Host 'Opening the VM console (vmconnect) for interactive GUI testing...' -ForegroundColor Cyan
             Start-Process -FilePath 'vmconnect.exe' -ArgumentList 'localhost', $VMName -ErrorAction SilentlyContinue
@@ -72,11 +71,9 @@ function Invoke-Win32ToolkitHyperVRun {
                 Read-Host "  $($ph.Label) — press Enter to continue"
                 continue
             }
-            $exit = if ($ph.Interactive) {
-                Invoke-Win32ToolkitGuestInteractive -Session $session -Command $ph.Command -UserName $sam -Label $ph.Label
-            } else {
-                Invoke-Win32ToolkitGuestPhase -Session $session -Command $ph.Command -Label $ph.Label
-            }
+            # Every phase runs as SYSTEM (the Intune context). For an interactive phase PSADT's own deploy
+            # mode renders its GUI in the logged-on user's session (a real desktop is ensured above).
+            $exit = Invoke-Win32ToolkitGuestPhase -Session $session -Command $ph.Command -Label $ph.Label
             if (-not $ph.IgnoreExit -and $exit -ne 0) {
                 Write-Warning "Guest phase '$($ph.Label)' exited with code $exit."
             }

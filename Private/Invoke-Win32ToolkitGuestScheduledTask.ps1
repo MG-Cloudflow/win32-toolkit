@@ -42,7 +42,8 @@ function Invoke-Win32ToolkitGuestScheduledTask {
         $taskName = 'Win32ToolkitPhase'
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 
-        $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -Command `"$cmd`""
+        # -WindowStyle Hidden so the raw powershell.exe console never shows — only PSADT's own GUI does.
+        $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"$cmd`""
         $principal = if ($runAs -eq 'System') {
             New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
         } else {

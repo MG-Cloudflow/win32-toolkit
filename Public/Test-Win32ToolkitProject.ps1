@@ -180,9 +180,9 @@ function Test-Win32ToolkitProject {
                     $interactive = -not ($Unattended -or ((Get-Win32ToolkitConfigValue -Name 'HyperVTestMode' -Default 'Interactive') -eq 'Unattended'))
                     if ($interactive) {
                         $phases = @(
-                            @{ Label = 'Install (GUI)';                   Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1'"; Interactive = $true }
+                            @{ Label = 'Install (GUI)';                   Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Interactive"; Interactive = $true }
                             @{ Label = 'Test the app in the VM window';   Pause = $true }
-                            @{ Label = 'Uninstall (GUI)';                 Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeploymentType Uninstall"; Interactive = $true }
+                            @{ Label = 'Uninstall (GUI)';                 Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeploymentType Uninstall -DeployMode Interactive"; Interactive = $true }
                             @{ Label = 'CollectLogs';                     Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
                         )
                         Write-Host 'Running an INTERACTIVE Install → test → Uninstall in the Hyper-V VM (watch the vmconnect window)...' -ForegroundColor Cyan
