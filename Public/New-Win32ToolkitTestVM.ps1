@@ -131,13 +131,18 @@ function New-Win32ToolkitTestVM {
             Enable-VMTPM       -VMName $Name
         }
 
-        Write-Host "Starting VM '$Name' for first boot (unattended OOBE)..." -ForegroundColor Cyan
+        # Unplug the vNIC for the OOBE boot so Windows 11 OOBE does NOT stall on its network-dependent
+        # "checking for updates" device-prep phase — with no network it fails fast and goes straight to
+        # the desktop. Safe: PowerShell Direct is over the VMBus, not TCP/IP. Reconnected before the
+        # checkpoint so reverts have internet for the test workload (winget).
+        Disconnect-VMNetworkAdapter -VMName $Name -ErrorAction SilentlyContinue
+
+        Write-Host "Starting VM '$Name' for first boot (unattended OOBE, NIC unplugged)..." -ForegroundColor Cyan
         Start-VM -Name $Name -ErrorAction Stop
         Wait-Win32ToolkitVMReady -VMName $Name -Credential $Credential | Out-Null
 
-        # Let the first-logon experience finish (the "getting ready / checking for updates" animation)
-        # so the warm checkpoint captures a SETTLED desktop, not a half-finished OOBE screen. explorer.exe
-        # only runs once the interactive shell is up.
+        # Let the first-logon reach a SETTLED desktop before checkpointing (explorer.exe = shell is up),
+        # so clean-base is a real desktop, not a half-finished OOBE screen.
         Write-Host 'Waiting for the guest desktop to settle (explorer)...' -ForegroundColor Cyan
         $shellDeadline = (Get-Date).AddMinutes(10)
         $shellUp = $false
@@ -148,6 +153,9 @@ function New-Win32ToolkitTestVM {
             } -ErrorAction SilentlyContinue)
         } until ($shellUp -or (Get-Date) -gt $shellDeadline)
         if (-not $shellUp) { Write-Warning 'Desktop shell (explorer) not detected before timeout — checkpointing anyway.' }
+
+        # Reconnect the NIC before the warm checkpoint so the workload has internet on revert.
+        Connect-VMNetworkAdapter -VMName $Name -SwitchName $SwitchName -ErrorAction SilentlyContinue
 
         Set-VM -Name $Name -CheckpointType Standard
         Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName
