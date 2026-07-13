@@ -81,7 +81,9 @@ function New-Win32ToolkitTestVM {
         throw '-IsoPath and -VhdxPath are mutually exclusive.'
     }
     if (-not $Credential) {
-        $Credential = Get-Credential -Message "Guest local-admin credential for VM '$Name' (e.g. w32admin) — password must NOT be blank"
+        # Prompt with a type-it-twice confirmation — a mistyped password here gets baked into the golden
+        # image (unattend + Winlogon) and then nothing can log in, forcing a full rebuild.
+        $Credential = Get-Win32ToolkitGuestCredentialInteractive -Message "Guest local-admin credential for VM '$Name' — enter the password twice; it must NOT be blank."
     }
     if ([string]::IsNullOrEmpty($Credential.GetNetworkCredential().Password)) {
         throw "The guest admin password must not be empty. A blank password is blocked for PowerShell Direct (the 'Limit local account use of blank passwords to console logon only' policy) and prevents AutoLogon — the build boots to a login screen instead of an auto-logged-in desktop. Re-run with a strong password."
