@@ -32,6 +32,7 @@ function New-Win32ToolkitGoldenVhdx {
         [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string]$VhdxPath,
         [Parameter(Mandatory)] [ValidateNotNull()]        [pscredential]$AdminCredential,
         [int]$ImageIndex,
+        [string]$Edition,
         [uint64]$SizeBytes = 64GB,
         [string]$ComputerName = 'GOLDENBASE',
         [string]$Locale = 'en-US',
@@ -54,6 +55,7 @@ function New-Win32ToolkitGoldenVhdx {
 
         $imgArgs = @{ SourcesPath = "${isoDrive}:\sources" }
         if ($PSBoundParameters.ContainsKey('ImageIndex') -and $ImageIndex) { $imgArgs['ImageIndex'] = $ImageIndex }
+        elseif ($Edition) { $imgArgs['EditionPreference'] = @($Edition) }
         $image = Get-Win32ToolkitInstallImage @imgArgs
         Write-Host "Applying image [$($image.Index)] $($image.ImageName) ($($image.Format))..." -ForegroundColor Cyan
 

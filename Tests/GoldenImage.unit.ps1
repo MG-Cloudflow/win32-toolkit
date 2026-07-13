@@ -62,18 +62,28 @@ function Test-Path { param([string]$LiteralPath, [Parameter(ValueFromRemainingAr
     if ($LiteralPath -like '*install.esd') { return $script:haveEsd }
     return $false
 }
+# Consumer multi-edition ISO (Home first, Pro later) — the real case that picked Home before the fix.
 $script:images = @(
-    [pscustomobject]@{ ImageIndex = 1; ImageName = 'Windows 11 Pro' },
-    [pscustomobject]@{ ImageIndex = 3; ImageName = 'Windows 11 Enterprise Evaluation' }
+    [pscustomobject]@{ ImageIndex = 1; ImageName = 'Windows 11 Home' },
+    [pscustomobject]@{ ImageIndex = 6; ImageName = 'Windows 11 Pro' },
+    [pscustomobject]@{ ImageIndex = 7; ImageName = 'Windows 11 Pro N' }
 )
 function Get-WindowsImage { param([string]$ImagePath) $script:images }
 
 $img = Get-Win32ToolkitInstallImage -SourcesPath $src
 if ($img.Format -eq 'wim' -and $img.ImagePath -like '*install.wim') { Ok 'detects install.wim' } else { Bad "path=$($img.ImagePath) fmt=$($img.Format)" }
-if ($img.Index -eq 3 -and $img.ImageName -match 'Enterprise') { Ok "edition preference picks 'Enterprise' (not /Index:1)" } else { Bad "sel=$($img.Index)/$($img.ImageName)" }
-$img2 = Get-Win32ToolkitInstallImage -SourcesPath $src -ImageIndex 1
-if ($img2.Index -eq 1) { Ok 'explicit -ImageIndex honored' } else { Bad "idx=$($img2.Index)" }
-try { Get-Win32ToolkitInstallImage -SourcesPath $src -ImageIndex 9 | Out-Null; Bad 'missing index did not throw' } catch { Ok 'missing index -> throws (lists available)' }
+if ($img.Index -eq 6 -and $img.ImageName -eq 'Windows 11 Pro') { Ok "default prefers 'Windows 11 Pro' (NOT Home/Index:1)" } else { Bad "sel=$($img.Index)/$($img.ImageName)" }
+$imgH = Get-Win32ToolkitInstallImage -SourcesPath $src -EditionPreference 'Home'
+if ($imgH.Index -eq 1) { Ok '-EditionPreference Home forces Home' } else { Bad "home=$($imgH.Index)" }
+$img2 = Get-Win32ToolkitInstallImage -SourcesPath $src -ImageIndex 7
+if ($img2.Index -eq 7) { Ok 'explicit -ImageIndex honored' } else { Bad "idx=$($img2.Index)" }
+try { Get-Win32ToolkitInstallImage -SourcesPath $src -ImageIndex 99 | Out-Null; Bad 'missing index did not throw' } catch { Ok 'missing index -> throws (lists available)' }
+
+# Enterprise-eval ISO (no Pro) — the priority list must fall through to Enterprise.
+$script:images = @([pscustomobject]@{ ImageIndex = 1; ImageName = 'Windows 11 Enterprise Evaluation' })
+$imgE = Get-Win32ToolkitInstallImage -SourcesPath $src
+if ($imgE.Index -eq 1 -and $imgE.ImageName -match 'Enterprise') { Ok 'eval ISO: default falls through to Enterprise' } else { Bad "eval=$($imgE.Index)/$($imgE.ImageName)" }
+
 $script:haveWim = $false; $script:haveEsd = $true
 $img3 = Get-Win32ToolkitInstallImage -SourcesPath $src
 if ($img3.Format -eq 'esd' -and $img3.ImagePath -like '*install.esd') { Ok 'falls back to install.esd' } else { Bad "esd path=$($img3.ImagePath)" }

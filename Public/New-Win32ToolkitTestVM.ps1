@@ -25,7 +25,11 @@ function New-Win32ToolkitTestVM {
     .PARAMETER CheckpointName
         Warm checkpoint name (default 'clean-base').
     .PARAMETER ImageIndex
-        Explicit edition index when building from ISO (else prefer Enterprise).
+        Explicit edition index when building from ISO. Overrides -Edition.
+    .PARAMETER Edition
+        Edition name substring to pick when building from ISO (e.g. 'Pro', 'Enterprise', 'Home'). When
+        omitted, the default preference is used: Windows 11 Pro first, Enterprise as a fallback. Pro is
+        the right choice for a consumer multi-edition ISO (which has no Enterprise).
     .PARAMETER EnableTPM
         Attach a virtual TPM (default $true — Windows 11 requires it).
     .PARAMETER Recheckpoint
@@ -49,6 +53,7 @@ function New-Win32ToolkitTestVM {
         [string]$SwitchName = 'Default Switch',
         [string]$CheckpointName = 'clean-base',
         [int]$ImageIndex,
+        [string]$Edition,
         [bool]$EnableTPM = $true,
         [switch]$Recheckpoint,
         [switch]$Force
@@ -102,6 +107,7 @@ function New-Win32ToolkitTestVM {
         if ($PSCmdlet.ShouldProcess($vhdx, "Build golden VHDX from '$IsoPath'")) {
             $buildArgs = @{ IsoPath = $IsoPath; VhdxPath = $vhdx; AdminCredential = $Credential; Force = [bool]$Force }
             if ($PSBoundParameters.ContainsKey('ImageIndex') -and $ImageIndex) { $buildArgs['ImageIndex'] = $ImageIndex }
+            if ($Edition) { $buildArgs['Edition'] = $Edition }
             New-Win32ToolkitGoldenVhdx @buildArgs | Out-Null
         }
     }

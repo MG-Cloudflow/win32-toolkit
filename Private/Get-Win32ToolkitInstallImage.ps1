@@ -13,7 +13,10 @@ function Get-Win32ToolkitInstallImage {
     .PARAMETER ImageIndex
         Explicit image index to select. When omitted, -EditionPreference decides.
     .PARAMETER EditionPreference
-        Substring matched against ImageName when no explicit index is given. Default 'Enterprise'.
+        Ordered list of ImageName substrings tried when no explicit index is given; the first image
+        matching the first pattern that hits wins. The default prefers 'Windows 11 Pro' (the sensible
+        target on a consumer multi-edition ISO — NOT Home/Index:1) and falls back to 'Enterprise' for
+        VL / evaluation media. Pass a single value (e.g. -EditionPreference 'Home') to force one.
     .OUTPUTS
         PSCustomObject with: ImagePath, Index, ImageName, Format ('wim' | 'esd').
     #>
@@ -26,7 +29,7 @@ function Get-Win32ToolkitInstallImage {
 
         [int]$ImageIndex,
 
-        [string]$EditionPreference = 'Enterprise'
+        [string[]]$EditionPreference = @('Windows 11 Pro', 'Windows 10 Pro', 'Enterprise', 'Pro')
     )
 
     $wim = Join-Path $SourcesPath 'install.wim'
@@ -47,8 +50,15 @@ function Get-Win32ToolkitInstallImage {
         }
     }
     else {
-        $sel = $images | Where-Object { $_.ImageName -match [regex]::Escape($EditionPreference) } | Select-Object -First 1
-        if (-not $sel) { $sel = $images | Select-Object -First 1 }
+        $sel = $null
+        foreach ($pattern in $EditionPreference) {
+            $sel = $images | Where-Object { $_.ImageName -match [regex]::Escape($pattern) } | Select-Object -First 1
+            if ($sel) { break }
+        }
+        if (-not $sel) {
+            $sel = $images | Select-Object -First 1
+            Write-Warning "No preferred edition ($($EditionPreference -join ', ')) found in this ISO — defaulting to '$($sel.ImageName)' (index $($sel.ImageIndex)). Use -Edition or -ImageIndex to choose."
+        }
     }
 
     [pscustomobject]@{
