@@ -16,6 +16,7 @@ $fail = 0
 function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
+. (Join-Path $repo 'Private\Invoke-Win32ToolkitGuestScheduledTask.ps1')
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitGuestPhase.ps1')
 . (Join-Path $repo 'Private\Copy-Win32ToolkitResultsFromGuest.ps1')
 . (Join-Path $repo 'Private\New-Win32ToolkitHyperVSession.ps1')
@@ -23,11 +24,14 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Remove-Win32ToolkitHyperVSession.ps1')
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitHyperVRun.ps1')
 
-Write-Host '[1] Invoke-Win32ToolkitGuestPhase returns ONLY the exit code (not the output stream)' -ForegroundColor Cyan
+Write-Host '[1] Invoke-Win32ToolkitGuestPhase runs as SYSTEM and returns ONLY the exit code' -ForegroundColor Cyan
 # Simulate a guest that emits output lines followed by the exit code (the shape that broke the [int] cast).
-function Invoke-Command { param($Session, [scriptblock]$ScriptBlock, $ArgumentList) return @('install output line', 'more output', 5) }
+# The scheduled-task runner passes -ArgumentList $Command,$RunAs,$Timeout, so ArgumentList[1] is the context.
+$script:runAs = $null
+function Invoke-Command { param($Session, [scriptblock]$ScriptBlock, $ArgumentList) $script:runAs = $ArgumentList[1]; return @('install output line', 'more output', 5) }
 $rc = Invoke-Win32ToolkitGuestPhase -Session 'S' -Command 'x' -Label 'test'
 if ($rc -eq 5) { Ok 'extracts the exit code even when output is present' } else { Bad "rc=$rc" }
+if ($script:runAs -eq 'System') { Ok 'silent phase runs as SYSTEM (Intune-faithful context)' } else { Bad "runAs=$($script:runAs)" }
 Remove-Item Function:\Invoke-Command
 
 Write-Host '[2] Copy-Win32ToolkitResultsFromGuest maps guest files to project-relative paths' -ForegroundColor Cyan
