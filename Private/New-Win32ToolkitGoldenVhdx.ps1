@@ -64,9 +64,14 @@ function New-Win32ToolkitGoldenVhdx {
 
         Expand-WindowsImage -ImagePath $image.ImagePath -Index $image.Index -ApplyPath "$($layout.WindowsDrive)\" -ErrorAction Stop | Out-Null
 
-        $winDir = "$($layout.WindowsDrive)\Windows"
-        & "$winDir\System32\bcdboot.exe" $winDir /s $layout.EspDrive /f UEFI
-        if ($LASTEXITCODE -ne 0) { throw "bcdboot failed (exit $LASTEXITCODE)." }
+        # Use the HOST's bcdboot.exe, NOT the applied image's copy: a newer/different guest build (e.g.
+        # 25H2 media on an older host) has a bcdboot.exe/bcrypt.dll that fails to load on this host with
+        # a "Bad Image 0xc0e90002" error. The host bcdboot still copies the boot files FROM the guest
+        # $winDir onto the ESP (host + guest are the same architecture).
+        $winDir  = "$($layout.WindowsDrive)\Windows"
+        $bcdboot = Join-Path $env:SystemRoot 'System32\bcdboot.exe'
+        & $bcdboot $winDir /s $layout.EspDrive /f UEFI
+        if ($LASTEXITCODE -ne 0) { throw "bcdboot failed (exit $LASTEXITCODE) — see the console output above." }
 
         # Seed the answer file BEFORE dismount (the verified ordering — W: must still be mounted).
         $panther = Join-Path $winDir 'Panther'
