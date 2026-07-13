@@ -24,7 +24,11 @@ function New-Win32ToolkitHyperVSession {
         [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string]$VMName,
         [Parameter(Mandatory)] [ValidateNotNull()]        [pscredential]$Credential,
         [string]$CheckpointName = 'clean-base',
-        [switch]$SkipRevert
+        [switch]$SkipRevert,
+
+        # Interactive GUI runs need a real logged-in desktop; if the checkpoint landed on the login
+        # screen, recover by rebooting to trigger AutoLogon (Confirm-Win32ToolkitGuestDesktop).
+        [switch]$EnsureDesktop
     )
 
     if (-not $SkipRevert) {
@@ -37,6 +41,12 @@ function New-Win32ToolkitHyperVSession {
     # Warm revert returns a running, logged-in guest; -SkipPrep because the golden image already set the
     # execution policy. This still handles the brief window before PowerShell Direct answers.
     Wait-Win32ToolkitVMReady -VMName $VMName -Credential $Credential -SkipPrep | Out-Null
+
+    if ($EnsureDesktop) {
+        if (-not (Confirm-Win32ToolkitGuestDesktop -VMName $VMName -Credential $Credential)) {
+            Write-Warning 'Could not reach an interactive desktop even after a recovery reboot. Is guest AutoLogon configured (Set-Win32ToolkitGuestAutoLogon)? The PSADT GUI may not render — use -Unattended / Silent, or re-checkpoint a logged-in desktop.'
+        }
+    }
 
     return (New-PSSession -VMName $VMName -Credential $Credential -ErrorAction Stop)
 }

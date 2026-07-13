@@ -56,7 +56,7 @@ Write-Host '[4] Invoke-Win32ToolkitHyperVRun orchestration order + always-revert
 function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }
 function Get-Win32ToolkitGuestCredential { [pscredential]::new('w32admin', (ConvertTo-SecureString 'p' -AsPlainText -Force)) }
 $script:log = @()
-function New-Win32ToolkitHyperVSession    { param($VMName, $Credential, $CheckpointName, [switch]$SkipRevert) $script:log += 'session'; 'SESS' }
+function New-Win32ToolkitHyperVSession    { param($VMName, $Credential, $CheckpointName, [switch]$SkipRevert, [switch]$EnsureDesktop) $script:log += 'session'; 'SESS' }
 function Copy-Win32ToolkitProjectToGuest  { param($Session, $ProjectPath, $GuestPath) $script:log += "copyin:$GuestPath" }
 function Invoke-Win32ToolkitGuestPhase    { param($Session, $Command, $Label) $script:log += "phase:$Label"; 0 }
 function Copy-Win32ToolkitResultsFromGuest{ param($Session, $GuestPath, $Destination, $GuestRoot) $script:log += 'copyout' }
@@ -91,7 +91,7 @@ Write-Host '[6] Invoke-Win32ToolkitHyperVRun routes interactive / pause / silent
 function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }
 function Get-Win32ToolkitGuestCredential { [pscredential]::new('.\w32admin', (ConvertTo-SecureString 'p' -AsPlainText -Force)) }
 $script:log2 = @()
-function New-Win32ToolkitHyperVSession     { param($VMName, $Credential, $CheckpointName, [switch]$SkipRevert) 'SESS' }
+function New-Win32ToolkitHyperVSession     { param($VMName, $Credential, $CheckpointName, [switch]$SkipRevert, [switch]$EnsureDesktop) $script:ensureDesktop = $EnsureDesktop.IsPresent; 'SESS' }
 function Copy-Win32ToolkitProjectToGuest   { param($Session, $ProjectPath, $GuestPath) }
 function Copy-Win32ToolkitResultsFromGuest { param($Session, $GuestPath, $Destination, $GuestRoot) }
 function Remove-Win32ToolkitHyperVSession  { param($Session, $VMName, $CheckpointName, [switch]$Revert) }
@@ -109,6 +109,7 @@ $iphases = @(
 )
 Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase $iphases 6>$null | Out-Null
 if ($script:vmconnect) { Ok 'vmconnect opened for the interactive run' } else { Bad 'vmconnect not opened' }
+if ($script:ensureDesktop) { Ok 'interactive run requests -EnsureDesktop (login-screen safety net)' } else { Bad 'EnsureDesktop not requested for interactive run' }
 if (($script:log2 -join ' > ') -eq 'gui:Install (GUI)(w32admin) > pause > gui:Uninstall (GUI)(w32admin) > silent:CollectLogs') { Ok 'interactive/pause/silent routed correctly (SAM name stripped)' } else { Bad "log: $($script:log2 -join ' > ')" }
 Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Invoke-Win32ToolkitGuestInteractive, Function:\Read-Host, Function:\Start-Process, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential
 

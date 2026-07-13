@@ -48,8 +48,11 @@ function Invoke-Win32ToolkitHyperVRun {
 
     $session = $null
     try {
+        # Interactive phases need a logged-in desktop, so ask the session to ensure/recover one.
+        $needsDesktop = @($Phase | Where-Object { $_.Interactive }).Count -gt 0
+
         Write-Host "Reverting '$VMName' to '$CheckpointName' and connecting over PowerShell Direct..." -ForegroundColor Cyan
-        $session = New-Win32ToolkitHyperVSession -VMName $VMName -Credential $Credential -CheckpointName $CheckpointName
+        $session = New-Win32ToolkitHyperVSession -VMName $VMName -Credential $Credential -CheckpointName $CheckpointName -EnsureDesktop:$needsDesktop
 
         Write-Host "Copying project into the guest (C:\PSADT)..." -ForegroundColor Cyan
         Copy-Win32ToolkitProjectToGuest -Session $session -ProjectPath $ProjectPath -GuestPath 'C:\PSADT'
@@ -57,10 +60,9 @@ function Invoke-Win32ToolkitHyperVRun {
             Copy-Win32ToolkitProjectToGuest -Session $session -ProjectPath $BaselineProjectPath -GuestPath 'C:\PSADTOld'
         }
 
-        # Interactive phases run in the guest's logged-on desktop session (GUI visible); if any exist,
-        # open the VM console so the operator can watch/drive it. Pause phases block on the host.
+        # If any phase is interactive, open the VM console so the operator can watch/drive the GUI.
         $sam = $Credential.UserName.Split('\')[-1]
-        if (@($Phase | Where-Object { $_.Interactive }).Count -gt 0) {
+        if ($needsDesktop) {
             Write-Host 'Opening the VM console (vmconnect) for interactive GUI testing...' -ForegroundColor Cyan
             Start-Process -FilePath 'vmconnect.exe' -ArgumentList 'localhost', $VMName -ErrorAction SilentlyContinue
         }
