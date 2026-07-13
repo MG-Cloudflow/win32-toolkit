@@ -23,10 +23,11 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Remove-Win32ToolkitHyperVSession.ps1')
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitHyperVRun.ps1')
 
-Write-Host '[1] Invoke-Win32ToolkitGuestPhase returns the guest exit code' -ForegroundColor Cyan
-function Invoke-Command { param($Session, [scriptblock]$ScriptBlock, $ArgumentList) return 3 }
+Write-Host '[1] Invoke-Win32ToolkitGuestPhase returns ONLY the exit code (not the output stream)' -ForegroundColor Cyan
+# Simulate a guest that emits output lines followed by the exit code (the shape that broke the [int] cast).
+function Invoke-Command { param($Session, [scriptblock]$ScriptBlock, $ArgumentList) return @('install output line', 'more output', 5) }
 $rc = Invoke-Win32ToolkitGuestPhase -Session 'S' -Command 'x' -Label 'test'
-if ($rc -eq 3) { Ok 'passes through the guest exit code' } else { Bad "rc=$rc" }
+if ($rc -eq 5) { Ok 'extracts the exit code even when output is present' } else { Bad "rc=$rc" }
 Remove-Item Function:\Invoke-Command
 
 Write-Host '[2] Copy-Win32ToolkitResultsFromGuest maps guest files to project-relative paths' -ForegroundColor Cyan

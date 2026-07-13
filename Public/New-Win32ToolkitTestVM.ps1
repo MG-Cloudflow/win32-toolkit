@@ -135,6 +135,20 @@ function New-Win32ToolkitTestVM {
         Start-VM -Name $Name -ErrorAction Stop
         Wait-Win32ToolkitVMReady -VMName $Name -Credential $Credential | Out-Null
 
+        # Let the first-logon experience finish (the "getting ready / checking for updates" animation)
+        # so the warm checkpoint captures a SETTLED desktop, not a half-finished OOBE screen. explorer.exe
+        # only runs once the interactive shell is up.
+        Write-Host 'Waiting for the guest desktop to settle (explorer)...' -ForegroundColor Cyan
+        $shellDeadline = (Get-Date).AddMinutes(10)
+        $shellUp = $false
+        do {
+            Start-Sleep -Seconds 10
+            $shellUp = [bool](Invoke-Command -VMName $Name -Credential $Credential -ScriptBlock {
+                [bool](Get-Process -Name explorer -ErrorAction SilentlyContinue)
+            } -ErrorAction SilentlyContinue)
+        } until ($shellUp -or (Get-Date) -gt $shellDeadline)
+        if (-not $shellUp) { Write-Warning 'Desktop shell (explorer) not detected before timeout — checkpointing anyway.' }
+
         Set-VM -Name $Name -CheckpointType Standard
         Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName
         Write-Host "✓ Warm '$CheckpointName' checkpoint taken." -ForegroundColor Green
