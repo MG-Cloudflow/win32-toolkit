@@ -62,6 +62,13 @@ function Show-Win32ToolkitProjectActions {
                     $sc = Read-SpectreSelection -Message 'Test scenario' -Choices $scenChoices -ChoiceLabelProperty 'Label' -Color Blue
 
                     $testSplat = @{ ProjectPath = $project.Path; Scenario = $sc.Key; Backend = $backend.Key }
+                    if ($backend.Key -eq 'HyperV' -and $sc.Key -eq 'InstallUninstall') {
+                        $mode = Read-SpectreSelection -Message 'Hyper-V run mode' -Choices @(
+                            [pscustomobject]@{ Key = 'interactive'; Label = 'Interactive — watch the PSADT GUI in the VM console, test, then uninstall' }
+                            [pscustomobject]@{ Key = 'unattended';  Label = 'Silent — install then uninstall back-to-back (no GUI)' }
+                        ) -ChoiceLabelProperty 'Label' -Color Blue
+                        if ($mode.Key -eq 'unattended') { $testSplat['Unattended'] = $true }
+                    }
                     if ($sc.Key -eq 'Update') {
                         if (-not (Read-SpectreConfirm -Message 'Also verify the update-app requirement rule during the test? (recommended)' -DefaultAnswer 'y')) {
                             $testSplat['SkipRequirementCheck'] = $true

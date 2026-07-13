@@ -86,6 +86,32 @@ try { Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(@{ Label = 'X
 catch { if ("$_" -match 'guest credential') { Ok 'missing credential -> clear throw' } else { Bad "$_" } }
 Remove-Item Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential
 
+Write-Host '[6] Invoke-Win32ToolkitHyperVRun routes interactive / pause / silent phases + opens vmconnect' -ForegroundColor Cyan
+. (Join-Path $repo 'Private\Invoke-Win32ToolkitHyperVRun.ps1')
+function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }
+function Get-Win32ToolkitGuestCredential { [pscredential]::new('.\w32admin', (ConvertTo-SecureString 'p' -AsPlainText -Force)) }
+$script:log2 = @()
+function New-Win32ToolkitHyperVSession     { param($VMName, $Credential, $CheckpointName, [switch]$SkipRevert) 'SESS' }
+function Copy-Win32ToolkitProjectToGuest   { param($Session, $ProjectPath, $GuestPath) }
+function Copy-Win32ToolkitResultsFromGuest { param($Session, $GuestPath, $Destination, $GuestRoot) }
+function Remove-Win32ToolkitHyperVSession  { param($Session, $VMName, $CheckpointName, [switch]$Revert) }
+function Invoke-Win32ToolkitGuestPhase       { param($Session, $Command, $Label) $script:log2 += "silent:$Label"; 0 }
+function Invoke-Win32ToolkitGuestInteractive { param($Session, $Command, $UserName, $Label) $script:log2 += "gui:$Label($UserName)"; 0 }
+function Read-Host { param($Prompt) $script:log2 += 'pause' }
+$script:vmconnect = $false
+function Start-Process { param($FilePath, $ArgumentList, $ErrorAction) if ($FilePath -eq 'vmconnect.exe') { $script:vmconnect = $true } }
+
+$iphases = @(
+    @{ Label = 'Install (GUI)';   Command = 'x'; Interactive = $true }
+    @{ Label = 'Test';            Pause = $true }
+    @{ Label = 'Uninstall (GUI)'; Command = 'y'; Interactive = $true }
+    @{ Label = 'CollectLogs';     Command = 'z'; IgnoreExit = $true }
+)
+Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase $iphases 6>$null | Out-Null
+if ($script:vmconnect) { Ok 'vmconnect opened for the interactive run' } else { Bad 'vmconnect not opened' }
+if (($script:log2 -join ' > ') -eq 'gui:Install (GUI)(w32admin) > pause > gui:Uninstall (GUI)(w32admin) > silent:CollectLogs') { Ok 'interactive/pause/silent routed correctly (SAM name stripped)' } else { Bad "log: $($script:log2 -join ' > ')" }
+Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Invoke-Win32ToolkitGuestInteractive, Function:\Read-Host, Function:\Start-Process, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential
+
 if ($fail -eq 0) {
     Write-Host "`nAll HyperVProvider tests passed." -ForegroundColor Green
     exit 0

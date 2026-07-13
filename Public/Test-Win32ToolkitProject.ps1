@@ -90,7 +90,14 @@ function Test-Win32ToolkitProject {
         # PowerShell Direct; 'Sandbox' uses Windows Sandbox.
         [Parameter(Mandatory = $false)]
         [ValidateSet('Sandbox', 'HyperV')]
-        [string]$Backend
+        [string]$Backend,
+
+        # Hyper-V InstallUninstall only: run SILENT and back-to-back (no GUI, no vmconnect, no pause) —
+        # ideal for automated runs. The default is INTERACTIVE: PSADT runs with its GUI in the VM console
+        # (vmconnect opens) with a pause to test the app before uninstall. (Overrides the HyperVTestMode
+        # config default.)
+        [Parameter(Mandatory = $false)]
+        [switch]$Unattended
     )
 
     try {
@@ -167,15 +174,27 @@ function Test-Win32ToolkitProject {
                 if ($resolvedBackend -eq 'HyperV') {
                     # Log collector runs inside the guest (copies PSADT/MSI logs to Sandbox\Logs).
                     $null = New-LogCollectorScript -ProjectPath $ProjectPath
-                    # No in-guest WinForms countdown over PowerShell Direct (no interactive desktop in the
-                    # session); install → uninstall run back-to-back. Interactive verification via
-                    # vmconnect is a follow-up.
-                    $phases = @(
-                        @{ Label = 'Install';     Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Silent" }
-                        @{ Label = 'Uninstall';   Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeploymentType Uninstall -DeployMode Silent" }
-                        @{ Label = 'CollectLogs'; Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
-                    )
-                    Write-Host 'Running Install → Uninstall in the Hyper-V VM over PowerShell Direct...' -ForegroundColor Cyan
+
+                    # Interactive (default) shows the PSADT GUI in the VM console for hands-on testing;
+                    # -Unattended (or HyperVTestMode=Unattended) runs silent + back-to-back for automation.
+                    $interactive = -not ($Unattended -or ((Get-Win32ToolkitConfigValue -Name 'HyperVTestMode' -Default 'Interactive') -eq 'Unattended'))
+                    if ($interactive) {
+                        $phases = @(
+                            @{ Label = 'Install (GUI)';                   Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1'"; Interactive = $true }
+                            @{ Label = 'Test the app in the VM window';   Pause = $true }
+                            @{ Label = 'Uninstall (GUI)';                 Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeploymentType Uninstall"; Interactive = $true }
+                            @{ Label = 'CollectLogs';                     Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
+                        )
+                        Write-Host 'Running an INTERACTIVE Install → test → Uninstall in the Hyper-V VM (watch the vmconnect window)...' -ForegroundColor Cyan
+                    }
+                    else {
+                        $phases = @(
+                            @{ Label = 'Install';     Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Silent" }
+                            @{ Label = 'Uninstall';   Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeploymentType Uninstall -DeployMode Silent" }
+                            @{ Label = 'CollectLogs'; Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
+                        )
+                        Write-Host 'Running a SILENT Install → Uninstall in the Hyper-V VM over PowerShell Direct...' -ForegroundColor Cyan
+                    }
                     $ran = Invoke-Win32ToolkitHyperVRun -ProjectPath $ProjectPath -Phase $phases -Output @('Sandbox\Logs\*')
                     if ($ran) {
                         Write-Host "✓ Hyper-V install/uninstall completed. Logs: $(Join-Path $ProjectPath 'Sandbox\Logs')" -ForegroundColor Green

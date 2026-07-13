@@ -57,8 +57,24 @@ function Invoke-Win32ToolkitHyperVRun {
             Copy-Win32ToolkitProjectToGuest -Session $session -ProjectPath $BaselineProjectPath -GuestPath 'C:\PSADTOld'
         }
 
+        # Interactive phases run in the guest's logged-on desktop session (GUI visible); if any exist,
+        # open the VM console so the operator can watch/drive it. Pause phases block on the host.
+        $sam = $Credential.UserName.Split('\')[-1]
+        if (@($Phase | Where-Object { $_.Interactive }).Count -gt 0) {
+            Write-Host 'Opening the VM console (vmconnect) for interactive GUI testing...' -ForegroundColor Cyan
+            Start-Process -FilePath 'vmconnect.exe' -ArgumentList 'localhost', $VMName -ErrorAction SilentlyContinue
+        }
+
         foreach ($ph in $Phase) {
-            $exit = Invoke-Win32ToolkitGuestPhase -Session $session -Command $ph.Command -Label $ph.Label
+            if ($ph.Pause) {
+                Read-Host "  $($ph.Label) — press Enter to continue"
+                continue
+            }
+            $exit = if ($ph.Interactive) {
+                Invoke-Win32ToolkitGuestInteractive -Session $session -Command $ph.Command -UserName $sam -Label $ph.Label
+            } else {
+                Invoke-Win32ToolkitGuestPhase -Session $session -Command $ph.Command -Label $ph.Label
+            }
             if (-not $ph.IgnoreExit -and $exit -ne 0) {
                 Write-Warning "Guest phase '$($ph.Label)' exited with code $exit."
             }
