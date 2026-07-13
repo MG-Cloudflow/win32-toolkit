@@ -154,13 +154,15 @@ function New-Win32ToolkitTestVM {
         } until ($shellUp -or (Get-Date) -gt $shellDeadline)
         if (-not $shellUp) { Write-Warning 'Desktop shell (explorer) not detected before timeout — checkpointing anyway.' }
 
-        # Safety net: configure guest AutoLogon so any future boot lands on the desktop (recovers if a
-        # checkpoint/boot ever shows the login screen — see Confirm-Win32ToolkitGuestDesktop).
+        # Reconnect the NIC BEFORE configuring AutoLogon (Sysinternals Autologon needs guest internet) and
+        # before the warm checkpoint (so the workload has internet on revert).
+        Connect-VMNetworkAdapter -VMName $Name -SwitchName $SwitchName -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 8   # let the NIC acquire an address
+
+        # Safety net: configure guest AutoLogon so a future boot lands on the desktop (the -EnsureDesktop
+        # recovery path — the normal flow reverts the checkpoint and needs no login).
         try { Set-Win32ToolkitGuestAutoLogon -VMName $Name -Credential $Credential }
         catch { Write-Warning "Could not configure guest AutoLogon: $($_.Exception.Message)" }
-
-        # Reconnect the NIC before the warm checkpoint so the workload has internet on revert.
-        Connect-VMNetworkAdapter -VMName $Name -SwitchName $SwitchName -ErrorAction SilentlyContinue
 
         Set-VM -Name $Name -CheckpointType Standard
         Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName
