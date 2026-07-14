@@ -17,9 +17,12 @@ function Get-InstallerFileInfo {
         return $installerInfo
     }
     
-    # Check for EXE files
-    $exeFiles = Get-ChildItem -Path $FilesPath -Filter "*.exe" -File | Where-Object { 
-        $_.Name -notlike "*Setup*" -and 
+    # Check for EXE files.
+    # Exclude only PSADT'S OWN binaries. There used to be a '*Setup*' exclusion here, which silently
+    # discarded the installer for any app whose EXE is called setup.exe / acme-setup.exe / VLCSetup.exe —
+    # i.e. the single most common name an installer has. Such a project failed outright with
+    # "No installer (msi/exe/msix/appx) detected", and a manual app could not be packaged at all.
+    $exeFiles = Get-ChildItem -Path $FilesPath -Filter "*.exe" -File | Where-Object {
         $_.Name -notlike "*Invoke-AppDeployToolkit*" -and
         $_.Name -notlike "*ServiceUI*"
     }

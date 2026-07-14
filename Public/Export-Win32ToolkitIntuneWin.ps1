@@ -140,9 +140,18 @@ function Export-Win32ToolkitIntuneWin {
             catch {
                 throw "Failed to download IntuneWinAppUtil.exe: $($_.Exception.Message)`nDownload it manually from https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool and place it in: $toolsFolder"
             }
+
+            # This binary is about to be EXECUTED on the packaging host, and the fallback URL above is a
+            # MUTABLE ref (…/master/IntuneWinAppUtil.exe). Verify it is genuinely Microsoft-signed and fail
+            # CLOSED — deleting it, so a rejected binary can never be silently reused by the next run.
+            Assert-Win32ToolkitTrustedBinary -Path $utilPath -ExpectedSubject 'Microsoft Corporation' -RemoveOnFailure
+            Write-Host '  ✓ Authenticode verified (Microsoft Corporation)' -ForegroundColor Green
         }
         else {
-            Write-Host "✓ Using IntuneWinAppUtil.exe from: $toolsFolder" -ForegroundColor Gray
+            # Also verify an ALREADY-PRESENT copy: a binary in Tools\ is not trustworthy merely because it
+            # exists — it could be left over from a compromised download, or dropped there by something else.
+            Assert-Win32ToolkitTrustedBinary -Path $utilPath -ExpectedSubject 'Microsoft Corporation' -RemoveOnFailure
+            Write-Host "✓ Using IntuneWinAppUtil.exe from: $toolsFolder (Authenticode verified)" -ForegroundColor Gray
         }
 
         # ── Step 2: Copy raw project → Staging\<Template>\ ───────────────────────
