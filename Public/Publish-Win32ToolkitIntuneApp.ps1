@@ -33,6 +33,19 @@ function Publish-Win32ToolkitIntuneApp {
     "app already installed" requirement rule. Fails fast if no requirement rule can be built.
 .PARAMETER UpdateNameSuffix
     Display-name suffix for the update app (default ' (Update)').
+.PARAMETER TimeoutSeconds
+    How long to wait for each of the two ASYNCHRONOUS Intune steps — the Azure Storage SAS URI (step 6)
+    and the file commit (step 8) — before giving up. Default 300 s.
+
+    Why 300 and not the old 60: both waits used to be a fixed 20 x 3 s loop, i.e. a hard 60-second
+    ceiling that could not be raised. Intune's commit does the server-side decrypt/validate of the whole
+    package, so it scales with package size; a 200 MB+ .intunewin (normal for a PSADT project with a
+    bundled installer) regularly needs more than a minute, and the timeout fired AFTER the blob had
+    already been uploaded — throwing away a publish that would have succeeded. 300 s covers the observed
+    worst case with headroom while still failing in a reasonable time when the tenant is genuinely stuck.
+
+    Polling backs off exponentially (2 s, doubling, capped at 15 s), so a slow tenant is polled patiently
+    rather than hammered.
 .EXAMPLE
     Publish-Win32ToolkitIntuneApp `
         -IntuneWinPath 'C:\Win32Apps\IntuneWin\Git_x64_2.53.0.intunewin' `
@@ -56,7 +69,12 @@ function Publish-Win32ToolkitIntuneApp {
         [switch]$AsUpdate,
 
         # Display-name suffix that distinguishes the update app from the install app.
-        [string]$UpdateNameSuffix = ' (Update)'
+        [string]$UpdateNameSuffix = ' (Update)',
+
+        # Timeout for the two asynchronous Intune waits (SAS URI, file commit). See the help above for
+        # why the default is 300 s and not the 60 s these loops were previously hardcoded to.
+        [ValidateRange(5, 7200)]
+        [int]$TimeoutSeconds = 300
     )
 
     $baseUri  = 'https://graph.microsoft.com/beta/deviceAppManagement'
@@ -78,11 +96,11 @@ function Publish-Win32ToolkitIntuneApp {
         $appCfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
         $app    = if ($appCfg.PSObject.Properties.Name -contains 'App') { $appCfg.App } else { $null }
 
+        # Every manifest field comes from Get-YAMLInstallerInfo, which reads the RIGHT file per field (the
+        # description/URL live in the *.locale* manifest, not the installer manifest). This block used to grab
+        # the alphabetically-first *.yaml — always the installer manifest — so the Intune app's description and
+        # information URL silently published as empty strings.
         $yamlInfo = Get-YAMLInstallerInfo -FilesPath $filesPath
-        $rawYaml  = ''
-        $yamlFile = Get-ChildItem -Path $filesPath -Filter '*.yaml' -File -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-        if ($yamlFile) { $rawYaml = Get-Content $yamlFile.FullName -Raw }
 
         $displayName = if     ($app -and $app.Name)                      { $app.Name }
                        elseif ($yamlInfo -and $yamlInfo.PackageName)     { $yamlInfo.PackageName }
@@ -94,16 +112,14 @@ function Publish-Win32ToolkitIntuneApp {
                           elseif ($yamlInfo -and $yamlInfo.PackageVersion) { $yamlInfo.PackageVersion }
                           else                                           { '' }
         $description = if     ($app -and $app.Description)               { $app.Description }
-                       elseif ($rawYaml -match '(?m)^\s*ShortDescription:\s*(.+)') { $matches[1].Trim() }
-                       elseif ($rawYaml -match '(?m)^\s*Description:\s*(.+)')      { $matches[1].Trim() }
+                       elseif ($yamlInfo -and $yamlInfo.Description)     { $yamlInfo.Description }
                        else                                              { '' }
         $informationUrl = if     ($app -and $app.InformationUrl)         { $app.InformationUrl }
-                          elseif ($rawYaml -match '(?m)^\s*PackageUrl:\s*(.+)')   { $matches[1].Trim() }
-                          elseif ($rawYaml -match '(?m)^\s*PublisherUrl:\s*(.+)') { $matches[1].Trim() }
+                          elseif ($yamlInfo -and $yamlInfo.InformationUrl) { $yamlInfo.InformationUrl }
                           else                                           { '' }
 
         $wingetId = ''
-        if ($rawYaml -match '(?m)^\s*PackageIdentifier:\s*(.+)') { $wingetId = $matches[1].Trim() }
+        if ($yamlInfo -and $yamlInfo.PackageIdentifier) { $wingetId = $yamlInfo.PackageIdentifier }
 
         # ── Architecture: AppConfig.App.Arch, else parse the project folder name ──
         $arch = 'x64'
@@ -225,22 +241,16 @@ function Publish-Win32ToolkitIntuneApp {
         Write-Host "  ✓ File entry: $fileId" -ForegroundColor Green
 
         # ── Step 4: Poll for Azure Storage SAS URI ────────────────────────────────
-        Write-Host 'Waiting for Azure Storage SAS URI...' -ForegroundColor Yellow
-        $sasUri = $null
-        for ($i = 0; $i -lt 20; $i++) {
-            Start-Sleep -Seconds 3
-            $poll = Invoke-MgGraphRequest -Method GET -Uri $fileUri -OutputType PSObject
-            if ($poll.uploadState -eq 'azureStorageUriRequestSuccess') {
-                $sasUri = $poll.azureStorageUri
-                Write-Host '  ✓ SAS URI received.' -ForegroundColor Green
-                break
-            }
-            if ($poll.uploadState -like '*Error*' -or $poll.uploadState -like '*Fail*') {
-                throw "Azure Storage URI request failed. Upload state: $($poll.uploadState)"
-            }
-            Write-Host "  Waiting... (state: $($poll.uploadState))" -ForegroundColor Gray
-        }
-        if (-not $sasUri) { throw 'Timed out waiting for Azure Storage SAS URI (60 s).' }
+        # Both async waits (here and the commit below) go through the SAME helper, so their timeout and
+        # back-off behaviour cannot drift apart.
+        Write-Host "Waiting for Azure Storage SAS URI (timeout ${TimeoutSeconds}s)..." -ForegroundColor Yellow
+        $poll = Wait-Win32ToolkitUploadState -FileUri $fileUri `
+            -TargetState 'azureStorageUriRequestSuccess' `
+            -Activity 'the Azure Storage SAS URI' `
+            -TimeoutSeconds $TimeoutSeconds
+        $sasUri = $poll.azureStorageUri
+        if (-not $sasUri) { throw 'Intune reported azureStorageUriRequestSuccess but returned no azureStorageUri.' }
+        Write-Host '  ✓ SAS URI received.' -ForegroundColor Green
 
         # ── Step 5: Extract inner encrypted file to temp ──────────────────────────
         Write-Host 'Extracting encrypted content file...' -ForegroundColor Yellow
@@ -285,22 +295,14 @@ function Publish-Win32ToolkitIntuneApp {
         Invoke-MgGraphRequest -Method POST -Uri "$fileUri/commit" -Body ($commitBody | ConvertTo-Json -Depth 5) -ContentType 'application/json' | Out-Null
 
         # ── Step 8: Poll for commit success ───────────────────────────────────────
-        Write-Host 'Waiting for commit confirmation...' -ForegroundColor Yellow
-        $committed = $false
-        for ($i = 0; $i -lt 20; $i++) {
-            Start-Sleep -Seconds 3
-            $poll = Invoke-MgGraphRequest -Method GET -Uri $fileUri -OutputType PSObject
-            if ($poll.uploadState -eq 'commitFileSuccess') {
-                Write-Host '  ✓ Commit successful.' -ForegroundColor Green
-                $committed = $true
-                break
-            }
-            if ($poll.uploadState -like '*Error*' -or $poll.uploadState -like '*Fail*') {
-                throw "File commit failed. Upload state: $($poll.uploadState)"
-            }
-            Write-Host "  Waiting... (state: $($poll.uploadState))" -ForegroundColor Gray
-        }
-        if (-not $committed) { throw 'Timed out waiting for file commit (60 s).' }
+        # The commit makes Intune decrypt + validate the whole package server-side, so this wait scales
+        # with package size — it is the one that used to blow the 60 s ceiling on large .intunewin files.
+        Write-Host "Waiting for commit confirmation (timeout ${TimeoutSeconds}s)..." -ForegroundColor Yellow
+        $null = Wait-Win32ToolkitUploadState -FileUri $fileUri `
+            -TargetState 'commitFileSuccess' `
+            -Activity 'the file commit' `
+            -TimeoutSeconds $TimeoutSeconds
+        Write-Host '  ✓ Commit successful.' -ForegroundColor Green
 
         # ── Step 9: Link content version to app ──────────────────────────────────
         Write-Host 'Linking content version to app...' -ForegroundColor Yellow

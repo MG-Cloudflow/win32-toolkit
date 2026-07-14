@@ -276,7 +276,43 @@ function Invoke-Win32Toolkit {
 
             }
             else {
-                Write-Warning 'Project was created but download failed. You can manually add the application files to the Files directory.'
+                # The download failed, so Rename/Configure/Finalize above were all skipped. Anything the
+                # user asked for downstream (test, package, publish, dependencies) silently did NOT happen.
+                # Name the options they actually supplied — a failed run must never look like a published one.
+                # This stays a WARNING: the project folder is deliberately kept so the run can be retried.
+                Write-Warning "Download FAILED for '$($selectedApp.Id)' ($selectedArch) - no installer was placed in the project's Files folder."
+
+                $skipped = [System.Collections.Generic.List[string]]::new()
+                if ($PSBoundParameters.ContainsKey('RunTest') -and $RunTest) {
+                    $skipped.Add("-RunTest ($($RunTest -join ', ')): the package was NOT tested - no Sandbox/Hyper-V run happened.")
+                }
+                if ($PSBoundParameters.ContainsKey('PackageIntune') -and $PackageIntune) {
+                    $skipped.Add('-PackageIntune: NOTHING was packaged - no .intunewin file was produced.')
+                }
+                if ($PSBoundParameters.ContainsKey('PublishIntune') -and $PublishIntune) {
+                    $skipped.Add('-PublishIntune: NOTHING was published - no app was uploaded to Intune.')
+                }
+                if ($PSBoundParameters.ContainsKey('PublishUpdate') -and $PublishUpdate) {
+                    $skipped.Add('-PublishUpdate: no update app was published to Intune.')
+                }
+                if ($PSBoundParameters.ContainsKey('DependsOn') -and $DependsOn) {
+                    $skipped.Add("-DependsOn ($($DependsOn -join ', ')): no dependencies were declared on the project.")
+                }
+
+                if ($skipped.Count -gt 0) {
+                    Write-Warning 'The following options you passed were SKIPPED because the download failed:'
+                    foreach ($item in $skipped) { Write-Warning "  * $item" }
+                }
+
+                Write-Warning "The project folder was still created: $projectFullPath"
+                Write-Warning "Next: re-run the same command to retry a transient download failure."
+                # Do NOT tell the user to drop an installer into Files\ and re-run: Create-PSADTProject removes
+                # and recreates the project directory on every run, so anything placed there by hand is deleted
+                # before the (still failing) download is retried. Supplying your own installer is the MANUAL
+                # flow's job.
+                Write-Warning "To package an installer you supply yourself, use the manual flow instead:"
+                Write-Warning "  New-Win32ToolkitManualApp -Name '$($selectedApp.Name)' -Version '$($selectedApp.Version)' -Architecture $selectedArch -SourcePath <path-to-your-installer>"
+                Write-Warning "Do not copy files into '$downloadPath' and re-run this command — the project folder is recreated from scratch each run, which would delete them."
             }
         }
         else {

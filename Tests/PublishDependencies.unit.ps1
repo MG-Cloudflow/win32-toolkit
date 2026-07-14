@@ -14,6 +14,7 @@ $fail = 0
 function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
+. (Join-Path $repo 'Private\Wait-Win32ToolkitUploadState.ps1')   # the SAS-URI / commit poller Publish now uses
 . (Join-Path $repo 'Public\Publish-Win32ToolkitIntuneApp.ps1')
 
 $APPID = '11111111-2222-3333-4444-555555555555'

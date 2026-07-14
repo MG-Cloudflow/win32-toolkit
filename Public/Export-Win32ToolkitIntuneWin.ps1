@@ -26,8 +26,13 @@ function Export-Win32ToolkitIntuneWin {
     If omitted, an interactive numbered list is shown.
 .PARAMETER BasePath
     Root folder containing the Templates\, Projects\, Staging\, and IntuneWin\ tiers. If omitted,
-    the registry-saved value is used (see Invoke-Win32Toolkit). Ignored when ProjectPath is supplied
-    — the BasePath and template are derived from the path.
+    the registry-saved value is used (see Invoke-Win32Toolkit).
+
+    When -ProjectPath is supplied, an explicit -BasePath is honoured: Staging\ and IntuneWin\ are
+    written under it. If -BasePath is omitted, the base is derived from the project path, which must
+    follow the <BasePath>\Projects\<Template>\<ProjectName> layout — a project stored anywhere else
+    is an error telling you to pass -BasePath (rather than silently creating Staging\ and IntuneWin\
+    in an unexpected place).
 .EXAMPLE
     Export-Win32ToolkitIntuneWin
 .EXAMPLE
@@ -46,6 +51,13 @@ function Export-Win32ToolkitIntuneWin {
 .EXAMPLE
     # Publish both the install app and the requirement-gated update app
     Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0' -PublishIntune -PublishUpdate
+.PARAMETER PublishTimeoutSeconds
+    Passed straight to Publish-Win32ToolkitIntuneApp -TimeoutSeconds: how long to wait for Intune's two
+    asynchronous steps (Azure Storage SAS URI, file commit). Omit to use that command's default (300 s).
+    Raise it for very large packages or a slow tenant.
+.EXAMPLE
+    # A big package on a slow tenant — wait up to 15 minutes for the commit
+    Export-Win32ToolkitIntuneWin -ProjectPath $proj -PublishIntune -PublishTimeoutSeconds 900
 #>
     [CmdletBinding()]
     param(
@@ -66,10 +78,20 @@ function Export-Win32ToolkitIntuneWin {
 
         # Suppress the interactive "Upload to Intune now?" prompt (used by the TUI / automation).
         [Parameter(Mandatory = $false)]
-        [switch]$NoPublishPrompt
+        [switch]$NoPublishPrompt,
+
+        # Forwarded to Publish-Win32ToolkitIntuneApp -TimeoutSeconds. Left unbound by default so the
+        # default lives in exactly one place (Publish's own parameter) instead of being duplicated here.
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(5, 7200)]
+        [int]$PublishTimeoutSeconds
     )
 
     try {
+        # Captured BEFORE the picker branch below overwrites $BasePath with the resolved/registry value:
+        # only a base the CALLER actually passed may override the layout derived from the project path.
+        $explicitBasePath = -not [string]::IsNullOrWhiteSpace($BasePath)
+
         # ── Project resolution ────────────────────────────────────────────────────
         if (-not $ProjectPath) {
             $BasePath = Get-Win32ToolkitBasePath -BasePath $BasePath
@@ -93,12 +115,34 @@ function Export-Win32ToolkitIntuneWin {
             throw "Setup file not found: $setupFile`nVerify this is a valid PSADT v4 project folder."
         }
 
-        # Derive layout from ProjectPath: <BasePath>\Projects\<Template>\<ProjectName>
-        $projectName   = Split-Path $ProjectPath -Leaf
-        $templateSeg   = Split-Path (Split-Path $ProjectPath -Parent) -Leaf
-        $projectsRoot  = Split-Path (Split-Path $ProjectPath -Parent) -Parent
-        $derivedBase   = Split-Path $projectsRoot -Parent
-        $paths         = Get-Win32ToolkitPaths -BasePath $derivedBase
+        # ── Layout resolution: <BasePath>\Projects\<Template>\<ProjectName> ──────
+        # An explicitly supplied -BasePath WINS — silently ignoring a parameter the caller passed and
+        # writing Staging\ / IntuneWin\ somewhere else is never the right answer. Only when no -BasePath
+        # was given do we derive it from the project path, and then the layout is VALIDATED: a project
+        # that does not live under a Projects\<Template>\ pair fails loudly instead of scattering output
+        # into a surprising directory two levels above wherever the project happens to sit.
+        $resolvedProject = (Resolve-Path -LiteralPath $ProjectPath).ProviderPath.TrimEnd('\')
+        $projectName     = Split-Path $resolvedProject -Leaf
+        $templateSeg     = Split-Path (Split-Path $resolvedProject -Parent) -Leaf
+
+        if ($explicitBasePath) {
+            $resolvedBase = $BasePath.Trim().TrimEnd('\')
+        }
+        else {
+            $projectsRoot = Split-Path (Split-Path $resolvedProject -Parent) -Parent
+            $derivedBase  = if ([string]::IsNullOrWhiteSpace($projectsRoot)) { $null } else { Split-Path $projectsRoot -Parent }
+
+            if ([string]::IsNullOrWhiteSpace($derivedBase) -or
+                (Split-Path $projectsRoot -Leaf) -ne 'Projects') {
+                throw ("Cannot derive the BasePath from this project path: $resolvedProject" +
+                       "`nThe expected layout is <BasePath>\Projects\<Template>\<ProjectName>." +
+                       "`nRe-run with an explicit -BasePath so Staging\ and IntuneWin\ are created where you expect them.")
+            }
+
+            $resolvedBase = $derivedBase
+        }
+
+        $paths = Get-Win32ToolkitPaths -BasePath $resolvedBase
 
         # ── Step 1: Locate IntuneWinAppUtil.exe ──────────────────────────────────
         # Module root is one level up from this Public\ script
@@ -225,19 +269,27 @@ function Export-Win32ToolkitIntuneWin {
                 $answer = Read-Host 'Upload to Microsoft Intune now? (Y/N)'
                 $doInstall = $answer -match '^[Yy]'
             }
+
+            # Only forward the timeout when the caller actually supplied one — otherwise Publish's own
+            # default (300 s) applies, so the value is never duplicated in two places.
+            $publishArgs = @{}
+            if ($PSBoundParameters.ContainsKey('PublishTimeoutSeconds')) {
+                $publishArgs['TimeoutSeconds'] = $PublishTimeoutSeconds
+            }
+
             if ($doInstall) {
                 # Publish now EMITS a result object ({ AppId; DisplayName; ... }) so dependencies can be
                 # related to the app it just created. Export's contract is to emit NOTHING, and it is called
                 # bare from Invoke-Win32ToolkitFinalize and the TUI — so capture it instead of leaking it
                 # into their pipelines.
-                $null = Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath
+                $null = Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath @publishArgs
             }
             if ($doUpdate) {
                 # Pre-check: if no reliable "already installed" signal exists (e.g. an MSI with no
                 # UpgradeCode), skip the update gracefully with a warning instead of throwing — which
                 # matters most in "both" mode, where the install app has already uploaded.
                 if (Get-Win32ToolkitRequirementRule -ProjectPath $ProjectPath) {
-                    $null = Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath -AsUpdate
+                    $null = Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath -AsUpdate @publishArgs
                 }
                 else {
                     Write-Warning 'Skipped the update app: this project has no reliable "already installed" signal (no install tattoo, MSI UpgradeCode, or app name). Publish the install app, or use supersedence.'

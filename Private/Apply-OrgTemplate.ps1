@@ -50,7 +50,10 @@ function Apply-OrgTemplate {
                 $cfg = [regex]::Replace($cfg, '(?m)(# Log path used for Toolkit logging\.\r?\n\s*LogPath = )[^\r\n]+', { param($m) $m.Groups[1].Value + "'$logEsc'" })
             }
 
-            Set-Content -Path $configPath -Value $cfg -Encoding UTF8
+            # UTF-8 WITH BOM — read on-device by Windows PowerShell 5.1 (Import-PowerShellDataFile), which
+            # decodes a BOM-less file as ANSI and would mojibake a non-ASCII CompanyName. PS7's
+            # Set-Content -Encoding UTF8 writes NO BOM, so write the bytes ourselves.
+            [System.IO.File]::WriteAllText($configPath, $cfg, (New-Object System.Text.UTF8Encoding($true)))
             Write-Host '  ✓ config.psd1 updated' -ForegroundColor Green
         }
 
@@ -72,7 +75,9 @@ function Apply-OrgTemplate {
                 -Pattern '(?s)    ProgressPrompt = @\{.*?(?=\r?\n    RestartPrompt)' `
                 -Replacement $newProg -Multiline -Label 'progress-prompt messages'
 
-            Set-Content -Path $strPath -Value $str -Encoding UTF8
+            # UTF-8 WITH BOM (see config.psd1 above) — dialog strings are the most likely place for
+            # non-ASCII text (accents, curly quotes, ™/®), and they render on the user's screen.
+            [System.IO.File]::WriteAllText($strPath, $str, (New-Object System.Text.UTF8Encoding($true)))
             Write-Host '  ✓ strings.psd1 updated' -ForegroundColor Green
         }
 
@@ -178,7 +183,9 @@ function Apply-OrgTemplate {
                 -Pattern '(?s)    ## (?:Display a message at the end[^\n]*\r?\n    if \(!\$adtSession\.UseDefaultMsi\)\r?\n    \{[\s\S]*?\}|Completion prompt disabled by org template\.)' `
                 -Replacement $newCompletion -Multiline -Label 'completion prompt'
 
-            Set-Content -Path $scriptPath -Value $scr -Encoding UTF8
+            # UTF-8 WITH BOM (see config.psd1 above) — this script is executed on the device by Windows
+            # PowerShell 5.1; a BOM-less non-ASCII AppScriptAuthor/prompt message would mojibake there.
+            [System.IO.File]::WriteAllText($scriptPath, $scr, (New-Object System.Text.UTF8Encoding($true)))
             Write-Host '  ✓ Invoke-AppDeployToolkit.ps1 updated' -ForegroundColor Green
         }
 

@@ -59,7 +59,10 @@ function Set-PSADTDataDrivenScript {
     $loader = @'
 # Data-driven deployment values (win32-toolkit): read app-specific settings as DATA.
 $appConfig = if (Test-Path -LiteralPath "$PSScriptRoot\SupportFiles\AppConfig.json") {
-    Get-Content -LiteralPath "$PSScriptRoot\SupportFiles\AppConfig.json" -Raw | ConvertFrom-Json
+    # -Encoding UTF8: AppConfig.json is BOM-less UTF-8 and this runs under Windows PowerShell 5.1 on the
+    # device, whose Get-Content default decodes a BOM-less file as ANSI (non-ASCII vendor/app names would
+    # mojibake). 5.1's -Encoding UTF8 reader handles both BOM and BOM-less input.
+    Get-Content -LiteralPath "$PSScriptRoot\SupportFiles\AppConfig.json" -Raw -Encoding UTF8 | ConvertFrom-Json
 } else {
     [pscustomobject]@{ App = [pscustomobject]@{}; Installer = $null; Uninstall = $null; ProcessesToClose = @() }
 }
@@ -237,8 +240,10 @@ $adtSession = @{
     $content = $content.Replace('## <Perform Post-Installation tasks here>',   $postInstallTattoo)
     $content = $content.Replace('## <Perform Post-Uninstallation tasks here>', $postUninstallTattoo)
 
-    # Match the module's existing encoding for this file (UTF-8 w/ BOM — safe for PS 5.1 on-device).
-    Set-Content -LiteralPath $ScriptPath -Value $content -Encoding UTF8
+    # UTF-8 WITH BOM: this script runs under Windows PowerShell 5.1 on the device (Intune's
+    # powershell.exe), which decodes a BOM-less file as ANSI — non-ASCII branding/vendor/app names would
+    # mojibake silently. PS7's Set-Content -Encoding UTF8 writes NO BOM, so write the bytes ourselves.
+    [System.IO.File]::WriteAllText($ScriptPath, $content, (New-Object System.Text.UTF8Encoding($true)))
 
     # Sanity: confirm the result still parses.
     $errs = $null
