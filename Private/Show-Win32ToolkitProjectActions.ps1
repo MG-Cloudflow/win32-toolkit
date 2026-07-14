@@ -35,8 +35,10 @@ function Show-Win32ToolkitProjectActions {
             Clear-Host
             Write-SpectreRule -Title (Get-SpectreEscapedText -Text ('{0} / {1}' -f $project.Template, $project.Name)) -Color Blue
 
+            $depNow = @(Get-Win32ToolkitDependencies -ProjectPath $project.Path)
             $act = Read-SpectreSelection -Message 'What would you like to do?' -Choices @(
                 [pscustomobject]@{ Key = 'test';    Label = 'Run a test (Windows Sandbox or Hyper-V VM)' }
+                [pscustomobject]@{ Key = 'deps';    Label = "Dependencies — apps installed BEFORE this one ($(if ($depNow.Count) { "$($depNow.Count) declared" } else { 'none' }))" }
                 [pscustomobject]@{ Key = 'finish';  Label = "Finalize / refresh ($((Get-Win32ToolkitBackendInfo).Label) capture -> auto uninstall)" }
                 [pscustomobject]@{ Key = 'package'; Label = 'Package to .intunewin' }
                 [pscustomobject]@{ Key = 'publish'; Label = 'Publish to Intune' }
@@ -46,6 +48,21 @@ function Show-Win32ToolkitProjectActions {
             ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 10
 
             switch ($act.Key) {
+                'deps' {
+                    Clear-Host; Write-SpectreRule -Title 'Dependencies' -Color Blue
+                    Write-SpectreHost '[grey]Intune installs these BEFORE this app. They are also installed first in the test/capture run, so the app is never tested without its runtime.[/]'
+                    $current = @($depNow | ForEach-Object { "$($_.Source):$($_.Ref)" })
+                    $chosen  = @(Show-Win32ToolkitDependencyPicker -BasePath $BasePath -Existing $current)
+                    try {
+                        # The picker returns the AUTHORITATIVE list, so -Clear first and re-declare it.
+                        if ($chosen.Count -eq 0) { $null = Set-Win32ToolkitAppDependency -ProjectPath $project.Path -Clear }
+                        else                     { $null = Set-Win32ToolkitAppDependency -ProjectPath $project.Path -DependsOn $chosen -Clear }
+                        $shown = if ($chosen.Count) { $chosen -join ', ' } else { '(none)' }
+                        Format-SpectrePanel -Data "Dependencies saved: $(Get-SpectreEscapedText -Text $shown)`n`nRe-run Finalize/refresh so the capture reflects them, and re-publish to attach the Intune relationships." -Header 'Done' -Border Rounded -Color Green | Out-SpectreHost
+                    }
+                    catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red | Out-SpectreHost }
+                    Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                }
                 'test' {
                     $backend = Read-SpectreSelection -Message 'Which test backend?' -Choices @(
                         [pscustomobject]@{ Key = 'Sandbox'; Label = 'Windows Sandbox' }

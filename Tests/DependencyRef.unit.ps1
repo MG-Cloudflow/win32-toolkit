@@ -69,6 +69,15 @@ $threw = $false
 try { Set-Win32ToolkitAppDependency -ProjectPath $proj -DependsOn 'project:Contoso\Notepad_x64_8.6' | Out-Null } catch { $threw = $true }
 if ($threw) { Ok 'self-reference rejected (Intune rejects it too)' } else { Bad 'self-reference accepted' }
 
+Write-Host '[7] both entry points expose the same declaration surface (winget + custom/manual apps)' -ForegroundColor Cyan
+$surface = @{}
+foreach ($f in @('Public\Invoke-Win32Toolkit.ps1', 'Public\New-Win32ToolkitManualApp.ps1')) {
+    $raw = Get-Content -LiteralPath (Join-Path $repo $f) -Raw
+    $surface[$f] = ($raw -match '\[string\[\]\]\$DependsOn') -and ($raw -match '\$DependencyType') -and ($raw -match 'Set-Win32ToolkitAppDependency')
+}
+if ($surface['Public\Invoke-Win32Toolkit.ps1'])        { Ok 'winget flow: -DependsOn declares into AppConfig' }        else { Bad 'winget flow missing -DependsOn' }
+if ($surface['Public\New-Win32ToolkitManualApp.ps1'])  { Ok 'custom/manual flow: -DependsOn declares into AppConfig' } else { Bad 'manual flow missing -DependsOn' }
+
 Remove-Item -LiteralPath (Split-Path -Parent (Split-Path -Parent $proj)) -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''

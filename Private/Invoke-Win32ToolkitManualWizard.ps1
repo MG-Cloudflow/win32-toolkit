@@ -47,6 +47,13 @@ function Invoke-Win32ToolkitManualWizard {
     $template = Get-Win32ToolkitTemplateChoice -BasePath $BasePath
     if ([string]::IsNullOrWhiteSpace($template)) { return }
 
+    # Dependencies — apps Intune must install BEFORE this one (e.g. a VC++ redistributable). Also staged
+    # into the test/capture guest so the run installs them first, like Intune does on a device.
+    $deps = @()
+    if (Read-SpectreConfirm -Message 'Does this app need another app installed FIRST (e.g. a VC++ redistributable)?' -DefaultAnswer 'n') {
+        $deps = @(Show-Win32ToolkitDependencyPicker -BasePath $BasePath)
+    }
+
     # After-build options. The documentation capture ALWAYS runs, and both it and the optional test follow
     # the CONFIGURED backend — name the real backend rather than hard-coding "Windows Sandbox".
     $bi = Get-Win32ToolkitBackendInfo
@@ -79,6 +86,7 @@ function Invoke-Win32ToolkitManualWizard {
         "Mode         : $modeStr"
         "Base folder  : $BasePath"
         "Test/capture : $($bi.Label)"
+        "Depends on   : $(if ($deps) { $deps -join ', ' } else { '(nothing)' })"
         "After build  : $afterStr"
     ) -join "`n"
     Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $summary) -Header 'Review' -Border Rounded -Color Blue
@@ -98,6 +106,7 @@ function Invoke-Win32ToolkitManualWizard {
     if ($descr)     { $p.Description = $descr }
     if ($infoUrl)   { $p.InformationUrl = $infoUrl }
     if ($iconPath)  { $p.IconPath = $iconPath }
+    if ($deps)      { $p.DependsOn = $deps }   # declared into AppConfig + staged into the test/capture guest
 
     if ($advanced) {
         # Scaffold only, then hand off to the two-step finish screen.
