@@ -377,6 +377,58 @@ Invoke-Win32Toolkit -NewTemplate -TemplateName 'Contoso'
 
 ---
 
+## Manual apps (not in winget)
+
+Plenty of apps aren't in winget — a vendor MSI, an in-house installer, a legacy EXE. `New-Win32ToolkitManualApp`
+packages those: **you supply the installer, and everything after that is identical to the winget flow** —
+capture, auto-generated uninstall logic, detection rule, `.intunewin`, publish, dependencies, and the same
+Sandbox/Hyper-V test scenarios.
+
+### Easy vs Advanced
+
+The only question is whether the toolkit can install your app **silently and unattended**:
+
+| | When | What you do |
+|---|---|---|
+| **Easy** | An **MSI** (Zero-Config), an **MSIX/APPX**, or an **EXE with `-SilentArgs`** | Nothing — it runs end to end |
+| **Advanced** | An **EXE with no known silent switches**, or you pass `-Advanced` | The Install region is left for **you** to author, then you finalise |
+
+The **uninstall stays automated in both cases** — it's derived from the capture, not from you.
+
+```powershell
+# Easy — an MSI, end to end (capture → uninstall logic → package → publish)
+New-Win32ToolkitManualApp -Name 'Qastor' -Version '3.16.0' -Architecture x64 `
+    -SourcePath 'C:\src\qastor.msi' -TemplateName 'Arxus' -PackageIntune
+
+# Easy — an EXE, because you know its silent switches
+New-Win32ToolkitManualApp -Name 'Acme Reader' -Version '7.1' -Architecture x64 `
+    -SourcePath 'C:\src\acme-setup.exe' -SilentArgs '/S /norestart' -TemplateName 'Contoso'
+
+# Advanced — you write the install logic
+New-Win32ToolkitManualApp -Name 'Legacy CAD' -Version '12.0' -Architecture x64 `
+    -SourcePath 'C:\src\LegacyCAD\' -Advanced -TemplateName 'Contoso'
+#   → edit the Install region of <project>\Invoke-AppDeployToolkit.ps1, then:
+Complete-Win32ToolkitManualApp -ProjectPath 'C:\Win32Apps\Projects\Contoso\Legacy_CAD_x64_12.0' `
+    -RunTest InstallUninstall -PackageIntune
+```
+
+`-SourcePath` takes a **file or a folder** (a folder is copied wholesale into `Files\`, for installers that
+need their payload beside them).
+
+### It's the same pipeline
+
+Manual apps are not a lesser path — they get everything the winget flow gets:
+
+- **Dependencies** — `-DependsOn 'winget:Microsoft.VCRedist.2015+.x64'` works exactly the same, including
+  being installed in the guest before your app during the capture and test runs.
+- **Test scenarios** — `Test-Win32ToolkitProject` (`InstallUninstall`; `Update` needs `-BaselineProjectPath`
+  since there's no winget version history to pull an older build from).
+- **Org templates**, detection rules, the install tattoo, `.intunewin`, Intune publish, the update app.
+
+In the TUI this is **"Package a manual app"**, which asks the same questions and shows the same review panel.
+
+---
+
 ## Test-Win32ToolkitProject
 
 Runs test scenarios against a PSADT project in the configured backend — **Windows Sandbox** by default, or a **Hyper-V VM** via `-Backend HyperV` (opt-in; falls back to Sandbox if the VM isn't ready). Documentation capture follows the same backend. Can be called standalone, chained via `-RunTest` on `Invoke-Win32Toolkit`, or run at any time against any existing project.
