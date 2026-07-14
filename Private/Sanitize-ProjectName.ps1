@@ -1,4 +1,6 @@
 function Sanitize-ProjectName {
+    [CmdletBinding()]
+    [OutputType([string])]
     param([string]$Name)
     
     # Remove or replace invalid characters for folder names

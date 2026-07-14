@@ -46,7 +46,7 @@ function Download-WingetApp {
     )
 
     $label = if ($AppName) { "$AppName ($AppId)" } else { $AppId }
-    Write-Host "Downloading $label [$Architecture]..." -ForegroundColor Green
+    Write-Verbose "Downloading $label [$Architecture]..."
 
     if (-not (Test-Path -LiteralPath $DownloadPath)) {
         New-Item -ItemType Directory -Path $DownloadPath -Force | Out-Null

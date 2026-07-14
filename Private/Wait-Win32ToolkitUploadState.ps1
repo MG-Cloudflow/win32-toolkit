@@ -83,7 +83,7 @@ function Wait-Win32ToolkitUploadState {
 
         if ($elapsed -ge $TimeoutSeconds) { break }
 
-        Write-Host "  Waiting... (state: $lastState, ${elapsed}s / ${TimeoutSeconds}s)" -ForegroundColor Gray
+        Write-Verbose "  Waiting... (state: $lastState, ${elapsed}s / ${TimeoutSeconds}s)"
         $delay = [math]::Min($delay * 2, $MaxDelaySeconds)
     }
 

@@ -118,10 +118,10 @@ function Invoke-Win32Toolkit {
 
         # -Id fast path: skip search entirely
         if ($Id) {
-            Write-Host "Resolving package ID: $Id" -ForegroundColor Yellow
+            Write-Verbose "Resolving package ID: $Id"
             $showOutput = winget show --id "$Id" --exact --accept-source-agreements | Out-String
             if ($LASTEXITCODE -ne 0 -or $showOutput -notmatch 'Found') {
-                Write-Host "Package ID '$Id' not found in winget. Verify the ID and try again." -ForegroundColor Red
+                Write-Error "Package ID '$Id' not found in winget. Verify the ID and try again."
                 return
             }
             $resolvedName    = if ($showOutput -match '(?m)^Found\s+(.+?)\s+\[') { $matches[1].Trim() } else { $Id }
@@ -148,7 +148,7 @@ function Invoke-Win32Toolkit {
             $apps = $apps | Where-Object { $_.Source -ne 'msstore' }
 
             if ($apps.Count -eq 0) {
-                Write-Host "No applications found matching: $SearchTerm" -ForegroundColor Yellow
+                Write-Warning "No applications found matching: $SearchTerm"
                 return
             }
 
@@ -177,7 +177,7 @@ function Invoke-Win32Toolkit {
             $selectedApp = $apps[$parsed - 1]
 
             if (-not $selectedApp) {
-                Write-Host 'No application selected' -ForegroundColor Yellow
+                Write-Warning 'No application selected'
                 return
             }
 
@@ -192,11 +192,11 @@ function Invoke-Win32Toolkit {
 
         if ($selectedArch -eq 'all') {
             if ($Architecture) {
-                Write-Host "'-Architecture all' is not valid — defaulting to x64." -ForegroundColor Yellow
+                Write-Warning "'-Architecture all' is not valid — defaulting to x64."
                 $selectedArch = 'x64'
             }
             else {
-                Write-Host 'For project creation, please select a specific architecture.' -ForegroundColor Yellow
+                Write-Warning 'For project creation, please select a specific architecture.'
                 $selectedArch = Select-Architecture -Architectures $availableArchs -AppName $selectedApp.Name
             }
         }
@@ -231,22 +231,22 @@ function Invoke-Win32Toolkit {
                 New-Item -Path $downloadPath -ItemType Directory -Force | Out-Null
             }
 
-            Write-Host "`nDownloading application to project Files directory..." -ForegroundColor Yellow
+            Write-Verbose 'Downloading application to project Files directory...'
             $downloadSuccess = Download-WingetApp -AppId $selectedApp.Id -AppName $selectedApp.Name -DownloadPath $downloadPath -Architecture $selectedArch
 
             if ($downloadSuccess) {
                 Write-Host "`n✓ App downloaded successfully!" -ForegroundColor Green
 
                 # Normalize the installer filename to AppName_arch_version.ext
-                Write-Host 'Normalizing installer filename...' -ForegroundColor Yellow
+                Write-Verbose 'Normalizing installer filename...'
                 Rename-InstallerFile -FilesPath $downloadPath -AppName $selectedApp.Name -Version $selectedApp.Version -Architecture $selectedArch
 
                 # Configure PSADT based on downloaded installer type
-                Write-Host 'Configuring PSADT for installer type...' -ForegroundColor Yellow
+                Write-Verbose 'Configuring PSADT for installer type...'
                 $psadtConfigured = Configure-PSADTForInstaller -ProjectPath $projectFullPath -AppInfo $selectedApp -Architecture $selectedArch
 
                 # Download and apply the app-specific icon from WinGet YAML
-                Write-Host 'Downloading app icon from WinGet...' -ForegroundColor Cyan
+                Write-Verbose 'Downloading app icon from WinGet...'
                 Get-AppIconFromWinget -ProjectPath $projectFullPath -FilesPath $downloadPath | Out-Null
 
                 if ($psadtConfigured) {

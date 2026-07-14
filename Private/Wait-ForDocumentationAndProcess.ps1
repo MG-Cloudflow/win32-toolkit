@@ -23,9 +23,9 @@ function Wait-ForDocumentationAndProcess {
         if ($ExpectedJsonPath) {
             Write-Host "Waiting for this run's capture: $(Split-Path $ExpectedJsonPath -Leaf)" -ForegroundColor Cyan
         } else {
-            Write-Host "Checking for InstallationChanges JSON file every $checkIntervalSeconds seconds..." -ForegroundColor Cyan
+            Write-Verbose "Checking for InstallationChanges JSON file every $checkIntervalSeconds seconds..."
         }
-        Write-Host "Maximum wait time: $maxWaitMinutes minutes" -ForegroundColor Gray
+        Write-Verbose "Maximum wait time: $maxWaitMinutes minutes"
 
         for ($i = 1; $i -le $totalChecks; $i++) {
             if ($ExpectedJsonPath) {
@@ -47,7 +47,7 @@ function Wait-ForDocumentationAndProcess {
             }
 
             $minutesWaited = ($i * $checkIntervalSeconds) / 60
-            Write-Host "Waiting... ($([math]::Round($minutesWaited, 1)) minutes elapsed)" -ForegroundColor Gray
+            Write-Verbose "Waiting... ($([math]::Round($minutesWaited, 1)) minutes elapsed)"
             Start-Sleep -Seconds $checkIntervalSeconds
         }
         
@@ -59,7 +59,7 @@ function Wait-ForDocumentationAndProcess {
         Write-Host "`nProcessing documentation results..." -ForegroundColor Yellow
         
         # Generate requirement script
-        Write-Host "Generating Intune requirement script..." -ForegroundColor Cyan
+        Write-Verbose "Generating Intune requirement script..."
         $reqSuccess = New-IntuneRequirementScript -ProjectPath $ProjectPath -JsonFilePath $jsonFile
         
         if ($reqSuccess) {
@@ -73,7 +73,7 @@ function Wait-ForDocumentationAndProcess {
         # belt-and-braces — it is an idempotent read-modify-write of AppConfig.json).
         switch ($InstallerType) {
             'exe' {
-                Write-Host "Generating uninstall logic for EXE installer..." -ForegroundColor Cyan
+                Write-Verbose "Generating uninstall logic for EXE installer..."
                 $uninstallSuccess = Update-PSADTUninstallLogic -ProjectPath $ProjectPath -JsonFilePath $jsonFile
                 if ($uninstallSuccess) {
                     Write-Host "✓ Uninstall logic generated for EXE installer" -ForegroundColor Green
@@ -97,7 +97,7 @@ function Wait-ForDocumentationAndProcess {
         }
 
         # Populate AppProcessesToClose for all installer types
-        Write-Host "Detecting processes to close..." -ForegroundColor Cyan
+        Write-Verbose "Detecting processes to close..."
         $procSuccess = Update-PSADTProcessesToClose -ProjectPath $ProjectPath -JsonFilePath $jsonFile
         if (-not $procSuccess) {
             Write-Warning "Could not auto-detect processes to close - AppProcessesToClose left empty"

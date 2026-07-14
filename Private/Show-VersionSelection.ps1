@@ -3,6 +3,7 @@ function Show-VersionSelection {
 .SYNOPSIS
     Displays a numbered list of available versions and returns the user's selection.
 #>
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [array]$Versions

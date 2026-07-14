@@ -13,7 +13,7 @@ function Publish-Win32ToolkitIntuneApp {
     4. Creates the app shell in Intune.
     5. Registers a content version and file entry.
     6. Waits for the Azure Storage SAS URI.
-    7. Uploads the encrypted content using the Azure Block Blob API (4 MB chunks).
+    7. Uploads the encrypted content using the Azure Block Blob API (6 MB chunks).
     8. Commits the file and waits for confirmation.
     9. Links the content version to the app.
 
@@ -54,7 +54,7 @@ function Publish-Win32ToolkitIntuneApp {
     # Publish the update app (2nd app, requirement-gated to devices that already have it)
     Publish-Win32ToolkitIntuneApp -IntuneWinPath $win -ProjectPath $proj -AsUpdate
 #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
     [OutputType([pscustomobject])]   # { AppId; DisplayName; IsUpdateApp; PortalUri } — see the Summary block
     param(
         [Parameter(Mandatory = $true)]
@@ -146,24 +146,34 @@ function Publish-Win32ToolkitIntuneApp {
             Write-Host '  Mode         : UPDATE app (requirement: app already installed)' -ForegroundColor Gray
         }
 
+        # ── -WhatIf / -Confirm gate for the ENTIRE publish ────────────────────────
+        # Everything from here down mutates the live tenant (auth, app shell, content version, blob upload,
+        # commit) and the later steps depend on the app id from the first POST. A per-step guard is therefore
+        # unsafe: skipping only step 1 under -WhatIf would still fire live requests against a null app id. Gate
+        # the whole sequence once, so -WhatIf is a true dry run — no auth, no Graph writes.
+        if (-not $PSCmdlet.ShouldProcess($displayName, "Publish Win32 app to Intune (version $displayVersion)")) {
+            Write-Host "WhatIf: would connect to Microsoft Graph and publish '$displayName' v$displayVersion to Intune (create app shell, upload content, commit)." -ForegroundColor Yellow
+            return
+        }
+
         # ── Graph authentication ──────────────────────────────────────────────────
         Connect-Win32ToolkitGraph
 
         # ── Extract .intunewin metadata ───────────────────────────────────────────
-        Write-Host 'Extracting .intunewin metadata...' -ForegroundColor Yellow
+        Write-Verbose 'Extracting .intunewin metadata...'
         $meta = Get-Win32IntuneWinMetadata -IntuneWinPath $IntuneWinPath
         Write-Host "  ✓ Unencrypted : $([math]::Round($meta.UnencryptedSize / 1MB, 2)) MB" -ForegroundColor Gray
         Write-Host "  ✓ Encrypted  : $([math]::Round($meta.SizeEncrypted   / 1MB, 2)) MB" -ForegroundColor Gray
 
         # ── Detection rules ───────────────────────────────────────────────────────
-        Write-Host 'Building detection rules...' -ForegroundColor Yellow
+        Write-Verbose 'Building detection rules...'
         $detectionRules = @(Get-Win32DetectionRules -ProjectPath $ProjectPath)
         if ($detectionRules.Count -eq 0) {
             Write-Warning 'No detection rules found. The app will be created but you must add a detection rule manually in the Intune portal.'
         }
 
         # ── Step 1: Create app shell ──────────────────────────────────────────────
-        Write-Host 'Creating app in Intune...' -ForegroundColor Yellow
+        Write-Verbose 'Creating app in Intune...'
 
         $appBody = @{
             '@odata.type'                      = '#microsoft.graph.win32LobApp'
@@ -210,13 +220,15 @@ function Publish-Win32ToolkitIntuneApp {
             $resolvedDeps = @(Resolve-Win32ToolkitDependencies -ProjectPath $ProjectPath -TenantId $tenantForResolve -BaseUri $baseUri)
         }
 
+        # The whole publish is already gated by the single ShouldProcess check above, so this POST runs
+        # unconditionally here (guarding it again would risk a null-appId cascade under -WhatIf).
         $appResponse = Invoke-MgGraphRequest -Method POST -Uri "$baseUri/mobileApps" `
             -Body ($appBody | ConvertTo-Json -Depth 10) -ContentType 'application/json' -OutputType PSObject
         $appId = $appResponse.id
         Write-Host "  ✓ App created: $appId" -ForegroundColor Green
 
         # ── Step 2: Create content version ────────────────────────────────────────
-        Write-Host 'Creating content version...' -ForegroundColor Yellow
+        Write-Verbose 'Creating content version...'
         $versionResponse = Invoke-MgGraphRequest -Method POST `
             -Uri "$baseUri/mobileApps/$appId/microsoft.graph.win32LobApp/contentVersions" `
             -Body @{} -OutputType PSObject
@@ -224,7 +236,7 @@ function Publish-Win32ToolkitIntuneApp {
         Write-Host "  ✓ Version: $versionId" -ForegroundColor Green
 
         # ── Step 3: Create file entry ─────────────────────────────────────────────
-        Write-Host 'Registering file entry...' -ForegroundColor Yellow
+        Write-Verbose 'Registering file entry...'
         $fileBody = [ordered]@{
             '@odata.type'   = '#microsoft.graph.mobileAppContentFile'
             'name'          = [System.IO.Path]::GetFileName($IntuneWinPath)
@@ -243,7 +255,7 @@ function Publish-Win32ToolkitIntuneApp {
         # ── Step 4: Poll for Azure Storage SAS URI ────────────────────────────────
         # Both async waits (here and the commit below) go through the SAME helper, so their timeout and
         # back-off behaviour cannot drift apart.
-        Write-Host "Waiting for Azure Storage SAS URI (timeout ${TimeoutSeconds}s)..." -ForegroundColor Yellow
+        Write-Verbose "Waiting for Azure Storage SAS URI (timeout ${TimeoutSeconds}s)..."
         $poll = Wait-Win32ToolkitUploadState -FileUri $fileUri `
             -TargetState 'azureStorageUriRequestSuccess' `
             -Activity 'the Azure Storage SAS URI' `
@@ -253,7 +265,7 @@ function Publish-Win32ToolkitIntuneApp {
         Write-Host '  ✓ SAS URI received.' -ForegroundColor Green
 
         # ── Step 5: Extract inner encrypted file to temp ──────────────────────────
-        Write-Host 'Extracting encrypted content file...' -ForegroundColor Yellow
+        Write-Verbose 'Extracting encrypted content file...'
         Add-Type -AssemblyName 'System.IO.Compression.FileSystem' -ErrorAction SilentlyContinue
 
         $tempFile   = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
@@ -276,18 +288,18 @@ function Publish-Win32ToolkitIntuneApp {
         Write-Host '  ✓ Content extracted to temp.' -ForegroundColor Green
 
         # ── Step 6: Upload to Azure Blob (block + blocklist) ──────────────────────
-        Write-Host 'Uploading content to Azure Storage...' -ForegroundColor Yellow
+        Write-Verbose 'Uploading content to Azure Storage...'
         Invoke-AzBlobUpload -SasUri $sasUri -FilePath $tempFile
 
         # ── Step 7: Commit the file ───────────────────────────────────────────────
-        Write-Host 'Committing file...' -ForegroundColor Yellow
+        Write-Verbose 'Committing file...'
         $commitBody = [ordered]@{
             'fileEncryptionInfo' = [ordered]@{
                 'encryptionKey'        = $meta.EncryptionKey
                 'macKey'               = $meta.MacKey
                 'initializationVector' = $meta.InitializationVector
                 'mac'                  = $meta.Mac
-                'profileIdentifier'    = 'ProfileVersion1'
+                'profileIdentifier'    = if ($meta.ProfileIdentifier) { $meta.ProfileIdentifier } else { 'ProfileVersion1' }
                 'fileDigest'           = $meta.FileDigest
                 'fileDigestAlgorithm'  = $meta.FileDigestAlgorithm
             }
@@ -297,7 +309,7 @@ function Publish-Win32ToolkitIntuneApp {
         # ── Step 8: Poll for commit success ───────────────────────────────────────
         # The commit makes Intune decrypt + validate the whole package server-side, so this wait scales
         # with package size — it is the one that used to blow the 60 s ceiling on large .intunewin files.
-        Write-Host "Waiting for commit confirmation (timeout ${TimeoutSeconds}s)..." -ForegroundColor Yellow
+        Write-Verbose "Waiting for commit confirmation (timeout ${TimeoutSeconds}s)..."
         $null = Wait-Win32ToolkitUploadState -FileUri $fileUri `
             -TargetState 'commitFileSuccess' `
             -Activity 'the file commit' `
@@ -305,7 +317,7 @@ function Publish-Win32ToolkitIntuneApp {
         Write-Host '  ✓ Commit successful.' -ForegroundColor Green
 
         # ── Step 9: Link content version to app ──────────────────────────────────
-        Write-Host 'Linking content version to app...' -ForegroundColor Yellow
+        Write-Verbose 'Linking content version to app...'
         $patchBody = @{
             '@odata.type'             = '#microsoft.graph.win32LobApp'
             'committedContentVersion' = $versionId
@@ -321,7 +333,7 @@ function Publish-Win32ToolkitIntuneApp {
 
             if ($resolvedDeps.Count -gt 0) {
                 Write-Host ''
-                Write-Host "Attaching $($resolvedDeps.Count) app dependency(ies) — Intune installs them first..." -ForegroundColor Yellow
+                Write-Verbose "Attaching $($resolvedDeps.Count) app dependency(ies) — Intune installs them first..."
                 $null = Set-Win32ToolkitAppRelationships -AppId $appId -Dependency $resolvedDeps -BaseUri $baseUri
                 Write-Host "  ✓ Dependencies attached: $(($resolvedDeps | ForEach-Object { $_.Ref }) -join ', ')" -ForegroundColor Green
             }

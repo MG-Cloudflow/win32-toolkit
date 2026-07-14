@@ -1,7 +1,9 @@
 function Get-WingetAppDetails {
+    [CmdletBinding()]
+    [OutputType([string[]])]
     param([string]$AppId)
-    
-    Write-Host "Getting details for: $AppId" -ForegroundColor Yellow
+
+    Write-Verbose "Getting details for: $AppId"
     
     try {
         # Get app information including available architectures
@@ -45,7 +47,7 @@ function Get-WingetAppDetails {
             # Final fallback - provide all common architectures as options
             if ($architectures.Count -eq 0) {
                 $architectures = @("x64", "x86", "arm64")
-                Write-Host "No specific architectures detected. Showing common options." -ForegroundColor Yellow
+                Write-Warning "No specific architectures detected. Showing common options."
             }
         }
         

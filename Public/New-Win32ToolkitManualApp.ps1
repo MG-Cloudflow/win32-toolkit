@@ -199,7 +199,7 @@ function New-Win32ToolkitManualApp {
 
         # ── Org template + optional icon ──────────────────────────────────────────
         if ($script:OrgTemplate) {
-            Write-Host 'Applying org template...' -ForegroundColor Cyan
+            Write-Verbose 'Applying org template...'
             Apply-OrgTemplate -ProjectPath $projectFullPath -Template $script:OrgTemplate | Out-Null
         }
         if ($IconPath -and (Test-Path -LiteralPath $IconPath)) {

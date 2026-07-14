@@ -39,6 +39,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\ConvertTo-PSSingleQuoted.ps1')
 . (Join-Path $repo 'Private\Test-Win32ToolkitProductCode.ps1')
 . (Join-Path $repo 'Private\Set-PSADTDataDrivenScript.ps1')
+. (Join-Path $repo 'Private\Set-Win32ToolkitTextBlock.ps1')   # Set-TextBlock, promoted out of Apply-OrgTemplate
 . (Join-Path $repo 'Private\Apply-OrgTemplate.ps1')
 . (Join-Path $repo 'Private\New-CountdownScript.ps1')
 . (Join-Path $repo 'Private\New-LogCollectorScript.ps1')

@@ -3,6 +3,9 @@ function Show-ScenarioSelection {
 .SYNOPSIS
     Displays a menu of available test scenarios and returns the user's choice.
 #>
+    [CmdletBinding()]
+    param()
+
     $scenarios = @(
         [PSCustomObject]@{ Name = 'InstallUninstall'; Description = 'Install → 2-min countdown → Uninstall' }
         [PSCustomObject]@{ Name = 'Update';           Description = 'Install old version → 2-min countdown → Run PSADT update' }

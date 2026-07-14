@@ -1,7 +1,9 @@
 function Search-WingetApps {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
     param([string]$SearchTerm)
-    
-    Write-Host "Searching for apps matching: $SearchTerm" -ForegroundColor Yellow
+
+    Write-Verbose "Searching for apps matching: $SearchTerm"
     
     # Run winget search and capture output
     $searchResults = winget search $SearchTerm --accept-source-agreements | Out-String

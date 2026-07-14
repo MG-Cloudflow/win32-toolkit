@@ -59,7 +59,7 @@ function Export-Win32ToolkitIntuneWin {
     # A big package on a slow tenant — wait up to 15 minutes for the commit
     Export-Win32ToolkitIntuneWin -ProjectPath $proj -PublishIntune -PublishTimeoutSeconds 900
 #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory = $false)]
         [string]$ProjectPath,
@@ -95,7 +95,7 @@ function Export-Win32ToolkitIntuneWin {
         # ── Project resolution ────────────────────────────────────────────────────
         if (-not $ProjectPath) {
             $BasePath = Get-Win32ToolkitBasePath -BasePath $BasePath
-            Write-Host 'Scanning for PSADT projects...' -ForegroundColor Yellow
+            Write-Verbose 'Scanning for PSADT projects...'
             $projects = Get-PSADTProjects -BasePath $BasePath
 
             if ($projects.Count -eq 0) {
@@ -151,7 +151,7 @@ function Export-Win32ToolkitIntuneWin {
         $utilPath    = Join-Path $toolsFolder 'IntuneWinAppUtil.exe'
 
         if (-not (Test-Path $utilPath)) {
-            Write-Host 'IntuneWinAppUtil.exe not found — downloading from Microsoft GitHub...' -ForegroundColor Yellow
+            Write-Verbose 'IntuneWinAppUtil.exe not found — downloading from Microsoft GitHub...'
 
             if (-not (Test-Path $toolsFolder)) {
                 New-Item -Path $toolsFolder -ItemType Directory -Force | Out-Null
@@ -166,11 +166,11 @@ function Export-Win32ToolkitIntuneWin {
                 $asset   = $release.assets | Where-Object { $_.name -eq 'IntuneWinAppUtil.exe' } | Select-Object -First 1
                 if ($asset) {
                     $downloadUrl = $asset.browser_download_url
-                    Write-Host "  Resolved release asset: $downloadUrl" -ForegroundColor Gray
+                    Write-Verbose "  Resolved release asset: $downloadUrl"
                 }
             }
             catch {
-                Write-Host '  GitHub Releases API not available — using raw repository file.' -ForegroundColor Gray
+                Write-Verbose '  GitHub Releases API not available — using raw repository file.'
             }
 
             if (-not $downloadUrl) {
@@ -211,7 +211,7 @@ function Export-Win32ToolkitIntuneWin {
             Remove-Item -Path $stagingPath -Recurse -Force
         }
 
-        Write-Host "Copying project to Staging..." -ForegroundColor Yellow
+        Write-Verbose "Copying project to Staging..."
         Copy-Item -Path $ProjectPath -Destination $stagingPath -Recurse -Force
         Write-Host "✓ Staging copy     : $stagingPath" -ForegroundColor Green
 
@@ -232,12 +232,14 @@ function Export-Win32ToolkitIntuneWin {
         Write-Host "  Output folder    : $intuneWinDir" -ForegroundColor Gray
         Write-Host ''
 
-        $process = Start-Process -FilePath $utilPath `
-            -ArgumentList "-c `"$stagingPath`" -s `"Invoke-AppDeployToolkit.ps1`" -o `"$intuneWinDir`" -q" `
-            -Wait -PassThru -NoNewWindow
+        if ($PSCmdlet.ShouldProcess($projectName, 'Build .intunewin package')) {
+            $process = Start-Process -FilePath $utilPath `
+                -ArgumentList "-c `"$stagingPath`" -s `"Invoke-AppDeployToolkit.ps1`" -o `"$intuneWinDir`" -q" `
+                -Wait -PassThru -NoNewWindow
 
-        if ($process.ExitCode -ne 0) {
-            throw "IntuneWinAppUtil.exe exited with code $($process.ExitCode). Check the output above for details."
+            if ($process.ExitCode -ne 0) {
+                throw "IntuneWinAppUtil.exe exited with code $($process.ExitCode). Check the output above for details."
+            }
         }
 
         # ── Step 6: Rename output to <ProjectName>.intunewin ─────────────────────

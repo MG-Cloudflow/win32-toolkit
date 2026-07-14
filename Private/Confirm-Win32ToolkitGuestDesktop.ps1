@@ -33,7 +33,7 @@ function Confirm-Win32ToolkitGuestDesktop {
 
     if (& $hasDesktop) { return $true }
 
-    Write-Host 'No interactive desktop detected (login screen?) — rebooting the guest to trigger AutoLogon...' -ForegroundColor Yellow
+    Write-Warning 'No interactive desktop detected (login screen?) — rebooting the guest to trigger AutoLogon...'
     Invoke-Command -VMName $VMName -Credential $Credential -ScriptBlock { Restart-Computer -Force } -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 20   # let it begin shutting down before we wait for it to come back
     try { Wait-Win32ToolkitVMReady -VMName $VMName -Credential $Credential -SkipPrep -HeartbeatTimeoutSec 180 -PSDirectTimeoutSec 300 | Out-Null } catch { }

@@ -60,7 +60,7 @@ function New-Win32ToolkitGoldenVhdx {
         if ($PSBoundParameters.ContainsKey('ImageIndex') -and $ImageIndex) { $imgArgs['ImageIndex'] = $ImageIndex }
         elseif ($Edition) { $imgArgs['EditionPreference'] = @($Edition) }
         $image = Get-Win32ToolkitInstallImage @imgArgs
-        Write-Host "Applying image [$($image.Index)] $($image.ImageName) ($($image.Format))..." -ForegroundColor Cyan
+        Write-Verbose "Applying image [$($image.Index)] $($image.ImageName) ($($image.Format))..."
 
         New-VHD -Path $VhdxPath -SizeBytes $SizeBytes -Dynamic -BlockSizeBytes 32MB -ErrorAction Stop | Out-Null
         $layout = Initialize-Win32ToolkitVhdxLayout -VhdxPath $VhdxPath

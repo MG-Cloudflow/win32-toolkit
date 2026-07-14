@@ -1,4 +1,6 @@
 function Get-AppIconFromWinget {
+    [CmdletBinding()]
+    [OutputType([bool])]
     param(
         [string]$ProjectPath,
         [string]$FilesPath
@@ -17,11 +19,11 @@ function Get-AppIconFromWinget {
         }
 
         if (-not $iconUrl) {
-            Write-Host 'No WinGet IconUrl found in YAML — keeping default PSADT icon' -ForegroundColor DarkYellow
+            Write-Warning 'No WinGet IconUrl found in YAML — keeping default PSADT icon'
             return $false
         }
 
-        Write-Host "Downloading app icon from WinGet: $iconUrl" -ForegroundColor Cyan
+        Write-Verbose "Downloading app icon from WinGet: $iconUrl"
 
         # Determine save paths
         $assetsPath    = Join-Path $ProjectPath 'Assets'

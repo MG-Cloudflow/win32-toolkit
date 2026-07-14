@@ -1,4 +1,5 @@
 function New-OrgTemplate {
+    [CmdletBinding()]
     param(
         [PSCustomObject]$ExistingTemplate = $null,
         [string]$TemplateName = '',

@@ -1,4 +1,6 @@
 function Get-Win32DetectionRules {
+    [CmdletBinding()]
+    [OutputType([object[]])]
     param(
         [Parameter(Mandatory = $true)]
         [string]$ProjectPath
@@ -24,7 +26,7 @@ function Get-Win32DetectionRules {
                      ((Get-Content -LiteralPath $deployScript -Raw) -match [regex]::Escape('win32-toolkit install tattoo - records'))
         if ($hasTattoo) {
             $tattooKey = "HKEY_LOCAL_MACHINE\SOFTWARE\$($app.ScriptAuthor)\$($app.Vendor)\$detName"
-            Write-Host "  Detection rule (Registry version): $tattooKey\Version = $($app.Version)" -ForegroundColor Gray
+            Write-Verbose "  Detection rule (Registry version): $tattooKey\Version = $($app.Version)"
             return @(
                 [ordered]@{
                     '@odata.type'          = '#microsoft.graph.win32LobAppRegistryDetection'
@@ -37,7 +39,7 @@ function Get-Win32DetectionRules {
                 }
             )
         }
-        Write-Host '  Tattoo values are present but the deploy script has no install tattoo — regenerate this project to enable version detection. Falling back to capture-based rules.' -ForegroundColor Yellow
+        Write-Warning '  Tattoo values are present but the deploy script has no install tattoo — regenerate this project to enable version detection. Falling back to capture-based rules.'
     }
     elseif ($app) {
         $missing = @()
@@ -46,7 +48,7 @@ function Get-Win32DetectionRules {
         if (-not $detName)          { $missing += 'App.DisplayName/Name (regenerate to populate)' }
         if (-not $app.Version)      { $missing += 'App.Version' }
         if ($missing.Count) {
-            Write-Host "  Tattoo/version detection unavailable — missing $($missing -join ', '). Using capture-based detection." -ForegroundColor Yellow
+            Write-Warning "  Tattoo/version detection unavailable — missing $($missing -join ', '). Using capture-based detection."
         }
     }
 
@@ -55,7 +57,7 @@ function Get-Win32DetectionRules {
     # detection rule from a STALE capture of a previous version.
     $jsonFile = Get-LatestInstallationCapture -ProjectPath $ProjectPath
     if (-not $jsonFile) {
-        Write-Host '  No InstallationChanges_*.json capture found — no detection rules generated.' -ForegroundColor Yellow
+        Write-Warning '  No InstallationChanges_*.json capture found — no detection rules generated.'
         return @()
     }
 
@@ -89,7 +91,7 @@ function Get-Win32DetectionRules {
             $keyPath = $keyPath -replace '^HKCU\\', 'HKEY_CURRENT_USER\'
             $keyPath = $keyPath -replace '^HKCR\\', 'HKEY_CLASSES_ROOT\'
 
-            Write-Host "  Detection rule (Registry): $keyPath" -ForegroundColor Gray
+            Write-Verbose "  Detection rule (Registry): $keyPath"
             return @(
                 [ordered]@{
                     '@odata.type'          = '#microsoft.graph.win32LobAppRegistryDetection'
@@ -121,7 +123,7 @@ function Get-Win32DetectionRules {
     if ($candidate) {
         $folder   = Split-Path $candidate -Parent
         $fileName = Split-Path $candidate -Leaf
-        Write-Host "  Detection rule (File): $candidate" -ForegroundColor Gray
+        Write-Verbose "  Detection rule (File): $candidate"
         return @(
             [ordered]@{
                 '@odata.type'          = '#microsoft.graph.win32LobAppFileSystemDetection'
@@ -135,6 +137,6 @@ function Get-Win32DetectionRules {
         )
     }
 
-    Write-Host '  No suitable detection rule candidates found.' -ForegroundColor Yellow
+    Write-Warning '  No suitable detection rule candidates found.'
     return @()
 }

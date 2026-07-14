@@ -1,4 +1,5 @@
 function Create-PSADTProject {
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [string]$ProjectName,
         [string]$ProjectPath,
@@ -11,17 +12,19 @@ function Create-PSADTProject {
         Write-Host "`nCreating PSADT V4 project: $ProjectName" -ForegroundColor Green
         
         # Check if PSADT module is installed
-        Write-Host "Checking for PSAppDeployToolkit module..." -ForegroundColor Yellow
+        Write-Verbose 'Checking for PSAppDeployToolkit module...'
         $PSADTModule = Get-Module -Name PSAppDeployToolkit -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
-        
+
         if (-not $PSADTModule) {
-            Write-Host "PSAppDeployToolkit module not found. Installing..." -ForegroundColor Yellow
-            Install-Module -Name PSAppDeployToolkit -Scope CurrentUser -Force -AllowClobber
+            Write-Verbose 'PSAppDeployToolkit module not found. Installing...'
+            if ($PSCmdlet.ShouldProcess('PSAppDeployToolkit', 'Install-Module from PSGallery')) {
+                Install-Module -Name PSAppDeployToolkit -Scope CurrentUser -Force -AllowClobber
+            }
             $PSADTModule = Get-Module -Name PSAppDeployToolkit -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
         }
         else {
             # Check PSGallery for a newer version
-            Write-Host "Installed version: $($PSADTModule.Version) — checking PSGallery for updates..." -ForegroundColor Yellow
+            Write-Verbose "Installed version: $($PSADTModule.Version) — checking PSGallery for updates..."
             try {
                 $galleryModule = Find-Module -Name PSAppDeployToolkit -Repository PSGallery -ErrorAction Stop
                 $galleryVersion = [System.Version]$galleryModule.Version
@@ -30,12 +33,14 @@ function Create-PSADTProject {
                 if ($galleryVersion -gt $installedVersion) {
                     Write-Host "Update available: $galleryVersion (installed: $installedVersion)" -ForegroundColor Cyan
                     if ($Force) {
-                        Write-Host "Skipping update check (-Force mode)." -ForegroundColor Gray
+                        Write-Verbose 'Skipping update check (-Force mode).'
                     } else {
                     $doUpdate = Read-Host "Update PSAppDeployToolkit to $galleryVersion now? (y/n)"
                     if ($doUpdate -in @('y', 'Y')) {
-                        Write-Host "Updating PSAppDeployToolkit to $galleryVersion..." -ForegroundColor Yellow
-                        Update-Module -Name PSAppDeployToolkit -Force
+                        Write-Verbose "Updating PSAppDeployToolkit to $galleryVersion..."
+                        if ($PSCmdlet.ShouldProcess('PSAppDeployToolkit', "Update-Module to $galleryVersion")) {
+                            Update-Module -Name PSAppDeployToolkit -Force
+                        }
                         Write-Host "✓ Updated to version: $galleryVersion" -ForegroundColor Green
 
                         # Only an assembly ALREADY LOADED into this process is a problem — PowerShell cannot
@@ -50,7 +55,7 @@ function Create-PSADTProject {
                             # does not know which public command the user invoked or with which arguments, so any
                             # process we spawned would silently do something they never asked for.
                             Write-Warning "PSAppDeployToolkit was updated to $galleryVersion, but version $($loaded.Version) is already loaded in this PowerShell session and cannot be reloaded in place."
-                            Write-Host "No project was created. Please start a NEW PowerShell session and re-run your command (for example: Invoke-Win32Toolkit)." -ForegroundColor Yellow
+                            Write-Warning 'No project was created. Please start a NEW PowerShell session and re-run your command (for example: Invoke-Win32Toolkit).'
                             return $false
                         }
 
@@ -60,20 +65,20 @@ function Create-PSADTProject {
                                        Sort-Object Version -Descending | Select-Object -First 1
                     }
                     else {
-                        Write-Host "Skipping update — continuing with installed version $installedVersion" -ForegroundColor Gray
+                        Write-Verbose "Skipping update — continuing with installed version $installedVersion"
                     }
                     } # end -not Force
                 }
                 else {
-                    Write-Host "✓ PSAppDeployToolkit is up to date ($($PSADTModule.Version))" -ForegroundColor Green
+                    Write-Verbose "PSAppDeployToolkit is up to date ($($PSADTModule.Version))"
                 }
             }
             catch {
-                Write-Host "Could not reach PSGallery to check for updates: $($_.Exception.Message)" -ForegroundColor DarkYellow
+                Write-Warning "Could not reach PSGallery to check for updates: $($_.Exception.Message)"
             }
         }
-        
-        Write-Host "Using PSAppDeployToolkit version: $($PSADTModule.Version)" -ForegroundColor Green
+
+        Write-Verbose "Using PSAppDeployToolkit version: $($PSADTModule.Version)"
         
         # Import the module
         Import-Module -Name PSAppDeployToolkit -Force
@@ -93,11 +98,13 @@ function Create-PSADTProject {
                     return $false
                 }
             }
-            Remove-Item -Path $ProjectFullPath -Recurse -Force
+            if ($PSCmdlet.ShouldProcess($ProjectFullPath, 'Remove existing project directory')) {
+                Remove-Item -Path $ProjectFullPath -Recurse -Force
+            }
         }
-        
+
         # Create new PSADT template using the module
-        Write-Host "Creating PSADT V4 template..." -ForegroundColor Yellow
+        Write-Verbose 'Creating PSADT V4 template...'
         New-ADTTemplate -Destination $ProjectPath -Name $ProjectName
         
         Write-Host "PSADT V4 project created successfully!" -ForegroundColor Green

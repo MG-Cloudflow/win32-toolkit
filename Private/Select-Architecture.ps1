@@ -1,4 +1,5 @@
 function Select-Architecture {
+    [CmdletBinding()]
     param(
         [array]$Architectures,
         [string]$AppName,

@@ -10,6 +10,8 @@ function Download-OldVersionInstaller {
       InstallerType — extension without dot (exe, msi, msix, appx)
       SilentArgs    — silent install switches for this installer
 #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory = $true)]
         [string]$AppId,
@@ -66,7 +68,7 @@ function Download-OldVersionInstaller {
         New-Item -ItemType Directory -Path $oldVersionDir -Force | Out-Null
     }
 
-    Write-Host "Downloading $verLabel of '$AppId'..." -ForegroundColor Yellow
+    Write-Verbose "Downloading $verLabel of '$AppId'..."
 
     $downloadArgs = @(
         'download',
@@ -117,7 +119,7 @@ function Download-OldVersionInstaller {
     if ($yamlFile) {
         $yamlContent = Get-Content -LiteralPath $yamlFile.FullName -Raw -Encoding UTF8
         if ($yamlContent -match '(?m)^\s*InstallerType:\s*(\S+)') {
-            $installerTypeName = $matches[1].Trim().ToLower()
+            $installerTypeName = $matches[1].Trim().ToLowerInvariant()
         }
     }
 
@@ -144,7 +146,7 @@ function Download-OldVersionInstaller {
     return [PSCustomObject]@{
         InstallerPath = $installer.FullName
         InstallerName = $installer.Name
-        InstallerType = $installer.Extension.TrimStart('.').ToLower()
+        InstallerType = $installer.Extension.TrimStart('.').ToLowerInvariant()
         SilentArgs    = $silentArgs
     }
 }

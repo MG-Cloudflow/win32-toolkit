@@ -94,6 +94,8 @@ function New-Win32ToolkitTestVM {
     if ($existing -and -not $Force) {
         $hasCp = Get-VMCheckpoint -VMName $Name -Name $CheckpointName -ErrorAction SilentlyContinue
         if ($hasCp -and -not $Recheckpoint) {
+            # Reuse is the intended fast path on a re-run — a normal success outcome, not a problem, so keep it
+            # on Write-Host (a Write-Warning here reads as a spurious alarm on the happy path).
             Write-Host "VM '$Name' already exists with checkpoint '$CheckpointName' — reusing." -ForegroundColor Yellow
             Set-Win32ToolkitConfigValue -Name 'HyperVVMName'     -Value $Name
             Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Value $CheckpointName
@@ -147,13 +149,13 @@ function New-Win32ToolkitTestVM {
         # checkpoint so reverts have internet for the test workload (winget).
         Disconnect-VMNetworkAdapter -VMName $Name -ErrorAction SilentlyContinue
 
-        Write-Host "Starting VM '$Name' for first boot (unattended OOBE, NIC unplugged)..." -ForegroundColor Cyan
+        Write-Verbose "Starting VM '$Name' for first boot (unattended OOBE, NIC unplugged)..."
         Start-VM -Name $Name -ErrorAction Stop
         Wait-Win32ToolkitVMReady -VMName $Name -Credential $Credential | Out-Null
 
         # Let the first-logon reach a SETTLED desktop before checkpointing (explorer.exe = shell is up),
         # so clean-base is a real desktop, not a half-finished OOBE screen.
-        Write-Host 'Waiting for the guest desktop to settle (explorer)...' -ForegroundColor Cyan
+        Write-Verbose 'Waiting for the guest desktop to settle (explorer)...'
         $shellDeadline = (Get-Date).AddMinutes(10)
         $shellUp = $false
         do {
@@ -196,7 +198,7 @@ function New-Win32ToolkitTestVM {
 
             # Windows Update needs real internet. Verify it (and repair the common nested Default-Switch DNS
             # failure) BEFORE the operator relies on it, so "Windows Update just sits there" is caught here.
-            Write-Host 'Checking the guest has working internet (Windows Update needs it)...' -ForegroundColor Cyan
+            Write-Verbose 'Checking the guest has working internet (Windows Update needs it)...'
             $guestNet = Confirm-Win32ToolkitGuestInternet -VMName $Name -Credential $Credential
 
             $sam = $Credential.UserName.Split('\')[-1]
@@ -235,7 +237,7 @@ function New-Win32ToolkitTestVM {
             Read-Host '  When the desktop is fully ready, press Enter to capture the clean-base checkpoint' | Out-Null
 
             # After update reboots the guest may still be settling — re-confirm the shell before freezing.
-            Write-Host 'Confirming the desktop is up before checkpointing...' -ForegroundColor Cyan
+            Write-Verbose 'Confirming the desktop is up before checkpointing...'
             $reDeadline = (Get-Date).AddMinutes(5)
             do {
                 $shellUp = [bool](Invoke-Command -VMName $Name -Credential $Credential -ScriptBlock {

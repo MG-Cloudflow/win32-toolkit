@@ -19,6 +19,8 @@ function Get-YAMLInstallerInfo {
 .OUTPUTS
     Hashtable of the parsed fields, or $null when the folder holds no manifest / cannot be parsed.
 #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
     param([string]$FilesPath)
 
     $installerFile = Get-WingetManifestFile -Path $FilesPath -Kind Installer
@@ -67,28 +69,32 @@ function Get-YAMLInstallerInfo {
         elseif ($metaContent -match '(?m)^\s*PackageIdentifier:\s*(.+)') { $installerInfo.PackageIdentifier = $matches[1].Trim() }
 
         # Parse basic package info
-        if ($metaContent -match 'PackageName:\s*(.+)') {
+        if ($metaContent -match '(?m)^\s*PackageName:\s*(.+)') {
             $installerInfo.PackageName = $matches[1].Trim()
         }
-        if ($metaContent -match 'Publisher:\s*(.+)') {
+        if ($metaContent -match '(?m)^\s*Publisher:\s*(.+)') {
             $installerInfo.Publisher = $matches[1].Trim()
         }
-        if ($metaContent -match 'PackageVersion:\s*(.+)') {
+        if ($metaContent -match '(?m)^\s*PackageVersion:\s*(.+)') {
             $installerInfo.PackageVersion = $matches[1].Trim()
         }
-        if ($yamlContent -match 'Architecture:\s*(.+)') {
+        # These live in the INSTALLER manifest, where they are frequently the first key of a YAML list
+        # item under `Installers:` — i.e. `  - Architecture: x64`. The anchor must therefore allow an
+        # optional list dash between the leading whitespace and the key, or `^\s*Architecture` never matches
+        # the dashed form and the field comes back empty.
+        if ($yamlContent -match '(?m)^\s*-?\s*Architecture:\s*(.+)') {
             $installerInfo.Architecture = $matches[1].Trim()
         }
-        if ($yamlContent -match 'ProductCode:\s*(.+)') {
+        if ($yamlContent -match '(?m)^\s*-?\s*ProductCode:\s*(.+)') {
             $installerInfo.ProductCode = $matches[1].Trim()
         }
-        if ($yamlContent -match '(?m)^\s*Scope:\s*(.+)') {
-            $installerInfo.Scope = $matches[1].Trim().ToLower()
+        if ($yamlContent -match '(?m)^\s*-?\s*Scope:\s*(.+)') {
+            $installerInfo.Scope = $matches[1].Trim().ToLowerInvariant()
         }
-        if ($yamlContent -match '(?m)^\s*InstallerType:\s*(\S+)') {
-            $installerInfo.InstallerType = $matches[1].Trim().ToLower()
+        if ($yamlContent -match '(?m)^\s*-?\s*InstallerType:\s*(\S+)') {
+            $installerInfo.InstallerType = $matches[1].Trim().ToLowerInvariant()
         }
-        if ($yamlContent -match '(?m)^\s*InstallerLocale:\s*(\S+)') {
+        if ($yamlContent -match '(?m)^\s*-?\s*InstallerLocale:\s*(\S+)') {
             $installerInfo.InstallerLocale = $matches[1].Trim()
         }
 

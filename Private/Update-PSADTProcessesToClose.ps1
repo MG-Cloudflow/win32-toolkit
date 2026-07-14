@@ -89,7 +89,7 @@ function Update-PSADTProcessesToClose {
         if ($sorted.Count -gt 0) {
             Write-Host "✓ ProcessesToClose data written: $($sorted -join ', ')" -ForegroundColor Green
         } else {
-            Write-Host 'ProcessesToClose: no user-launchable processes detected, wrote @()' -ForegroundColor DarkYellow
+            Write-Warning 'ProcessesToClose: no user-launchable processes detected, wrote @()'
         }
         return $true
     }

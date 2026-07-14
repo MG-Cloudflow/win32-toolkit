@@ -39,7 +39,7 @@ function Rename-InstallerFile {
     # Build a clean base name: AppName_Architecture_Version  (no spaces, filesystem-safe chars only)
     $cleanName = ($AppName -replace '[^A-Za-z0-9._-]', '_') -replace '_+', '_'
     $cleanVer  = ($Version  -replace '[^A-Za-z0-9._-]', '_') -replace '_+', '_'
-    $cleanArch = ($Architecture -replace '[^A-Za-z0-9]', '').ToLower()
+    $cleanArch = ($Architecture -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
     $baseName  = "${cleanName}_${cleanArch}_${cleanVer}"
 
     $renamed = $false

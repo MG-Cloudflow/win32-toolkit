@@ -1,9 +1,12 @@
 function Invoke-AzBlobUpload {
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
         [string]$SasUri,
 
         [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
         [string]$FilePath
     )
 
@@ -15,7 +18,7 @@ function Invoke-AzBlobUpload {
     $chunkIds   = @()
     $chunkIndex = 0
 
-    Write-Host "  File size: $([math]::Round($totalSize / 1MB, 1)) MB — uploading in $chunkCount chunk(s)..." -ForegroundColor Gray
+    Write-Verbose "  File size: $([math]::Round($totalSize / 1MB, 1)) MB — uploading in $chunkCount chunk(s)..."
 
     $binaryReader = New-Object System.IO.BinaryReader(
         [System.IO.File]::Open($FilePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
@@ -55,11 +58,6 @@ function Invoke-AzBlobUpload {
     }
 
     # ── Commit: Put Block List ─────────────────────────────────────────────────────
-    $blockListXml = '<?xml version="1.0" encoding="utf-8"?><BlockList>' +
-        ($chunkIds | ForEach-Object { "<Latest>$_</Latest>" } | Out-String -NoNewline).TrimEnd() +
-        '</BlockList>'
-
-    # Re-build without Out-String (cleaner)
     $blockListXml = '<?xml version="1.0" encoding="utf-8"?><BlockList>'
     foreach ($id in $chunkIds) { $blockListXml += "<Latest>$id</Latest>" }
     $blockListXml += '</BlockList>'

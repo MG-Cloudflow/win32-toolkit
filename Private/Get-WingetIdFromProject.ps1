@@ -9,6 +9,8 @@ function Get-WingetIdFromProject {
     lacks the key, walks the remaining manifests in preference order rather than giving up. Manifests are
     read as UTF-8.
 #>
+    [CmdletBinding()]
+    [OutputType([string])]
     param(
         [Parameter(Mandatory = $true)]
         [string]$FilesPath

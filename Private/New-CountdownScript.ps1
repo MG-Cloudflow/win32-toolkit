@@ -1,4 +1,6 @@
 function New-CountdownScript {
+    [CmdletBinding()]
+    [OutputType([string])]
     param([string]$ProjectPath)
 
     $sandboxPath = Join-Path $ProjectPath 'Sandbox'

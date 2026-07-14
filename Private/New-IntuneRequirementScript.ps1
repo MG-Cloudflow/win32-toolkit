@@ -1,12 +1,14 @@
 function New-IntuneRequirementScript {
+    [CmdletBinding()]
+    [OutputType([bool])]
     param(
         [string]$ProjectPath,
         [string]$JsonFilePath
     )
-    
+
     try {
         # Parse JSON using exact logic from Create-IntuneRequirement.ps1
-        Write-Host "Parsing JSON data..." -ForegroundColor White
+        Write-Verbose "Parsing JSON data..."
         $jsonContent = Get-Content -Path $JsonFilePath -Raw -Encoding UTF8 | ConvertFrom-Json
         
         # Extract application info using exact logic
@@ -58,11 +60,11 @@ function New-IntuneRequirementScript {
             $appName    = $mainApp.DisplayName
             $appVersion = $mainApp.DisplayVersion
             $publisher  = $mainApp.Publisher
-            Write-Host "Extracted info for: $appName" -ForegroundColor Green
-            if ($appVersion) { Write-Host "  Version: $appVersion" -ForegroundColor White }
-            if ($publisher)  { Write-Host "  Publisher: $publisher" -ForegroundColor White }
-            Write-Host "  Registry Entries: $($appEntries.Count)" -ForegroundColor White
-            if ($productCodes.Count -gt 0) { Write-Host "  Product Codes: $($productCodes.Count)" -ForegroundColor White }
+            Write-Verbose "Extracted info for: $appName"
+            if ($appVersion) { Write-Verbose "  Version: $appVersion" }
+            if ($publisher)  { Write-Verbose "  Publisher: $publisher" }
+            Write-Verbose "  Registry Entries: $($appEntries.Count)"
+            if ($productCodes.Count -gt 0) { Write-Verbose "  Product Codes: $($productCodes.Count)" }
         } else {
             # Fallback: read the winget manifest via the shared resolver.
             # This used to hand-pick the alphabetically-FIRST *.yaml, which is the *.installer.yaml — and the
@@ -77,9 +79,9 @@ function New-IntuneRequirementScript {
                 if ($yamlInfo.Publisher)      { $publisher  = $yamlInfo.Publisher }
                 if ($yamlInfo.ProductCode)    { $productCodes += $yamlInfo.ProductCode }
                 if ($appName) {
-                    Write-Host "JSON had no program entries — using the winget manifest as fallback" -ForegroundColor Yellow
-                    Write-Host "  App: $appName  Version: $appVersion" -ForegroundColor White
-                    if ($productCodes.Count -gt 0) { Write-Host "  Product Code: $($productCodes[0])" -ForegroundColor White }
+                    Write-Warning "JSON had no program entries — using the winget manifest as fallback"
+                    Write-Verbose "  App: $appName  Version: $appVersion"
+                    if ($productCodes.Count -gt 0) { Write-Verbose "  Product Code: $($productCodes[0])" }
                 }
             }
             if (-not $appName) {
@@ -89,7 +91,7 @@ function New-IntuneRequirementScript {
         }
         
         # Generate requirement script using exact logic from original
-        Write-Host "Generating requirement script..." -ForegroundColor White
+        Write-Verbose "Generating requirement script..."
 
         # Untrusted values (DisplayName/version from the capture JSON or YAML) are emitted
         # into single-quoted literals in the generated requirement script — escape them
@@ -255,7 +257,7 @@ try {
         $supportFilesPath = Join-Path $ProjectPath "SupportFiles"
         if (-not (Test-Path $supportFilesPath)) {
             New-Item -Path $supportFilesPath -ItemType Directory -Force | Out-Null
-            Write-Host "Created SupportFiles directory" -ForegroundColor Yellow
+            Write-Verbose "Created SupportFiles directory"
         }
         
         $defaultPath = Join-Path $supportFilesPath "RequirementScript.ps1"
