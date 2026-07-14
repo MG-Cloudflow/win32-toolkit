@@ -14,11 +14,19 @@ function Download-OldVersionInstaller {
         [Parameter(Mandatory = $true)]
         [string]$AppId,
 
-        [Parameter(Mandatory = $true)]
+        # Omit to download the LATEST version (used when staging a dependency, where any current version
+        # of e.g. the VC++ redistributable will do). The Update baseline always pins a version.
+        [Parameter(Mandatory = $false)]
         [string]$Version,
 
         [Parameter(Mandatory = $true)]
         [string]$ProjectPath,
+
+        # Where the installer lands. Defaults to the Update baseline folder (Sandbox\OldVersion); the
+        # dependency stager points it at Sandbox\Dependencies\<id> instead. The folder is always emptied
+        # first, so callers must NOT share one.
+        [Parameter(Mandatory = $false)]
+        [string]$DestinationDir,
 
         [Parameter(Mandatory = $false)]
         [string]$Architecture,
@@ -38,11 +46,13 @@ function Download-OldVersionInstaller {
 
     # Fail fast (before any download) on a pinned type that has no silent installer — otherwise the
     # sandbox would launch the app itself and hang until the 30-minute assertion timeout.
+    $verLabel = if ($Version) { "v$Version" } else { 'the latest version' }
+
     if ($InstallerType -match '^(portable|zip|pwa)$') {
-        throw "The baseline for '$AppId' v$Version is a '$InstallerType' winget package — it has no silent installer (it would launch the app and hang the sandbox). Pick a different baseline with -SpecificVersion, or test with -Scenario InstallUninstall."
+        throw "The baseline for '$AppId' $verLabel is a '$InstallerType' winget package — it has no silent installer (it would launch the app and hang the sandbox). Pick a different baseline with -SpecificVersion, or test with -Scenario InstallUninstall."
     }
 
-    $oldVersionDir = Join-Path $ProjectPath 'Sandbox\OldVersion'
+    $oldVersionDir = if ($DestinationDir) { $DestinationDir } else { Join-Path $ProjectPath 'Sandbox\OldVersion' }
 
     # Always start fresh so we don't accidentally pick up a stale installer. -LiteralPath enumeration
     # (not a wildcard -Path) so files with [ ] etc. are removed too; a survivor is a hard error rather
@@ -56,16 +66,17 @@ function Download-OldVersionInstaller {
         New-Item -ItemType Directory -Path $oldVersionDir -Force | Out-Null
     }
 
-    Write-Host "Downloading v$Version of '$AppId'..." -ForegroundColor Yellow
+    Write-Host "Downloading $verLabel of '$AppId'..." -ForegroundColor Yellow
 
     $downloadArgs = @(
         'download',
         '--id',                        $AppId,
-        '--version',                   $Version,
         '--download-directory',        $oldVersionDir,
         '--accept-source-agreements',
         '--accept-package-agreements'
     )
+    # No -Version => let winget pick the latest (the dependency-staging case).
+    if ($Version) { $downloadArgs += '--version'; $downloadArgs += $Version }
 
     if ($Architecture -and $Architecture -ne 'all') {
         $downloadArgs += '--architecture'
@@ -83,13 +94,13 @@ function Download-OldVersionInstaller {
     if ($LASTEXITCODE -ne 0 -and $pinArgs.Count -gt 0) {
         # The old version may not publish the pinned variant (or the winget build may not support a
         # pin flag) — retry unpinned rather than failing the whole test, but say so clearly.
-        Write-Warning "Pinned download (scope/installer-type/locale of the packaged variant) failed for '$AppId' v$Version — retrying without pins. The baseline may be a DIFFERENT variant than the packaged app; check the installed baseline in the sandbox."
+        Write-Warning "Pinned download (scope/installer-type/locale of the packaged variant) failed for '$AppId' $verLabel — retrying without pins. The baseline may be a DIFFERENT variant than the packaged app; check the installed baseline in the sandbox."
         Get-ChildItem -LiteralPath $oldVersionDir -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
         & winget @downloadArgs
     }
 
     if ($LASTEXITCODE -ne 0) {
-        throw "winget download exited with code $LASTEXITCODE for '$AppId' v$Version."
+        throw "winget download exited with code $LASTEXITCODE for '$AppId' $verLabel."
     }
 
     # Locate the downloaded installer file

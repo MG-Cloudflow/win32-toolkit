@@ -27,6 +27,8 @@ $script:hvPhase  = $null
 $script:hvOutput = $null
 $script:launched = 0
 
+$script:depCount = 0
+function Initialize-Win32ToolkitDependencyStaging { param($ProjectPath) return $script:depCount }
 function Get-Win32ToolkitTestBackend { param($Backend) return $script:backend }
 function Get-Process { param($Name, $ErrorAction) return $script:procs }
 function New-LogCollectorScript { param($ProjectPath) return 'fake' }
@@ -125,6 +127,22 @@ $verdict = $null
 try { $verdict = Test-Win32ToolkitProject -ProjectPath $proj -Scenario 'Update' -BaselineProjectPath $base -Unattended *>$null } catch { }
 if ($null -eq $script:waitArgs) { Ok 'waiter never entered (returns null instead of polling 30 min)' } else { Bad "waiter was called: $($script:waitArgs | Out-String)" }
 $script:hvCopiesLog = $true
+
+Write-Host '[9] declared dependencies install FIRST in BOTH scenarios' -ForegroundColor Cyan
+$script:depCount = 1
+$script:backend = 'HyperV'; $script:procs = @(); $script:testMode = 'Interactive'
+Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
+if (@($script:hvPhase)[0].Label -eq 'Install dependencies') { Ok 'InstallUninstall: dependency is the FIRST phase' } else { Bad "first=$(@($script:hvPhase)[0].Label)" }
+
+Run @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProjectPath = $base; Unattended = $true }
+$lbl = @($script:hvPhase | ForEach-Object { $_.Label })
+if ($lbl[0] -eq 'Install dependencies' -and $lbl[1] -eq 'Assert: PreBaseline') {
+    Ok 'Update: dependency runs BEFORE the PreBaseline snapshot (its ARP entry belongs to the baseline)'
+} else { Bad "order=$($lbl -join ' > ')" }
+
+$script:depCount = 0
+Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
+if (@($script:hvPhase)[0].Label -ne 'Install dependencies') { Ok 'none declared -> no dependency phase (unchanged behaviour)' } else { Bad 'phantom dependency phase' }
 
 Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
 

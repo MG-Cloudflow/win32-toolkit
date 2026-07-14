@@ -22,6 +22,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 
 # Shadows so nothing external runs.
 function New-LogCollectorScript { param($ProjectPath) return 'fake-collector' }
+# Declared dependencies are staged into Sandbox\Dependencies\ before the run; these fixtures declare none.
+function Initialize-Win32ToolkitDependencyStaging { param($ProjectPath) return 0 }
 function Get-WindowsOptionalFeature { param($Online, $FeatureName, $ErrorAction) return $null }
 $script:started = 0
 function Start-Process { param($FilePath, $ArgumentList, $ErrorAction, [switch]$PassThru, [switch]$Wait) $script:started++ }

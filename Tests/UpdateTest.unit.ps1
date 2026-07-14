@@ -185,6 +185,8 @@ try {
     . (Join-Path $repo 'Private\Get-LatestInstallationCapture.ps1')
     . (Join-Path $repo 'Private\Get-Win32DetectionRules.ps1')
     . (Join-Path $repo 'Private\New-TargetedDocumentation.ps1')
+    # New-TargetedDocumentation now stages declared dependencies; this project declares none, so 0.
+    function Initialize-Win32ToolkitDependencyStaging { param($ProjectPath) return 0 }
     . (Join-Path $repo 'Private\New-LogCollectorScript.ps1')
     . (Join-Path $repo 'Private\New-Win32ToolkitSandboxConfig.ps1')   # .wsb builder used by New-TargetedDocumentation
 
