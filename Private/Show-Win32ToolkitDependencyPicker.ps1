@@ -88,8 +88,11 @@ function Show-Win32ToolkitDependencyPicker {
                 }
                 if ($apps.Count -eq 0) { Write-SpectreHost '[yellow]No Win32 apps found in the tenant.[/]'; break }
 
+                # NOTE: displayVersion is NOT selectable here — /mobileApps is a collection of the BASE type
+                # microsoft.graph.mobileApp, which has no such property (isof() filters, it does not cast).
+                # So the label shows the publisher instead.
                 $pick = Read-SpectreSelection -Message 'Which published app?' -Choices @(
-                    $apps | ForEach-Object { [pscustomobject]@{ Key = $_.Id; Label = "$($_.DisplayName)  [grey]$($_.DisplayVersion)[/]" } }
+                    $apps | ForEach-Object { [pscustomobject]@{ Key = $_.Id; Label = "$($_.DisplayName)  [grey]$($_.Publisher)[/]" } }
                 ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 12
                 $ref = "intune:$($pick.Key)"
                 if ($refs -notcontains $ref) { $refs.Add($ref) }

@@ -105,6 +105,24 @@ if ($hits.Count -eq 1 -and $hits[0].Id -eq $VC) { Ok 'the "(Update)" twin is exc
 $byId = @(Find-Win32ToolkitIntuneApp -WingetId 'Microsoft.VCRedist.2015+.x64')
 if ($byId.Count -eq 1 -and $byId[0].Id -eq $VC) { Ok 'winget id resolved via the notes stamp' } else { Bad "byId=$($byId.Count)" }
 
+# REGRESSION (live 400 from Graph): $select is evaluated against the BASE type microsoft.graph.mobileApp —
+# isof() filters the collection but does NOT cast it. Selecting displayVersion (a win32LobApp-only property)
+# is a hard 400: "Could not find a property named 'displayVersion' on type 'microsoft.graph.mobileApp'".
+if ($script:seenUri -notmatch 'displayVersion') { Ok '$select does not request displayVersion (400 on the base type)' } else { Bad "select requests displayVersion: $script:seenUri" }
+foreach ($prop in 'id', 'displayName', 'publisher', 'notes') {
+    if ($script:seenUri -notmatch [regex]::Escape($prop)) { Bad "select is missing '$prop'" }
+}
+Ok '$select requests only base-type properties (id/displayName/publisher/notes)'
+
+Write-Host '[8] a tenant-search failure must NOT abort the publish (warn + continue)' -ForegroundColor Cyan
+. (Join-Path $repo 'Private\Resolve-Win32ToolkitDependencies.ps1')
+function Get-Win32ToolkitDependencies { param($ProjectPath) @([pscustomobject]@{ Source = 'winget'; Ref = 'Microsoft.VCRedist.2015+.x64'; DependencyType = 'autoInstall' }) }
+function Find-Win32ToolkitIntuneApp { param($DisplayName, $WingetId, [switch]$All, $BaseUri) throw 'BadRequest (Bad Request).' }
+$threw = $false
+$res = $null
+try { $res = @(Resolve-Win32ToolkitDependencies -ProjectPath 'C:\proj' -WarningAction SilentlyContinue) } catch { $threw = $true }
+if (-not $threw -and $res.Count -eq 0) { Ok 'Graph failure is warned about and skipped — the app still publishes' } else { Bad "threw=$threw count=$($res.Count)" }
+
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All IntuneRelationships tests passed.' -ForegroundColor Green; exit 0 }
 else { Write-Host "$fail IntuneRelationships test(s) FAILED." -ForegroundColor Red; exit 1 }

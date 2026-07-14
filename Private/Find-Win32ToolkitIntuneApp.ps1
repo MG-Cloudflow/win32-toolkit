@@ -39,7 +39,13 @@ function Find-Win32ToolkitIntuneApp {
         [string]$BaseUri = 'https://graph.microsoft.com/beta/deviceAppManagement'
     )
 
-    $select = 'id,displayName,displayVersion,publisher,notes'
+    # $select is evaluated against the BASE type. `isof(...)` FILTERS the collection but does not CAST it,
+    # so /mobileApps is still a collection of microsoft.graph.mobileApp — and selecting a property that only
+    # exists on the derived win32LobApp is a hard 400:
+    #     "Could not find a property named 'displayVersion' on type 'microsoft.graph.mobileApp'"
+    # id / displayName / publisher / notes are all mobileApp properties. displayVersion is NOT — and we do
+    # not need it: dependency resolution is version-agnostic (any published version satisfies it).
+    $select = 'id,displayName,publisher,notes'
     $uri    = "$BaseUri/mobileApps?`$filter=isof('microsoft.graph.win32LobApp')&`$select=$select"
 
     if ($DisplayName) {

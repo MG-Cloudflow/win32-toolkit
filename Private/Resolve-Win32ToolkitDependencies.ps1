@@ -48,6 +48,11 @@ function Resolve-Win32ToolkitDependencies {
         $id  = $null
         $how = $null
 
+        # A tenant lookup that FAILS (a bad filter, a transient Graph error, a permissions problem) must
+        # never abort the publish — that is the same outcome as "dependency not found", which is defined to
+        # warn and continue. Aborting here would block an otherwise-good app from shipping.
+        try {
+
         switch ($d.Source) {
 
             'intune' { $id = $d.Ref; $how = 'explicit app id' }
@@ -91,6 +96,16 @@ function Resolve-Win32ToolkitDependencies {
                     continue
                 }
             }
+        }
+
+        }
+        catch {
+            Write-Warning @"
+Could not look up dependency '$($d.Source):$($d.Ref)' in Intune: $($_.Exception.Message)
+The app WILL still publish — but WITHOUT this dependency. Attach it afterwards with
+    Sync-Win32ToolkitAppDependency -ProjectPath '$ProjectPath'
+"@
+            continue
         }
 
         if ($id) {
