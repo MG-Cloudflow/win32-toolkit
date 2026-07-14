@@ -67,6 +67,41 @@ $script:backend = 'Sandbox'; $script:procs = @([pscustomobject]@{ Name = 'Window
 Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
 if ($script:hvCalled -eq 0 -and $script:launched -eq 0) { Ok 'guard blocked the run before launch' } else { Bad "hvCalled=$script:hvCalled launched=$script:launched" }
 
+# --- Update scenario on Hyper-V -------------------------------------------------------------------
+# Shadow the Update-scenario machinery so we reach the HyperV branch without winget/downloads.
+function Get-Win32ToolkitAppConfig { param($ProjectPath) [pscustomobject]@{ App = [pscustomobject]@{ Version = '1.0'; DisplayName = 'App' } } }
+function Get-Win32ToolkitRequirementRule { param($ProjectPath) 'rule' }
+function New-UpdateAssertionScript { param($ProjectPath, [switch]$SkipRequirement, $OldVersion, [switch]$ExpectBaselineTattoo) 'assert.ps1' }
+function New-CountdownScript { param($ProjectPath) $script:countdownMade++; 'cd.ps1' }
+function Wait-Win32ToolkitUpdateAssertion { param($ProjectPath) return $true }
+function Get-Win32ToolkitBaselineInstallCommand { param($InstallerSandboxPath, $InstallerType, $SilentArgs) "& '$InstallerSandboxPath'" }
+$script:hvBaseline = $null
+function Invoke-Win32ToolkitHyperVRun { param($ProjectPath, $Phase, $Output, $BaselineProjectPath) $script:hvCalled++; $script:hvPhase = $Phase; $script:hvOutput = $Output; $script:hvBaseline = $BaselineProjectPath; return $true }
+
+# a baseline project so -BaselineProjectPath validates (needs Invoke-AppDeployToolkit.ps1 + differing path)
+$base = Join-Path ([System.IO.Path]::GetTempPath()) ('w32base_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $base -Force | Out-Null
+Set-Content -Path (Join-Path $base 'Invoke-AppDeployToolkit.ps1') -Value '# psadt'
+
+Write-Host '[6] Update + HyperV = full assertion phase sequence, host pause, no Countdown.ps1' -ForegroundColor Cyan
+$script:backend = 'HyperV'; $script:procs = @(); $script:testMode = 'Interactive'; $script:countdownMade = 0
+Run @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProjectPath = $base }
+$labels = @($script:hvPhase.Label)
+$cmds   = @($script:hvPhase.Command) -join ' | '
+if ($script:hvCalled -eq 1) { Ok 'Update routed to the Hyper-V provider' } else { Bad "hvCalled=$script:hvCalled" }
+if ($cmds -match 'PreBaseline' -and $cmds -match 'PreUpdate' -and $cmds -match 'PostUpdate') { Ok 'PreBaseline/PreUpdate/PostUpdate assertions present' } else { Bad "cmds=$cmds" }
+if ((Pauses) -eq 1) { Ok 'host Pause replaces the in-guest countdown' } else { Bad "pauses=$(Pauses)" }
+if ($script:countdownMade -eq 0) { Ok 'Countdown.ps1 NOT generated for HyperV' } else { Bad 'Countdown.ps1 was generated' }
+if ($script:hvBaseline -eq $base) { Ok 'baseline project forwarded (-> C:\PSADTOld)' } else { Bad "baseline=$script:hvBaseline" }
+if ($labels -contains 'CollectLogs' -and $script:hvOutput -contains 'Sandbox\Logs\*') { Ok 'logs collected + copied back' } else { Bad "labels=$($labels -join ',')" }
+
+Write-Host '[7] Update + HyperV + -Unattended = no pause' -ForegroundColor Cyan
+$script:backend = 'HyperV'; $script:countdownMade = 0
+Run @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProjectPath = $base; Unattended = $true }
+if ((Pauses) -eq 0 -and $script:hvCalled -eq 1) { Ok 'silent Update run (no host pause)' } else { Bad "pauses=$(Pauses) hvCalled=$script:hvCalled" }
+
+Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
+
 Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''
