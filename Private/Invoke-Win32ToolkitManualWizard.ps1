@@ -47,13 +47,19 @@ function Invoke-Win32ToolkitManualWizard {
     $template = Get-Win32ToolkitTemplateChoice -BasePath $BasePath
     if ([string]::IsNullOrWhiteSpace($template)) { return }
 
-    # After-build options
+    # After-build options. The documentation capture ALWAYS runs, and both it and the optional test follow
+    # the CONFIGURED backend — name the real backend rather than hard-coding "Windows Sandbox".
+    $bi = Get-Win32ToolkitBackendInfo
+    if ($bi.FellBack) {
+        Write-SpectreHost "[yellow]Hyper-V is selected but NOT ready — falling back to Windows Sandbox:[/] $(Get-SpectreEscapedText -Text ($bi.Reasons -join '; '))"
+    }
+    $testLabel = "Run an install/uninstall test in $($bi.Label)"
     $actions = @(Read-SpectreMultiSelection -Message 'After building, also… (space to toggle, enter to accept)' -Choices @(
-            'Run an install/uninstall test in Windows Sandbox'
+            $testLabel
             'Package to .intunewin'
             'Publish to Intune'
         ) -Color Blue -AllowEmpty)
-    $doTest    = $actions -contains 'Run an install/uninstall test in Windows Sandbox'
+    $doTest    = $actions -contains $testLabel
     $doPackage = $actions -contains 'Package to .intunewin'
     $doPublish = $actions -contains 'Publish to Intune'
 
@@ -72,6 +78,7 @@ function Invoke-Win32ToolkitManualWizard {
         "Template     : $template"
         "Mode         : $modeStr"
         "Base folder  : $BasePath"
+        "Test/capture : $($bi.Label)"
         "After build  : $afterStr"
     ) -join "`n"
     Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $summary) -Header 'Review' -Border Rounded -Color Blue

@@ -55,13 +55,20 @@ function Invoke-Win32ToolkitWingetWizard {
     $template = Get-Win32ToolkitTemplateChoice -BasePath $BasePath
     if ([string]::IsNullOrWhiteSpace($template)) { return }
 
-    # 5. What to do after building
+    # 5. What to do after building. NOTE: the documentation capture ALWAYS runs, and both it and the
+    # optional test follow the CONFIGURED backend — so name the real backend instead of hard-coding
+    # "Windows Sandbox" (the TUI used to claim Sandbox while actually running in the Hyper-V VM).
+    $bi = Get-Win32ToolkitBackendInfo
+    if ($bi.FellBack) {
+        Write-SpectreHost "[yellow]Hyper-V is selected but NOT ready — falling back to Windows Sandbox:[/] $(Get-SpectreEscapedText -Text ($bi.Reasons -join '; '))"
+    }
+    $testLabel = "Run an install/uninstall test in $($bi.Label)"
     $actions = @(Read-SpectreMultiSelection -Message 'After building, also… (space to toggle, enter to accept)' -Choices @(
-            'Run an install/uninstall test in Windows Sandbox'
+            $testLabel
             'Package to .intunewin'
             'Publish to Intune'
         ) -Color Blue -AllowEmpty)
-    $doTest    = $actions -contains 'Run an install/uninstall test in Windows Sandbox'
+    $doTest    = $actions -contains $testLabel
     $doPackage = $actions -contains 'Package to .intunewin'
     $doPublish = $actions -contains 'Publish to Intune'
 
@@ -77,6 +84,7 @@ function Invoke-Win32ToolkitWingetWizard {
         "Architecture : $arch"
         "Template     : $template"
         "Base folder  : $BasePath"
+        "Test/capture : $($bi.Label)"
         "After build  : $afterStr"
     ) -join "`n"
     Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $summary) -Header 'Review' -Border Rounded -Color Blue
@@ -90,7 +98,7 @@ function Invoke-Win32ToolkitWingetWizard {
         Write-SpectreHost '[yellow]Publish skipped — will build/package only.[/]'
     }
 
-    # 8. Run (Invoke shows its own progress + launches Windows Sandbox)
+    # 8. Run (Invoke shows its own progress; the capture/test run in the resolved backend)
     Clear-Host
     Write-SpectreRule -Title "Building $(Get-SpectreEscapedText -Text $picked.Name)…" -Color Blue
     $p = @{ Id = $picked.Id; Architecture = $arch; TemplateName = $template; BasePath = $BasePath; Force = $true }

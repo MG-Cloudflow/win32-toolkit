@@ -341,10 +341,14 @@ function Test-Win32ToolkitProject {
                     $oldInstaller = Download-OldVersionInstaller @dl
                 }
 
-                # ── Step 5: Ensure Countdown.ps1 exists ──────────────────────────────────
-                Write-Host 'Creating countdown script...' -ForegroundColor Yellow
-                $countdownPath = New-CountdownScript -ProjectPath $ProjectPath
-                Write-Host "✓ Countdown script : $countdownPath" -ForegroundColor Green
+                # ── Step 5: Ensure Countdown.ps1 exists (Sandbox only) ───────────────────
+                # The in-guest WinForms countdown is a Windows Sandbox artifact. On Hyper-V the HOST
+                # pauses instead (a Pause phase), so the guest never needs Countdown.ps1.
+                if ($resolvedBackend -eq 'Sandbox') {
+                    Write-Host 'Creating countdown script...' -ForegroundColor Yellow
+                    $countdownPath = New-CountdownScript -ProjectPath $ProjectPath
+                    Write-Host "✓ Countdown script : $countdownPath" -ForegroundColor Green
+                }
 
                 # Log collector — copies PSADT/MSI logs back to the project after the run
                 $logCollectorPath = New-LogCollectorScript -ProjectPath $ProjectPath
@@ -383,14 +387,11 @@ function Test-Win32ToolkitProject {
                     if (Test-Path -LiteralPath $fp) { Remove-Item -LiteralPath $fp -Force -ErrorAction SilentlyContinue }
                 }
 
-                # ── Step 6: Build the sandbox WSB config ──────────────────────────────────
-                $sandboxFolder     = Join-Path $ProjectPath 'Sandbox'
-                $sandboxConfigFile = Join-Path $sandboxFolder 'UpdateDemo.wsb'
-
-                # Baseline install command. Vendor baseline: exe/msi via Start-Process, msix/appx via
-                # Add-AppxPackage (untrusted values escaped + argv-safe). Toolkit-package baseline: run
-                # its Invoke-AppDeployToolkit.ps1 from the second (read-only) mapped folder — a fixed
-                # sandbox-side path, no untrusted splice. Then XML-encode for the .wsb <Command>.
+                # Baseline install command — BACKEND-NEUTRAL: the guest paths (C:\PSADT, C:\PSADTOld) are
+                # identical under Sandbox mapped folders and the Hyper-V copy-in, so the same command
+                # string drives both. Vendor baseline: exe/msi via Start-Process, msix/appx via
+                # Add-AppxPackage (untrusted values escaped + argv-safe). Toolkit-package baseline: run its
+                # Invoke-AppDeployToolkit.ps1 from C:\PSADTOld — a fixed guest path, no untrusted splice.
                 $installCmd = if ($useBaselineProject) {
                     "& 'C:\PSADTOld\Invoke-AppDeployToolkit.ps1' -DeployMode Silent"
                 } else {
@@ -399,7 +400,59 @@ function Test-Win32ToolkitProject {
                         -InstallerType $oldInstaller.InstallerType `
                         -SilentArgs    $oldInstaller.SilentArgs
                 }
-                $installCmdXml = ConvertTo-XmlEncoded $installCmd
+
+                # ── Step 6 (Hyper-V): run the update sequence in the VM over PowerShell Direct ────
+                # Exactly the Sandbox LogonCommand sequence, expressed as provider phases. The in-guest
+                # WinForms Countdown becomes a HOST pause (dropped under -Unattended / HyperVTestMode).
+                # The baseline project is copied to C:\PSADTOld by the provider (-BaselineProjectPath).
+                if ($resolvedBackend -eq 'HyperV') {
+                    $interactive = -not ($Unattended -or ((Get-Win32ToolkitConfigValue -Name 'HyperVTestMode' -Default 'Interactive') -eq 'Unattended'))
+
+                    $phases = @(
+                        @{ Label = 'Assert: PreBaseline';              Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline" }
+                        @{ Label = "Install baseline v$targetVersion"; Command = $installCmd }
+                        @{ Label = 'Assert: PreUpdate';                Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate" }
+                    )
+                    # DeployMode must be EXPLICIT: every Hyper-V phase runs as SYSTEM in session 0, where
+                    # PSADT's interactive default does not apply (the Sandbox .wsb gets away with it because
+                    # its LogonCommand runs on a real desktop). Interactive=$true is also what makes the
+                    # provider ensure a desktop and open vmconnect — without it the operator would be told
+                    # to watch a VM window that never opens.
+                    if ($interactive) {
+                        $phases += @{ Label = 'Verify the OLD install in the VM window'; Pause = $true; Interactive = $true }
+                        $phases += @{ Label = 'Update (PSADT GUI)'; Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Interactive"; Interactive = $true }
+                    }
+                    else {
+                        $phases += @{ Label = 'Update (PSADT)'; Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Silent" }
+                    }
+                    $phases += @(
+                        @{ Label = 'Assert: PostUpdate'; Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate" }
+                        @{ Label = 'CollectLogs';        Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
+                    )
+
+                    $hvArgs = @{ ProjectPath = $ProjectPath; Phase = $phases; Output = @('Sandbox\Logs\*') }
+                    if ($useBaselineProject) { $hvArgs['BaselineProjectPath'] = $BaselineProjectPath }
+
+                    Write-Host "`nRunning the Update test in the Hyper-V VM..." -ForegroundColor Cyan
+                    if (-not (Invoke-Win32ToolkitHyperVRun @hvArgs)) {
+                        Write-Warning 'The Hyper-V update run did not complete cleanly — see the warnings above.'
+                    }
+
+                    # The Hyper-V run is SYNCHRONOUS: UpdateAssertions.log already came back with
+                    # Sandbox\Logs, so the waiter's first poll succeeds. If the copy-out silently failed
+                    # there is nothing to wait FOR — bail instead of blocking the host for the 30-min default.
+                    $assertLog = Join-Path $ProjectPath 'Sandbox\Logs\UpdateAssertions.log'
+                    if (-not (Test-Path -LiteralPath $assertLog)) {
+                        Write-Warning "No UpdateAssertions.log came back from the VM — the assertions never ran, or the copy-out failed. Check $ProjectPath\Sandbox\Logs and the phase warnings above."
+                        return $null
+                    }
+                    return (Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -TimeoutMinutes 1 -PollSeconds 1)
+                }
+
+                # ── Step 6 (Sandbox): build the .wsb config ───────────────────────────────
+                $sandboxFolder     = Join-Path $ProjectPath 'Sandbox'
+                $sandboxConfigFile = Join-Path $sandboxFolder 'UpdateDemo.wsb'
+                $installCmdXml     = ConvertTo-XmlEncoded $installCmd
 
                 # Mapped folders: project (RW) + optional read-only baseline (never mutate the raw
                 # Projects\ copy). Order preserved: project first, then baseline (C:\PSADTOld).

@@ -37,7 +37,7 @@ function Show-Win32ToolkitProjectActions {
 
             $act = Read-SpectreSelection -Message 'What would you like to do?' -Choices @(
                 [pscustomobject]@{ Key = 'test';    Label = 'Run a test (Windows Sandbox or Hyper-V VM)' }
-                [pscustomobject]@{ Key = 'finish';  Label = 'Finalize / refresh (Sandbox capture -> auto uninstall)' }
+                [pscustomobject]@{ Key = 'finish';  Label = "Finalize / refresh ($((Get-Win32ToolkitBackendInfo).Label) capture -> auto uninstall)" }
                 [pscustomobject]@{ Key = 'package'; Label = 'Package to .intunewin' }
                 [pscustomobject]@{ Key = 'publish'; Label = 'Publish to Intune' }
                 [pscustomobject]@{ Key = 'open';    Label = 'Open the project folder' }
@@ -52,20 +52,21 @@ function Show-Win32ToolkitProjectActions {
                         [pscustomobject]@{ Key = 'HyperV';  Label = 'Hyper-V VM (fast — needs a provisioned test VM; see Settings)' }
                     ) -ChoiceLabelProperty 'Label' -Color Blue
 
-                    # Hyper-V currently wires InstallUninstall; Update/capture still run on Sandbox.
-                    $scenChoices = @([pscustomobject]@{ Key = 'InstallUninstall'; Label = 'Install then uninstall (any app)' })
-                    if ($backend.Key -eq 'Sandbox') {
-                        $scenChoices += [pscustomobject]@{ Key = 'Update'; Label = 'Update from an older version (winget apps only)' }
-                    } else {
-                        Write-SpectreHost '[grey]Hyper-V currently supports Install/Uninstall. Update runs on Windows Sandbox for now.[/]'
-                    }
+                    # Both scenarios run on both backends now (Update-on-HyperV drives the same
+                    # PreBaseline -> install-old -> PreUpdate -> pause -> update -> PostUpdate sequence
+                    # as the Sandbox LogonCommand, with a HOST pause instead of the in-guest countdown).
+                    $scenChoices = @(
+                        [pscustomobject]@{ Key = 'InstallUninstall'; Label = 'Install then uninstall (any app)' }
+                        [pscustomobject]@{ Key = 'Update';           Label = 'Update from an older version (winget apps only)' }
+                    )
                     $sc = Read-SpectreSelection -Message 'Test scenario' -Choices $scenChoices -ChoiceLabelProperty 'Label' -Color Blue
 
                     $testSplat = @{ ProjectPath = $project.Path; Scenario = $sc.Key; Backend = $backend.Key }
-                    if ($backend.Key -eq 'HyperV' -and $sc.Key -eq 'InstallUninstall') {
+                    if ($backend.Key -eq 'HyperV') {
+                        $pauseWhat = if ($sc.Key -eq 'Update') { 'verify the OLD install, then update' } else { 'test the app, then uninstall' }
                         $mode = Read-SpectreSelection -Message 'Hyper-V run mode' -Choices @(
-                            [pscustomobject]@{ Key = 'interactive'; Label = 'Interactive — watch the PSADT GUI in the VM console, test, then uninstall' }
-                            [pscustomobject]@{ Key = 'unattended';  Label = 'Silent — install then uninstall back-to-back (no GUI)' }
+                            [pscustomobject]@{ Key = 'interactive'; Label = "Interactive — watch the PSADT GUI in the VM console, $pauseWhat" }
+                            [pscustomobject]@{ Key = 'unattended';  Label = 'Silent — run every phase back-to-back (no GUI, no pause)' }
                         ) -ChoiceLabelProperty 'Label' -Color Blue
                         if ($mode.Key -eq 'unattended') { $testSplat['Unattended'] = $true }
                     }

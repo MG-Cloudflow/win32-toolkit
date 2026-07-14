@@ -31,15 +31,27 @@ function Wait-Win32ToolkitUpdateAssertion {
 
         # Poll interval; short values are used by the unit tests.
         [ValidateRange(1, 60)]
-        [int]$PollSeconds = 10
+        [int]$PollSeconds = 10,
+
+        # Which backend produced the log — affects the host-side wording only, never the verdict. Sandbox
+        # streams the log LIVE while the sandbox runs; the Hyper-V run is already finished by the time we
+        # read it (the log was copied back), so "waiting for the sandbox" would be nonsense there.
+        [ValidateSet('Sandbox', 'HyperV')]
+        [string]$Backend = 'Sandbox'
     )
 
     $logPath = Join-Path $ProjectPath 'Sandbox\Logs\UpdateAssertions.log'
 
     Write-Host ''
-    Write-Host "Waiting for in-sandbox update assertions (up to $TimeoutMinutes min)..." -ForegroundColor Yellow
-    Write-Host "  Live log: $logPath" -ForegroundColor Gray
-    Write-Host '  (The sandbox keeps running independently of this wait.)' -ForegroundColor Gray
+    if ($Backend -eq 'HyperV') {
+        Write-Host 'Reading the update assertions from the completed Hyper-V run...' -ForegroundColor Yellow
+        Write-Host "  Log: $logPath" -ForegroundColor Gray
+    }
+    else {
+        Write-Host "Waiting for in-sandbox update assertions (up to $TimeoutMinutes min)..." -ForegroundColor Yellow
+        Write-Host "  Live log: $logPath" -ForegroundColor Gray
+        Write-Host '  (The sandbox keeps running independently of this wait.)' -ForegroundColor Gray
+    }
 
     $deadline  = (Get-Date).AddMinutes($TimeoutMinutes)
     $announced = @{}

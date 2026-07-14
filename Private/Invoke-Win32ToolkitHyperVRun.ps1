@@ -57,7 +57,10 @@ function Invoke-Win32ToolkitHyperVRun {
         Write-Host "Copying project into the guest (C:\PSADT)..." -ForegroundColor Cyan
         Copy-Win32ToolkitProjectToGuest -Session $session -ProjectPath $ProjectPath -GuestPath 'C:\PSADT'
         if ($BaselineProjectPath) {
-            Copy-Win32ToolkitProjectToGuest -Session $session -ProjectPath $BaselineProjectPath -GuestPath 'C:\PSADTOld'
+            # -ReadOnly reproduces the Sandbox <ReadOnly>true</ReadOnly> mount, so the baseline's own PSADT
+            # run can't write into C:\PSADTOld on Hyper-V while the same run fails under Sandbox.
+            Write-Host 'Copying the update baseline into the guest (C:\PSADTOld, read-only)...' -ForegroundColor Cyan
+            Copy-Win32ToolkitProjectToGuest -Session $session -ProjectPath $BaselineProjectPath -GuestPath 'C:\PSADTOld' -ReadOnly
         }
 
         # If any phase is interactive, open the VM console so the operator can watch the PSADT GUI.
