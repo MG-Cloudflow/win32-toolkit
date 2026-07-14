@@ -79,7 +79,16 @@ function Invoke-Win32Toolkit {
 
         # Also publish the update app (2nd app, same version, requirement-gated to installed devices).
         [Parameter(Mandatory = $false)]
-        [switch]$PublishUpdate
+        [switch]$PublishUpdate,
+
+        # Apps that Intune must install BEFORE this one (e.g. a Visual C++ redistributable).
+        # Accepts 'winget:<id>', 'project:<Template>\<Name>', 'intune:<guid>', or a bare reference.
+        # Declared into AppConfig.json; resolved to real Intune app ids and attached as
+        # mobileAppDependency relationships at publish time.
+        [string[]]$DependsOn,
+
+        [ValidateSet('autoInstall', 'detect')]
+        [string]$DependencyType = 'autoInstall'
     )
 
     try {
@@ -250,6 +259,13 @@ function Invoke-Win32Toolkit {
 
                 Write-Host "Project location: $projectFullPath" -ForegroundColor Cyan
                 Write-Host "Downloaded files:  $downloadPath"   -ForegroundColor Cyan
+
+                # Declare Intune app dependencies (data-only). Written AFTER Configure-PSADTForInstaller so
+                # AppConfig.json already exists, and BEFORE finalize so publishing can resolve + attach them.
+                if ($DependsOn) {
+                    $declared = Set-Win32ToolkitAppDependency -ProjectPath $projectFullPath -DependsOn $DependsOn -DependencyType $DependencyType
+                    Write-Host "✓ Dependencies   : $((@($declared) | ForEach-Object { "$($_.Source):$($_.Ref)" }) -join ', ')" -ForegroundColor Green
+                }
 
                 # Documentation capture, uninstall automation, and optional test/package/publish
                 # (shared with the manual-app flow — see Invoke-Win32ToolkitFinalize).
