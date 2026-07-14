@@ -83,7 +83,21 @@ function Test-Win32ToolkitProject {
         # instead of downloading the old vendor installer — exercises the tattoo-overwrite path. Mutually
         # exclusive with -VersionsBack / -SpecificVersion, and works for manual (non-winget) projects.
         [Parameter(Mandatory = $false)]
-        [string]$BaselineProjectPath
+        [string]$BaselineProjectPath,
+
+        # Which test backend to run against. Omit to use the configured/resolved default (Sandbox unless
+        # HyperV is configured AND ready). 'HyperV' runs the scenario in the local Hyper-V VM over
+        # PowerShell Direct; 'Sandbox' uses Windows Sandbox.
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Sandbox', 'HyperV')]
+        [string]$Backend,
+
+        # Hyper-V InstallUninstall only: run SILENT and back-to-back (no GUI, no vmconnect, no pause) —
+        # ideal for automated runs. The default is INTERACTIVE: PSADT runs with its GUI in the VM console
+        # (vmconnect opens) with a pause to test the app before uninstall. (Overrides the HyperVTestMode
+        # config default.)
+        [Parameter(Mandatory = $false)]
+        [switch]$Unattended
     )
 
     try {
@@ -138,16 +152,56 @@ function Test-Win32ToolkitProject {
             }
         }
 
-        # Windows Sandbox allows a single running instance — fail fast (before any download work)
-        # instead of launching a doomed sandbox and waiting on assertions that will never come.
-        if (Test-Win32ToolkitSandboxRunning) {
-            throw 'Another Windows Sandbox is already running (only one instance is allowed). Close it — e.g. the documentation-capture sandbox from a previous step — and re-run the test.'
+        # Resolve the effective test backend (Sandbox by default; HyperV is opt-in and falls back to
+        # Sandbox with a warning if the VM / guest credential aren't ready).
+        $resolvedBackend = if ($Backend) { Get-Win32ToolkitTestBackend -Backend $Backend } else { Get-Win32ToolkitTestBackend }
+        Write-Host "Backend          : $resolvedBackend" -ForegroundColor Cyan
+
+        # Windows Sandbox allows a single running instance — fail fast (Sandbox backend only, via the
+        # shared helper) instead of launching a doomed sandbox. HyperV skips this guard.
+        if ($resolvedBackend -eq 'Sandbox') {
+            if (Test-Win32ToolkitSandboxRunning) {
+                throw 'Another Windows Sandbox is already running (only one instance is allowed). Close it — e.g. the documentation-capture sandbox from a previous step — and re-run the test.'
+            }
         }
 
         switch ($Scenario) {
 
             'InstallUninstall' {
                 Write-Host "`nScenario: Install → Countdown → Uninstall" -ForegroundColor Cyan
+
+                if ($resolvedBackend -eq 'HyperV') {
+                    # Log collector runs inside the guest (copies PSADT/MSI logs to Sandbox\Logs).
+                    $null = New-LogCollectorScript -ProjectPath $ProjectPath
+
+                    # Interactive (default) shows the PSADT GUI in the VM console for hands-on testing;
+                    # -Unattended (or HyperVTestMode=Unattended) runs silent + back-to-back for automation.
+                    $interactive = -not ($Unattended -or ((Get-Win32ToolkitConfigValue -Name 'HyperVTestMode' -Default 'Interactive') -eq 'Unattended'))
+                    if ($interactive) {
+                        $phases = @(
+                            @{ Label = 'Install (GUI)';                   Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Interactive"; Interactive = $true }
+                            @{ Label = 'Test the app in the VM window';   Pause = $true }
+                            @{ Label = 'Uninstall (GUI)';                 Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeploymentType Uninstall -DeployMode Interactive"; Interactive = $true }
+                            @{ Label = 'CollectLogs';                     Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
+                        )
+                        Write-Host 'Running an INTERACTIVE Install → test → Uninstall in the Hyper-V VM (watch the vmconnect window)...' -ForegroundColor Cyan
+                    }
+                    else {
+                        $phases = @(
+                            @{ Label = 'Install';     Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Silent" }
+                            @{ Label = 'Uninstall';   Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeploymentType Uninstall -DeployMode Silent" }
+                            @{ Label = 'CollectLogs'; Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
+                        )
+                        Write-Host 'Running a SILENT Install → Uninstall in the Hyper-V VM over PowerShell Direct...' -ForegroundColor Cyan
+                    }
+                    $ran = Invoke-Win32ToolkitHyperVRun -ProjectPath $ProjectPath -Phase $phases -Output @('Sandbox\Logs\*')
+                    if ($ran) {
+                        Write-Host "✓ Hyper-V install/uninstall completed. Logs: $(Join-Path $ProjectPath 'Sandbox\Logs')" -ForegroundColor Green
+                    } else {
+                        Write-Warning 'Hyper-V install/uninstall run did not complete cleanly — see the warnings above.'
+                    }
+                    return
+                }
 
                 # Create the countdown helper script inside Sandbox\
                 Write-Host 'Creating countdown script...' -ForegroundColor Yellow

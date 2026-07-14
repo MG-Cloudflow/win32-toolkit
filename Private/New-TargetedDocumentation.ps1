@@ -7,6 +7,11 @@ function New-TargetedDocumentation {
         [string]$ProjectName,
         [object]$AppInfo,
 
+        # Which test/capture backend drives the generated script. 'Sandbox' builds + launches the .wsb;
+        # 'HyperV' generates the (backend-aware) script but leaves execution to the Hyper-V provider.
+        [ValidateSet('Sandbox', 'HyperV')]
+        [string]$Backend = 'Sandbox',
+
         # Tests only: prepare everything (incl. clearing stale captures) but do not launch the sandbox.
         [switch]$SkipLaunch
     )
@@ -49,6 +54,10 @@ function New-TargetedDocumentation {
 $projectName = '__PROJECTNAME__'
 $timestamp = '__TIMESTAMP__'
 $installerScope = '__SCOPE__'
+$backend = '__BACKEND__'
+# Under Hyper-V this runs via PowerShell Direct (session 0, no interactive host): silence the progress
+# bar so Write-Progress can't error, and the Sandbox-only init/teardown timing below is skipped.
+if ($backend -eq 'HyperV') { $ProgressPreference = 'SilentlyContinue' }
 $outputPath = 'C:\PSADT\Documentation'
 $logPath = 'C:\PSADT\SupportFiles\Targeted_Documentation_Log___TIMESTAMP__.txt'
 
@@ -58,17 +67,21 @@ Write-Host "Project: $projectName"
 Write-Host "Timestamp: $timestamp"
 Write-Host "======================================"
 
-Write-Host "`nWaiting for Windows Sandbox to fully initialize..." -ForegroundColor Yellow
-Write-Host "This ensures all system services are ready before documentation begins." -ForegroundColor Gray
-Write-Host "Please wait 60 seconds..." -ForegroundColor Cyan
+# The 60s settle wait is a Windows Sandbox artifact (services still coming up at logon). Under Hyper-V
+# the provider already gated readiness (heartbeat + PS Direct) before this script runs, so skip it.
+if ($backend -eq 'Sandbox') {
+    Write-Host "`nWaiting for Windows Sandbox to fully initialize..." -ForegroundColor Yellow
+    Write-Host "This ensures all system services are ready before documentation begins." -ForegroundColor Gray
+    Write-Host "Please wait 60 seconds..." -ForegroundColor Cyan
 
-# Wait 60 seconds for sandbox initialization
-for ($i = 60; $i -gt 0; $i--) {
-    Write-Progress -Activity "Initializing Windows Sandbox" -Status "Waiting for system to stabilize..." -SecondsRemaining $i -PercentComplete ((60 - $i) / 60 * 100)
-    Start-Sleep -Seconds 1
+    # Wait 60 seconds for sandbox initialization
+    for ($i = 60; $i -gt 0; $i--) {
+        Write-Progress -Activity "Initializing Windows Sandbox" -Status "Waiting for system to stabilize..." -SecondsRemaining $i -PercentComplete ((60 - $i) / 60 * 100)
+        Start-Sleep -Seconds 1
+    }
+    Write-Progress -Activity "Initializing Windows Sandbox" -Completed
+    Write-Host "Sandbox initialization complete!" -ForegroundColor Green
 }
-Write-Progress -Activity "Initializing Windows Sandbox" -Completed
-Write-Host "Sandbox initialization complete!" -ForegroundColor Green
 
 # Create documentation output folder
 New-Item -Path $outputPath -ItemType Directory -Force | Out-Null
@@ -610,36 +623,45 @@ Write-Host "1. Copy the Documentation folder to your host system" -ForegroundCol
 Write-Host "2. Use InstallationChanges JSON for automated uninstall and requirement script generation" -ForegroundColor Green
 Write-Host "3. Review detailed log for installation analysis" -ForegroundColor Green
 
-Write-Host "`n======================================"
-Write-Host "AUTO-CLOSING SANDBOX IN 30 SECONDS" -ForegroundColor Red
-Write-Host "======================================"
-Write-Host "The Windows Sandbox will automatically close to clean up resources." -ForegroundColor Yellow
-Write-Host "All documentation files have been saved to the mapped folder." -ForegroundColor Green
-Write-Host "`nPress Ctrl+C to cancel auto-close..." -ForegroundColor Gray
-
-# 30-second countdown with progress bar
-for ($i = 30; $i -gt 0; $i--) {
-    Write-Progress -Activity "Auto-closing Windows Sandbox" -Status "Sandbox will close automatically to free resources..." -SecondsRemaining $i -PercentComplete ((30 - $i) / 30 * 100)
-    Start-Sleep -Seconds 1
-}
-Write-Progress -Activity "Auto-closing Windows Sandbox" -Completed
-
-Write-Host "`nClosing Windows Sandbox..." -ForegroundColor Red
-Write-Log "Sandbox auto-close initiated after 30-second countdown" "INFO"
 Write-Log "Documentation process completed successfully" "SUCCESS"
 
-# Gracefully shut down the sandbox so the host client can disconnect cleanly
-Stop-Computer
+# The 30s auto-close countdown + Stop-Computer are Windows Sandbox teardown. Under Hyper-V the host
+# reverts the checkpoint AFTER the provider copies the capture back — the guest must NOT shut down
+# (that would kill the PowerShell Direct session mid-copy) and there is no sandbox client to disconnect.
+if ($backend -eq 'Sandbox') {
+    Write-Host "`n======================================"
+    Write-Host "AUTO-CLOSING SANDBOX IN 30 SECONDS" -ForegroundColor Red
+    Write-Host "======================================"
+    Write-Host "The Windows Sandbox will automatically close to clean up resources." -ForegroundColor Yellow
+    Write-Host "All documentation files have been saved to the mapped folder." -ForegroundColor Green
+    Write-Host "`nPress Ctrl+C to cancel auto-close..." -ForegroundColor Gray
+
+    # 30-second countdown with progress bar
+    for ($i = 30; $i -gt 0; $i--) {
+        Write-Progress -Activity "Auto-closing Windows Sandbox" -Status "Sandbox will close automatically to free resources..." -SecondsRemaining $i -PercentComplete ((30 - $i) / 30 * 100)
+        Start-Sleep -Seconds 1
+    }
+    Write-Progress -Activity "Auto-closing Windows Sandbox" -Completed
+
+    Write-Host "`nClosing Windows Sandbox..." -ForegroundColor Red
+    Write-Log "Sandbox auto-close initiated after 30-second countdown" "INFO"
+
+    # Gracefully shut down the sandbox so the host client can disconnect cleanly
+    Stop-Computer
+}
 '@
 
         # Replace placeholders with actual values
         $documentationScript = $documentationScript -replace '__PROJECTNAME__', $ProjectName
         $documentationScript = $documentationScript -replace '__TIMESTAMP__', $timestamp
         $documentationScript = $documentationScript -replace '__SCOPE__', $installerScope
+        $documentationScript = $documentationScript -replace '__BACKEND__', $Backend
 
-        # Save the documentation script inside the PSADT project's SupportFiles folder
+        # Save the documentation script inside the PSADT project's SupportFiles folder. Write UTF-8 WITH a
+        # BOM: the guest runs it under Windows PowerShell 5.1, which decodes a BOM-less file as ANSI and
+        # mojibakes non-ASCII (matches New-UpdateAssertionScript). PS7 `Set-Content -Encoding UTF8` is BOM-less.
         $docScriptPath = Join-Path $supportFilesFolder "TargetedDocumentationScript.ps1"
-        $documentationScript | Set-Content -Path $docScriptPath -Encoding UTF8
+        [System.IO.File]::WriteAllText($docScriptPath, $documentationScript, (New-Object System.Text.UTF8Encoding($true)))
         Write-Host "✓ Targeted documentation script created: $docScriptPath" -ForegroundColor Green
 
         # Create the log collector used inside the sandbox (Sandbox\CollectLogs.ps1),
@@ -647,14 +669,17 @@ Stop-Computer
         $null = New-LogCollectorScript -ProjectPath $ProjectPath
         Write-Host "✓ Log collector created for documentation sandbox" -ForegroundColor Green
 
-        # Build the sandbox configuration via the shared .wsb builder (test-backend seam, Phase 0).
-        $sandboxConfigContent = New-Win32ToolkitSandboxConfig `
-            -Mount @{ HostPath = $ProjectPath; GuestPath = 'C:\PSADT'; ReadOnly = $false } `
-            -LogonCommandXml 'powershell.exe -NoExit -ExecutionPolicy Bypass -File C:\PSADT\SupportFiles\TargetedDocumentationScript.ps1'
+        # Create the sandbox configuration (Sandbox backend only — Hyper-V runs the same generated script
+        # over PowerShell Direct with no .wsb). Built via the shared .wsb builder (test-backend seam, Phase 0).
+        if ($Backend -eq 'Sandbox') {
+            $sandboxConfigContent = New-Win32ToolkitSandboxConfig `
+                -Mount @{ HostPath = $ProjectPath; GuestPath = 'C:\PSADT'; ReadOnly = $false } `
+                -LogonCommandXml 'powershell.exe -NoExit -ExecutionPolicy Bypass -File C:\PSADT\SupportFiles\TargetedDocumentationScript.ps1'
 
-        # Write the sandbox configuration to the file
-        $sandboxConfigContent | Set-Content -Path $sandboxConfigFile -Encoding UTF8
-        Write-Host "✓ Targeted documentation sandbox configuration created!" -ForegroundColor Green
+            # Write the sandbox configuration to the file
+            $sandboxConfigContent | Set-Content -Path $sandboxConfigFile -Encoding UTF8
+            Write-Host "✓ Targeted documentation sandbox configuration created!" -ForegroundColor Green
+        }
 
         # Clear stale captures from previous runs BEFORE launching, so any capture file present after
         # this point postdates this launch (re-finalize previously picked up the old JSON instantly).
@@ -670,6 +695,14 @@ Stop-Computer
             if ($stale.Count -gt 0) {
                 Write-Host "✓ Cleared $($stale.Count) stale capture file(s) from Documentation\" -ForegroundColor Green
             }
+        }
+
+        # Hyper-V: the generated script + log collector are prepared and stale captures cleared. The
+        # Hyper-V provider copies the project into the VM, runs the script over PowerShell Direct, and
+        # copies the capture back — no .wsb build, feature probe, or WindowsSandbox.exe launch.
+        if ($Backend -eq 'HyperV') {
+            Write-Host '✓ Documentation prepared for the Hyper-V backend (the provider runs it in the VM).' -ForegroundColor Green
+            return $expectedJson
         }
 
         # Check if Windows Sandbox is available

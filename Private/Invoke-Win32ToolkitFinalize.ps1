@@ -50,10 +50,27 @@ function Invoke-Win32ToolkitFinalize {
     # 1-2. Sandbox documentation capture → uninstall / requirement / processes.
     # New-TargetedDocumentation returns the EXPECTED capture path (truthy) on success, $false on
     # failure; passing it to the waiter makes the wait immune to stale captures from earlier runs.
-    Write-Host "`nGenerating targeted installation documentation..." -ForegroundColor Yellow
-    $docSuccess = New-TargetedDocumentation -ProjectPath $ProjectPath -ProjectName $ProjectName -AppInfo $AppInfo
+    # Documentation capture follows the configured test backend (Sandbox default; HyperV opt-in, falls
+    # back to Sandbox if the VM isn't ready). Under Sandbox the .wsb launches inside
+    # New-TargetedDocumentation; under HyperV the script is prepared here and executed in the VM below
+    # (revert → copy-in → run over PS Direct → copy-out), then the SAME waiter/consumer processes it.
+    $backend = Get-Win32ToolkitTestBackend
+    Write-Host "`nGenerating targeted installation documentation ($backend)..." -ForegroundColor Yellow
+    $docSuccess = New-TargetedDocumentation -ProjectPath $ProjectPath -ProjectName $ProjectName -AppInfo $AppInfo -Backend $backend
 
-    if ($docSuccess) {
+    $captureReady = [bool]$docSuccess
+    if ($docSuccess -and $backend -eq 'HyperV') {
+        Write-Host 'Running documentation capture inside the Hyper-V VM...' -ForegroundColor Cyan
+        $ran = Invoke-Win32ToolkitHyperVRun -ProjectPath $ProjectPath -Phase @(
+            @{ Label = 'Document install changes'; Command = "& 'C:\PSADT\SupportFiles\TargetedDocumentationScript.ps1'" }
+        ) -Output @('Documentation\InstallationChanges_*.json', 'Documentation\Targeted_Documentation_Log_*.txt', 'Sandbox\Logs\*')
+        if (-not $ran) {
+            $captureReady = $false
+            Write-Warning 'Hyper-V documentation capture did not complete — skipping processing. Review the VM and its logs.'
+        }
+    }
+
+    if ($captureReady) {
         Write-Host '✓ Targeted documentation setup completed!' -ForegroundColor Green
         Write-Host "`nWaiting for documentation completion..." -ForegroundColor Yellow
         $fileInfo      = Get-InstallerFileInfo -FilesPath $filesPath

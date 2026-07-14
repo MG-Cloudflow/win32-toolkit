@@ -13,6 +13,7 @@ function Show-Win32ToolkitSettings {
         Write-SpectreHost "Base folder: [blue]$(Get-SpectreEscapedText -Text $BasePath)[/]"
         $choices = @(
             [pscustomobject]@{ Key = 'basepath'; Label = 'Change the base folder' }
+            [pscustomobject]@{ Key = 'testvm';   Label = 'Hyper-V test VM (backend / provision / reset / remove)' }
             [pscustomobject]@{ Key = 'recheck';  Label = 'Re-run the system check' }
             [pscustomobject]@{ Key = 'back';     Label = 'Back to main menu' }
         )
@@ -25,6 +26,9 @@ function Show-Win32ToolkitSettings {
                     Write-SpectreHost "[green]Saved:[/] $(Get-SpectreEscapedText -Text $BasePath)"
                 }
             }
+            # Out-Null so nothing this subtree emits leaks into $base (the caller captures
+            # Show-Win32ToolkitSettings's output). Panels inside render via Out-SpectreHost.
+            'testvm'  { Show-Win32ToolkitTestVM | Out-Null }
             'recheck' { Show-Win32ToolkitHealth -BasePath $BasePath }
             'back'    { return $BasePath }
         }
