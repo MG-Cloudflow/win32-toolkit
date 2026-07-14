@@ -14,12 +14,18 @@ function Copy-Win32ToolkitProjectToGuest {
         Host path of the project to copy.
     .PARAMETER GuestPath
         Guest destination (default 'C:\PSADT').
+    .PARAMETER ReadOnly
+        Lock the copied folder read+execute (icacls) after copying, reproducing the Sandbox mapped folder's
+        <ReadOnly>true</ReadOnly> semantics. Used for the update baseline at C:\PSADTOld: without it the
+        baseline's own PSADT run could WRITE into it on Hyper-V while the identical run FAILS on Sandbox —
+        a silent backend divergence. The VM reverts after every run, so the ACL never persists.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] $Session,
         [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string]$ProjectPath,
-        [string]$GuestPath = 'C:\PSADT'
+        [string]$GuestPath = 'C:\PSADT',
+        [switch]$ReadOnly
     )
 
     Invoke-Command -Session $Session -ScriptBlock {
@@ -30,4 +36,12 @@ function Copy-Win32ToolkitProjectToGuest {
 
     # Copy the project CONTENTS (not the folder itself) so files land directly under $GuestPath.
     Copy-Item -ToSession $Session -Path (Join-Path $ProjectPath '*') -Destination $GuestPath -Recurse -Force -ErrorAction Stop
+
+    if ($ReadOnly) {
+        # Grant read+execute only (no deny ACE — SYSTEM must still READ and EXECUTE the baseline's PSADT).
+        Invoke-Command -Session $Session -ScriptBlock {
+            param($p)
+            & icacls.exe $p /inheritance:r /grant 'SYSTEM:(OI)(CI)(RX)' 'Administrators:(OI)(CI)(RX)' 'Users:(OI)(CI)(RX)' | Out-Null
+        } -ArgumentList $GuestPath
+    }
 }

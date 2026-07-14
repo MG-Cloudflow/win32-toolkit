@@ -413,11 +413,19 @@ function Test-Win32ToolkitProject {
                         @{ Label = "Install baseline v$targetVersion"; Command = $installCmd }
                         @{ Label = 'Assert: PreUpdate';                Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate" }
                     )
+                    # DeployMode must be EXPLICIT: every Hyper-V phase runs as SYSTEM in session 0, where
+                    # PSADT's interactive default does not apply (the Sandbox .wsb gets away with it because
+                    # its LogonCommand runs on a real desktop). Interactive=$true is also what makes the
+                    # provider ensure a desktop and open vmconnect — without it the operator would be told
+                    # to watch a VM window that never opens.
                     if ($interactive) {
-                        $phases += @{ Label = 'Verify the OLD install in the VM window'; Pause = $true }
+                        $phases += @{ Label = 'Verify the OLD install in the VM window'; Pause = $true; Interactive = $true }
+                        $phases += @{ Label = 'Update (PSADT GUI)'; Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Interactive"; Interactive = $true }
+                    }
+                    else {
+                        $phases += @{ Label = 'Update (PSADT)'; Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Silent" }
                     }
                     $phases += @(
-                        @{ Label = 'Update (PSADT)';     Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1'" }
                         @{ Label = 'Assert: PostUpdate'; Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate" }
                         @{ Label = 'CollectLogs';        Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
                     )
@@ -429,8 +437,16 @@ function Test-Win32ToolkitProject {
                     if (-not (Invoke-Win32ToolkitHyperVRun @hvArgs)) {
                         Write-Warning 'The Hyper-V update run did not complete cleanly — see the warnings above.'
                     }
-                    # UpdateAssertions.log came back with Sandbox\Logs — the verdict is available immediately.
-                    return (Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath)
+
+                    # The Hyper-V run is SYNCHRONOUS: UpdateAssertions.log already came back with
+                    # Sandbox\Logs, so the waiter's first poll succeeds. If the copy-out silently failed
+                    # there is nothing to wait FOR — bail instead of blocking the host for the 30-min default.
+                    $assertLog = Join-Path $ProjectPath 'Sandbox\Logs\UpdateAssertions.log'
+                    if (-not (Test-Path -LiteralPath $assertLog)) {
+                        Write-Warning "No UpdateAssertions.log came back from the VM — the assertions never ran, or the copy-out failed. Check $ProjectPath\Sandbox\Logs and the phase warnings above."
+                        return $null
+                    }
+                    return (Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -TimeoutMinutes 1 -PollSeconds 1)
                 }
 
                 # ── Step 6 (Sandbox): build the .wsb config ───────────────────────────────

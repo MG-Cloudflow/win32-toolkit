@@ -73,10 +73,21 @@ function Get-Win32ToolkitAppConfig { param($ProjectPath) [pscustomobject]@{ App 
 function Get-Win32ToolkitRequirementRule { param($ProjectPath) 'rule' }
 function New-UpdateAssertionScript { param($ProjectPath, [switch]$SkipRequirement, $OldVersion, [switch]$ExpectBaselineTattoo) 'assert.ps1' }
 function New-CountdownScript { param($ProjectPath) $script:countdownMade++; 'cd.ps1' }
-function Wait-Win32ToolkitUpdateAssertion { param($ProjectPath) return $true }
+$script:waitArgs = $null
+function Wait-Win32ToolkitUpdateAssertion { param($ProjectPath, $Backend, $TimeoutMinutes, $PollSeconds) $script:waitArgs = @{ Backend = $Backend; TimeoutMinutes = $TimeoutMinutes }; return $true }
 function Get-Win32ToolkitBaselineInstallCommand { param($InstallerSandboxPath, $InstallerType, $SilentArgs) "& '$InstallerSandboxPath'" }
 $script:hvBaseline = $null
-function Invoke-Win32ToolkitHyperVRun { param($ProjectPath, $Phase, $Output, $BaselineProjectPath) $script:hvCalled++; $script:hvPhase = $Phase; $script:hvOutput = $Output; $script:hvBaseline = $BaselineProjectPath; return $true }
+$script:hvCopiesLog = $true    # simulate the provider copying UpdateAssertions.log back out of the guest
+function Invoke-Win32ToolkitHyperVRun {
+    param($ProjectPath, $Phase, $Output, $BaselineProjectPath)
+    $script:hvCalled++; $script:hvPhase = $Phase; $script:hvOutput = $Output; $script:hvBaseline = $BaselineProjectPath
+    if ($script:hvCopiesLog) {
+        $ld = Join-Path $ProjectPath 'Sandbox\Logs'
+        New-Item -ItemType Directory -Path $ld -Force | Out-Null
+        Set-Content -Path (Join-Path $ld 'UpdateAssertions.log') -Value 'ASSERT Tattoo = PASS'
+    }
+    return $true
+}
 
 # a baseline project so -BaselineProjectPath validates (needs Invoke-AppDeployToolkit.ps1 + differing path)
 $base = Join-Path ([System.IO.Path]::GetTempPath()) ('w32base_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -94,11 +105,26 @@ if ((Pauses) -eq 1) { Ok 'host Pause replaces the in-guest countdown' } else { B
 if ($script:countdownMade -eq 0) { Ok 'Countdown.ps1 NOT generated for HyperV' } else { Bad 'Countdown.ps1 was generated' }
 if ($script:hvBaseline -eq $base) { Ok 'baseline project forwarded (-> C:\PSADTOld)' } else { Bad "baseline=$script:hvBaseline" }
 if ($labels -contains 'CollectLogs' -and $script:hvOutput -contains 'Sandbox\Logs\*') { Ok 'logs collected + copied back' } else { Bad "labels=$($labels -join ',')" }
+# REGRESSION GUARDS for bugs found in review: without Interactive the provider never opens vmconnect
+# (the pause would point at a window that doesn't exist), and PSADT as SYSTEM/session-0 needs an
+# EXPLICIT -DeployMode (its interactive default only works on the Sandbox's real desktop).
+if ((Inters) -ge 1) { Ok 'interactive Update marks phases Interactive (=> desktop + vmconnect)' } else { Bad "no Interactive phase — vmconnect would never open" }
+if ($cmds -match '-DeployMode Interactive') { Ok 'update runs with an EXPLICIT -DeployMode Interactive' } else { Bad "update phase has no explicit DeployMode: $cmds" }
+if ($script:waitArgs.Backend -eq 'HyperV' -and $script:waitArgs.TimeoutMinutes -le 1) { Ok 'waiter told HyperV + short timeout (no 30-min hang)' } else { Bad "waitArgs=$($script:waitArgs | Out-String)" }
 
-Write-Host '[7] Update + HyperV + -Unattended = no pause' -ForegroundColor Cyan
+Write-Host '[7] Update + HyperV + -Unattended = no pause, explicit SILENT deploy mode' -ForegroundColor Cyan
 $script:backend = 'HyperV'; $script:countdownMade = 0
 Run @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProjectPath = $base; Unattended = $true }
+$cmds7 = @($script:hvPhase.Command) -join ' | '
 if ((Pauses) -eq 0 -and $script:hvCalled -eq 1) { Ok 'silent Update run (no host pause)' } else { Bad "pauses=$(Pauses) hvCalled=$script:hvCalled" }
+if ($cmds7 -match '-DeployMode Silent' -and (Inters) -eq 0) { Ok 'explicit -DeployMode Silent, no interactive phases' } else { Bad "cmds=$cmds7 inter=$(Inters)" }
+
+Write-Host '[8] Update + HyperV but the assertions log never came back -> no 30-min hang' -ForegroundColor Cyan
+$script:backend = 'HyperV'; $script:hvCopiesLog = $false; $script:waitArgs = $null
+$verdict = $null
+try { $verdict = Test-Win32ToolkitProject -ProjectPath $proj -Scenario 'Update' -BaselineProjectPath $base -Unattended *>$null } catch { }
+if ($null -eq $script:waitArgs) { Ok 'waiter never entered (returns null instead of polling 30 min)' } else { Bad "waiter was called: $($script:waitArgs | Out-String)" }
+$script:hvCopiesLog = $true
 
 Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
 
