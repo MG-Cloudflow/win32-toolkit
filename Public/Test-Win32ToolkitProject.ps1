@@ -157,11 +157,10 @@ function Test-Win32ToolkitProject {
         $resolvedBackend = if ($Backend) { Get-Win32ToolkitTestBackend -Backend $Backend } else { Get-Win32ToolkitTestBackend }
         Write-Host "Backend          : $resolvedBackend" -ForegroundColor Cyan
 
-        # Windows Sandbox allows a single running instance — fail fast (Sandbox backend only) instead of
-        # launching a doomed sandbox and waiting on assertions that will never come.
+        # Windows Sandbox allows a single running instance — fail fast (Sandbox backend only, via the
+        # shared helper) instead of launching a doomed sandbox. HyperV skips this guard.
         if ($resolvedBackend -eq 'Sandbox') {
-            $runningWsb = @(Get-Process -Name 'WindowsSandbox', 'WindowsSandboxClient', 'WindowsSandboxRemoteSession' -ErrorAction SilentlyContinue)
-            if ($runningWsb.Count -gt 0) {
+            if (Test-Win32ToolkitSandboxRunning) {
                 throw 'Another Windows Sandbox is already running (only one instance is allowed). Close it — e.g. the documentation-capture sandbox from a previous step — and re-run the test.'
             }
         }
@@ -217,22 +216,10 @@ function Test-Win32ToolkitProject {
                 $sandboxFolder     = Join-Path $ProjectPath 'Sandbox'
                 $sandboxConfigFile = Join-Path $sandboxFolder 'FinalDemo.wsb'
 
-                $sandboxConfigContent = @"
-<Configuration>
-    <VGpu>Disable</VGpu>
-    <Networking>Enable</Networking>
-    <MappedFolders>
-        <MappedFolder>
-            <HostFolder>$(ConvertTo-XmlEncoded $ProjectPath)</HostFolder>
-            <SandboxFolder>C:\PSADT</SandboxFolder>
-            <ReadOnly>false</ReadOnly>
-        </MappedFolder>
-    </MappedFolders>
-    <LogonCommand>
-        <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { C:\PSADT\Invoke-AppDeployToolkit.ps1; C:\PSADT\Sandbox\Countdown.ps1; C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1 } }&quot;</Command>
-    </LogonCommand>
-</Configuration>
-"@
+                $logonCommandXml = 'powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { C:\PSADT\Invoke-AppDeployToolkit.ps1; C:\PSADT\Sandbox\Countdown.ps1; C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1 } }&quot;'
+                $sandboxConfigContent = New-Win32ToolkitSandboxConfig `
+                    -Mount @{ HostPath = $ProjectPath; GuestPath = 'C:\PSADT'; ReadOnly = $false } `
+                    -LogonCommandXml $logonCommandXml
                 Set-Content -Path $sandboxConfigFile -Value $sandboxConfigContent -Encoding UTF8
                 Write-Host "✓ Sandbox config   : $sandboxConfigFile" -ForegroundColor Green
 
@@ -248,10 +235,13 @@ function Test-Win32ToolkitProject {
                 Write-Host '  5. Keep the sandbox open for verification'  -ForegroundColor Cyan
                 Write-Host '=============================================' -ForegroundColor Cyan
 
-                Start-Process -FilePath 'WindowsSandbox.exe' -ArgumentList "`"$sandboxConfigFile`""
-
-                Write-Host "`n✓ Final demo sandbox launched successfully!" -ForegroundColor Green
-                Write-Host 'Monitor the sandbox for the complete install/uninstall cycle.' -ForegroundColor White
+                if ((Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched) {
+                    Write-Host "`n✓ Final demo sandbox launched successfully!" -ForegroundColor Green
+                    Write-Host 'Monitor the sandbox for the complete install/uninstall cycle.' -ForegroundColor White
+                } else {
+                    Write-Host 'The sandbox did NOT auto-launch — start it manually by double-clicking:' -ForegroundColor Yellow
+                    Write-Host "  $sandboxConfigFile" -ForegroundColor Yellow
+                }
             }
 
             'Update' {
@@ -411,34 +401,17 @@ function Test-Win32ToolkitProject {
                 }
                 $installCmdXml = ConvertTo-XmlEncoded $installCmd
 
-                # Second mapped folder (READ-ONLY — never mutate the raw Projects\ copy) for baseline mode.
-                $baselineMapping = if ($useBaselineProject) {
-                    @"
+                # Mapped folders: project (RW) + optional read-only baseline (never mutate the raw
+                # Projects\ copy). Order preserved: project first, then baseline (C:\PSADTOld).
+                $mounts = @(@{ HostPath = $ProjectPath; GuestPath = 'C:\PSADT'; ReadOnly = $false })
+                if ($useBaselineProject) {
+                    $mounts += @{ HostPath = $BaselineProjectPath; GuestPath = 'C:\PSADTOld'; ReadOnly = $true }
+                }
 
-        <MappedFolder>
-            <HostFolder>$(ConvertTo-XmlEncoded $BaselineProjectPath)</HostFolder>
-            <SandboxFolder>C:\PSADTOld</SandboxFolder>
-            <ReadOnly>true</ReadOnly>
-        </MappedFolder>
-"@
-                } else { '' }
-
-                $sandboxConfigContent = @"
-<Configuration>
-    <VGpu>Disable</VGpu>
-    <Networking>Enable</Networking>
-    <MappedFolders>
-        <MappedFolder>
-            <HostFolder>$(ConvertTo-XmlEncoded $ProjectPath)</HostFolder>
-            <SandboxFolder>C:\PSADT</SandboxFolder>
-            <ReadOnly>false</ReadOnly>
-        </MappedFolder>$baselineMapping
-    </MappedFolders>
-    <LogonCommand>
-        <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline; $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1'; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1' } }&quot;</Command>
-    </LogonCommand>
-</Configuration>
-"@
+                # $installCmdXml is already XML-encoded (ConvertTo-XmlEncoded above); the rest of the
+                # LogonCommand is static, XML-safe text. The builder XML-encodes the host paths.
+                $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline; $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1'; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1' } }&quot;"
+                $sandboxConfigContent = New-Win32ToolkitSandboxConfig -Mount $mounts -LogonCommandXml $logonCommandXml
                 Set-Content -Path $sandboxConfigFile -Value $sandboxConfigContent -Encoding UTF8
                 Write-Host "✓ Sandbox config   : $sandboxConfigFile" -ForegroundColor Green
 
@@ -467,9 +440,11 @@ function Test-Win32ToolkitProject {
                 Write-Host '  7. Keep the sandbox open for final verification'         -ForegroundColor White
                 Write-Host '================================================'          -ForegroundColor Cyan
 
-                Start-Process -FilePath 'WindowsSandbox.exe' -ArgumentList "`"$sandboxConfigFile`""
-
-                Write-Host "`n✓ Update test sandbox launched." -ForegroundColor Green
+                if ((Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched) {
+                    Write-Host "`n✓ Update test sandbox launched." -ForegroundColor Green
+                } else {
+                    Write-Host "The sandbox did NOT auto-launch — start it manually by double-clicking: $sandboxConfigFile" -ForegroundColor Yellow
+                }
 
                 # ── Step 8: Wait for the in-sandbox assertions and report pass/fail ──────
                 # The verdict is RETURNED ($true pass / $false fail / $null inconclusive) so callers

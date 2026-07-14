@@ -26,6 +26,9 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Resolve-Win32ToolkitBaselineSilentArgs.ps1')
 . (Join-Path $repo 'Private\Download-OldVersionInstaller.ps1')
 . (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1')   # for -BaselineProjectPath validation (throws early)
+. (Join-Path $repo 'Private\Test-Win32ToolkitSandboxRunning.ps1')
+. (Join-Path $repo 'Private\Start-Win32ToolkitSandbox.ps1')
+. (Join-Path $repo 'Private\Invoke-Win32ToolkitTestRun.ps1')
 
 $base = Join-Path ([System.IO.Path]::GetTempPath()) ("w32upd_" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $base -Force | Out-Null
@@ -183,6 +186,7 @@ try {
     . (Join-Path $repo 'Private\Get-Win32DetectionRules.ps1')
     . (Join-Path $repo 'Private\New-TargetedDocumentation.ps1')
     . (Join-Path $repo 'Private\New-LogCollectorScript.ps1')
+    . (Join-Path $repo 'Private\New-Win32ToolkitSandboxConfig.ps1')   # .wsb builder used by New-TargetedDocumentation
 
     # (a) newest-by-LastWriteTime wins even when NAME order disagrees
     $sp = Join-Path $base 'stale-proj'
