@@ -45,6 +45,11 @@ function Get-Win32DetectionRules { param($ProjectPath) @(@{ '@odata.type' = '#mi
 function Get-Win32ToolkitRequirementRule { param($ProjectPath) 'if ($true) { "Installed" }' }
 function Get-Win32ToolkitAppConfig { param($ProjectPath) [pscustomobject]@{ App = [pscustomobject]@{ DisplayName = 'Test App'; Version = '1.0'; Publisher = 'ACME' } } }
 function Get-YAMLInstallerInfo { param($FilesPath) $null }
+# Publish now resolves + attaches app dependencies and records the publication; this project declares none.
+function Get-MgContext { [pscustomobject]@{ TenantId = 'tenant-1' } }
+function Resolve-Win32ToolkitDependencies { param($ProjectPath, $TenantId, $BaseUri) @() }
+function Set-Win32ToolkitAppRelationships { param($AppId, $Dependency, $BaseUri) 0 }
+function Set-Win32ToolkitPublication { param($ProjectPath, $AppId, $TenantId, $DisplayName, $DisplayVersion, $WingetId) 'p' }
 function Invoke-AzBlobUpload { param($SasUri, $FilePath) }
 function Start-Sleep { param($Seconds) }
 function Get-Content { param($Path, [switch]$Raw, $Encoding) '{}' }

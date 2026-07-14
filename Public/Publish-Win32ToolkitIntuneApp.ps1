@@ -182,6 +182,18 @@ function Publish-Win32ToolkitIntuneApp {
             'requirementRules' = @($requirementRules)
         }
 
+        # Resolve declared dependencies to real Intune app ids BEFORE creating the app shell and uploading
+        # the blob — a missing dependency should be reported up front, not after a 200 MB upload. Any that
+        # cannot be resolved are WARNED about and skipped: the app still publishes (nothing is ever
+        # auto-published into the tenant as a side effect). Dependencies attach to the INSTALL app only —
+        # the "(Update)" app is requirement-gated to devices that already have the app, and therefore the
+        # dependency, so relating it would only make it undeletable.
+        $resolvedDeps = @()
+        if (-not $AsUpdate) {
+            $tenantForResolve = try { (Get-MgContext).TenantId } catch { 'unknown' }
+            $resolvedDeps = @(Resolve-Win32ToolkitDependencies -ProjectPath $ProjectPath -TenantId $tenantForResolve -BaseUri $baseUri)
+        }
+
         $appResponse = Invoke-MgGraphRequest -Method POST -Uri "$baseUri/mobileApps" `
             -Body ($appBody | ConvertTo-Json -Depth 10) -ContentType 'application/json' -OutputType PSObject
         $appId = $appResponse.id
@@ -297,6 +309,21 @@ function Publish-Win32ToolkitIntuneApp {
             'committedContentVersion' = $versionId
         }
         Invoke-MgGraphRequest -Method PATCH -Uri "$baseUri/mobileApps/$appId" -Body ($patchBody | ConvertTo-Json -Depth 3) -ContentType 'application/json' | Out-Null
+
+        # ── Step 10: Remember the publication, then attach app dependencies ───────
+        # Intune only allows relationships AFTER the app is added and uploaded, which is why this is last.
+        $tenant = try { (Get-MgContext).TenantId } catch { 'unknown' }
+        if (-not $AsUpdate) {
+            $null = Set-Win32ToolkitPublication -ProjectPath $ProjectPath -AppId $appId -TenantId $tenant `
+                -DisplayName $displayName -DisplayVersion $displayVersion -WingetId $wingetId
+
+            if ($resolvedDeps.Count -gt 0) {
+                Write-Host ''
+                Write-Host "Attaching $($resolvedDeps.Count) app dependency(ies) — Intune installs them first..." -ForegroundColor Yellow
+                $null = Set-Win32ToolkitAppRelationships -AppId $appId -Dependency $resolvedDeps -BaseUri $baseUri
+                Write-Host "  ✓ Dependencies attached: $(($resolvedDeps | ForEach-Object { $_.Ref }) -join ', ')" -ForegroundColor Green
+            }
+        }
 
         # ── Summary ───────────────────────────────────────────────────────────────
         Write-Host ''

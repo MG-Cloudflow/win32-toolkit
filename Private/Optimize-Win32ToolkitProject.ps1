@@ -27,8 +27,9 @@ function Optimize-Win32ToolkitProject {
     $foldersToRemove = @(
         'Docs',
         'Examples',
-        'Sandbox',
-        'Documentation'
+        'Sandbox',        # test artifacts: .wsb configs, Countdown, OldVersion + Dependencies installers
+        'Documentation',
+        'Intune'          # Publications.json — tenant ids + app ids must NEVER travel to a device
     )
 
     foreach ($folder in $foldersToRemove) {

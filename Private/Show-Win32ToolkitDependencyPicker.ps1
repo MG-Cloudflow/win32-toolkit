@@ -38,6 +38,7 @@ function Show-Win32ToolkitDependencyPicker {
         $choices = @(
             [pscustomobject]@{ Key = 'winget';  Label = 'Add a dependency from winget (e.g. the VC++ redistributable)' }
             [pscustomobject]@{ Key = 'project'; Label = 'Add a dependency from an already-packaged project' }
+            [pscustomobject]@{ Key = 'intune';  Label = 'Pick an app already published in Intune (you will sign in)' }
         )
         if ($refs.Count -gt 0) { $choices += [pscustomobject]@{ Key = 'remove'; Label = 'Remove a dependency' } }
         $choices += [pscustomobject]@{ Key = 'done'; Label = 'Done' }
@@ -71,6 +72,28 @@ function Show-Win32ToolkitDependencyPicker {
                 ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 12
                 $ref = "project:$($pick.Key)"
                 if ($refs -notcontains $ref) { $refs.Add($ref) }
+            }
+            'intune' {
+                # Live tenant list. Stored as 'intune:<guid>' — an app id needs no resolution at publish
+                # time. NOTE: an intune: dependency cannot be STAGED into the test guest (the toolkit has
+                # no package for it), so the test run will not install it — the picker says so.
+                try {
+                    Write-SpectreHost '[grey]Signing in to Intune to list published Win32 apps...[/]'
+                    Connect-Win32ToolkitGraph
+                    $apps = @(Find-Win32ToolkitIntuneApp -All)
+                }
+                catch {
+                    Write-SpectreHost "[red]Could not list Intune apps: $(Get-SpectreEscapedText -Text $_.Exception.Message)[/]"
+                    break
+                }
+                if ($apps.Count -eq 0) { Write-SpectreHost '[yellow]No Win32 apps found in the tenant.[/]'; break }
+
+                $pick = Read-SpectreSelection -Message 'Which published app?' -Choices @(
+                    $apps | ForEach-Object { [pscustomobject]@{ Key = $_.Id; Label = "$($_.DisplayName)  [grey]$($_.DisplayVersion)[/]" } }
+                ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 12
+                $ref = "intune:$($pick.Key)"
+                if ($refs -notcontains $ref) { $refs.Add($ref) }
+                Write-SpectreHost '[yellow]Note:[/] an Intune-picked app cannot be installed in the test/capture guest (no local package), so the test run will not have it. Use winget/project if you need it during testing.'
             }
             'remove' {
                 $pick = Read-SpectreSelection -Message 'Remove which dependency?' -Choices @(
