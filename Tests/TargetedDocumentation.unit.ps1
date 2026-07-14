@@ -56,6 +56,15 @@ if ($text.Contains("`$backend = 'Sandbox'")) { Ok 'backend literal baked = Sandb
 if ((GuardCount $text $sandGuard) -eq 2) { Ok 'two Sandbox-only guards (init wait + auto-close/Stop-Computer)' } else { Bad "sandbox guards = $(GuardCount $text $sandGuard)" }
 if ((GuardCount $text $hvGuard) -eq 1) { Ok 'one HyperV guard (ProgressPreference)' } else { Bad "hyperv guards = $(GuardCount $text $hvGuard)" }
 if ($text.Contains('Stop-Computer')) { Ok 'Stop-Computer present (guarded)' } else { Bad 'Stop-Computer missing' }
+
+# THE most important ordering rule in the capture: declared dependencies must be installed BEFORE the
+# pre-install baseline. If they went in afterwards, the dependency's own files/registry/services would show
+# up in the diff as changes made by the app under test — poisoning the detection rule and uninstall logic.
+$depIdx  = $text.IndexOf('InstallDependencies.ps1')
+$baseIdx = $text.IndexOf('Capturing PRE-INSTALLATION baseline')
+if ($depIdx -ge 0 -and $baseIdx -gt $depIdx) {
+    Ok 'dependencies install BEFORE the pre-install baseline snapshot'
+} else { Bad "dep block at $depIdx, baseline at $baseIdx — the dependency must come FIRST" }
 if (Test-Path -LiteralPath $wsbS) { Ok 'Sandbox: .wsb built' } else { Bad 'Sandbox: .wsb missing' }
 if ($jsonS -like '*Documentation\InstallationChanges_*.json') { Ok 'returns expected capture path' } else { Bad "returned: $jsonS" }
 

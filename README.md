@@ -80,12 +80,17 @@ Get-Command -Module win32-toolkit
 
 # CommandType  Name
 # -----------  ----
+# Function     Complete-Win32ToolkitManualApp
 # Function     Export-Win32ToolkitIntuneWin
 # Function     Invoke-Win32Toolkit
+# Function     New-Win32ToolkitManualApp
+# Function     New-Win32ToolkitTestVM
 # Function     Publish-Win32ToolkitIntuneApp
-# Function     Test-Win32ToolkitProject
-# Function     Export-Win32ToolkitIntuneWin
-# Function     Invoke-Win32Toolkit
+# Function     Remove-Win32ToolkitTestVM
+# Function     Reset-Win32ToolkitTestVM
+# Function     Set-Win32ToolkitAppDependency
+# Function     Show-Win32Toolkit
+# Function     Sync-Win32ToolkitAppDependency
 # Function     Test-Win32ToolkitProject
 ```
 
@@ -170,6 +175,8 @@ Invoke-Win32Toolkit
     [-RunTest <string[]>]
     [-PackageIntune]
     [-PublishIntune]
+    [-DependsOn <string[]>]
+    [-DependencyType <autoInstall|detect>]
 ```
 
 ### Parameters
@@ -574,7 +581,8 @@ Export-Win32ToolkitIntuneWin -PublishIntune   # interactive picker + publish
 3. Copies `Projects\<Name>` → `Staging\<Name>`, refreshing a previous copy if present so Staging always reflects the latest raw project state
 4. Runs the optimizer against the **Staging copy** — removes:
    - `Docs\`, `Examples\` folders
-   - `Sandbox\` folder (WSB configs, Countdown scripts, OldVersion downloads)
+   - `Sandbox\` folder (WSB configs, Countdown scripts, OldVersion downloads, **dependency installers**)
+   - `Intune\` folder (`Publications.json` — the project→app-id cache; tenant and app ids never travel to a device)
    - `Documentation\` folder (sandbox capture JSON and logs)
    - `SupportFiles\TargetedDocumentationScript.ps1` and documentation log files (`SupportFiles\RequirementScript.ps1` is kept)
    - `*.md` and `*.wsb` files in the project root
@@ -671,8 +679,25 @@ absent, Intune will not even attempt your app. Use it deliberately.
 The dependency must already exist in Intune as a published Win32 app. The toolkit resolves it (from its
 publication cache, or by searching the tenant), then attaches the relationship after the upload.
 
+**So publish the dependency FIRST, then the app that needs it.**
+
 **If the dependency isn't in your tenant yet, your app still publishes — with a warning.** Nothing is ever
-auto-published on your behalf. Package and publish the dependency, then re-publish your app to attach it.
+auto-published on your behalf.
+
+> ⚠️ **Do NOT "just re-publish" the app to fix its dependencies.** `Publish-Win32ToolkitIntuneApp` always
+> creates a **new** app — it has no update path — so re-publishing produces a *duplicate* and leaves the
+> original (the one actually assigned to your users) still without its dependency.
+>
+> To change the dependencies of an app that is **already live**, declare them and then run:
+> ```powershell
+> Sync-Win32ToolkitAppDependency -ProjectPath 'C:\Win32Apps\Projects\Arxus\Qastor_x64_10.0'
+> ```
+> It updates the existing app in place (its id comes from the project's publication cache), replacing its
+> dependency set — so removing a declaration really does remove the relationship. Supersedence is left
+> untouched.
+
+If a reference matches **more than one** app in the tenant, it is skipped with a warning (never guessed) and
+the app publishes without it — declare `intune:<app id>` to disambiguate.
 
 You do **not** need a "skip if already installed" setting: Intune honours the *dependency app's own
 detection rule*, so a machine that already has the redistributable simply doesn't reinstall it.

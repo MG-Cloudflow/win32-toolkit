@@ -103,10 +103,16 @@ function Resolve-Win32ToolkitDependencies {
         }
         else {
             # Chosen behaviour: publish anyway, but say clearly what is missing and how to fix it.
+            # NOTE: do NOT tell the operator to "re-publish this app" — Publish always CREATES A NEW APP
+            # (there is no update path), so that would produce a duplicate and leave the assigned app
+            # without its dependency. Sync-Win32ToolkitAppDependency updates the app already in the tenant.
             Write-Warning @"
 Dependency '$($d.Source):$($d.Ref)' is NOT published in this Intune tenant, so it cannot be linked.
 This app WILL still publish — but WITHOUT that dependency, so Intune will not install it first.
-To fix: package and publish the dependency as its own app, then re-publish this one to attach it.
+To fix: package and publish the dependency as its own app, then attach it to THIS app with
+    Sync-Win32ToolkitAppDependency -ProjectPath '$ProjectPath'
+(Do not simply re-publish this app: publishing always creates a NEW app, which would leave the
+assigned one without its dependency.)
 "@
         }
     }

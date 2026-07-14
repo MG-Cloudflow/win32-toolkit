@@ -114,11 +114,15 @@ function Set-Win32ToolkitAppRelationships {
             -Body $body -ContentType 'application/json' | Out-Null
     }
     catch {
-        $m = $_.Exception.Message
+        # Never advise "re-publish": Publish always CREATES A NEW app (there is no update path), so that
+        # would duplicate the app and leave the assigned one without its dependency.
+        # Sync-Win32ToolkitAppDependency updates the app that is already in the tenant.
+        $m   = $_.Exception.Message
+        $fix = "The app IS published, just without its dependency relationship. Fix the cause, then run Sync-Win32ToolkitAppDependency -ProjectPath <project> to attach it to THIS app (do NOT re-publish — that creates a second app)."
         if ($m -match '403|Forbidden') {
-            throw "Intune refused the relationship write (403). A correct Graph scope is not enough: your admin account also needs the Intune RBAC 'Relate' permission (Mobile apps category). The app IS published — grant Relate and re-publish to attach its dependencies. ($m)"
+            throw "Intune refused the relationship write (403). A correct Graph scope is not enough: your admin account also needs the Intune RBAC 'Relate' permission (Mobile apps category). $fix ($m)"
         }
-        throw "Failed to attach dependencies to app $AppId. The app IS published, just without its dependency relationship — fix the cause and re-publish to attach it. ($m)"
+        throw "Failed to attach dependencies to app $AppId. $fix ($m)"
     }
 
     return @($Dependency).Count
