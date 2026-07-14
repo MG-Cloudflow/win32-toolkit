@@ -13,6 +13,7 @@ The module exposes an interactive UI plus a set of commands that cover the full 
 | `Test-Win32ToolkitProject` | Run test scenarios (Windows Sandbox or a Hyper-V VM) against any existing PSADT project |
 | `Export-Win32ToolkitIntuneWin` | Clean up and compile a project into a ready-to-upload `.intunewin` file |
 | `Publish-Win32ToolkitIntuneApp` | Upload a `.intunewin` file directly to Microsoft Intune via the Graph API |
+| `Set-Win32ToolkitAppDependency` | Declare apps that Intune must install **before** this one (e.g. a VC++ redistributable) |
 
 ---
 
@@ -620,6 +621,67 @@ Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUnins
 ```
 
 ---
+
+## App dependencies
+
+Some apps need something else installed **first** — most commonly a **Visual C++ redistributable**, or
+another in-house app. Declare it, and the toolkit does two things:
+
+1. **In Intune** — creates a real `mobileAppDependency` relationship, so the Intune Management Extension
+   installs the dependency **before** your app on the device.
+2. **In your test runs** — installs the dependency **inside the Sandbox / Hyper-V guest before the app**, so
+   your app is never captured or tested on a machine that is missing its runtime.
+
+That second part matters more than it sounds. The **documentation capture** installs your app on a clean
+machine to discover what it changes. Without the dependency present, the install can fail or half-succeed —
+and the detection rule, uninstall logic and processes-to-close would all be generated from a **broken
+install**, then shipped to every device.
+
+### Declaring
+
+```powershell
+# winget flow
+Invoke-Win32Toolkit -Id 'Contoso.App' -Architecture x64 -DependsOn 'winget:Microsoft.VCRedist.2015+.x64'
+
+# custom (non-winget) app
+New-Win32ToolkitManualApp -Name 'Qastor' -Version '10.0' -Architecture x64 -SourcePath 'C:\src\qastor.msi' `
+    -DependsOn 'winget:Microsoft.VCRedist.2015+.x64'
+
+# an existing project (add or change dependencies at any time)
+Set-Win32ToolkitAppDependency -ProjectPath 'C:\Win32Apps\Projects\Arxus\Qastor_x64_10.0' `
+    -DependsOn 'winget:Microsoft.VCRedist.2015+.x64'
+```
+
+Or in the **TUI**: both wizards ask *"Does this app need another app installed FIRST?"*, and every project
+has a **Dependencies** action.
+
+### Three sources
+
+| Reference | Meaning | Installed in the test run? |
+|---|---|---|
+| `winget:Microsoft.VCRedist.2015+.x64` | a winget package | ✅ downloaded and installed in the guest |
+| `project:Contoso\VCRedist_x64_14.38` | a project you already packaged | ✅ installed via its own PSADT |
+| `intune:<app id>` | an app already published in Intune (pick it from the TUI) | ❌ no local package to install |
+
+`-DependencyType` defaults to `autoInstall` (install it first). `detect` **only detects** it — and if it is
+absent, Intune will not even attempt your app. Use it deliberately.
+
+### What happens at publish
+
+The dependency must already exist in Intune as a published Win32 app. The toolkit resolves it (from its
+publication cache, or by searching the tenant), then attaches the relationship after the upload.
+
+**If the dependency isn't in your tenant yet, your app still publishes — with a warning.** Nothing is ever
+auto-published on your behalf. Package and publish the dependency, then re-publish your app to attach it.
+
+You do **not** need a "skip if already installed" setting: Intune honours the *dependency app's own
+detection rule*, so a machine that already has the redistributable simply doesn't reinstall it.
+
+> **Prerequisite:** your admin account needs the Intune RBAC **Relate** permission (Mobile apps). A correct
+> Graph scope is *not* enough — without it the relationship write fails with a 403 *after* the app uploads.
+
+Uninstalling your app leaves the dependency in place (it is shared). Design notes:
+[knowledge-base/designs/intune-dependencies.md](knowledge-base/designs/intune-dependencies.md).
 
 ---
 
