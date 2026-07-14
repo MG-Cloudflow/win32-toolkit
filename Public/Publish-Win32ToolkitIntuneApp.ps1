@@ -42,6 +42,7 @@ function Publish-Win32ToolkitIntuneApp {
     Publish-Win32ToolkitIntuneApp -IntuneWinPath $win -ProjectPath $proj -AsUpdate
 #>
     [CmdletBinding()]
+    [OutputType([pscustomobject])]   # { AppId; DisplayName; IsUpdateApp; PortalUri } — see the Summary block
     param(
         [Parameter(Mandatory = $true)]
         [string]$IntuneWinPath,
@@ -305,6 +306,17 @@ function Publish-Win32ToolkitIntuneApp {
         Write-Host ''
         Write-Host '  View in Intune portal:' -ForegroundColor Gray
         Write-Host "  https://intune.microsoft.com/#view/Microsoft_Intune_Apps/SettingsMenu/~/0/appId/$appId" -ForegroundColor DarkGray
+
+        # EMIT the publication result. The app id previously existed only in a Write-Host line, so nothing
+        # downstream could reference the app it had just created — which is exactly what an Intune
+        # dependency relationship needs (you can only relate apps by id, and only AFTER the upload).
+        # Emitted last so it is the sole object on the success pipeline.
+        [pscustomobject]@{
+            AppId        = $appId
+            DisplayName  = $displayName
+            IsUpdateApp  = [bool]$AsUpdate
+            PortalUri    = "https://intune.microsoft.com/#view/Microsoft_Intune_Apps/SettingsMenu/~/0/appId/$appId"
+        }
     }
     catch {
         $msg = "Publish-Win32ToolkitIntuneApp failed: $($_.Exception.Message)"
