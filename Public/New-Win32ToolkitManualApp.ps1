@@ -240,4 +240,10 @@ function New-Win32ToolkitManualApp {
     catch {
         Write-Error "New-Win32ToolkitManualApp failed: $($_.Exception.Message)"
     }
+    finally {
+        # Clear the module-scoped org template so a stale value can't leak into the next
+        # command in the same session. Runs on both success and failure. $null is the
+        # cleared state the module initialises at load.
+        $script:OrgTemplate = $null
+    }
 }

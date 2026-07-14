@@ -116,8 +116,32 @@ function Get-Win32DetectionRules {
         if ($_ -is [string]) { $_ } elseif ($_.Path) { $_.Path } else { $_.ToString() }
     }
 
+    # Choose the best single MACHINE-WIDE file candidate. An app under C:\Tools, C:\ProgramData, D:\Apps,
+    # etc. is a valid detection target — the old hard filter to '^C:\Program Files' returned @() for those,
+    # leaving Intune with NO detection rule. Rank so Program Files (the most stable location) wins when
+    # present, then any other machine-wide absolute path, dropping obvious capture noise.
+    #
+    # Per-user profile paths are deliberately EXCLUDED (ranked unusable): Intune evaluates detection as
+    # SYSTEM on the device, which cannot see another user's profile, and the capture host's account name
+    # (e.g. the Windows Sandbox 'WDAGUtilityAccount') is baked into the literal captured path and won't exist
+    # on the target. A per-user file rule can therefore NEVER match — worse than no rule, because it makes
+    # Intune reinstall the app on every evaluation cycle. For a genuinely per-user app we return @() and the
+    # operator adds a detection rule by hand, exactly as before this broadening.
+    $rankPath = {
+        param($p)
+        if ($p -match '^[A-Za-z]:\\Users\\')                 { return 99 } # per-user profile — SYSTEM can't see it
+        if ($p -match '^[A-Za-z]:\\Program Files \(x86\)\\') { return 0 }
+        if ($p -match '^[A-Za-z]:\\Program Files\\')         { return 1 }
+        if ($p -match '^[A-Za-z]:\\')                        { return 2 }  # any other machine-wide absolute path
+        if ($p -match '^\\\\')                               { return 3 }  # UNC
+        return 99                                                          # relative / unusable
+    }
+    $noise = '\\(Temp|tmp|Windows\\Temp|Windows\\Installer|\$Recycle\.Bin|INetCache|WinSxS)\\|\\Temp\\'
     $candidate = $filePaths |
-        Where-Object { $_ -match '^C:\\Program Files' } |
+        Where-Object { $_ } |
+        Where-Object { (& $rankPath $_) -lt 99 } |          # must be an absolute path
+        Where-Object { $_ -notmatch $noise } |              # drop temp / installer scratch
+        Sort-Object -Property @{ Expression = { & $rankPath $_ } }, @{ Expression = { $_.Length } } |
         Select-Object -First 1
 
     if ($candidate) {
