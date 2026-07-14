@@ -80,7 +80,16 @@ function New-Win32ToolkitManualApp {
         [switch]$PackageIntune,
         [switch]$PublishIntune,
         # Also publish the update app (2nd app, same version, requirement-gated to installed devices).
-        [switch]$PublishUpdate
+        [switch]$PublishUpdate,
+
+        # Apps Intune must install BEFORE this one (e.g. a Visual C++ redistributable).
+        # 'winget:<id>' | 'project:<Template>\<Name>' | 'intune:<guid>' | a bare reference.
+        # Declared into AppConfig.json; ALSO staged into the test/capture guest so the run installs the
+        # dependency first, exactly as Intune does on a real device.
+        [string[]]$DependsOn,
+
+        [ValidateSet('autoInstall', 'detect')]
+        [string]$DependencyType = 'autoInstall'
     )
 
     try {
@@ -160,6 +169,14 @@ function New-Win32ToolkitManualApp {
         }
         Set-Win32ToolkitAppConfig -ProjectPath $projectFullPath -Config $cfg | Out-Null
         Write-Host '✓ Wrote SupportFiles\AppConfig.json' -ForegroundColor Green
+
+        # Declare Intune app dependencies (data-only) now that AppConfig.json exists. They are resolved to
+        # real Intune app ids at publish time, and staged into the test/capture guest so the run installs
+        # them BEFORE this app — the same order Intune uses on a device.
+        if ($DependsOn) {
+            $declared = Set-Win32ToolkitAppDependency -ProjectPath $projectFullPath -DependsOn $DependsOn -DependencyType $DependencyType
+            Write-Host "✓ Dependencies   : $((@($declared) | ForEach-Object { "$($_.Source):$($_.Ref)" }) -join ', ')" -ForegroundColor Green
+        }
 
         # MSIX/APPX: identity-driven uninstall data, written at configure time (capture-independent).
         if ($isAppx) {

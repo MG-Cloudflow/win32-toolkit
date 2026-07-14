@@ -27,8 +27,14 @@ $script:hvPhase  = $null
 $script:hvOutput = $null
 $script:launched = 0
 
+$script:depCount = 0
+function Initialize-Win32ToolkitDependencyStaging { param($ProjectPath) return $script:depCount }
 function Get-Win32ToolkitTestBackend { param($Backend) return $script:backend }
 function Get-Process { param($Name, $ErrorAction) return $script:procs }
+# The single-instance guard goes through the Phase-0 seam helper, NOT Get-Process directly. Without this
+# shadow it throws "not recognized", and the Sandbox guard test would pass for the WRONG reason (an error,
+# not a guard). Driven by the same $script:procs so every test below reads naturally.
+function Test-Win32ToolkitSandboxRunning { return (@($script:procs).Count -gt 0) }
 function New-LogCollectorScript { param($ProjectPath) return 'fake' }
 function Get-Win32ToolkitConfigValue { param($Name, $Default) return $script:testMode }
 function Invoke-Win32ToolkitHyperVRun { param($ProjectPath, $Phase, $Output) $script:hvCalled++; $script:hvPhase = $Phase; $script:hvOutput = $Output; return $true }
@@ -125,6 +131,46 @@ $verdict = $null
 try { $verdict = Test-Win32ToolkitProject -ProjectPath $proj -Scenario 'Update' -BaselineProjectPath $base -Unattended *>$null } catch { }
 if ($null -eq $script:waitArgs) { Ok 'waiter never entered (returns null instead of polling 30 min)' } else { Bad "waiter was called: $($script:waitArgs | Out-String)" }
 $script:hvCopiesLog = $true
+
+Write-Host '[9] declared dependencies install FIRST in BOTH scenarios' -ForegroundColor Cyan
+$script:depCount = 1
+$script:backend = 'HyperV'; $script:procs = @(); $script:testMode = 'Interactive'
+Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
+if (@($script:hvPhase)[0].Label -eq 'Install dependencies') { Ok 'InstallUninstall: dependency is the FIRST phase' } else { Bad "first=$(@($script:hvPhase)[0].Label)" }
+
+Run @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProjectPath = $base; Unattended = $true }
+$lbl = @($script:hvPhase | ForEach-Object { $_.Label })
+if ($lbl[0] -eq 'Install dependencies' -and $lbl[1] -eq 'Assert: PreBaseline') {
+    Ok 'Update: dependency runs BEFORE the PreBaseline snapshot (its ARP entry belongs to the baseline)'
+} else { Bad "order=$($lbl -join ' > ')" }
+
+$script:depCount = 0
+Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
+if (@($script:hvPhase)[0].Label -ne 'Install dependencies') { Ok 'none declared -> no dependency phase (unchanged behaviour)' } else { Bad 'phantom dependency phase' }
+
+Write-Host '[10] SANDBOX backend: the .wsb LogonCommand also installs dependencies FIRST' -ForegroundColor Cyan
+# The Hyper-V phase order is covered above, but the Sandbox path builds a LogonCommand STRING — a separate
+# code path with its own ordering. Without this guard the dependency could be moved after the install (or
+# after PreBaseline) on Sandbox and every test would still pass.
+$script:logon = $null
+function New-Win32ToolkitSandboxConfig { param($Mount, $LogonCommandXml) $script:logon = $LogonCommandXml; '<Configuration/>' }
+function Invoke-Win32ToolkitTestRun { param($Backend, $SandboxConfigPath) [pscustomobject]@{ Launched = $true } }
+function ConvertTo-XmlEncoded { param($Value) $Value }
+
+$script:depCount = 1; $script:backend = 'Sandbox'; $script:procs = @()
+Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
+$di = $script:logon.IndexOf('InstallDependencies.ps1')
+$ai = $script:logon.IndexOf('Invoke-AppDeployToolkit.ps1')
+if ($di -ge 0 -and $ai -gt $di) { Ok 'Sandbox InstallUninstall: dependencies before the app install' } else { Bad "logon=$script:logon" }
+
+Run @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProjectPath = $base }
+$di = $script:logon.IndexOf('InstallDependencies.ps1')
+$pb = $script:logon.IndexOf('PreBaseline')
+if ($di -ge 0 -and $pb -gt $di) { Ok 'Sandbox Update: dependencies before the PreBaseline snapshot' } else { Bad "logon=$script:logon" }
+
+$script:depCount = 0
+Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
+if ($script:logon -notmatch 'InstallDependencies') { Ok 'none declared -> no dependency step in the .wsb' } else { Bad 'phantom dependency step' }
 
 Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
 

@@ -165,6 +165,15 @@ function Test-Win32ToolkitProject {
             }
         }
 
+        # Stage declared dependencies (winget installers / packaged projects) into Sandbox\Dependencies\ so
+        # the guest installs them BEFORE the app — the same order Intune uses on a real device. Returns 0
+        # (and generates nothing) when the project declares none, so behaviour is unchanged for those.
+        $depCount   = Initialize-Win32ToolkitDependencyStaging -ProjectPath $ProjectPath
+        $depCommand = "& 'C:\PSADT\Sandbox\InstallDependencies.ps1'"
+        if ($depCount -gt 0) {
+            Write-Host "Dependencies     : $depCount (installed in the guest before the app)" -ForegroundColor Cyan
+        }
+
         switch ($Scenario) {
 
             'InstallUninstall' {
@@ -177,8 +186,13 @@ function Test-Win32ToolkitProject {
                     # Interactive (default) shows the PSADT GUI in the VM console for hands-on testing;
                     # -Unattended (or HyperVTestMode=Unattended) runs silent + back-to-back for automation.
                     $interactive = -not ($Unattended -or ((Get-Win32ToolkitConfigValue -Name 'HyperVTestMode' -Default 'Interactive') -eq 'Unattended'))
+
+                    # Dependencies go in FIRST (silently), exactly as Intune installs them on a device.
+                    $phases = @()
+                    if ($depCount -gt 0) { $phases += @{ Label = 'Install dependencies'; Command = $depCommand } }
+
                     if ($interactive) {
-                        $phases = @(
+                        $phases += @(
                             @{ Label = 'Install (GUI)';                   Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Interactive"; Interactive = $true }
                             @{ Label = 'Test the app in the VM window';   Pause = $true }
                             @{ Label = 'Uninstall (GUI)';                 Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeploymentType Uninstall -DeployMode Interactive"; Interactive = $true }
@@ -187,7 +201,7 @@ function Test-Win32ToolkitProject {
                         Write-Host 'Running an INTERACTIVE Install → test → Uninstall in the Hyper-V VM (watch the vmconnect window)...' -ForegroundColor Cyan
                     }
                     else {
-                        $phases = @(
+                        $phases += @(
                             @{ Label = 'Install';     Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Silent" }
                             @{ Label = 'Uninstall';   Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeploymentType Uninstall -DeployMode Silent" }
                             @{ Label = 'CollectLogs'; Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
@@ -216,7 +230,10 @@ function Test-Win32ToolkitProject {
                 $sandboxFolder     = Join-Path $ProjectPath 'Sandbox'
                 $sandboxConfigFile = Join-Path $sandboxFolder 'FinalDemo.wsb'
 
-                $logonCommandXml = 'powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { C:\PSADT\Invoke-AppDeployToolkit.ps1; C:\PSADT\Sandbox\Countdown.ps1; C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1 } }&quot;'
+                # Dependencies install FIRST (static, XML-safe path — no untrusted value is spliced here;
+                # the untrusted installer args live in Sandbox\Dependencies\dependencies.json as DATA).
+                $depPrefixXml    = if ($depCount -gt 0) { 'C:\PSADT\Sandbox\InstallDependencies.ps1; ' } else { '' }
+                $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}C:\PSADT\Invoke-AppDeployToolkit.ps1; C:\PSADT\Sandbox\Countdown.ps1; C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1 } }&quot;"
                 $sandboxConfigContent = New-Win32ToolkitSandboxConfig `
                     -Mount @{ HostPath = $ProjectPath; GuestPath = 'C:\PSADT'; ReadOnly = $false } `
                     -LogonCommandXml $logonCommandXml
@@ -408,7 +425,13 @@ function Test-Win32ToolkitProject {
                 if ($resolvedBackend -eq 'HyperV') {
                     $interactive = -not ($Unattended -or ((Get-Win32ToolkitConfigValue -Name 'HyperVTestMode' -Default 'Interactive') -eq 'Unattended'))
 
-                    $phases = @(
+                    # Dependencies FIRST — and before the PreBaseline snapshot, so the dependency's own
+                    # Add/Remove-Programs entry is part of the baseline rather than looking like something
+                    # the app under test installed (which would confuse the OldArpGone assertion).
+                    $phases = @()
+                    if ($depCount -gt 0) { $phases += @{ Label = 'Install dependencies'; Command = $depCommand } }
+
+                    $phases += @(
                         @{ Label = 'Assert: PreBaseline';              Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline" }
                         @{ Label = "Install baseline v$targetVersion"; Command = $installCmd }
                         @{ Label = 'Assert: PreUpdate';                Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate" }
@@ -463,7 +486,10 @@ function Test-Win32ToolkitProject {
 
                 # $installCmdXml is already XML-encoded (ConvertTo-XmlEncoded above); the rest of the
                 # LogonCommand is static, XML-safe text. The builder XML-encodes the host paths.
-                $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline; $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1'; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1' } }&quot;"
+                # Dependencies install FIRST — before the PreBaseline snapshot, so the dependency's own ARP
+                # entry belongs to the baseline instead of looking like something the app under test added.
+                $depPrefixXml    = if ($depCount -gt 0) { "&amp; 'C:\PSADT\Sandbox\InstallDependencies.ps1'; " } else { '' }
+                $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}&amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline; $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1'; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1' } }&quot;"
                 $sandboxConfigContent = New-Win32ToolkitSandboxConfig -Mount $mounts -LogonCommandXml $logonCommandXml
                 Set-Content -Path $sandboxConfigFile -Value $sandboxConfigContent -Encoding UTF8
                 Write-Host "✓ Sandbox config   : $sandboxConfigFile" -ForegroundColor Green

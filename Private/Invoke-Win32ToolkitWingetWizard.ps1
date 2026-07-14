@@ -55,6 +55,13 @@ function Invoke-Win32ToolkitWingetWizard {
     $template = Get-Win32ToolkitTemplateChoice -BasePath $BasePath
     if ([string]::IsNullOrWhiteSpace($template)) { return }
 
+    # 4b. Dependencies — apps Intune must install BEFORE this one (e.g. a VC++ redistributable).
+    # Sourced from winget or an already-packaged project; stored as data in AppConfig.json.
+    $deps = @()
+    if (Read-SpectreConfirm -Message 'Does this app need another app installed FIRST (e.g. a VC++ redistributable)?' -DefaultAnswer 'n') {
+        $deps = @(Show-Win32ToolkitDependencyPicker -BasePath $BasePath)
+    }
+
     # 5. What to do after building. NOTE: the documentation capture ALWAYS runs, and both it and the
     # optional test follow the CONFIGURED backend — so name the real backend instead of hard-coding
     # "Windows Sandbox" (the TUI used to claim Sandbox while actually running in the Hyper-V VM).
@@ -85,6 +92,7 @@ function Invoke-Win32ToolkitWingetWizard {
         "Template     : $template"
         "Base folder  : $BasePath"
         "Test/capture : $($bi.Label)"
+        "Depends on   : $(if ($deps) { $deps -join ', ' } else { '(nothing)' })"
         "After build  : $afterStr"
     ) -join "`n"
     Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $summary) -Header 'Review' -Border Rounded -Color Blue
@@ -102,6 +110,7 @@ function Invoke-Win32ToolkitWingetWizard {
     Clear-Host
     Write-SpectreRule -Title "Building $(Get-SpectreEscapedText -Text $picked.Name)…" -Color Blue
     $p = @{ Id = $picked.Id; Architecture = $arch; TemplateName = $template; BasePath = $BasePath; Force = $true }
+    if ($deps)      { $p.DependsOn = $deps }
     if ($doTest)    { $p.RunTest = 'InstallUninstall' }
     if ($doPackage) { $p.PackageIntune = $true }
     if ($doPublish) { $p.PublishIntune = $true }

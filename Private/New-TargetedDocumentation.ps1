@@ -207,6 +207,24 @@ function Get-TargetedRegistrySnapshot {
     return $results
 }
 
+# --- Declared dependencies: install BEFORE the baseline snapshot ---------------------------------
+# Intune installs app dependencies FIRST on a real device (mobileAppDependency), so the test bench must
+# too. Critically this runs BEFORE the pre-install baseline: if the dependency went in afterwards, its own
+# files / registry keys / services would show up in the diff as changes made by THIS app — poisoning the
+# generated detection rule, uninstall logic and processes-to-close.
+if (Test-Path -LiteralPath 'C:\PSADT\Sandbox\InstallDependencies.ps1') {
+    Write-Host "`nInstalling declared dependencies (before the baseline)..." -ForegroundColor Yellow
+    Write-Log "Installing declared dependencies BEFORE the baseline capture" "INFO"
+    try {
+        & 'C:\PSADT\Sandbox\InstallDependencies.ps1'
+        Write-Log "Declared dependencies installed" "SUCCESS"
+    }
+    catch {
+        Write-Host "Dependency install FAILED - the capture may be unreliable." -ForegroundColor Red
+        Write-Log "Dependency install FAILED: $($_.Exception.Message)" "ERROR"
+    }
+}
+
 Write-Host "`nCapturing PRE-INSTALLATION baseline..." -ForegroundColor Yellow
 Write-Log "Starting PRE-INSTALLATION baseline capture" "INFO"
 
@@ -668,6 +686,11 @@ if ($backend -eq 'Sandbox') {
         # so the documentation run's PSADT/MSI install logs are copied back to the project.
         $null = New-LogCollectorScript -ProjectPath $ProjectPath
         Write-Host "✓ Log collector created for documentation sandbox" -ForegroundColor Green
+
+        # Stage declared dependencies into Sandbox\Dependencies\ so the guest can install them BEFORE the
+        # baseline. Without this the capture runs on a machine missing the app's runtime, and the detection
+        # / uninstall rules would be derived from a broken install. No-op when none are declared.
+        $null = Initialize-Win32ToolkitDependencyStaging -ProjectPath $ProjectPath
 
         # Create the sandbox configuration (Sandbox backend only — Hyper-V runs the same generated script
         # over PowerShell Direct with no .wsb). Built via the shared .wsb builder (test-backend seam, Phase 0).

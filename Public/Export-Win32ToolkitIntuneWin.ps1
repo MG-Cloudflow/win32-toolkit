@@ -217,14 +217,18 @@ function Export-Win32ToolkitIntuneWin {
                 $doInstall = $answer -match '^[Yy]'
             }
             if ($doInstall) {
-                Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath
+                # Publish now EMITS a result object ({ AppId; DisplayName; ... }) so dependencies can be
+                # related to the app it just created. Export's contract is to emit NOTHING, and it is called
+                # bare from Invoke-Win32ToolkitFinalize and the TUI — so capture it instead of leaking it
+                # into their pipelines.
+                $null = Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath
             }
             if ($doUpdate) {
                 # Pre-check: if no reliable "already installed" signal exists (e.g. an MSI with no
                 # UpgradeCode), skip the update gracefully with a warning instead of throwing — which
                 # matters most in "both" mode, where the install app has already uploaded.
                 if (Get-Win32ToolkitRequirementRule -ProjectPath $ProjectPath) {
-                    Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath -AsUpdate
+                    $null = Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath -AsUpdate
                 }
                 else {
                     Write-Warning 'Skipped the update app: this project has no reliable "already installed" signal (no install tattoo, MSI UpgradeCode, or app name). Publish the install app, or use supersedence.'
