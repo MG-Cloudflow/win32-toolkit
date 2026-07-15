@@ -34,8 +34,18 @@ function Confirm-Win32ToolkitGuestDesktop {
     if (& $hasDesktop) { return $true }
 
     Write-Warning 'No interactive desktop detected (login screen?) — rebooting the guest to trigger AutoLogon...'
+    Write-Warning "This recovery costs 1-3 minutes on EVERY interactive run — re-take the checkpoint at a logged-in desktop to fix it durably (Reset-Win32ToolkitTestVM, log in via vmconnect, then re-checkpoint from the TUI's Hyper-V screen)."
     Invoke-Command -VMName $VMName -Credential $Credential -ScriptBlock { Restart-Computer -Force } -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 20   # let it begin shutting down before we wait for it to come back
+
+    # Wait for the shutdown to actually BEGIN (heartbeat leaves 'OK') before waiting for the guest to come
+    # back — polling at 1 s replaces the old blind 20 s sleep; the 20 s CAP keeps the worst case identical
+    # (if the heartbeat never dips we proceed exactly as before and the ready-wait below sorts it out).
+    $dipDeadline = (Get-Date).AddSeconds(20)
+    do {
+        $hb = (Get-VMIntegrationService -VMName $VMName -Name 'Heartbeat' -ErrorAction SilentlyContinue).PrimaryStatusDescription
+        if ($hb -ne 'OK') { break }
+        Start-Sleep -Seconds 1
+    } until ((Get-Date) -gt $dipDeadline)
     try { Wait-Win32ToolkitVMReady -VMName $VMName -Credential $Credential -SkipPrep -HeartbeatTimeoutSec 180 -PSDirectTimeoutSec 300 | Out-Null } catch { }
 
     $deadline = (Get-Date).AddMinutes($TimeoutMinutes)

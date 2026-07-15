@@ -25,6 +25,17 @@ function Remove-Win32ToolkitHyperVSession {
 
     if ($Session) { Remove-PSSession -Session $Session -ErrorAction SilentlyContinue }
     if ($Revert -and $VMName) {
-        Restore-VMCheckpoint -VMName $VMName -Name $CheckpointName -Confirm:$false -ErrorAction SilentlyContinue
+        # The old -ErrorAction SilentlyContinue swallowed a FAILED revert — and a failure here must never
+        # let the next run believe the VM is clean. Stamp the process-local clean marker STRICTLY after a
+        # successful restore (New-Win32ToolkitHyperVSession consumes it to skip its then-redundant
+        # open-revert); on failure clear it and warn, so the next run reverts before starting.
+        try {
+            Restore-VMCheckpoint -VMName $VMName -Name $CheckpointName -Confirm:$false -ErrorAction Stop
+            $script:HyperVCleanMarker = @{ VMName = $VMName; CheckpointName = $CheckpointName; StampedAt = Get-Date }
+        }
+        catch {
+            $script:HyperVCleanMarker = $null
+            Write-Warning "Teardown revert of '$VMName' to '$CheckpointName' FAILED: $($_.Exception.Message) — the VM may hold state from the last run; the next run will revert it before starting."
+        }
     }
 }

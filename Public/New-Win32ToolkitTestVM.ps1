@@ -145,6 +145,9 @@ function New-Win32ToolkitTestVM {
 
     # --- Create + configure the Gen2 VM ------------------------------------------------------------
     if ($PSCmdlet.ShouldProcess($Name, 'Create Gen2 VM + take clean-base checkpoint')) {
+        # Invalidate the process-local clean marker / readiness cache — a brand-new VM + checkpoint
+        # supersede anything cached about the previous one.
+        Clear-Win32ToolkitHyperVStateCache
         New-VM -Name $Name -Generation 2 -MemoryStartupBytes $MemoryStartupBytes -VHDPath $vhdx -Path $paths.VMs -SwitchName $SwitchName -ErrorAction Stop | Out-Null
         Set-VMFirmware  -VMName $Name -EnableSecureBoot On -SecureBootTemplate 'MicrosoftWindows'
         Set-VMProcessor -VMName $Name -Count $ProcessorCount

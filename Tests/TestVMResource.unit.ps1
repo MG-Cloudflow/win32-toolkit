@@ -17,6 +17,7 @@ function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitByteSize.ps1')
+. (Join-Path $repo 'Private\Clear-Win32ToolkitHyperVStateCache.ps1')   # reconfigure invalidates the HyperV state caches
 . (Join-Path $repo 'Public\Set-Win32ToolkitTestVMResource.ps1')
 
 # --- shadowed Hyper-V + config surface, logging the call sequence ---------------------------------

@@ -930,15 +930,26 @@ if ($backend -eq 'Sandbox') {
             return $expectedJson
         }
 
-        # Check if Windows Sandbox is available
-        try {
-            $sandboxFeature = Get-WindowsOptionalFeature -Online -FeatureName "Containers-DisposableClientVM" -ErrorAction SilentlyContinue
-            if ($sandboxFeature -and $sandboxFeature.State -ne "Enabled") {
-                Write-Warning "Windows Sandbox feature is not enabled. Please enable it in Windows Features."
-                Write-Warning "To enable: Control Panel > Programs > Turn Windows features on or off > Windows Sandbox"
+        # Check if Windows Sandbox is available. The DISM probe costs 2-10 s, and the answer cannot change
+        # while this process runs (enabling the feature needs a reboot) — so probe ONCE per process and
+        # reuse the verdict. Deliberately a cache, not a cheaper Get-Command check: the probe's value is
+        # the feature-DISABLED advisory (WindowsSandbox.exe can exist with the feature off).
+        if ($null -eq $script:SandboxFeatureEnabled) {
+            try {
+                $sandboxFeature = Get-WindowsOptionalFeature -Online -FeatureName "Containers-DisposableClientVM" -ErrorAction SilentlyContinue
+                $script:SandboxFeatureEnabled = if ($sandboxFeature) { $sandboxFeature.State -eq 'Enabled' } else { $null }
+                if ($null -eq $script:SandboxFeatureEnabled) {
+                    Write-Warning "Unable to check Windows Sandbox feature status. Windows Sandbox may not be available on this system."
+                    $script:SandboxFeatureEnabled = $true   # unknown -> don't re-probe and don't nag; launch failure still warns
+                }
+            } catch {
+                Write-Warning "Unable to check Windows Sandbox feature status. Windows Sandbox may not be available on this system."
+                $script:SandboxFeatureEnabled = $true
             }
-        } catch {
-            Write-Warning "Unable to check Windows Sandbox feature status. Windows Sandbox may not be available on this system."
+        }
+        if ($script:SandboxFeatureEnabled -eq $false) {
+            Write-Warning "Windows Sandbox feature is not enabled. Please enable it in Windows Features."
+            Write-Warning "To enable: Control Panel > Programs > Turn Windows features on or off > Windows Sandbox"
         }
 
         Write-Host "`nTargeted Documentation Setup Complete!" -ForegroundColor Cyan
