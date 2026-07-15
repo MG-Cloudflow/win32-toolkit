@@ -34,27 +34,34 @@ if ($rc -eq 5) { Ok 'extracts the exit code even when output is present' } else 
 if ($script:runAs -eq 'System') { Ok 'silent phase runs as SYSTEM (Intune-faithful context)' } else { Bad "runAs=$($script:runAs)" }
 Remove-Item Function:\Invoke-Command
 
-Write-Host '[2] Copy-Win32ToolkitResultsFromGuest maps guest files to project-relative paths' -ForegroundColor Cyan
-function Invoke-Command { param($Session, [scriptblock]$ScriptBlock, $ArgumentList) return @('C:\PSADT\Documentation\InstallationChanges_1.json', 'C:\PSADT\Sandbox\Logs\a.log') }
-$script:copied = @()
-function Copy-Item { param($FromSession, $LiteralPath, $Destination, [switch]$Force, $ErrorAction) $script:copied += $Destination }
-$dest = Join-Path ([IO.Path]::GetTempPath()) ('hvp_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
-Copy-Win32ToolkitResultsFromGuest -Session 'S' -GuestPath @('C:\PSADT\Documentation\*', 'C:\PSADT\Sandbox\Logs\*') -Destination $dest
-if (($script:copied -contains (Join-Path $dest 'Documentation\InstallationChanges_1.json')) -and ($script:copied -contains (Join-Path $dest 'Sandbox\Logs\a.log'))) { Ok 'C:\PSADT-relative structure preserved under the project' } else { Bad "copied: $($script:copied -join '|')" }
+Write-Host '[2] Copy-Win32ToolkitResultsFromGuest maps guest files to project-relative paths (zip transfer)' -ForegroundColor Cyan
+# The copy-out is now ONE zip (see CopyOutBatch.unit.ps1 for the full matrix). Here: the guest scriptblock
+# runs LOCALLY against a fixture tree standing in for C:\PSADT, and the relative mapping is verified.
+function Invoke-Command { [CmdletBinding()] param($Session, [scriptblock]$ScriptBlock, $ArgumentList, [Parameter(ValueFromRemainingArguments)]$Rest) & $ScriptBlock @ArgumentList }
+function Copy-Item { [CmdletBinding()] param($FromSession, $Path, $Destination, [switch]$Force, [Parameter(ValueFromRemainingArguments)]$Rest) Microsoft.PowerShell.Management\Copy-Item -Path $Path -Destination $Destination -Force }
+$guestRoot = Join-Path ([IO.Path]::GetTempPath()) ('hvpg_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+$dest      = Join-Path ([IO.Path]::GetTempPath()) ('hvp_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+New-Item -ItemType Directory -Path (Join-Path $guestRoot 'Documentation'), (Join-Path $guestRoot 'Sandbox\Logs'), $dest -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $guestRoot 'Documentation\InstallationChanges_1.json') '{}'
+Set-Content -LiteralPath (Join-Path $guestRoot 'Sandbox\Logs\a.log') 'log'
+Copy-Win32ToolkitResultsFromGuest -Session 'S' -GuestPath @((Join-Path $guestRoot 'Documentation\*'), (Join-Path $guestRoot 'Sandbox\Logs\*')) -Destination $dest -GuestRoot $guestRoot 3>$null
+if ((Test-Path (Join-Path $dest 'Documentation\InstallationChanges_1.json')) -and (Test-Path (Join-Path $dest 'Sandbox\Logs\a.log'))) { Ok 'relative structure preserved under the project (single-zip transfer)' } else { Bad "copied: $(@(Get-ChildItem $dest -Recurse -File | ForEach-Object FullName) -join '|')" }
 Remove-Item Function:\Invoke-Command, Function:\Copy-Item
-Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $dest, $guestRoot -Recurse -Force -ErrorAction SilentlyContinue
 
-Write-Host '[3] New-Win32ToolkitHyperVSession: revert -> (running) -> wait -> session' -ForegroundColor Cyan
+Write-Host '[3] New-Win32ToolkitHyperVSession: revert -> (running) -> connect (the proving session IS the run session)' -ForegroundColor Cyan
 $script:seq = @()
+$script:HyperVCleanMarker = $null   # no prior teardown in this process -> the open-revert must run
 function Restore-VMCheckpoint { param($VMName, $Name, [switch]$Confirm, $ErrorAction) $script:seq += 'restore' }
 function Get-VM   { param($Name, $ErrorAction) $script:seq += 'get-vm'; [pscustomobject]@{ State = 'Running' } }
 function Start-VM { param($Name, $ErrorAction) $script:seq += 'start' }
-function Wait-Win32ToolkitVMReady { param($VMName, $Credential, [switch]$SkipPrep) $script:seq += 'wait'; $true }
-function New-PSSession { param($VMName, $Credential, $ErrorAction) $script:seq += 'session'; 'SESS' }
+function Wait-Win32ToolkitVMReady { param($VMName, $Credential, [switch]$SkipPrep, [switch]$ReturnSession)
+    if ($ReturnSession) { $script:seq += 'session'; 'SESS' } else { $script:seq += 'wait'; $true }
+}
 $cred = [pscredential]::new('w32admin', (ConvertTo-SecureString 'p' -AsPlainText -Force))
 $s = New-Win32ToolkitHyperVSession -VMName vm -Credential $cred
-if ($s -eq 'SESS' -and (($script:seq -join '>') -eq 'restore>get-vm>wait>session')) { Ok 'warm revert then connect (Start-VM skipped when already Running)' } else { Bad "seq=$($script:seq -join '>') s=$s" }
-Remove-Item Function:\Restore-VMCheckpoint, Function:\Get-VM, Function:\Start-VM, Function:\Wait-Win32ToolkitVMReady, Function:\New-PSSession
+if ($s -eq 'SESS' -and (($script:seq -join '>') -eq 'restore>get-vm>session')) { Ok 'warm revert then ONE connection (no throwaway probe; Start-VM skipped when Running)' } else { Bad "seq=$($script:seq -join '>') s=$s" }
+Remove-Item Function:\Restore-VMCheckpoint, Function:\Get-VM, Function:\Start-VM, Function:\Wait-Win32ToolkitVMReady
 
 Write-Host '[4] Invoke-Win32ToolkitHyperVRun orchestration order + always-revert' -ForegroundColor Cyan
 function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }

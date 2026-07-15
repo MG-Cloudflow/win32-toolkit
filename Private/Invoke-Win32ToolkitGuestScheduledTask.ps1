@@ -51,12 +51,34 @@ function Invoke-Win32ToolkitGuestScheduledTask {
         }
         Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Force | Out-Null
 
+        # Snapshot the task info BEFORE starting. Task State is AMBIGUOUS: 'Ready' means both
+        # "not started yet" and "already finished", and Start-ScheduledTask launches ASYNCHRONOUSLY —
+        # a fast first poll can sample 'Ready' before the scheduler transitions to 'Running' and would
+        # declare the phase complete while the installer is still launching (racing the UNINSTALL phase
+        # against a running install). Completion is therefore keyed on a task-info TRANSITION
+        # (LastRunTime / LastTaskResult changed vs this stamp) AND a non-Running state — which is what
+        # lets the poll run at 1 s (guest-local, free) instead of the old blind 3 s pre-sleep per phase.
+        $preInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
+
         Start-ScheduledTask -TaskName $taskName
         $deadline = (Get-Date).AddMinutes($timeoutMin)
-        do {
-            Start-Sleep -Seconds 3
-            $state = (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State
-        } until ($state -ne 'Running' -or (Get-Date) -gt $deadline)
+        if ($preInfo) {
+            do {
+                $state = (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State
+                $info  = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
+                $ran   = $info -and (($info.LastRunTime -ne $preInfo.LastRunTime) -or ($info.LastTaskResult -ne $preInfo.LastTaskResult))
+                if ($ran -and $state -ne 'Running') { break }
+                Start-Sleep -Seconds 1
+            } until ((Get-Date) -gt $deadline)
+        }
+        else {
+            # No pre-start stamp (abnormal): the transition signal is unavailable, so fall back to the
+            # legacy shape — a blind first sleep long enough to outlive the async launch, then state-only.
+            do {
+                Start-Sleep -Seconds 3
+                $state = (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State
+            } until ($state -ne 'Running' -or (Get-Date) -gt $deadline)
+        }
 
         $rc = (Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue).LastTaskResult
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue

@@ -68,19 +68,44 @@ Write-Host "Project: $projectName"
 Write-Host "Timestamp: $timestamp"
 Write-Host "======================================"
 
-# The 60s settle wait is a Windows Sandbox artifact (services still coming up at logon). Under Hyper-V
+# The settle wait is a Windows Sandbox artifact (services still coming up at logon). Under Hyper-V
 # the provider already gated readiness (heartbeat + PS Direct) before this script runs, so skip it.
 if ($backend -eq 'Sandbox') {
     Write-Host "`nWaiting for Windows Sandbox to fully initialize..." -ForegroundColor Yellow
     Write-Host "This ensures all system services are ready before documentation begins." -ForegroundColor Gray
-    Write-Host "Please wait 60 seconds..." -ForegroundColor Cyan
 
-    # Wait 60 seconds for sandbox initialization
-    for ($i = 60; $i -gt 0; $i--) {
-        Write-Progress -Activity "Initializing Windows Sandbox" -Status "Waiting for system to stabilize..." -SecondsRemaining $i -PercentComplete ((60 - $i) / 60 * 100)
-        Start-Sleep -Seconds 1
+    if ($installerScope -eq 'machine') {
+        # MACHINE-scope captures: proceed as soon as the guest is actually ready — desktop up, the
+        # service control manager answering, and the user-profile churn settled (two consecutive
+        # samples) — CAPPED at the old 60 s, so the worst case is identical to the fixed wait.
+        # USER/UNKNOWN scope keeps the fixed 60 s below: those captures diff LOCALAPPDATA/APPDATA/
+        # USERPROFILE, exactly where the fresh WDAG profile's first-logon churn lands, and an early
+        # PRE scan would push that churn into the install diff as noise.
+        Write-Host "Probing readiness (machine scope; up to 60 seconds)..." -ForegroundColor Cyan
+        $settleDeadline = (Get-Date).AddSeconds(60)
+        $prevCount = -1
+        do {
+            $ok = $false
+            try {
+                $explorerUp = [bool](Get-Process -Name explorer -ErrorAction SilentlyContinue)
+                $svcUp      = $null -ne (Get-Service -Name msiserver -ErrorAction SilentlyContinue)
+                $count      = @(Get-ChildItem -Path $env:LOCALAPPDATA -Recurse -Depth 1 -ErrorAction SilentlyContinue).Count
+                $stable     = ($prevCount -ge 0) -and ([Math]::Abs($count - $prevCount) -le 2)
+                $prevCount  = $count
+                $ok = $explorerUp -and $svcUp -and $stable
+            } catch { $ok = $false }
+            if ($ok) { break }
+            Start-Sleep -Seconds 3
+        } until ((Get-Date) -gt $settleDeadline)
     }
-    Write-Progress -Activity "Initializing Windows Sandbox" -Completed
+    else {
+        Write-Host "Please wait 60 seconds..." -ForegroundColor Cyan
+        for ($i = 60; $i -gt 0; $i--) {
+            Write-Progress -Activity "Initializing Windows Sandbox" -Status "Waiting for system to stabilize..." -SecondsRemaining $i -PercentComplete ((60 - $i) / 60 * 100)
+            Start-Sleep -Seconds 1
+        }
+        Write-Progress -Activity "Initializing Windows Sandbox" -Completed
+    }
     Write-Host "Sandbox initialization complete!" -ForegroundColor Green
 }
 
@@ -131,16 +156,17 @@ function Get-TargetedDirectorySnapshot {
     
     Write-Host "Scanning $Description..." -ForegroundColor Gray
     Write-Log "Beginning $Description scan with depth $Depth" "INFO"
-    
-    $results = @()
-    
+
+    # List[object], not @()+= : the array re-allocation is quadratic over tens of thousands of files.
+    $results = New-Object System.Collections.Generic.List[object]
+
     foreach ($path in $Paths) {
         if (Test-Path $path) {
             try {
                 Write-Log "Scanning path: $path" "INFO"
-                $items = Get-ChildItem -Path $path -Recurse -Depth $Depth -ErrorAction SilentlyContinue | 
-                         Select-Object FullName, Name, Length, CreationTime, LastWriteTime, Attributes
-                $results += $items
+                $items = @(Get-ChildItem -Path $path -Recurse -Depth $Depth -ErrorAction SilentlyContinue |
+                         Select-Object FullName, Name, Length, CreationTime, LastWriteTime, Attributes)
+                foreach ($it in $items) { $results.Add($it) }
                 Write-Log "Found $($items.Count) items in $path" "INFO"
             } catch {
                 Write-Log "Error scanning $path - $($_.Exception.Message)" "WARNING"
@@ -149,9 +175,9 @@ function Get-TargetedDirectorySnapshot {
             Write-Log "Path not found: $path" "INFO"
         }
     }
-    
+
     Write-Log "Total items found in $Description - $($results.Count)" "SUCCESS"
-    return $results
+    return $results.ToArray()
 }
 
 # Function to scan targeted registry locations
@@ -160,17 +186,18 @@ function Get-TargetedRegistrySnapshot {
     
     Write-Host "Scanning $Description..." -ForegroundColor Gray
     Write-Log "Beginning $Description scan" "INFO"
-    
-    $results = @()
-    
+
+    # List[object], not @()+= : quadratic re-allocation over thousands of registry keys.
+    $results = New-Object System.Collections.Generic.List[object]
+
     foreach ($regPath in $RegistryPaths) {
         try {
             Write-Log "Scanning registry path: $regPath" "INFO"
-            
+
             if (Test-Path $regPath) {
                 # Get all subkeys and their properties
                 $keys = Get-ChildItem -Path $regPath -Recurse -ErrorAction SilentlyContinue
-                
+
                 foreach ($key in $keys) {
                     try {
                         $properties = Get-ItemProperty -Path $key.PSPath -ErrorAction SilentlyContinue
@@ -182,19 +209,19 @@ function Get-TargetedRegistrySnapshot {
                                 $value = if ($prop.Value -is [array]) { $prop.Value -join ", " } else { $prop.Value }
                                 $propString += "`n    $($prop.Name) = $value"
                             }
-                            
-                            $results += [PSCustomObject]@{
+
+                            $results.Add([PSCustomObject]@{
                                 FullPath = $key.Name
                                 KeyName = $key.PSChildName
                                 Properties = $propString
                                 Summary = "Key: $($key.PSChildName) | Properties: $($propList.Count)"
-                            }
+                            })
                         }
                     } catch {
                         Write-Log "Error reading properties from $($key.PSPath) - $($_.Exception.Message)" "WARNING"
                     }
                 }
-                
+
                 Write-Log "Found $($keys.Count) registry keys in $regPath" "INFO"
             } else {
                 Write-Log "Registry path not found: $regPath" "INFO"
@@ -203,9 +230,9 @@ function Get-TargetedRegistrySnapshot {
             Write-Log "Error scanning registry path $regPath - $($_.Exception.Message)" "WARNING"
         }
     }
-    
+
     Write-Log "Total registry entries found in $Description - $($results.Count)" "SUCCESS"
-    return $results
+    return $results.ToArray()
 }
 
 # --- Declared dependencies: install BEFORE the baseline snapshot ---------------------------------
@@ -336,17 +363,35 @@ Write-Log "PSADT installation process completed with exit code: $($installProces
 
 Write-Host "`nWaiting for installation to fully finalize..." -ForegroundColor Yellow
 Write-Host "Allowing time for background processes, registry updates, and file operations to complete." -ForegroundColor Gray
-Write-Host "Please wait 30 seconds..." -ForegroundColor Cyan
 
-# Wait 30 seconds for installation finalization - registry changes can be delayed
-for ($i = 30; $i -gt 0; $i--) {
-    Write-Progress -Activity "Finalizing Installation" -Status "Waiting for background processes and registry updates to complete..." -SecondsRemaining $i -PercentComplete ((30 - $i) / 30 * 100)
-    Start-Sleep -Seconds 1
+# MSI installers: the trailing work is the Windows Installer service itself, and it is OBSERVABLE —
+# poll for msiexec quiescence (none running + a 3 s double-check grace) and proceed early, CAPPED at
+# the old 30 s so the worst case is identical. NON-MSI installers keep the fixed 30 s: a detached
+# NSIS/Inno child's late FILE drops have no rescan backstop (the registry retry below rescans registry
+# only), so their window is never shortened.
+$isMsi = [bool](Get-ChildItem -Path 'C:\PSADT\Files' -Filter '*.msi' -ErrorAction SilentlyContinue | Select-Object -First 1)
+if ($isMsi) {
+    Write-Host "MSI install: waiting for the Windows Installer service to go quiet (max 30 s)..." -ForegroundColor Cyan
+    $finalizeDeadline = (Get-Date).AddSeconds(30)
+    do {
+        if (-not (Get-Process -Name msiexec -ErrorAction SilentlyContinue)) {
+            Start-Sleep -Seconds 3
+            if (-not (Get-Process -Name msiexec -ErrorAction SilentlyContinue)) { break }
+        }
+        Start-Sleep -Seconds 1
+    } until ((Get-Date) -gt $finalizeDeadline)
+    Write-Log "Installation finalization wait completed (msiexec quiescence, max 30 s)" "INFO"
 }
-Write-Progress -Activity "Finalizing Installation" -Completed
+else {
+    Write-Host "Please wait 30 seconds..." -ForegroundColor Cyan
+    for ($i = 30; $i -gt 0; $i--) {
+        Write-Progress -Activity "Finalizing Installation" -Status "Waiting for background processes and registry updates to complete..." -SecondsRemaining $i -PercentComplete ((30 - $i) / 30 * 100)
+        Start-Sleep -Seconds 1
+    }
+    Write-Progress -Activity "Finalizing Installation" -Completed
+    Write-Log "Installation finalization wait completed (30 seconds)" "INFO"
+}
 Write-Host "Installation finalization complete!" -ForegroundColor Green
-
-Write-Log "Installation finalization wait completed (30 seconds)" "INFO"
 
 Write-Host "`nCapturing POST-INSTALLATION state..." -ForegroundColor Yellow
 Write-Log "Starting POST-INSTALLATION state capture" "INFO"
@@ -388,55 +433,62 @@ try {
 try {
     Write-Log "Comparing registry changes" "INFO"
     Write-Host "Registry comparison: PRE entries = $($preRegistry.Count), POST entries = $($postRegistry.Count)" -ForegroundColor Gray
-    
-    $retryCount = 0
-    $maxRetries = 3
-    $newRegEntries = @()
-    
-    do {
-        # Build a HashSet of pre-install FullPath values for reliable set-difference detection
-        $preFullPathSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-        foreach ($preEntry in $preRegistry) { if ($preEntry.FullPath) { [void]$preFullPathSet.Add($preEntry.FullPath) } }
 
-        # Find all post-install entries not present in the pre-install snapshot
-        $newRegEntries = @($postRegistry | Where-Object { $_.FullPath -and -not $preFullPathSet.Contains($_.FullPath) } |
-                            ForEach-Object {
-                                [PSCustomObject]@{
-                                    NewRegistryEntry = $_.FullPath
-                                    KeyName          = $_.KeyName
-                                    Properties       = $_.Properties
-                                    Summary          = $_.Summary
-                                }
-                            })
-        
-        if ($newRegEntries.Count -eq 0 -and $retryCount -lt $maxRetries) {
-            $retryCount++
-            Write-Host "No registry changes detected on attempt $retryCount. Waiting 30 seconds for delayed registry writes..." -ForegroundColor Yellow
-            Write-Log "Registry scan attempt $retryCount found no changes - waiting 30 seconds for retry" "INFO"
-            
-            # Wait 30 seconds for delayed registry changes
-            for ($i = 30; $i -gt 0; $i--) {
-                Write-Progress -Activity "Waiting for Registry Changes" -Status "Registry writes may be delayed - waiting for retry $retryCount/$maxRetries..." -SecondsRemaining $i -PercentComplete ((30 - $i) / 30 * 100)
-                Start-Sleep -Seconds 1
+    # Build a HashSet of pre-install FullPath values for reliable set-difference detection
+    $preFullPathSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($preEntry in $preRegistry) { if ($preEntry.FullPath) { [void]$preFullPathSet.Add($preEntry.FullPath) } }
+
+    function Get-NewRegEntries {
+        param($Snapshot)
+        @($Snapshot | Where-Object { $_.FullPath -and -not $preFullPathSet.Contains($_.FullPath) } |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    NewRegistryEntry = $_.FullPath
+                    KeyName          = $_.KeyName
+                    Properties       = $_.Properties
+                    Summary          = $_.Summary
+                }
+            })
+    }
+
+    $newRegEntries = @(Get-NewRegEntries -Snapshot $postRegistry)
+
+    if ($newRegEntries.Count -eq 0) {
+        # An empty diff usually means a delayed writer (or a portable app). The old loop slept a blind
+        # 30 s and re-scanned ALL 6-8 hives, up to three times (90 s + 3 full scans, every time). Same
+        # 90 s TOTAL BUDGET, but: poll every 5 s against ONLY the Uninstall hives (the "did anything
+        # land" signal — cheap), and when the budget ends or the probe trips, do ONE full-hive rescan +
+        # full diff — mandatory, because an app whose only late writes are App Paths / Classes would
+        # never trip the Uninstall probe, and today's loop caught those on its full-scan retries.
+        Write-Host "No registry changes detected — polling the Uninstall hives for late writers (up to 90 s)..." -ForegroundColor Yellow
+        Write-Log "Registry diff empty - polling Uninstall hives every 5 s (90 s budget) for delayed writes" "INFO"
+        $uninstallHives = @($targetRegistryPaths | Where-Object { $_ -like '*CurrentVersion\Uninstall*' })
+        $retryBudget = (Get-Date).AddSeconds(90)
+        do {
+            Start-Sleep -Seconds 5
+            $probe = @(Get-TargetedRegistrySnapshot -Description "Uninstall-hive probe" -RegistryPaths $uninstallHives)
+            $probeNew = @($probe | Where-Object { $_.FullPath -and -not $preFullPathSet.Contains($_.FullPath) })
+            if ($probeNew.Count -gt 0) {
+                Write-Log "Uninstall-hive probe detected $($probeNew.Count) new key(s) - running the full rescan" "INFO"
+                break
             }
-            Write-Progress -Activity "Waiting for Registry Changes" -Completed
-            
-            # Re-capture registry state
-            Write-Host "Re-scanning registry state (attempt $($retryCount + 1))..." -ForegroundColor Cyan
-            Write-Log "Re-capturing registry state for retry attempt $($retryCount + 1)" "INFO"
-            $postRegistry = Get-TargetedRegistrySnapshot -Description "Post-installation registry (retry $($retryCount + 1))" -RegistryPaths $targetRegistryPaths
-            Write-Log "Registry re-scan completed: $($postRegistry.Count) keys" "INFO"
-        }
-    } while ($newRegEntries.Count -eq 0 -and $retryCount -lt $maxRetries)
-    
+        } until ((Get-Date) -gt $retryBudget)
+
+        # Final full-hive rescan + full diff (runs on probe hit AND on budget exhaustion).
+        Write-Host "Re-scanning all registry hives (final)..." -ForegroundColor Cyan
+        $postRegistry = Get-TargetedRegistrySnapshot -Description "Post-installation registry (final)" -RegistryPaths $targetRegistryPaths
+        Write-Log "Registry re-scan completed: $($postRegistry.Count) keys" "INFO"
+        $newRegEntries = @(Get-NewRegEntries -Snapshot $postRegistry)
+    }
+
     if ($newRegEntries.Count -gt 0) {
         Write-Host "Found $($newRegEntries.Count) new registry entries" -ForegroundColor Green
-        Write-Log "Found $($newRegEntries.Count) new registry entries after $retryCount retries" "INFO"
+        Write-Log "Found $($newRegEntries.Count) new registry entries" "INFO"
     } else {
-        Write-Host "No registry changes detected after $maxRetries attempts" -ForegroundColor Yellow
-        Write-Log "No registry changes detected after $maxRetries retry attempts" "WARNING"
+        Write-Host "No registry changes detected after the 90 s late-writer budget" -ForegroundColor Yellow
+        Write-Log "No registry changes detected after the 90 s late-writer budget" "WARNING"
     }
-    
+
 } catch {
     Write-Host "Warning: Could not compare registry changes" -ForegroundColor Yellow
     Write-Log "Warning: Could not compare registry changes: $($_.Exception.Message)" "WARNING"

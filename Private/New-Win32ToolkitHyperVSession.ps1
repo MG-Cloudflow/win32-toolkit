@@ -60,14 +60,16 @@ function New-Win32ToolkitHyperVSession {
     }
 
     # Warm revert returns a running, logged-in guest; -SkipPrep because the golden image already set the
-    # execution policy. This still handles the brief window before PowerShell Direct answers.
-    Wait-Win32ToolkitVMReady -VMName $VMName -Credential $Credential -SkipPrep | Out-Null
-
+    # execution policy. The desktop check runs BEFORE the session is created: its recovery path REBOOTS
+    # the guest, which would kill a session opened earlier — the returned session must postdate any reboot.
     if ($EnsureDesktop) {
+        Wait-Win32ToolkitVMReady -VMName $VMName -Credential $Credential -SkipPrep | Out-Null
         if (-not (Confirm-Win32ToolkitGuestDesktop -VMName $VMName -Credential $Credential)) {
             Write-Warning 'Could not reach an interactive desktop even after a recovery reboot. Is guest AutoLogon configured (Set-Win32ToolkitGuestAutoLogon)? The PSADT GUI may not render — use -Unattended / Silent, or re-checkpoint a logged-in desktop.'
         }
     }
 
-    return (New-PSSession -VMName $VMName -Credential $Credential -ErrorAction Stop)
+    # -ReturnSession: the connection that proves PowerShell Direct IS the run's session (the old shape
+    # proved readiness with a throwaway ad-hoc connection, then built another session — 1-3 s wasted).
+    return (Wait-Win32ToolkitVMReady -VMName $VMName -Credential $Credential -SkipPrep -ReturnSession)
 }
