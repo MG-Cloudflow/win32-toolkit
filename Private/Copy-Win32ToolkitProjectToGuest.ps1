@@ -57,6 +57,10 @@ function Copy-Win32ToolkitProjectToGuest {
 
         Invoke-Command -Session $Session -ScriptBlock {
             param($zip, $dest)
+            # PS Direct does NOT inherit the host's $ProgressPreference — each Invoke-Command is its own
+            # runspace. Silence at the source so the guest 'Removed N of M files' bar from Remove-Item
+            # -Recurse isn't relayed back and painted over the host's Spectre TUI. (5.1-safe assignment.)
+            $ProgressPreference = 'SilentlyContinue'
             if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue }
             New-Item -ItemType Directory -Path $dest -Force | Out-Null
             Add-Type -AssemblyName 'System.IO.Compression.FileSystem' -ErrorAction SilentlyContinue

@@ -47,6 +47,13 @@ function Invoke-Win32ToolkitHyperVRun {
     }
 
     $session = $null
+    # Suppress HOST progress bars for the whole run. Copy-Item -To/-FromSession (the project copy in/out)
+    # and the Hyper-V checkpoint cmdlets paint out-of-band, absolute-cursor progress regions that tear the
+    # Spectre.Console TUI this runs under. The copy/session helpers below don't set their own
+    # $ProgressPreference, so they inherit this via dynamic scoping — no per-helper edits needed. Restored
+    # in finally so the intentional Azure-upload bar on the (later) publish path is unaffected.
+    $prevProgress = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
     try {
         # Interactive phases need a logged-in desktop, so ask the session to ensure/recover one.
         $needsDesktop = @($Phase | Where-Object { $_.Interactive }).Count -gt 0
@@ -94,5 +101,8 @@ function Invoke-Win32ToolkitHyperVRun {
     }
     finally {
         Remove-Win32ToolkitHyperVSession -Session $session -VMName $VMName -CheckpointName $CheckpointName -Revert
+        # Restore the caller's preference (the teardown Restore-VMCheckpoint above stays silenced), so this
+        # never leaks to a later Publish/Azure-upload bar. Runs on both the return and the catch paths.
+        $ProgressPreference = $prevProgress
     }
 }
