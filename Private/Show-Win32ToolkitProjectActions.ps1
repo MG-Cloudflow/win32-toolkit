@@ -42,6 +42,7 @@ function Show-Win32ToolkitProjectActions {
                 [pscustomobject]@{ Key = 'finish';  Label = "Finalize / refresh ($((Get-Win32ToolkitBackendInfo).Label) capture -> auto uninstall)" }
                 [pscustomobject]@{ Key = 'package'; Label = 'Package to .intunewin' }
                 [pscustomobject]@{ Key = 'publish'; Label = 'Publish to Intune' }
+                [pscustomobject]@{ Key = 'doc';     Label = 'Generate customer documentation (Documentation.md)' }
                 [pscustomobject]@{ Key = 'open';    Label = 'Open the project folder' }
                 [pscustomobject]@{ Key = 'another'; Label = 'Pick another project' }
                 [pscustomobject]@{ Key = 'back';    Label = 'Back to the main menu' }
@@ -205,6 +206,17 @@ function Show-Win32ToolkitProjectActions {
                             Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
                         }
                     }
+                }
+                'doc' {
+                    Clear-Host; Write-SpectreRule -Title 'Generate customer documentation' -Color Blue
+                    Write-SpectreHost '[grey]A clean one-page Documentation.md summarising the app, how it deploys, and the tests that were run — safe to hand to a customer.[/]'
+                    $inclIds = Read-SpectreConfirm -Message 'Include the Intune app id + portal link? (only if the customer owns the tenant)' -DefaultAnswer 'n'
+                    try {
+                        $out = Export-Win32ToolkitDocumentation -ProjectPath $project.Path -IncludeIntuneIds:$inclIds
+                        Format-SpectrePanel -Data "Documentation written to:`n$(Get-SpectreEscapedText -Text $out)" -Header 'Done' -Border Rounded -Color Green | Out-SpectreHost
+                    }
+                    catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red | Out-SpectreHost }
+                    Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
                 }
                 'open' { try { Invoke-Item -LiteralPath $project.Path } catch { } }
                 'another' { $reselect = $true }

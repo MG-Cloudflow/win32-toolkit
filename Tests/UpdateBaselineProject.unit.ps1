@@ -49,7 +49,9 @@ function Get-Win32ToolkitRequirementRule { param($ProjectPath) 'rule' }
 function New-UpdateAssertionScript { param($ProjectPath, [switch]$SkipRequirement, $OldVersion, [switch]$ExpectBaselineTattoo) 'assert.ps1' }
 function New-CountdownScript { param($ProjectPath) 'cd.ps1' }
 function Get-Win32ToolkitBaselineInstallCommand { param($InstallerSandboxPath, $InstallerType, $SilentArgs) "& '$InstallerSandboxPath'" }
-function Wait-Win32ToolkitUpdateAssertion { param($ProjectPath, $Backend, $TimeoutMinutes, $PollSeconds) $true }
+function Wait-Win32ToolkitUpdateAssertion { param($ProjectPath, $Backend, $TimeoutMinutes, $PollSeconds, $LogFileName, $Label) $true }
+# The Update arm now records its outcome via this helper — shadow it (the resolution/guard tests don't care).
+function Write-Win32ToolkitTestOutcome { param($ProjectPath, $Scenario, $Backend, $Mode, $Verdict, $LogFileName, $Notes) }
 
 $script:hvBaseline = $null
 $script:hvCalled   = 0

@@ -240,6 +240,14 @@ function Test-Win32ToolkitProject {
             'InstallUninstall' {
                 Write-Host "`nScenario: Install → Countdown → Uninstall" -ForegroundColor Cyan
 
+                # Assertion script: after install it must be DETECTED (Intune's own detection signal — the
+                # install tattoo); after uninstall it must be GONE. Value-free, reads AppConfig in the guest.
+                $null = New-InstallAssertionScript -ProjectPath $ProjectPath
+                $assertCmd = "& 'C:\PSADT\Sandbox\InstallAssertions.ps1'"
+                # Clear a previous run's log so the verdict reflects THIS run only.
+                $installAssertLog = Join-Path $ProjectPath 'Sandbox\Logs\InstallAssertions.log'
+                if (Test-Path -LiteralPath $installAssertLog) { Remove-Item -LiteralPath $installAssertLog -Force -ErrorAction SilentlyContinue }
+
                 if ($resolvedBackend -eq 'HyperV') {
                     # Log collector runs inside the guest (copies PSADT/MSI logs to Sandbox\Logs).
                     $null = New-LogCollectorScript -ProjectPath $ProjectPath
@@ -255,17 +263,21 @@ function Test-Win32ToolkitProject {
                     if ($interactive) {
                         $phases += @(
                             @{ Label = 'Install (GUI)';                   Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Interactive"; Interactive = $true }
+                            @{ Label = 'Assert: installed';               Command = "$assertCmd -Phase PostInstall"; IgnoreExit = $true }
                             @{ Label = 'Test the app in the VM window';   Pause = $true }
                             @{ Label = 'Uninstall (GUI)';                 Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeploymentType Uninstall -DeployMode Interactive"; Interactive = $true }
+                            @{ Label = 'Assert: uninstalled';             Command = "$assertCmd -Phase PostUninstall"; IgnoreExit = $true }
                             @{ Label = 'CollectLogs';                     Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
                         )
                         Write-Host 'Running an INTERACTIVE Install → test → Uninstall in the Hyper-V VM (watch the vmconnect window)...' -ForegroundColor Cyan
                     }
                     else {
                         $phases += @(
-                            @{ Label = 'Install';     Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Silent" }
-                            @{ Label = 'Uninstall';   Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeploymentType Uninstall -DeployMode Silent" }
-                            @{ Label = 'CollectLogs'; Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
+                            @{ Label = 'Install';             Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Silent" }
+                            @{ Label = 'Assert: installed';   Command = "$assertCmd -Phase PostInstall"; IgnoreExit = $true }
+                            @{ Label = 'Uninstall';           Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeploymentType Uninstall -DeployMode Silent" }
+                            @{ Label = 'Assert: uninstalled'; Command = "$assertCmd -Phase PostUninstall"; IgnoreExit = $true }
+                            @{ Label = 'CollectLogs';         Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
                         )
                         Write-Host 'Running a SILENT Install → Uninstall in the Hyper-V VM over PowerShell Direct...' -ForegroundColor Cyan
                     }
@@ -275,7 +287,15 @@ function Test-Win32ToolkitProject {
                     } else {
                         Write-Warning 'Hyper-V install/uninstall run did not complete cleanly — see the warnings above.'
                     }
-                    return
+                    # Read the install/uninstall assertions the guest wrote (only if the log came back — no 30-min
+                    # hang if the run died before writing it), report a verdict, and record it for the docs.
+                    $iuVerdict = $null
+                    if ($ran -and (Test-Path -LiteralPath $installAssertLog)) {
+                        $iuVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -TimeoutMinutes 1 -LogFileName 'InstallAssertions.log' -Label 'INSTALL/UNINSTALL TEST'
+                    }
+                    Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'InstallUninstall' -Backend 'HyperV' `
+                        -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $iuVerdict -LogFileName 'InstallAssertions.log'
+                    return $iuVerdict
                 }
 
                 # Create the countdown helper script inside Sandbox\
@@ -294,7 +314,7 @@ function Test-Win32ToolkitProject {
                 # Dependencies install FIRST (static, XML-safe path — no untrusted value is spliced here;
                 # the untrusted installer args live in Sandbox\Dependencies\dependencies.json as DATA).
                 $depPrefixXml    = if ($depCount -gt 0) { 'C:\PSADT\Sandbox\InstallDependencies.ps1; ' } else { '' }
-                $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}C:\PSADT\Invoke-AppDeployToolkit.ps1; C:\PSADT\Sandbox\Countdown.ps1; C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1 } }&quot;"
+                $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}C:\PSADT\Invoke-AppDeployToolkit.ps1; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostInstall; C:\PSADT\Sandbox\Countdown.ps1; C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostUninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1 } }&quot;"
                 $sandboxConfigContent = New-Win32ToolkitSandboxConfig `
                     -Mount @{ HostPath = $ProjectPath; GuestPath = 'C:\PSADT'; ReadOnly = $false } `
                     -LogonCommandXml $logonCommandXml
@@ -313,12 +333,23 @@ function Test-Win32ToolkitProject {
                 Write-Host '  5. Keep the sandbox open for verification'  -ForegroundColor Cyan
                 Write-Host '=============================================' -ForegroundColor Cyan
 
-                if ((Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched) {
+                $launched = (Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched
+                if ($launched) {
                     Write-Host "`n✓ Final demo sandbox launched successfully!" -ForegroundColor Green
                     Write-Host 'Monitor the sandbox for the complete install/uninstall cycle.' -ForegroundColor White
                 } else {
                     Write-Warning "The sandbox did NOT auto-launch — start it manually by double-clicking: $sandboxConfigFile"
                 }
+                # Wait for the in-sandbox install/uninstall assertions (only if it launched), print a verdict,
+                # and record it for the docs. Bounded to 10 min (install + the 2-min countdown + uninstall, plus
+                # slow-first-boot margin): if the operator closes the sandbox before the PostUninstall assertion,
+                # the run can never complete, so we must not block the host on the 30-min Update default.
+                $iuVerdict = if ($launched) {
+                    Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend Sandbox -TimeoutMinutes 10 -LogFileName 'InstallAssertions.log' -Label 'INSTALL/UNINSTALL TEST'
+                } else { $null }
+                Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'InstallUninstall' -Backend 'Sandbox' `
+                    -Mode 'Interactive' -Verdict $iuVerdict -LogFileName 'InstallAssertions.log'
+                return $iuVerdict
             }
 
             'Update' {
@@ -527,9 +558,12 @@ function Test-Win32ToolkitProject {
                     $assertLog = Join-Path $ProjectPath 'Sandbox\Logs\UpdateAssertions.log'
                     if (-not (Test-Path -LiteralPath $assertLog)) {
                         Write-Warning "No UpdateAssertions.log came back from the VM — the assertions never ran, or the copy-out failed. Check $ProjectPath\Sandbox\Logs and the phase warnings above."
+                        Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($Unattended) { 'Unattended' } else { 'Interactive' }) -Verdict $null -Notes 'Assertions log did not return from the VM.'
                         return $null
                     }
-                    return (Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -TimeoutMinutes 1 -PollSeconds 1)
+                    $updVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -TimeoutMinutes 1 -PollSeconds 1
+                    Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($Unattended) { 'Unattended' } else { 'Interactive' }) -Verdict $updVerdict
+                    return $updVerdict
                 }
 
                 # ── Step 6 (Sandbox): build the .wsb config ───────────────────────────────
@@ -588,7 +622,9 @@ function Test-Win32ToolkitProject {
                 # ── Step 8: Wait for the in-sandbox assertions and report pass/fail ──────
                 # The verdict is RETURNED ($true pass / $false fail / $null inconclusive) so callers
                 # (finalize pipeline, TUI, automation) can gate on a failed update test.
-                return (Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath)
+                $updVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath
+                Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'Sandbox' -Mode 'Interactive' -Verdict $updVerdict
+                return $updVerdict
             }
         }
     }

@@ -14,6 +14,7 @@ The module exposes an interactive UI plus a set of commands that cover the full 
 | `Export-Win32ToolkitIntuneWin` | Clean up and compile a project into a ready-to-upload `.intunewin` file |
 | `Publish-Win32ToolkitIntuneApp` | Upload a `.intunewin` file directly to Microsoft Intune via the Graph API |
 | `Set-Win32ToolkitAppDependency` | Declare apps that Intune must install **before** this one (e.g. a VC++ redistributable) |
+| `Export-Win32ToolkitDocumentation` | Write a clean, customer-facing `Documentation.md` for a packaged project (app info, deployment, tests) |
 
 ---
 
@@ -604,6 +605,43 @@ Test-Win32ToolkitProject -BasePath 'D:\Packaging'
 Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall
 Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall, Update
 ```
+
+> **Test outcomes are recorded.** Every test run (both scenarios, both backends) now asserts a real
+> pass/fail — after install the app must be **detected** (the same registry tattoo Intune detects on); after
+> uninstall it must be **gone** — and appends the result to `Documentation\TestResults.json`. That history is
+> what `Export-Win32ToolkitDocumentation` turns into the customer doc's Testing table.
+
+---
+
+## Export-Win32ToolkitDocumentation
+
+Writes a clean, **customer-facing one-page `Documentation.md`** for a packaged project — the kind of hand-over
+sheet you can send to a customer signing off a deployment. It gathers the facts already in the project and
+renders them as a skimmable Markdown page:
+
+- **Header & overview** — app name, version, publisher, architecture, packaged date, prepared-by, description.
+- **Deployment** — installer type; that it runs silently as SYSTEM; the exact Intune install/uninstall command
+  lines; the detection method in plain English; minimum Windows; and any dependencies installed first.
+- **What it installs** — a sanitised summary of the captured changes (counts of files/registry keys/services and
+  the Add/Remove Programs name) — never raw host paths.
+- **Testing** — a table of every recorded test run (scenario · backend · date · result), pulled from
+  `Documentation\TestResults.json`.
+- **Uninstall** — whether uninstall is supported/verified.
+
+**Customer-safe by default:** no tenant id, no Intune app id, no raw paths. Pass `-IncludeIntuneIds` (only when
+the customer owns the tenant) to add the app id and a portal deep-link. The output is ASCII-only so it can't
+mojibake when forwarded.
+
+```powershell
+# Write Documentation.md next to the project
+Export-Win32ToolkitDocumentation -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.55.0'
+
+# An internal copy that also lists the Intune app id + portal link
+Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath 'C:\temp\Git.md' -IncludeIntuneIds
+```
+
+In the **TUI**, this is the *"Generate customer documentation (Documentation.md)"* action in the
+"Work with an existing project" menu.
 
 ---
 
