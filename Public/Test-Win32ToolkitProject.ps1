@@ -107,10 +107,12 @@ function Test-Win32ToolkitProject {
         [ValidateSet('Sandbox', 'HyperV')]
         [string]$Backend,
 
-        # Hyper-V InstallUninstall only: run SILENT and back-to-back (no GUI, no vmconnect, no pause) —
-        # ideal for automated runs. The default is INTERACTIVE: PSADT runs with its GUI in the VM console
-        # (vmconnect opens) with a pause to test the app before uninstall. (Overrides the HyperVTestMode
-        # config default.)
+        # Run SILENT and back-to-back on EITHER backend (no GUI, no countdown/pause, and under Sandbox the
+        # guest shuts itself down afterwards so chained runs proceed) — ideal for automation. The default
+        # is INTERACTIVE: PSADT shows its GUI with a human verification window. Overrides the
+        # HyperVTestMode / SandboxTestMode config defaults; a non-interactive host auto-selects Unattended
+        # with a warning (see Get-Win32ToolkitTestMode). NOTE: Sandbox-unattended runs as the WDAG admin
+        # user while HyperV-unattended runs as SYSTEM (Intune parity) — not equivalent evidence.
         [Parameter(Mandatory = $false)]
         [switch]$Unattended
     )
@@ -218,11 +220,14 @@ function Test-Win32ToolkitProject {
         $resolvedBackend = if ($Backend) { Get-Win32ToolkitTestBackend -Backend $Backend } else { Get-Win32ToolkitTestBackend }
         Write-Host "Backend          : $resolvedBackend" -ForegroundColor Cyan
 
-        # Windows Sandbox allows a single running instance — fail fast (Sandbox backend only, via the
-        # shared helper) instead of launching a doomed sandbox. HyperV skips this guard.
+        # Windows Sandbox allows a single running instance. Instead of throwing the moment one exists —
+        # which silently killed chained runs (the capture sandbox is still auto-closing when the
+        # InstallUninstall test starts; the IU sandbox is still open when the chained Update test starts,
+        # and the non-terminating error let packaging proceed AS IF the test had run) — wait up to 90 s
+        # for it to exit, then fail with the same guidance. HyperV skips this guard.
         if ($resolvedBackend -eq 'Sandbox') {
-            if (Test-Win32ToolkitSandboxRunning) {
-                throw 'Another Windows Sandbox is already running (only one instance is allowed). Close it — e.g. the documentation-capture sandbox from a previous step — and re-run the test.'
+            if (-not (Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90)) {
+                throw 'Another Windows Sandbox is still running after waiting 90 s (only one instance is allowed). Close it — e.g. a previous test sandbox left open for verification — and re-run the test.'
             }
         }
 
@@ -253,8 +258,9 @@ function Test-Win32ToolkitProject {
                     $null = New-LogCollectorScript -ProjectPath $ProjectPath
 
                     # Interactive (default) shows the PSADT GUI in the VM console for hands-on testing;
-                    # -Unattended (or HyperVTestMode=Unattended) runs silent + back-to-back for automation.
-                    $interactive = -not ($Unattended -or ((Get-Win32ToolkitConfigValue -Name 'HyperVTestMode' -Default 'Interactive') -eq 'Unattended'))
+                    # -Unattended (or HyperVTestMode=Unattended, or a non-interactive host) runs silent +
+                    # back-to-back for automation. One resolver for both backends (Get-Win32ToolkitTestMode).
+                    $interactive = (Get-Win32ToolkitTestMode -Backend HyperV -Unattended:$Unattended) -eq 'Interactive'
 
                     # Dependencies go in FIRST (silently), exactly as Intune installs them on a device.
                     $phases = @()
@@ -298,10 +304,20 @@ function Test-Win32ToolkitProject {
                     return $iuVerdict
                 }
 
-                # Create the countdown helper script inside Sandbox\
-                Write-Verbose 'Creating countdown script...'
-                $countdownPath = New-CountdownScript -ProjectPath $ProjectPath
-                Write-Host "✓ Countdown script : $countdownPath" -ForegroundColor Green
+                # Watched (default) vs unattended: watched keeps the human verification window (countdown
+                # GUI, PSADT's interactive UI, -NoExit for inspection); unattended drops all three, runs
+                # PSADT -DeployMode Silent, and SHUTS THE GUEST DOWN afterwards so a chained test's
+                # single-instance guard clears on its own. NOTE the mode divergence: Sandbox-unattended
+                # runs as the WDAG interactive admin user, HyperV-unattended as SYSTEM/session-0 — their
+                # verdicts are not equivalent evidence (the recorded Mode/Backend make this visible).
+                $sbInteractive = (Get-Win32ToolkitTestMode -Backend Sandbox -Unattended:$Unattended) -eq 'Interactive'
+
+                if ($sbInteractive) {
+                    # Create the countdown helper script inside Sandbox\ (watched mode only)
+                    Write-Verbose 'Creating countdown script...'
+                    $countdownPath = New-CountdownScript -ProjectPath $ProjectPath
+                    Write-Host "✓ Countdown script : $countdownPath" -ForegroundColor Green
+                }
 
                 # Log collector — copies PSADT/MSI logs back to the project after the run
                 $logCollectorPath = New-LogCollectorScript -ProjectPath $ProjectPath
@@ -313,8 +329,15 @@ function Test-Win32ToolkitProject {
 
                 # Dependencies install FIRST (static, XML-safe path — no untrusted value is spliced here;
                 # the untrusted installer args live in Sandbox\Dependencies\dependencies.json as DATA).
-                $depPrefixXml    = if ($depCount -gt 0) { 'C:\PSADT\Sandbox\InstallDependencies.ps1; ' } else { '' }
-                $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}C:\PSADT\Invoke-AppDeployToolkit.ps1; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostInstall; C:\PSADT\Sandbox\Countdown.ps1; C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostUninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1 } }&quot;"
+                $depPrefixXml = if ($depCount -gt 0) { 'C:\PSADT\Sandbox\InstallDependencies.ps1; ' } else { '' }
+                if ($sbInteractive) {
+                    $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}C:\PSADT\Invoke-AppDeployToolkit.ps1; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostInstall; C:\PSADT\Sandbox\Countdown.ps1; C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostUninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1 } }&quot;"
+                }
+                else {
+                    # No -NoExit, no countdown, Silent deploys; 5 s before Stop-Computer lets the VSMB
+                    # mapped-folder write-back flush the collected logs.
+                    $logonCommandXml = "powershell.exe -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeployMode Silent; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostInstall; C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall -DeployMode Silent; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostUninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1; Start-Sleep -Seconds 5; Stop-Computer -Force } }&quot;"
+                }
                 $sandboxConfigContent = New-Win32ToolkitSandboxConfig `
                     -Mount @{ HostPath = $ProjectPath; GuestPath = 'C:\PSADT'; ReadOnly = $false } `
                     -LogonCommandXml $logonCommandXml
@@ -326,11 +349,18 @@ function Test-Win32ToolkitProject {
                 Write-Host 'Launching Windows Sandbox for Final Demo...' -ForegroundColor Cyan
                 Write-Host '=============================================' -ForegroundColor Cyan
                 Write-Host 'The sandbox will:'                            -ForegroundColor White
+                if ($sbInteractive) {
                 Write-Host '  1. Install the application'                 -ForegroundColor Green
                 Write-Host '  2. Show a 2-minute countdown for testing'   -ForegroundColor Yellow
                 Write-Host '  3. Uninstall the application'               -ForegroundColor Red
                 Write-Host '  4. Copy PSADT/MSI logs to project\Sandbox\Logs' -ForegroundColor Cyan
                 Write-Host '  5. Keep the sandbox open for verification'  -ForegroundColor Cyan
+                } else {
+                Write-Host '  1. SILENTLY install the application'        -ForegroundColor Green
+                Write-Host '  2. Uninstall it back-to-back (no countdown)' -ForegroundColor Red
+                Write-Host '  3. Copy PSADT/MSI logs to project\Sandbox\Logs' -ForegroundColor Cyan
+                Write-Host '  4. Shut the sandbox down automatically'     -ForegroundColor Cyan
+                }
                 Write-Host '=============================================' -ForegroundColor Cyan
 
                 $launched = (Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched
@@ -348,7 +378,7 @@ function Test-Win32ToolkitProject {
                     Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend Sandbox -TimeoutMinutes 10 -LogFileName 'InstallAssertions.log' -Label 'INSTALL/UNINSTALL TEST'
                 } else { $null }
                 Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'InstallUninstall' -Backend 'Sandbox' `
-                    -Mode 'Interactive' -Verdict $iuVerdict -LogFileName 'InstallAssertions.log'
+                    -Mode $(if ($sbInteractive) { 'Interactive' } else { 'Unattended' }) -Verdict $iuVerdict -LogFileName 'InstallAssertions.log'
                 return $iuVerdict
             }
 
@@ -449,13 +479,17 @@ function Test-Win32ToolkitProject {
                     $oldInstaller = Download-OldVersionInstaller @dl
                 }
 
-                # ── Step 5: Ensure Countdown.ps1 exists (Sandbox only) ───────────────────
+                # ── Step 5: Ensure Countdown.ps1 exists (Sandbox WATCHED mode only) ──────
                 # The in-guest WinForms countdown is a Windows Sandbox artifact. On Hyper-V the HOST
-                # pauses instead (a Pause phase), so the guest never needs Countdown.ps1.
+                # pauses instead (a Pause phase); an UNATTENDED Sandbox run drops the countdown entirely.
+                $sbInteractive = $true
                 if ($resolvedBackend -eq 'Sandbox') {
-                    Write-Verbose 'Creating countdown script...'
-                    $countdownPath = New-CountdownScript -ProjectPath $ProjectPath
-                    Write-Host "✓ Countdown script : $countdownPath" -ForegroundColor Green
+                    $sbInteractive = (Get-Win32ToolkitTestMode -Backend Sandbox -Unattended:$Unattended) -eq 'Interactive'
+                    if ($sbInteractive) {
+                        Write-Verbose 'Creating countdown script...'
+                        $countdownPath = New-CountdownScript -ProjectPath $ProjectPath
+                        Write-Host "✓ Countdown script : $countdownPath" -ForegroundColor Green
+                    }
                 }
 
                 # Log collector — copies PSADT/MSI logs back to the project after the run
@@ -514,7 +548,7 @@ function Test-Win32ToolkitProject {
                 # WinForms Countdown becomes a HOST pause (dropped under -Unattended / HyperVTestMode).
                 # The baseline project is copied to C:\PSADTOld by the provider (-BaselineProjectPath).
                 if ($resolvedBackend -eq 'HyperV') {
-                    $interactive = -not ($Unattended -or ((Get-Win32ToolkitConfigValue -Name 'HyperVTestMode' -Default 'Interactive') -eq 'Unattended'))
+                    $interactive = (Get-Win32ToolkitTestMode -Backend HyperV -Unattended:$Unattended) -eq 'Interactive'
 
                     # Dependencies FIRST — and before the PreBaseline snapshot, so the dependency's own
                     # Add/Remove-Programs entry is part of the baseline rather than looking like something
@@ -582,8 +616,15 @@ function Test-Win32ToolkitProject {
                 # LogonCommand is static, XML-safe text. The builder XML-encodes the host paths.
                 # Dependencies install FIRST — before the PreBaseline snapshot, so the dependency's own ARP
                 # entry belongs to the baseline instead of looking like something the app under test added.
-                $depPrefixXml    = if ($depCount -gt 0) { "&amp; 'C:\PSADT\Sandbox\InstallDependencies.ps1'; " } else { '' }
-                $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}&amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline; $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1'; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1' } }&quot;"
+                $depPrefixXml = if ($depCount -gt 0) { "&amp; 'C:\PSADT\Sandbox\InstallDependencies.ps1'; " } else { '' }
+                if ($sbInteractive) {
+                    $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}&amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline; $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1'; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1' } }&quot;"
+                }
+                else {
+                    # Unattended: no -NoExit, no countdown, the PSADT update runs Silent, and the guest
+                    # shuts down after log collection (5 s VSMB flush) so a chained run's guard clears.
+                    $logonCommandXml = "powershell.exe -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}&amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline; $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Silent; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1'; Start-Sleep -Seconds 5; Stop-Computer -Force } }&quot;"
+                }
                 $sandboxConfigContent = New-Win32ToolkitSandboxConfig -Mount $mounts -LogonCommandXml $logonCommandXml
                 Set-Content -Path $sandboxConfigFile -Value $sandboxConfigContent -Encoding UTF8
                 Write-Host "✓ Sandbox config   : $sandboxConfigFile" -ForegroundColor Green
@@ -606,8 +647,13 @@ function Test-Win32ToolkitProject {
                 } else {
                 Write-Host '  2. ASSERT: update requirement rule detects the old install' -ForegroundColor Cyan
                 }
+                if ($sbInteractive) {
                 Write-Host '  3. Show a 2-minute countdown — verify the old install'   -ForegroundColor Yellow
                 Write-Host '  4. Run the PSADT package to perform the update'          -ForegroundColor Cyan
+                } else {
+                Write-Host '  3. (unattended: no countdown; the sandbox shuts down when done)' -ForegroundColor DarkYellow
+                Write-Host '  4. SILENTLY run the PSADT package to perform the update' -ForegroundColor Cyan
+                }
                 Write-Host '  5. ASSERT: requirement still met; tattoo = new version; old ARP entry gone' -ForegroundColor Cyan
                 Write-Host '  6. Copy PSADT/MSI logs to project\Sandbox\Logs'          -ForegroundColor Cyan
                 Write-Host '  7. Keep the sandbox open for final verification'         -ForegroundColor White
@@ -623,7 +669,8 @@ function Test-Win32ToolkitProject {
                 # The verdict is RETURNED ($true pass / $false fail / $null inconclusive) so callers
                 # (finalize pipeline, TUI, automation) can gate on a failed update test.
                 $updVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath
-                Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'Sandbox' -Mode 'Interactive' -Verdict $updVerdict
+                Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'Sandbox' `
+                    -Mode $(if ($sbInteractive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict
                 return $updVerdict
             }
         }

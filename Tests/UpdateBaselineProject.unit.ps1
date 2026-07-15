@@ -22,7 +22,11 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitDependencyRef.ps1')   # real parser (project:/winget:/bare)
 . (Join-Path $repo 'Private\Get-Win32ToolkitPaths.ps1')                 # real tier resolver
+. (Join-Path $repo 'Private\Get-Win32ToolkitTestMode.ps1')              # mode resolver (Interactive/Unattended)
+. (Join-Path $repo 'Private\Wait-Win32ToolkitSandboxFree.ps1')          # the guard now waits instead of throwing
 . (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1')
+# Deterministic on any host (CI stdin is redirected, which would otherwise force Unattended).
+function Test-Win32ToolkitHostNonInteractive { $false }
 
 # --- BasePath + a real packaged baseline under <base>\Projects\<Template>\<Name> -------------------
 $script:base = Join-Path ([System.IO.Path]::GetTempPath()) ('w32bp_' + [guid]::NewGuid().ToString('N').Substring(0, 8))

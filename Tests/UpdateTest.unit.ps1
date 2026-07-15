@@ -25,8 +25,13 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Get-Win32ToolkitBaselineInstallCommand.ps1')
 . (Join-Path $repo 'Private\Resolve-Win32ToolkitBaselineSilentArgs.ps1')
 . (Join-Path $repo 'Private\Download-OldVersionInstaller.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitTestMode.ps1')  # mode resolver (Interactive/Unattended)
+. (Join-Path $repo 'Private\Wait-Win32ToolkitSandboxFree.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitConfigValue.ps1')   # New-TargetedDocumentation reads SandboxTestMode
 . (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1')   # for -BaselineProjectPath validation (throws early)
 . (Join-Path $repo 'Private\Test-Win32ToolkitSandboxRunning.ps1')
+# Deterministic on any host (CI stdin is redirected, which would otherwise force Unattended).
+function Test-Win32ToolkitHostNonInteractive { $false }
 . (Join-Path $repo 'Private\Start-Win32ToolkitSandbox.ps1')
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitTestRun.ps1')
 

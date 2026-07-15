@@ -837,26 +837,30 @@ Write-Host "3. Review detailed log for installation analysis" -ForegroundColor G
 
 Write-Log "Documentation process completed successfully" "SUCCESS"
 
-# The 30s auto-close countdown + Stop-Computer are Windows Sandbox teardown. Under Hyper-V the host
+# The auto-close countdown + Stop-Computer are Windows Sandbox teardown. Under Hyper-V the host
 # reverts the checkpoint AFTER the provider copies the capture back — the guest must NOT shut down
 # (that would kill the PowerShell Direct session mid-copy) and there is no sandbox client to disconnect.
+# The duration is mode-dependent (host decides): 30 s WATCHED — the operator's Ctrl+C window to keep the
+# sandbox and inspect the captured install; 5 s UNATTENDED — just enough for the VSMB mapped-folder
+# write-back to flush, so a chained test's single-instance guard clears quickly.
 if ($backend -eq 'Sandbox') {
+    # Quoted-cast placeholder so the raw template itself stays parseable (5.1-safe).
+    $autoClose = [int]'__AUTOCLOSE__'
     Write-Host "`n======================================"
-    Write-Host "AUTO-CLOSING SANDBOX IN 30 SECONDS" -ForegroundColor Red
+    Write-Host "AUTO-CLOSING SANDBOX IN $autoClose SECONDS" -ForegroundColor Red
     Write-Host "======================================"
     Write-Host "The Windows Sandbox will automatically close to clean up resources." -ForegroundColor Yellow
     Write-Host "All documentation files have been saved to the mapped folder." -ForegroundColor Green
     Write-Host "`nPress Ctrl+C to cancel auto-close..." -ForegroundColor Gray
 
-    # 30-second countdown with progress bar
-    for ($i = 30; $i -gt 0; $i--) {
-        Write-Progress -Activity "Auto-closing Windows Sandbox" -Status "Sandbox will close automatically to free resources..." -SecondsRemaining $i -PercentComplete ((30 - $i) / 30 * 100)
+    for ($i = $autoClose; $i -gt 0; $i--) {
+        Write-Progress -Activity "Auto-closing Windows Sandbox" -Status "Sandbox will close automatically to free resources..." -SecondsRemaining $i -PercentComplete ((($autoClose - $i) / $autoClose) * 100)
         Start-Sleep -Seconds 1
     }
     Write-Progress -Activity "Auto-closing Windows Sandbox" -Completed
 
     Write-Host "`nClosing Windows Sandbox..." -ForegroundColor Red
-    Write-Log "Sandbox auto-close initiated after 30-second countdown" "INFO"
+    Write-Log "Sandbox auto-close initiated after $autoClose-second countdown" "INFO"
 
     # Gracefully shut down the sandbox so the host client can disconnect cleanly
     Stop-Computer
@@ -868,6 +872,15 @@ if ($backend -eq 'Sandbox') {
         $documentationScript = $documentationScript -replace '__TIMESTAMP__', $timestamp
         $documentationScript = $documentationScript -replace '__SCOPE__', $installerScope
         $documentationScript = $documentationScript -replace '__BACKEND__', $Backend
+        # Auto-close: 30 s watched (the operator's Ctrl+C inspect window) / 5 s unattended (VSMB flush
+        # only — SandboxTestMode=Unattended is the operator's opt-in that no one is watching captures).
+        # Fail-safe to 30: a config-layer hiccup must never leave the placeholder empty (that would
+        # corrupt the generated script's arithmetic) or shorten the operator's window.
+        $autoCloseSeconds = 30
+        try {
+            if ((Get-Win32ToolkitConfigValue -Name 'SandboxTestMode' -Default 'Interactive') -eq 'Unattended') { $autoCloseSeconds = 5 }
+        } catch { $autoCloseSeconds = 30 }
+        $documentationScript = $documentationScript -replace '__AUTOCLOSE__', $autoCloseSeconds
 
         # Save the documentation script inside the PSADT project's SupportFiles folder. Write UTF-8 WITH a
         # BOM: the guest runs it under Windows PowerShell 5.1, which decodes a BOM-less file as ANSI and
