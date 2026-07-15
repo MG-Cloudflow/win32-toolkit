@@ -22,9 +22,23 @@ function Show-Win32ToolkitTestVM {
             Write-SpectreHost "[yellow]Hyper-V backend not ready:[/] $(Get-SpectreEscapedText -Text ($reasons -join '; '))"
         }
 
+        # Show the VM's current CPU/RAM (live if it exists, else the configured spec the next provision will use).
+        $vmName = Get-Win32ToolkitConfigValue -Name 'HyperVVMName' -Default 'win32tk-golden'
+        $liveVm = $null; try { $liveVm = Get-VM -Name $vmName -ErrorAction SilentlyContinue } catch { }
+        if ($liveVm) {
+            $hCpu = (Get-VMProcessor -VMName $vmName).Count
+            $hMem = (Get-VMMemory -VMName $vmName).Startup
+            Write-SpectreHost "VM resources: [blue]$hCpu vCPU[/] / [blue]$([math]::Round($hMem / 1GB, 1)) GB[/]  [grey]($vmName)[/]"
+        } else {
+            $hCpu = Get-Win32ToolkitConfigValue -Name 'HyperVProcessorCount' -Default '2'
+            $hMem = [uint64](Get-Win32ToolkitConfigValue -Name 'HyperVMemoryStartupBytes' -Default ([uint64]4GB))
+            Write-SpectreHost "VM resources (next provision): [blue]$hCpu vCPU[/] / [blue]$([math]::Round($hMem / 1GB, 1)) GB[/]"
+        }
+
         $sel = Read-SpectreSelection -Message 'Hyper-V test VM' -Choices @(
             [pscustomobject]@{ Key = 'backend';   Label = 'Set the default test backend (Sandbox / Hyper-V)' }
             [pscustomobject]@{ Key = 'provision'; Label = 'Provision the test VM from a Windows 11 ISO (one-time, ~30-60 min)' }
+            [pscustomobject]@{ Key = 'resources'; Label = 'Change VM resources (CPU / memory) — reconfigures + re-checkpoints (minutes)' }
             [pscustomobject]@{ Key = 'reset';     Label = 'Reset the VM to its clean checkpoint' }
             [pscustomobject]@{ Key = 'autologon'; Label = 'Configure guest AutoLogon + re-checkpoint (fix a login-screen checkpoint)' }
             [pscustomobject]@{ Key = 'remove';    Label = 'Remove the test VM (and its VHDX)' }
@@ -84,6 +98,57 @@ function Show-Win32ToolkitTestVM {
                         }
                         catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red | Out-SpectreHost }
                         Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                    }
+                }
+            }
+            'resources' {
+                Clear-Host; Write-SpectreRule -Title 'VM resources (CPU / memory)' -Color Blue
+                $rvm = $null; try { $rvm = Get-VM -Name $vmName -ErrorAction SilentlyContinue } catch { }
+                if (-not $rvm) {
+                    Format-SpectrePanel -Data "No test VM ('$vmName') is provisioned yet — provision it first." -Header 'No VM' -Border Rounded -Color Yellow | Out-SpectreHost
+                    Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                }
+                else {
+                    $curCpu = (Get-VMProcessor -VMName $vmName).Count
+                    $curMem = (Get-VMMemory -VMName $vmName).Startup
+                    $vmHost = Get-VMHost
+                    Write-SpectreHost "Current: [blue]$curCpu vCPU[/] / [blue]$([math]::Round($curMem / 1GB, 2)) GB[/]"
+                    Write-SpectreHost "[grey]Host capacity: $($vmHost.LogicalProcessorCount) logical processors / $([math]::Round($vmHost.MemoryCapacity / 1GB, 1)) GB RAM (requests above this are refused).[/]"
+
+                    $cpuIn = Read-SpectreText -Message "New vCPU count (blank = keep $curCpu)" -DefaultAnswer ''
+                    $memIn = Read-SpectreText -Message "New memory, e.g. 6GB or 6144MB (blank = keep $([math]::Round($curMem / 1GB, 2)) GB)" -DefaultAnswer ''
+
+                    $bad = $false
+                    $rargs = @{}
+                    if (-not [string]::IsNullOrWhiteSpace($cpuIn)) {
+                        $pc = 0
+                        if ([int]::TryParse($cpuIn.Trim(), [ref]$pc) -and $pc -ge 1) { $rargs['ProcessorCount'] = $pc }
+                        else { Write-SpectreHost "[red]Invalid vCPU count: '$(Get-SpectreEscapedText -Text $cpuIn)'.[/]"; $bad = $true }
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($memIn)) {
+                        $bytes = ConvertTo-Win32ToolkitByteSize -Text $memIn
+                        if ($bytes) { $rargs['MemoryStartupBytes'] = $bytes }
+                        else { Write-SpectreHost "[red]Invalid memory: '$(Get-SpectreEscapedText -Text $memIn)' — try 6GB or 6144MB.[/]"; $bad = $true }
+                    }
+
+                    if ($bad) {
+                        Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                    }
+                    elseif ($rargs.Count -eq 0) {
+                        Write-SpectreHost '[grey]No changes entered — nothing to do.[/]'
+                        Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                    }
+                    else {
+                        Write-SpectreHost '[yellow]This turns the VM OFF, applies the change, cold-boots it to the AutoLogon desktop, and re-takes the clean-base checkpoint (a few minutes).[/]'
+                        if (Read-SpectreConfirm -Message 'Apply now?' -DefaultAnswer 'y') {
+                            Clear-Host; Write-SpectreRule -Title 'Reconfiguring the VM…' -Color Blue
+                            try {
+                                Set-Win32ToolkitTestVMResource @rargs | Out-Null
+                                Format-SpectrePanel -Data 'VM resources updated and the clean-base checkpoint recreated.' -Header 'Done' -Border Rounded -Color Green | Out-SpectreHost
+                            }
+                            catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red | Out-SpectreHost }
+                            Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                        }
                     }
                 }
             }

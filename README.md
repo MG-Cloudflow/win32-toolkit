@@ -46,7 +46,7 @@ Requires PowerShell 7.2+ and an interactive console window.
 | **PowerShell** | **7.2 or later** (PowerShell 7). Windows PowerShell 5.1 is not supported for running the module. |
 | **Winget** | Windows Package Manager must be installed and in `$PATH`. Included in Windows 10 21H1+ and Windows 11. |
 | **PSAppDeployToolkit** | v4.x from the PowerShell Gallery. Prompted to install automatically on first run if absent. |
-| **Test/capture backend** | Documentation capture and test scenarios run in a **backend**. Default: **Windows Sandbox** — enable via *Windows Features → Windows Sandbox* (Windows 10/11 Pro/Enterprise/Education). Opt-in alternative: a provisioned **Hyper-V VM** (faster; `New-Win32ToolkitTestVM` to provision, then `-Backend HyperV` or the TUI's *Hyper-V test VM* screen). The backend is resolved per run, falling back to Sandbox if the VM isn't ready. |
+| **Test/capture backend** | Documentation capture and test scenarios run in a **backend**. Default: **Windows Sandbox** — enable via *Windows Features → Windows Sandbox* (Windows 10/11 Pro/Enterprise/Education). Opt-in alternative: a provisioned **Hyper-V VM** (faster; `New-Win32ToolkitTestVM` to provision, then `-Backend HyperV` or the TUI's *Hyper-V test VM* screen). The backend is resolved per run, falling back to Sandbox if the VM isn't ready. Pick the VM's CPU/memory at provision time, or change them later on the existing VM with **`Set-Win32ToolkitTestVMResource -ProcessorCount 4 -MemoryStartupBytes 8GB`** (or the TUI's *Change VM resources* option) — it reconfigures the hardware and re-freezes the clean-base checkpoint in minutes, without rebuilding from ISO; requests above the host's CPU/RAM are refused. |
 | **Internet access** | Required to search Winget, download packages, check PSGallery, and download IntuneWinAppUtil.exe. |
 | **Administrator rights** | Recommended. Required if `BasePath` is under a system-protected location. |
 | **Microsoft.Graph.Authentication** | Required only for `Publish-Win32ToolkitIntuneApp` / `-PublishIntune`. Installed automatically on first use when you agree to the prompt. Install manually with `Install-Module -Name Microsoft.Graph.Authentication -Scope CurrentUser`. |
@@ -90,6 +90,7 @@ Get-Command -Module win32-toolkit
 # Function     Remove-Win32ToolkitTestVM
 # Function     Reset-Win32ToolkitTestVM
 # Function     Set-Win32ToolkitAppDependency
+# Function     Set-Win32ToolkitTestVMResource
 # Function     Show-Win32Toolkit
 # Function     Sync-Win32ToolkitAppDependency
 # Function     Test-Win32ToolkitProject
