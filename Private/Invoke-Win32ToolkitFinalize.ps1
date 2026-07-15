@@ -37,6 +37,14 @@ function Invoke-Win32ToolkitFinalize {
         [ValidateSet('InstallUninstall', 'Update')]
         [string[]]$RunTest,
 
+        # Update-test baseline selection, passed through to Test-Win32ToolkitProject so a scripted
+        # pipeline never blocks on the interactive version picker mid-run. Omit both to keep the
+        # interactive picker (current behavior). SpecificVersion wins when both are supplied.
+        [ValidateRange(1, 1000)]
+        [int]$UpdateVersionsBack,
+
+        [string]$UpdateSpecificVersion,
+
         [switch]$PackageIntune,
 
         [switch]$PublishIntune,
@@ -96,7 +104,13 @@ function Invoke-Win32ToolkitFinalize {
     #    surface a failure loudly before any packaging/publishing continues.
     if ($RunTest) {
         foreach ($scenario in $RunTest) {
-            $verdict = Test-Win32ToolkitProject -ProjectPath $ProjectPath -Scenario $scenario
+            $testArgs = @{ ProjectPath = $ProjectPath; Scenario = $scenario }
+            if ($scenario -eq 'Update') {
+                # Plumb the baseline choice through so automation never lands on the interactive picker.
+                if ($UpdateSpecificVersion)   { $testArgs['SpecificVersion'] = $UpdateSpecificVersion }
+                elseif ($UpdateVersionsBack)  { $testArgs['VersionsBack']    = $UpdateVersionsBack }
+            }
+            $verdict = Test-Win32ToolkitProject @testArgs
             if ($verdict -eq $false) {
                 $assertLog = if ($scenario -eq 'InstallUninstall') { 'InstallAssertions.log' } else { 'UpdateAssertions.log' }
                 Write-Warning "The $scenario test FAILED its assertions — review $ProjectPath\Sandbox\Logs\$assertLog before publishing this package."

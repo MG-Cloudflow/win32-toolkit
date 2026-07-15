@@ -54,20 +54,90 @@ function Invoke-Win32ToolkitHyperVRun {
     # in finally so the intentional Azure-upload bar on the (later) publish path is unaffected.
     $prevProgress = $ProgressPreference
     $ProgressPreference = 'SilentlyContinue'
+
+    # ── Deps checkpoint (opt-in: HyperVDepsCheckpoint=On) ─────────────────────────────────────────────
+    # When the project stages dependencies, a 'clean-base+deps-<key>' checkpoint lets every later run
+    # skip the per-run dependency install entirely: restore THAT instead of clean-base and drop the
+    # tagged dep phase. The key hashes the staged set + every payload byte + the parent checkpoint's
+    # identity, so any change simply never matches and falls back to clean-base + a live install (which
+    # then re-creates the checkpoint). VM maintenance deletes all checkpoints — the fallback is routine.
+    $effectiveCheckpoint  = $CheckpointName
+    $skipDepPhases        = $false
+    $createDepsCheckpoint = $false
+    $depsCpName           = $null
+    $depsFeatureOn        = $false
+    try { $depsFeatureOn = ((Get-Win32ToolkitConfigValue -Name 'HyperVDepsCheckpoint' -Default 'Off') -eq 'On') } catch { $depsFeatureOn = $false }
+    if ($depsFeatureOn) {
+        $depsCpName = Get-Win32ToolkitDepsCheckpointName -ProjectPath $ProjectPath -VMName $VMName -ParentCheckpointName $CheckpointName
+        if ($depsCpName) {
+            if (Get-VMCheckpoint -VMName $VMName -Name $depsCpName -ErrorAction SilentlyContinue) {
+                $effectiveCheckpoint = $depsCpName
+                $skipDepPhases       = $true
+                Write-Host "✓ Using checkpoint '$depsCpName' — this project's dependencies are pre-installed in the image." -ForegroundColor Green
+            }
+            else {
+                $createDepsCheckpoint = $true
+            }
+        }
+    }
+
+    # ── Overlap: build the copy-in zip(s) WHILE the checkpoint reverts ────────────────────────────────
+    # The zip needs no session and used to sit serially in every run (5-20 s). Pure .NET work in a
+    # thread job; joined (with errors surfaced) right before the transfer. No ThreadJob => build inline
+    # in the copy helper, exactly as before.
+    $zipJobs = @{}
+    $canThreadJob = [bool](Get-Command Start-ThreadJob -ErrorAction SilentlyContinue)
+    if ($canThreadJob) {
+        $zipBuilder = {
+            param($src, $dst)
+            Add-Type -AssemblyName 'System.IO.Compression.FileSystem' -ErrorAction SilentlyContinue
+            [System.IO.Compression.ZipFile]::CreateFromDirectory($src, $dst, [System.IO.Compression.CompressionLevel]::NoCompression, $false)
+            $dst
+        }
+        $projZipPath = Join-Path ([System.IO.Path]::GetTempPath()) ('w32proj_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.zip')
+        $zipJobs['project'] = @{ Job = (Start-ThreadJob -ScriptBlock $zipBuilder -ArgumentList $ProjectPath, $projZipPath); Path = $projZipPath }
+        if ($BaselineProjectPath) {
+            $baseZipPath = Join-Path ([System.IO.Path]::GetTempPath()) ('w32proj_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.zip')
+            $zipJobs['baseline'] = @{ Job = (Start-ThreadJob -ScriptBlock $zipBuilder -ArgumentList $BaselineProjectPath, $baseZipPath); Path = $baseZipPath }
+        }
+    }
+    # Joins a prebuild job and returns its zip path — or $null (build-inline fallback) on any job error.
+    $joinZip = {
+        param($key)
+        if (-not $zipJobs.ContainsKey($key)) { return $null }
+        try {
+            $null = Receive-Job -Job $zipJobs[$key].Job -Wait -ErrorAction Stop
+            return $zipJobs[$key].Path
+        }
+        catch {
+            Write-Verbose "Zip prebuild '$key' failed ($($_.Exception.Message)) — building inline."
+            Remove-Item -LiteralPath $zipJobs[$key].Path -Force -ErrorAction SilentlyContinue
+            return $null
+        }
+    }
+
     try {
         # Interactive phases need a logged-in desktop, so ask the session to ensure/recover one.
         $needsDesktop = @($Phase | Where-Object { $_.Interactive }).Count -gt 0
 
-        Write-Verbose "Reverting '$VMName' to '$CheckpointName' and connecting over PowerShell Direct..."
-        $session = New-Win32ToolkitHyperVSession -VMName $VMName -Credential $Credential -CheckpointName $CheckpointName -EnsureDesktop:$needsDesktop
+        Write-Verbose "Reverting '$VMName' to '$effectiveCheckpoint' and connecting over PowerShell Direct..."
+        $session = New-Win32ToolkitHyperVSession -VMName $VMName -Credential $Credential -CheckpointName $effectiveCheckpoint -EnsureDesktop:$needsDesktop
 
         Write-Verbose "Copying project into the guest (C:\PSADT)..."
-        Copy-Win32ToolkitProjectToGuest -Session $session -ProjectPath $ProjectPath -GuestPath 'C:\PSADT'
+        Copy-Win32ToolkitProjectToGuest -Session $session -ProjectPath $ProjectPath -GuestPath 'C:\PSADT' -PrebuiltZip (& $joinZip 'project')
         if ($BaselineProjectPath) {
             # -ReadOnly reproduces the Sandbox <ReadOnly>true</ReadOnly> mount, so the baseline's own PSADT
             # run can't write into C:\PSADTOld on Hyper-V while the same run fails under Sandbox.
             Write-Verbose 'Copying the update baseline into the guest (C:\PSADTOld, read-only)...'
-            Copy-Win32ToolkitProjectToGuest -Session $session -ProjectPath $BaselineProjectPath -GuestPath 'C:\PSADTOld' -ReadOnly
+            Copy-Win32ToolkitProjectToGuest -Session $session -ProjectPath $BaselineProjectPath -GuestPath 'C:\PSADTOld' -ReadOnly -PrebuiltZip (& $joinZip 'baseline')
+        }
+
+        # Deps are baked into the restored image: remove the in-guest installer script so the CAPTURE
+        # script (which installs deps in-script, not as a tagged phase) skips them too.
+        if ($skipDepPhases) {
+            Invoke-Command -Session $session -ScriptBlock {
+                param($p) Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+            } -ArgumentList 'C:\PSADT\Sandbox\InstallDependencies.ps1' -ErrorAction SilentlyContinue
         }
 
         # If any phase is interactive, open the VM console so the operator can watch the PSADT GUI.
@@ -81,11 +151,33 @@ function Invoke-Win32ToolkitHyperVRun {
                 Read-Host "  $($ph.Label) — press Enter to continue"
                 continue
             }
+            if ($ph.DepPhase -and $skipDepPhases) {
+                Write-Verbose "  Skipping '$($ph.Label)' — dependencies are pre-installed in the checkpoint."
+                continue
+            }
             # Every phase runs as SYSTEM (the Intune context). For an interactive phase PSADT's own deploy
             # mode renders its GUI in the logged-on user's session (a real desktop is ensured above).
             $exit = Invoke-Win32ToolkitGuestPhase -Session $session -Command $ph.Command -Label $ph.Label
             if (-not $ph.IgnoreExit -and $exit -ne 0) {
                 Write-Warning "Guest phase '$($ph.Label)' exited with code $exit."
+            }
+            # A SUCCESSFUL dep install is the moment to freeze the deps checkpoint (opt-in feature): the
+            # image now equals clean-base + this exact dependency set. Only one clean-base+deps-* is kept.
+            # A failure here is non-fatal — the run continues exactly as without the feature.
+            if ($ph.DepPhase -and $createDepsCheckpoint -and $exit -eq 0) {
+                try {
+                    Get-VMCheckpoint -VMName $VMName -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Name -like 'clean-base+deps-*' } |
+                        Remove-VMCheckpoint -ErrorAction SilentlyContinue
+                    Set-VM -Name $VMName -CheckpointType Standard -ErrorAction Stop
+                    Checkpoint-VM -VMName $VMName -SnapshotName $depsCpName -ErrorAction Stop
+                    $effectiveCheckpoint  = $depsCpName
+                    $createDepsCheckpoint = $false
+                    Write-Host "✓ Deps checkpoint '$depsCpName' created — later runs of this project skip the dependency install." -ForegroundColor Green
+                }
+                catch {
+                    Write-Warning "Could not create the deps checkpoint (run continues without it): $($_.Exception.Message)"
+                }
             }
         }
 
@@ -100,7 +192,15 @@ function Invoke-Win32ToolkitHyperVRun {
         return $false
     }
     finally {
-        Remove-Win32ToolkitHyperVSession -Session $session -VMName $VMName -CheckpointName $CheckpointName -Revert
+        # Revert to the EFFECTIVE checkpoint: with the deps feature that leaves the VM clean-with-deps
+        # (still never holding app/test state), and the R2 marker then matches the next run of the same
+        # project for the single-revert skip.
+        Remove-Win32ToolkitHyperVSession -Session $session -VMName $VMName -CheckpointName $effectiveCheckpoint -Revert
+        # Any unconsumed prebuild zips (job failed, run threw before the join) are cleaned here.
+        foreach ($k in $zipJobs.Keys) {
+            if ($zipJobs[$k].Job) { Remove-Job -Job $zipJobs[$k].Job -Force -ErrorAction SilentlyContinue }
+            Remove-Item -LiteralPath $zipJobs[$k].Path -Force -ErrorAction SilentlyContinue
+        }
         # Restore the caller's preference (the teardown Restore-VMCheckpoint above stays silenced), so this
         # never leaks to a later Publish/Azure-upload bar. Runs on both the return and the catch paths.
         $ProgressPreference = $prevProgress

@@ -71,6 +71,16 @@ function Invoke-Win32Toolkit {
         [ValidateSet('InstallUninstall', 'Update')]
         [string[]]$RunTest,
 
+        # Update-test baseline selection for -RunTest Update: pick the Nth-older release (or an exact
+        # version) up front, so a scripted pipeline never blocks on the interactive version picker
+        # mid-run. Omit both to keep the interactive picker. SpecificVersion wins over VersionsBack.
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 1000)]
+        [int]$UpdateVersionsBack,
+
+        [Parameter(Mandatory = $false)]
+        [string]$UpdateSpecificVersion,
+
         [Parameter(Mandatory = $false)]
         [switch]$PackageIntune,
 
@@ -271,6 +281,8 @@ function Invoke-Win32Toolkit {
                 # (shared with the manual-app flow — see Invoke-Win32ToolkitFinalize).
                 $finalize = @{ ProjectPath = $projectFullPath; ProjectName = $projectName; AppInfo = $selectedApp }
                 if ($RunTest) { $finalize['RunTest'] = $RunTest }   # omit when null (ValidateSet rejects $null)
+                if ($UpdateVersionsBack)    { $finalize['UpdateVersionsBack']    = $UpdateVersionsBack }
+                if ($UpdateSpecificVersion) { $finalize['UpdateSpecificVersion'] = $UpdateSpecificVersion }
                 Invoke-Win32ToolkitFinalize @finalize -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune -PublishUpdate:$PublishUpdate
 
 

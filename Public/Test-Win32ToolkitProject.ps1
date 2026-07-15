@@ -264,7 +264,7 @@ function Test-Win32ToolkitProject {
 
                     # Dependencies go in FIRST (silently), exactly as Intune installs them on a device.
                     $phases = @()
-                    if ($depCount -gt 0) { $phases += @{ Label = 'Install dependencies'; Command = $depCommand } }
+                    if ($depCount -gt 0) { $phases += @{ Label = 'Install dependencies'; Command = $depCommand; DepPhase = $true } }
 
                     if ($interactive) {
                         $phases += @(
@@ -554,7 +554,7 @@ function Test-Win32ToolkitProject {
                     # Add/Remove-Programs entry is part of the baseline rather than looking like something
                     # the app under test installed (which would confuse the OldArpGone assertion).
                     $phases = @()
-                    if ($depCount -gt 0) { $phases += @{ Label = 'Install dependencies'; Command = $depCommand } }
+                    if ($depCount -gt 0) { $phases += @{ Label = 'Install dependencies'; Command = $depCommand; DepPhase = $true } }
 
                     $phases += @(
                         @{ Label = 'Assert: PreBaseline';              Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline" }

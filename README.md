@@ -175,6 +175,8 @@ Invoke-Win32Toolkit
     [-Force]
     [-BasePath <string>]
     [-RunTest <string[]>]
+    [-UpdateVersionsBack <int>]
+    [-UpdateSpecificVersion <string>]
     [-PackageIntune]
     [-PublishIntune]
     [-DependsOn <string[]>]
@@ -272,6 +274,18 @@ Invoke-Win32Toolkit -Id 'Mozilla.Firefox' -Architecture x64 -Force -RunTest Inst
 ```
 
 Calls `Test-Win32ToolkitProject -ProjectPath $projectFullPath -Scenario $_` for each value.
+
+---
+
+#### `-UpdateVersionsBack <int>` / `-UpdateSpecificVersion <string>`
+
+Pre-select the `Update` test's baseline (Nth-older release, or an exact version) so a scripted
+`-RunTest Update` pipeline never blocks on the interactive version picker mid-run. Omit both to keep
+the picker. `-UpdateSpecificVersion` wins when both are supplied.
+
+```powershell
+Invoke-Win32Toolkit -Id 'Mozilla.Firefox' -Architecture x64 -Force -RunTest InstallUninstall, Update -UpdateVersionsBack 1 -PackageIntune
+```
 
 ---
 
@@ -437,6 +451,8 @@ In the TUI this is **"Package a manual app"**, which asks the same questions and
 ## Test-Win32ToolkitProject
 
 Runs test scenarios against a PSADT project in the configured backend — **Windows Sandbox** by default, or a **Hyper-V VM** via `-Backend HyperV` (opt-in; falls back to Sandbox if the VM isn't ready). Documentation capture follows the same backend. Can be called standalone, chained via `-RunTest` on `Invoke-Win32Toolkit`, or run at any time against any existing project.
+
+**Watched vs unattended.** Both backends default to **Interactive** (watched): PSADT shows its GUI and a countdown/pause gives you a verification window. Pass `-Unattended` (or set the `SandboxTestMode` / `HyperVTestMode` config value to `Unattended`) for silent back-to-back automation — no GUI, no countdown, and a Sandbox run shuts its guest down afterwards so **chained runs proceed on their own**. A non-interactive host (CI, redirected stdin) auto-selects Unattended with a warning. Note: Sandbox-unattended runs as the WDAG admin user while HyperV-unattended runs as SYSTEM (Intune parity) — their verdicts are not equivalent evidence. Back-to-back runs no longer fail on "another sandbox is already running": the guard now waits up to 90 s for the previous sandbox to close.
 
 ### Syntax
 
@@ -935,6 +951,22 @@ Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0'
 # Via Invoke-Win32Toolkit (full pipeline)
 Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -PublishIntune
 ```
+
+---
+
+## Pipeline performance & config switches
+
+The test/capture pipeline is tuned for wall-clock: blind waits are event-driven **with their old
+durations kept as hard ceilings** (worst case per site is exactly the previous behavior), each Hyper-V
+run reverts once instead of twice, results copy back as a single archive, and repeated downloads are
+cached. Registry config values (`HKCU:\Software\CloudFlow\win32-toolkit`):
+
+| Value | Default | Effect |
+|---|---|---|
+| `TestBackend` | `Sandbox` | `HyperV` opts test/capture runs into the Hyper-V VM (falls back to Sandbox when not ready). |
+| `HyperVTestMode` / `SandboxTestMode` | `Interactive` | `Unattended` makes that backend's tests run silent + back-to-back (no GUI, no countdown; Sandbox shuts its guest down afterwards). `-Unattended` overrides per call; non-interactive hosts auto-select it. |
+| `PipelineCache` | `On` | Caches update-baseline downloads under `<BasePath>\Cache\winget\` (SHA256-validated against the winget manifest on every reuse — a tampered/torn entry re-downloads) and reuses dependency staging within 6 h (every staged file re-hashed before reuse). `Off` restores the old always-download behavior. |
+| `HyperVDepsCheckpoint` | `Off` | `On`: after a project's dependencies install once in the VM, a `clean-base+deps-<hash>` checkpoint is taken and later runs of that project restore it instead of re-installing the dependencies. The hash covers the dependency set, every staged installer byte, and the parent checkpoint identity — any change falls back to `clean-base` + a live install. VM maintenance (resource changes, re-checkpointing) deletes it; it is simply recreated on the next run. |
 
 ---
 

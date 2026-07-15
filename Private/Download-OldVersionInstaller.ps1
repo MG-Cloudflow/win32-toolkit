@@ -68,41 +68,88 @@ function Download-OldVersionInstaller {
         New-Item -ItemType Directory -Path $oldVersionDir -Force | Out-Null
     }
 
-    Write-Verbose "Downloading $verLabel of '$AppId'..."
-
-    $downloadArgs = @(
-        'download',
-        '--id',                        $AppId,
-        '--download-directory',        $oldVersionDir,
-        '--accept-source-agreements',
-        '--accept-package-agreements'
-    )
-    # No -Version => let winget pick the latest (the dependency-staging case).
-    if ($Version) { $downloadArgs += '--version'; $downloadArgs += $Version }
-
-    if ($Architecture -and $Architecture -ne 'all') {
-        $downloadArgs += '--architecture'
-        $downloadArgs += $Architecture
+    # ── Pipeline cache (PINNED versions only) ────────────────────────────────────────────────────────
+    # A released version's installer is immutable, so a hash-validated cached copy is strictly stronger
+    # than re-downloading it every Update test (which is what happened before). The key encodes the full
+    # requested variant; the WHOLE download directory is cached — the installer manifest next to the
+    # binary carries SilentSwitches/InstallerType that the resolution below needs. Unpinned 'latest'
+    # (dependency staging) is deliberately NEVER cached here: it is a moving target.
+    $cacheDir = $null
+    if ($Version) {
+        $cacheRoot = $null
+        try { $cacheRoot = Get-Win32ToolkitPipelineCacheRoot } catch { $cacheRoot = $null }   # fail open: no cache
+        if ($cacheRoot) {
+            $san = { param($v) if ([string]::IsNullOrWhiteSpace($v)) { 'any' } else { ($v -replace '[\\/:*?"<>|]', '_').ToLowerInvariant() } }
+            $keyLeaf  = ('{0}_{1}_{2}_{3}' -f (& $san $Architecture), (& $san $Scope), (& $san $InstallerType), (& $san $Locale))
+            $cacheDir = Join-Path $cacheRoot (Join-Path ($AppId -replace '[\\/:*?"<>|]', '_') (Join-Path ($Version -replace '[\\/:*?"<>|]', '_') $keyLeaf))
+        }
     }
 
-    # Pin the packaged variant so the baseline matches (machine vs user scope, msi vs exe, locale).
-    $pinArgs = @()
-    if ($Scope -and $Scope -in @('machine', 'user')) { $pinArgs += '--scope';          $pinArgs += $Scope }
-    if ($InstallerType)                              { $pinArgs += '--installer-type'; $pinArgs += $InstallerType }
-    if ($Locale)                                     { $pinArgs += '--locale';         $pinArgs += $Locale }
-
-    & winget @downloadArgs @pinArgs
-
-    if ($LASTEXITCODE -ne 0 -and $pinArgs.Count -gt 0) {
-        # The old version may not publish the pinned variant (or the winget build may not support a
-        # pin flag) — retry unpinned rather than failing the whole test, but say so clearly.
-        Write-Warning "Pinned download (scope/installer-type/locale of the packaged variant) failed for '$AppId' $verLabel — retrying without pins. The baseline may be a DIFFERENT variant than the packaged app; check the installed baseline in the sandbox."
-        Get-ChildItem -LiteralPath $oldVersionDir -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-        & winget @downloadArgs
+    $cacheHit = $false
+    if ($cacheDir -and (Test-Win32ToolkitCachedInstaller -Path $cacheDir)) {
+        Write-Host "✓ Using the cached download for '$AppId' $verLabel (SHA256-validated against its manifest)." -ForegroundColor Green
+        Copy-Item -Path (Join-Path $cacheDir '*') -Destination $oldVersionDir -Recurse -Force
+        $cacheHit = $true
     }
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "winget download exited with code $LASTEXITCODE for '$AppId' $verLabel."
+    $usedFallback = $false
+    if (-not $cacheHit) {
+        Write-Verbose "Downloading $verLabel of '$AppId'..."
+
+        $downloadArgs = @(
+            'download',
+            '--id',                        $AppId,
+            '--download-directory',        $oldVersionDir,
+            '--accept-source-agreements',
+            '--accept-package-agreements'
+        )
+        # No -Version => let winget pick the latest (the dependency-staging case).
+        if ($Version) { $downloadArgs += '--version'; $downloadArgs += $Version }
+
+        if ($Architecture -and $Architecture -ne 'all') {
+            $downloadArgs += '--architecture'
+            $downloadArgs += $Architecture
+        }
+
+        # Pin the packaged variant so the baseline matches (machine vs user scope, msi vs exe, locale).
+        $pinArgs = @()
+        if ($Scope -and $Scope -in @('machine', 'user')) { $pinArgs += '--scope';          $pinArgs += $Scope }
+        if ($InstallerType)                              { $pinArgs += '--installer-type'; $pinArgs += $InstallerType }
+        if ($Locale)                                     { $pinArgs += '--locale';         $pinArgs += $Locale }
+
+        & winget @downloadArgs @pinArgs
+
+        if ($LASTEXITCODE -ne 0 -and $pinArgs.Count -gt 0) {
+            # The old version may not publish the pinned variant (or the winget build may not support a
+            # pin flag) — retry unpinned rather than failing the whole test, but say so clearly.
+            Write-Warning "Pinned download (scope/installer-type/locale of the packaged variant) failed for '$AppId' $verLabel — retrying without pins. The baseline may be a DIFFERENT variant than the packaged app; check the installed baseline in the sandbox."
+            Get-ChildItem -LiteralPath $oldVersionDir -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            & winget @downloadArgs
+            $usedFallback = $true
+        }
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "winget download exited with code $LASTEXITCODE for '$AppId' $verLabel."
+        }
+
+        # Cache the download — but NEVER a fallback result under the pinned key: the unpinned retry can
+        # legitimately deliver a DIFFERENT variant, and caching it would poison every future pinned run
+        # (unlike today's re-download, a cache would never self-heal when the vendor publishes the
+        # pinned variant). The write is validated and rolled back on any inconsistency (fail open).
+        if ($cacheDir -and -not $usedFallback) {
+            try {
+                if (Test-Path -LiteralPath $cacheDir) { Remove-Item -LiteralPath $cacheDir -Recurse -Force -ErrorAction SilentlyContinue }
+                New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+                Copy-Item -Path (Join-Path $oldVersionDir '*') -Destination $cacheDir -Recurse -Force
+                if (-not (Test-Win32ToolkitCachedInstaller -Path $cacheDir)) {
+                    Remove-Item -LiteralPath $cacheDir -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+            catch {
+                Write-Verbose "Could not cache the download (non-fatal): $($_.Exception.Message)"
+                Remove-Item -LiteralPath $cacheDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
     }
 
     # Locate the downloaded installer file

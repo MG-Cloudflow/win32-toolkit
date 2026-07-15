@@ -33,7 +33,12 @@ function Copy-Win32ToolkitProjectToGuest {
         [Parameter(Mandatory)] $Session,
         [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string]$ProjectPath,
         [string]$GuestPath = 'C:\PSADT',
-        [switch]$ReadOnly
+        [switch]$ReadOnly,
+
+        # A zip already built for this project (Invoke-Win32ToolkitHyperVRun pre-builds it CONCURRENTLY
+        # with the checkpoint revert — the build needs no session). Consumed: deleted in finally either
+        # way. Omitted/missing => built here, exactly as before.
+        [string]$PrebuiltZip
     )
 
     # Transfer as ONE zip rather than file-by-file. Copy-Item -ToSession REPLAYS each source file's
@@ -43,16 +48,11 @@ function Copy-Win32ToolkitProjectToGuest {
     #     Cannot convert value "524320" to type "System.IO.FileAttributes"      (0x80020 = PINNED|Archive)
     # A zip carries no such attributes. It is also markedly faster (one transfer, not hundreds), and it
     # leaves the raw Projects\ copy untouched — we never mutate the source to work around this.
-    Add-Type -AssemblyName 'System.IO.Compression.FileSystem' -ErrorAction SilentlyContinue
-    $hostZip  = Join-Path ([System.IO.Path]::GetTempPath()) ('w32proj_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.zip')
+    $hostZip = if ($PrebuiltZip -and (Test-Path -LiteralPath $PrebuiltZip)) { $PrebuiltZip }
+               else { New-Win32ToolkitProjectZip -ProjectPath $ProjectPath }
     $guestZip = 'C:\Windows\Temp\' + (Split-Path -Leaf $hostZip)
 
     try {
-        # NoCompression: the payload is installers (already compressed) — packaging speed is what matters.
-        # $false = do not include the base directory, so the project CONTENTS land directly under $GuestPath.
-        [System.IO.Compression.ZipFile]::CreateFromDirectory(
-            $ProjectPath, $hostZip, [System.IO.Compression.CompressionLevel]::NoCompression, $false)
-
         Copy-Item -ToSession $Session -Path $hostZip -Destination $guestZip -Force -ErrorAction Stop
 
         Invoke-Command -Session $Session -ScriptBlock {

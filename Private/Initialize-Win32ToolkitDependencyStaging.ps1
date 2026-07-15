@@ -41,6 +41,48 @@ function Initialize-Win32ToolkitDependencyStaging {
     $deps = @(Get-Win32ToolkitDependencies -ProjectPath $ProjectPath)
     $depRoot    = Join-Path $ProjectPath 'Sandbox\Dependencies'
     $scriptPath = Join-Path $ProjectPath 'Sandbox\InstallDependencies.ps1'
+    $stagedMark = Join-Path $depRoot '.staged.json'
+
+    # ── Staging reuse (hash-validated) ────────────────────────────────────────────────────────────
+    # A full pipeline stages the SAME dependencies 2-3 times (capture + each test), wiping and
+    # re-downloading identical binaries each time. Reuse the existing staging when: the cache is on,
+    # the DECLARED set is unchanged, the staging is < 6 h old (deps are unpinned 'latest' — bound the
+    # staleness), and EVERY staged file still matches the SHA256 recorded at stage time. The re-hash is
+    # what makes this safe on BOTH backends: under Sandbox the staging folder was mounted read-write
+    # into a guest that ran an untrusted installer — a tampered file is a MISS, never a reuse.
+    $declaredJson = ConvertTo-Json -InputObject @($deps | ForEach-Object { "$($_.Source):$($_.Ref)" }) -Compress
+    $declaredHash = $null
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { $declaredHash = ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($declaredJson))) -replace '-', '') }
+        finally { $sha.Dispose() }
+    } catch { $declaredHash = $null }
+
+    $reuseCandidate = $false
+    try {
+        $reuseCandidate = $deps.Count -gt 0 -and $declaredHash -and (Test-Path -LiteralPath $stagedMark) -and (Get-Win32ToolkitPipelineCacheRoot)
+    } catch { $reuseCandidate = $false }
+    if ($reuseCandidate) {
+        try {
+            $mark = Get-Content -LiteralPath $stagedMark -Raw | ConvertFrom-Json
+            $fresh = $mark.DeclaredHash -eq $declaredHash -and
+                     $mark.StagedAt -and (((Get-Date) - [datetime]$mark.StagedAt).TotalHours -lt 6) -and
+                     (Test-Path -LiteralPath $scriptPath) -and
+                     (Test-Path -LiteralPath (Join-Path $depRoot 'dependencies.json'))
+            if ($fresh) {
+                foreach ($f in @($mark.Files)) {
+                    $p = Join-Path $depRoot $f.Path
+                    if (-not (Test-Path -LiteralPath $p)) { $fresh = $false; break }
+                    if ((Get-FileHash -LiteralPath $p -Algorithm SHA256 -ErrorAction Stop).Hash -ne $f.Sha256) { $fresh = $false; break }
+                }
+            }
+            if ($fresh) {
+                Write-Host "✓ Dependencies already staged (hash-validated, $([int]$mark.Count) item(s)) — reusing." -ForegroundColor Green
+                return [int]$mark.Count
+            }
+        }
+        catch { Write-Verbose "Dependency staging reuse check failed (restaging): $($_.Exception.Message)" }
+    }
 
     # Always start clean: a stale dependency from a previous run would silently install in the guest.
     if (Test-Path -LiteralPath $depRoot)    { Remove-Item -LiteralPath $depRoot -Recurse -Force -ErrorAction SilentlyContinue }
@@ -143,6 +185,22 @@ foreach ($d in @($deps)) {
 Write-Host 'All dependencies installed.' -ForegroundColor Green
 '@
     [System.IO.File]::WriteAllText($scriptPath, $guest, (New-Object System.Text.UTF8Encoding($true)))
+
+    # Record what was staged (declared-set hash + per-file SHA256) so the next call in this pipeline can
+    # REUSE it instead of wiping + re-downloading — see the reuse check at the top. Best-effort: a
+    # failure here just means the next call restages (today's behavior).
+    if ($declaredHash) {
+        try {
+            $files = @(Get-ChildItem -LiteralPath $depRoot -Recurse -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -ne '.staged.json' } |
+                ForEach-Object {
+                    @{ Path = $_.FullName.Substring($depRoot.Length + 1); Sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
+                })
+            $markJson = ConvertTo-Json -InputObject @{ DeclaredHash = $declaredHash; StagedAt = (Get-Date).ToString('o'); Count = $entries.Count; Files = $files } -Depth 4
+            [System.IO.File]::WriteAllText($stagedMark, $markJson, (New-Object System.Text.UTF8Encoding($false)))
+        }
+        catch { Write-Verbose "Could not record the staging marker (reuse disabled for the next call): $($_.Exception.Message)" }
+    }
 
     Write-Host "✓ Dependencies staged: $(($entries | ForEach-Object { $_.Name }) -join ', ')" -ForegroundColor Green
     return $entries.Count
