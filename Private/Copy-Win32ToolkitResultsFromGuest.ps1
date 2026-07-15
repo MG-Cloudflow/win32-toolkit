@@ -28,6 +28,9 @@ function Copy-Win32ToolkitResultsFromGuest {
     # Resolve the globs to concrete guest file paths.
     $files = Invoke-Command -Session $Session -ScriptBlock {
         param($globs)
+        # PS Direct doesn't inherit the host's $ProgressPreference (separate runspace); keep this remote
+        # enumeration from relaying any progress onto the host's Spectre TUI. (5.1-safe assignment.)
+        $ProgressPreference = 'SilentlyContinue'
         foreach ($g in $globs) {
             Get-ChildItem -Path $g -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
         }
