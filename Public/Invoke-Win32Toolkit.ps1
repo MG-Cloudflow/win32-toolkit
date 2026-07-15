@@ -118,10 +118,10 @@ function Invoke-Win32Toolkit {
 
         # -Id fast path: skip search entirely
         if ($Id) {
-            Write-Host "Resolving package ID: $Id" -ForegroundColor Yellow
+            Write-Verbose "Resolving package ID: $Id"
             $showOutput = winget show --id "$Id" --exact --accept-source-agreements | Out-String
             if ($LASTEXITCODE -ne 0 -or $showOutput -notmatch 'Found') {
-                Write-Host "Package ID '$Id' not found in winget. Verify the ID and try again." -ForegroundColor Red
+                Write-Error "Package ID '$Id' not found in winget. Verify the ID and try again."
                 return
             }
             $resolvedName    = if ($showOutput -match '(?m)^Found\s+(.+?)\s+\[') { $matches[1].Trim() } else { $Id }
@@ -148,7 +148,7 @@ function Invoke-Win32Toolkit {
             $apps = $apps | Where-Object { $_.Source -ne 'msstore' }
 
             if ($apps.Count -eq 0) {
-                Write-Host "No applications found matching: $SearchTerm" -ForegroundColor Yellow
+                Write-Warning "No applications found matching: $SearchTerm"
                 return
             }
 
@@ -177,7 +177,7 @@ function Invoke-Win32Toolkit {
             $selectedApp = $apps[$parsed - 1]
 
             if (-not $selectedApp) {
-                Write-Host 'No application selected' -ForegroundColor Yellow
+                Write-Warning 'No application selected'
                 return
             }
 
@@ -192,11 +192,11 @@ function Invoke-Win32Toolkit {
 
         if ($selectedArch -eq 'all') {
             if ($Architecture) {
-                Write-Host "'-Architecture all' is not valid — defaulting to x64." -ForegroundColor Yellow
+                Write-Warning "'-Architecture all' is not valid — defaulting to x64."
                 $selectedArch = 'x64'
             }
             else {
-                Write-Host 'For project creation, please select a specific architecture.' -ForegroundColor Yellow
+                Write-Warning 'For project creation, please select a specific architecture.'
                 $selectedArch = Select-Architecture -Architectures $availableArchs -AppName $selectedApp.Name
             }
         }
@@ -231,22 +231,22 @@ function Invoke-Win32Toolkit {
                 New-Item -Path $downloadPath -ItemType Directory -Force | Out-Null
             }
 
-            Write-Host "`nDownloading application to project Files directory..." -ForegroundColor Yellow
+            Write-Verbose 'Downloading application to project Files directory...'
             $downloadSuccess = Download-WingetApp -AppId $selectedApp.Id -AppName $selectedApp.Name -DownloadPath $downloadPath -Architecture $selectedArch
 
             if ($downloadSuccess) {
                 Write-Host "`n✓ App downloaded successfully!" -ForegroundColor Green
 
                 # Normalize the installer filename to AppName_arch_version.ext
-                Write-Host 'Normalizing installer filename...' -ForegroundColor Yellow
+                Write-Verbose 'Normalizing installer filename...'
                 Rename-InstallerFile -FilesPath $downloadPath -AppName $selectedApp.Name -Version $selectedApp.Version -Architecture $selectedArch
 
                 # Configure PSADT based on downloaded installer type
-                Write-Host 'Configuring PSADT for installer type...' -ForegroundColor Yellow
+                Write-Verbose 'Configuring PSADT for installer type...'
                 $psadtConfigured = Configure-PSADTForInstaller -ProjectPath $projectFullPath -AppInfo $selectedApp -Architecture $selectedArch
 
                 # Download and apply the app-specific icon from WinGet YAML
-                Write-Host 'Downloading app icon from WinGet...' -ForegroundColor Cyan
+                Write-Verbose 'Downloading app icon from WinGet...'
                 Get-AppIconFromWinget -ProjectPath $projectFullPath -FilesPath $downloadPath | Out-Null
 
                 if ($psadtConfigured) {
@@ -276,7 +276,43 @@ function Invoke-Win32Toolkit {
 
             }
             else {
-                Write-Warning 'Project was created but download failed. You can manually add the application files to the Files directory.'
+                # The download failed, so Rename/Configure/Finalize above were all skipped. Anything the
+                # user asked for downstream (test, package, publish, dependencies) silently did NOT happen.
+                # Name the options they actually supplied — a failed run must never look like a published one.
+                # This stays a WARNING: the project folder is deliberately kept so the run can be retried.
+                Write-Warning "Download FAILED for '$($selectedApp.Id)' ($selectedArch) - no installer was placed in the project's Files folder."
+
+                $skipped = [System.Collections.Generic.List[string]]::new()
+                if ($PSBoundParameters.ContainsKey('RunTest') -and $RunTest) {
+                    $skipped.Add("-RunTest ($($RunTest -join ', ')): the package was NOT tested - no Sandbox/Hyper-V run happened.")
+                }
+                if ($PSBoundParameters.ContainsKey('PackageIntune') -and $PackageIntune) {
+                    $skipped.Add('-PackageIntune: NOTHING was packaged - no .intunewin file was produced.')
+                }
+                if ($PSBoundParameters.ContainsKey('PublishIntune') -and $PublishIntune) {
+                    $skipped.Add('-PublishIntune: NOTHING was published - no app was uploaded to Intune.')
+                }
+                if ($PSBoundParameters.ContainsKey('PublishUpdate') -and $PublishUpdate) {
+                    $skipped.Add('-PublishUpdate: no update app was published to Intune.')
+                }
+                if ($PSBoundParameters.ContainsKey('DependsOn') -and $DependsOn) {
+                    $skipped.Add("-DependsOn ($($DependsOn -join ', ')): no dependencies were declared on the project.")
+                }
+
+                if ($skipped.Count -gt 0) {
+                    Write-Warning 'The following options you passed were SKIPPED because the download failed:'
+                    foreach ($item in $skipped) { Write-Warning "  * $item" }
+                }
+
+                Write-Warning "The project folder was still created: $projectFullPath"
+                Write-Warning "Next: re-run the same command to retry a transient download failure."
+                # Do NOT tell the user to drop an installer into Files\ and re-run: Create-PSADTProject removes
+                # and recreates the project directory on every run, so anything placed there by hand is deleted
+                # before the (still failing) download is retried. Supplying your own installer is the MANUAL
+                # flow's job.
+                Write-Warning "To package an installer you supply yourself, use the manual flow instead:"
+                Write-Warning "  New-Win32ToolkitManualApp -Name '$($selectedApp.Name)' -Version '$($selectedApp.Version)' -Architecture $selectedArch -SourcePath <path-to-your-installer>"
+                Write-Warning "Do not copy files into '$downloadPath' and re-run this command — the project folder is recreated from scratch each run, which would delete them."
             }
         }
         else {
@@ -285,5 +321,11 @@ function Invoke-Win32Toolkit {
     }
     catch {
         Write-Error "Script execution failed: $($_.Exception.Message)"
+    }
+    finally {
+        # Clear the module-scoped org template so a stale value can't leak into the next
+        # command in the same session. Runs on both success and failure. $null is the
+        # cleared state the module initialises at load.
+        $script:OrgTemplate = $null
     }
 }

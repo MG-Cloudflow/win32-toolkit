@@ -1,4 +1,6 @@
 function Get-Win32DetectionRules {
+    [CmdletBinding()]
+    [OutputType([object[]])]
     param(
         [Parameter(Mandatory = $true)]
         [string]$ProjectPath
@@ -24,7 +26,7 @@ function Get-Win32DetectionRules {
                      ((Get-Content -LiteralPath $deployScript -Raw) -match [regex]::Escape('win32-toolkit install tattoo - records'))
         if ($hasTattoo) {
             $tattooKey = "HKEY_LOCAL_MACHINE\SOFTWARE\$($app.ScriptAuthor)\$($app.Vendor)\$detName"
-            Write-Host "  Detection rule (Registry version): $tattooKey\Version = $($app.Version)" -ForegroundColor Gray
+            Write-Verbose "  Detection rule (Registry version): $tattooKey\Version = $($app.Version)"
             return @(
                 [ordered]@{
                     '@odata.type'          = '#microsoft.graph.win32LobAppRegistryDetection'
@@ -37,7 +39,7 @@ function Get-Win32DetectionRules {
                 }
             )
         }
-        Write-Host '  Tattoo values are present but the deploy script has no install tattoo — regenerate this project to enable version detection. Falling back to capture-based rules.' -ForegroundColor Yellow
+        Write-Warning '  Tattoo values are present but the deploy script has no install tattoo — regenerate this project to enable version detection. Falling back to capture-based rules.'
     }
     elseif ($app) {
         $missing = @()
@@ -46,7 +48,7 @@ function Get-Win32DetectionRules {
         if (-not $detName)          { $missing += 'App.DisplayName/Name (regenerate to populate)' }
         if (-not $app.Version)      { $missing += 'App.Version' }
         if ($missing.Count) {
-            Write-Host "  Tattoo/version detection unavailable — missing $($missing -join ', '). Using capture-based detection." -ForegroundColor Yellow
+            Write-Warning "  Tattoo/version detection unavailable — missing $($missing -join ', '). Using capture-based detection."
         }
     }
 
@@ -55,7 +57,7 @@ function Get-Win32DetectionRules {
     # detection rule from a STALE capture of a previous version.
     $jsonFile = Get-LatestInstallationCapture -ProjectPath $ProjectPath
     if (-not $jsonFile) {
-        Write-Host '  No InstallationChanges_*.json capture found — no detection rules generated.' -ForegroundColor Yellow
+        Write-Warning '  No InstallationChanges_*.json capture found — no detection rules generated.'
         return @()
     }
 
@@ -89,7 +91,7 @@ function Get-Win32DetectionRules {
             $keyPath = $keyPath -replace '^HKCU\\', 'HKEY_CURRENT_USER\'
             $keyPath = $keyPath -replace '^HKCR\\', 'HKEY_CLASSES_ROOT\'
 
-            Write-Host "  Detection rule (Registry): $keyPath" -ForegroundColor Gray
+            Write-Verbose "  Detection rule (Registry): $keyPath"
             return @(
                 [ordered]@{
                     '@odata.type'          = '#microsoft.graph.win32LobAppRegistryDetection'
@@ -114,14 +116,38 @@ function Get-Win32DetectionRules {
         if ($_ -is [string]) { $_ } elseif ($_.Path) { $_.Path } else { $_.ToString() }
     }
 
+    # Choose the best single MACHINE-WIDE file candidate. An app under C:\Tools, C:\ProgramData, D:\Apps,
+    # etc. is a valid detection target — the old hard filter to '^C:\Program Files' returned @() for those,
+    # leaving Intune with NO detection rule. Rank so Program Files (the most stable location) wins when
+    # present, then any other machine-wide absolute path, dropping obvious capture noise.
+    #
+    # Per-user profile paths are deliberately EXCLUDED (ranked unusable): Intune evaluates detection as
+    # SYSTEM on the device, which cannot see another user's profile, and the capture host's account name
+    # (e.g. the Windows Sandbox 'WDAGUtilityAccount') is baked into the literal captured path and won't exist
+    # on the target. A per-user file rule can therefore NEVER match — worse than no rule, because it makes
+    # Intune reinstall the app on every evaluation cycle. For a genuinely per-user app we return @() and the
+    # operator adds a detection rule by hand, exactly as before this broadening.
+    $rankPath = {
+        param($p)
+        if ($p -match '^[A-Za-z]:\\Users\\')                 { return 99 } # per-user profile — SYSTEM can't see it
+        if ($p -match '^[A-Za-z]:\\Program Files \(x86\)\\') { return 0 }
+        if ($p -match '^[A-Za-z]:\\Program Files\\')         { return 1 }
+        if ($p -match '^[A-Za-z]:\\')                        { return 2 }  # any other machine-wide absolute path
+        if ($p -match '^\\\\')                               { return 3 }  # UNC
+        return 99                                                          # relative / unusable
+    }
+    $noise = '\\(Temp|tmp|Windows\\Temp|Windows\\Installer|\$Recycle\.Bin|INetCache|WinSxS)\\|\\Temp\\'
     $candidate = $filePaths |
-        Where-Object { $_ -match '^C:\\Program Files' } |
+        Where-Object { $_ } |
+        Where-Object { (& $rankPath $_) -lt 99 } |          # must be an absolute path
+        Where-Object { $_ -notmatch $noise } |              # drop temp / installer scratch
+        Sort-Object -Property @{ Expression = { & $rankPath $_ } }, @{ Expression = { $_.Length } } |
         Select-Object -First 1
 
     if ($candidate) {
         $folder   = Split-Path $candidate -Parent
         $fileName = Split-Path $candidate -Leaf
-        Write-Host "  Detection rule (File): $candidate" -ForegroundColor Gray
+        Write-Verbose "  Detection rule (File): $candidate"
         return @(
             [ordered]@{
                 '@odata.type'          = '#microsoft.graph.win32LobAppFileSystemDetection'
@@ -135,6 +161,6 @@ function Get-Win32DetectionRules {
         )
     }
 
-    Write-Host '  No suitable detection rule candidates found.' -ForegroundColor Yellow
+    Write-Warning '  No suitable detection rule candidates found.'
     return @()
 }

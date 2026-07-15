@@ -1,12 +1,14 @@
 function New-IntuneRequirementScript {
+    [CmdletBinding()]
+    [OutputType([bool])]
     param(
         [string]$ProjectPath,
         [string]$JsonFilePath
     )
-    
+
     try {
         # Parse JSON using exact logic from Create-IntuneRequirement.ps1
-        Write-Host "Parsing JSON data..." -ForegroundColor White
+        Write-Verbose "Parsing JSON data..."
         $jsonContent = Get-Content -Path $JsonFilePath -Raw -Encoding UTF8 | ConvertFrom-Json
         
         # Extract application info using exact logic
@@ -58,25 +60,28 @@ function New-IntuneRequirementScript {
             $appName    = $mainApp.DisplayName
             $appVersion = $mainApp.DisplayVersion
             $publisher  = $mainApp.Publisher
-            Write-Host "Extracted info for: $appName" -ForegroundColor Green
-            if ($appVersion) { Write-Host "  Version: $appVersion" -ForegroundColor White }
-            if ($publisher)  { Write-Host "  Publisher: $publisher" -ForegroundColor White }
-            Write-Host "  Registry Entries: $($appEntries.Count)" -ForegroundColor White
-            if ($productCodes.Count -gt 0) { Write-Host "  Product Codes: $($productCodes.Count)" -ForegroundColor White }
+            Write-Verbose "Extracted info for: $appName"
+            if ($appVersion) { Write-Verbose "  Version: $appVersion" }
+            if ($publisher)  { Write-Verbose "  Publisher: $publisher" }
+            Write-Verbose "  Registry Entries: $($appEntries.Count)"
+            if ($productCodes.Count -gt 0) { Write-Verbose "  Product Codes: $($productCodes.Count)" }
         } else {
-            # Fallback: parse the winget YAML in Files\
-            $yamlFile = Get-ChildItem (Join-Path $ProjectPath 'Files') -Filter '*.yaml' -ErrorAction SilentlyContinue |
-                        Select-Object -First 1
-            if ($yamlFile) {
-                $yamlText = Get-Content $yamlFile.FullName -Raw
-                if ($yamlText -match 'PackageName:\s*(.+)')    { $appName    = $Matches[1].Trim() }
-                if ($yamlText -match 'PackageVersion:\s*(.+)') { $appVersion = $Matches[1].Trim() }
-                if ($yamlText -match 'Publisher:\s*(.+)')      { $publisher  = $Matches[1].Trim() }
-                if ($yamlText -match "ProductCode:\s*'?(\{[A-F0-9-]{36}\})'?") { $productCodes += $Matches[1] }
+            # Fallback: read the winget manifest via the shared resolver.
+            # This used to hand-pick the alphabetically-FIRST *.yaml, which is the *.installer.yaml — and the
+            # installer manifest carries no PackageName/Publisher (they live in the version/locale manifest).
+            # So $appName stayed $null, the function returned $false, and NO requirement script was written at
+            # all whenever the capture produced no program entries. Get-YAMLInstallerInfo reads the right file
+            # for each field (and with an explicit encoding).
+            $yamlInfo = Get-YAMLInstallerInfo -FilesPath (Join-Path $ProjectPath 'Files')
+            if ($yamlInfo) {
+                if ($yamlInfo.PackageName)    { $appName    = $yamlInfo.PackageName }
+                if ($yamlInfo.PackageVersion) { $appVersion = $yamlInfo.PackageVersion }
+                if ($yamlInfo.Publisher)      { $publisher  = $yamlInfo.Publisher }
+                if ($yamlInfo.ProductCode)    { $productCodes += $yamlInfo.ProductCode }
                 if ($appName) {
-                    Write-Host "JSON had no program entries — using YAML manifest as fallback" -ForegroundColor Yellow
-                    Write-Host "  App: $appName  Version: $appVersion" -ForegroundColor White
-                    if ($productCodes.Count -gt 0) { Write-Host "  Product Code: $($productCodes[0])" -ForegroundColor White }
+                    Write-Warning "JSON had no program entries — using the winget manifest as fallback"
+                    Write-Verbose "  App: $appName  Version: $appVersion"
+                    if ($productCodes.Count -gt 0) { Write-Verbose "  Product Code: $($productCodes[0])" }
                 }
             }
             if (-not $appName) {
@@ -86,22 +91,32 @@ function New-IntuneRequirementScript {
         }
         
         # Generate requirement script using exact logic from original
-        Write-Host "Generating requirement script..." -ForegroundColor White
+        Write-Verbose "Generating requirement script..."
 
         # Untrusted values (DisplayName/version from the capture JSON or YAML) are emitted
         # into single-quoted literals in the generated requirement script — escape them
         # (ConvertTo-PSSingleQuoted), and keep only strict-GUID product codes.
-        $appNameSq      = ConvertTo-PSSingleQuoted $appName
-        $appNameTokenSq = ConvertTo-PSSingleQuoted ($appName.Split(' ')[0])
-        $appVersionSq   = ConvertTo-PSSingleQuoted $appVersion
-        $productCodes   = @($productCodes | Where-Object { Test-Win32ToolkitProductCode $_ })
+        #
+        # Matching is on the FULL DisplayName (exact equality) and the MSI product code — never on the
+        # first token of the name. The old `-like "*$($appName.Split(' ')[0])*"` made "Microsoft Teams"
+        # match ANY Add/Remove-Programs entry containing "Microsoft" (Edge, Office, Visual C++ …), i.e. a
+        # false-positive "installed". Same discipline as Get-Win32ToolkitRequirementRule.
+        $appNameSq    = ConvertTo-PSSingleQuoted $appName
+        $appVersionSq = ConvertTo-PSSingleQuoted $appVersion
+        $productCodes = @($productCodes | Where-Object { Test-Win32ToolkitProductCode $_ })
+
+        # A COMMENT is a code context too. ConvertTo-PSSingleQuoted protects a single-quoted LITERAL; it does
+        # nothing for text emitted inside <# ... #>. A DisplayName containing '#>' would CLOSE the comment block
+        # and everything after it would become top-level code in a script Intune runs as SYSTEM. Neutralise the
+        # comment terminator and flatten newlines before the name goes anywhere near the header.
+        $appNameCmt = (($appName -replace '#>', '#_>') -replace '[\r\n]+', ' ').Trim()
 
         $requirementScript = @"
 <#
 .SYNOPSIS
-    Intune Win32 App Requirement Script for $appName
+    Intune Win32 App Requirement Script for $appNameCmt
 .DESCRIPTION
-    Checks if $appName is installed on the device.
+    Checks if $appNameCmt is installed on the device.
     Generated automatically from InstallationChanges data on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 .NOTES
     This script should return exit code 0 if the requirement is met (app is installed)
@@ -135,10 +150,12 @@ try {
     )
     
     foreach (`$productCode in `$productCodes) {
+        # The product code IS the identity - an Uninstall key under it means THIS product is installed.
+        # (-LiteralPath: never treat the key path as a wildcard pattern.)
         `$msiPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\`$productCode"
-        if (Test-Path `$msiPath) {
-            `$msiApp = Get-ItemProperty -Path `$msiPath -ErrorAction SilentlyContinue
-            if (`$msiApp -and `$msiApp.DisplayName -like '*$appNameTokenSq*') {
+        if (Test-Path -LiteralPath `$msiPath) {
+            `$msiApp = Get-ItemProperty -LiteralPath `$msiPath -ErrorAction SilentlyContinue
+            if (`$msiApp) {
                 `$appFound = `$true
                 `$installedVersion = `$msiApp.DisplayVersion
                 Write-Host "Found via MSI Product Code: `$(`$msiApp.DisplayName) v`$installedVersion"
@@ -152,15 +169,17 @@ try {
 
         # Add registry search for application name
         $requirementScript += @"
-    # Search by application name if not found via product code
+    # Search by application name if not found via product code.
+    # EXACT DisplayName equality on the FULL name - a substring/first-token match would report e.g.
+    # 'Microsoft Edge' as a hit for 'Microsoft Teams'. Equality also needs no wildcard escaping, so a
+    # name containing [ ] * ? still matches literally.
     if (-not `$appFound) {
         foreach (`$regPath in `$registryPaths) {
             try {
                 `$apps = Get-ItemProperty -Path `$regPath -ErrorAction SilentlyContinue | Where-Object {
-                    `$_.DisplayName -like '*$appNameTokenSq*' -or
                     `$_.DisplayName -eq '$appNameSq'
                 }
-                
+
                 foreach (`$app in `$apps) {
                     if (`$app.DisplayName) {
                         `$appFound = `$true
@@ -238,12 +257,16 @@ try {
         $supportFilesPath = Join-Path $ProjectPath "SupportFiles"
         if (-not (Test-Path $supportFilesPath)) {
             New-Item -Path $supportFilesPath -ItemType Directory -Force | Out-Null
-            Write-Host "Created SupportFiles directory" -ForegroundColor Yellow
+            Write-Verbose "Created SupportFiles directory"
         }
         
         $defaultPath = Join-Path $supportFilesPath "RequirementScript.ps1"
-        
-        $requirementScript | Set-Content -Path $defaultPath -Encoding UTF8
+
+        # UTF-8 WITH BOM: Intune runs requirement scripts with Windows PowerShell 5.1, which decodes a
+        # BOM-less file as ANSI — a non-ASCII DisplayName ('Café', 'Nagüi') would mojibake and the
+        # DisplayName comparison would silently never match. PS7's Set-Content -Encoding UTF8 writes NO
+        # BOM, so write the bytes ourselves (same as Get-Win32ToolkitRequirementRule).
+        [System.IO.File]::WriteAllText($defaultPath, ($requirementScript + "`r`n"), (New-Object System.Text.UTF8Encoding($true)))
         Write-Host "`n✓ SUCCESS: Requirement script saved to:" -ForegroundColor Green
         Write-Host "  $defaultPath" -ForegroundColor White
         

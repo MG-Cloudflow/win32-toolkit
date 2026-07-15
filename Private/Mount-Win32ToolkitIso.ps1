@@ -49,7 +49,7 @@ function Mount-Win32ToolkitIso {
             }
         }
         catch { if ($_.Exception.Message -like 'Not enough free space*') { throw } }  # space error is fatal; probing errors are not
-        Write-Host "Staging ISO to local disk ($dst)..." -ForegroundColor Cyan
+        Write-Verbose "Staging ISO to local disk ($dst)..."
         try {
             Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
         }

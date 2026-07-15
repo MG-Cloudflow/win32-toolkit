@@ -1,4 +1,6 @@
 function Get-AppIconFromWinget {
+    [CmdletBinding()]
+    [OutputType([bool])]
     param(
         [string]$ProjectPath,
         [string]$FilesPath
@@ -17,11 +19,18 @@ function Get-AppIconFromWinget {
         }
 
         if (-not $iconUrl) {
-            Write-Host 'No WinGet IconUrl found in YAML — keeping default PSADT icon' -ForegroundColor DarkYellow
+            Write-Warning 'No WinGet IconUrl found in YAML — keeping default PSADT icon'
             return $false
         }
 
-        Write-Host "Downloading app icon from WinGet: $iconUrl" -ForegroundColor Cyan
+        # Only ever fetch over HTTPS. An http:// (or any non-https) URL is never contacted —
+        # a plaintext fetch is trivially MITM'd and we'd be writing attacker bytes as SYSTEM's icon.
+        if ($iconUrl -notmatch '^(?i)https://') {
+            Write-Warning "WinGet IconUrl is not HTTPS ('$iconUrl') — refusing to fetch; keeping default PSADT icon"
+            return $false
+        }
+
+        Write-Verbose "Downloading app icon from WinGet: $iconUrl"
 
         # Determine save paths
         $assetsPath    = Join-Path $ProjectPath 'Assets'
@@ -31,19 +40,53 @@ function Get-AppIconFromWinget {
             if (-not (Test-Path $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
         }
 
-        $iconDest = Join-Path $assetsPath 'AppIcon.png'
+        $maxBytes = 5MB
 
         $wr = Invoke-WebRequest -Uri $iconUrl -UseBasicParsing -ErrorAction Stop
-        [System.IO.File]::WriteAllBytes($iconDest, $wr.Content)
 
-        # Determine the icon file type from URL extension or Content-Type
-        $ext = [System.IO.Path]::GetExtension($iconUrl).ToLower()
-        if ($ext -notin @('.png','.ico','.jpg','.jpeg','.bmp')) { $ext = '.png' }
+        # Pre-check the advertised size when present — Content-Length can lie or be absent, so this is
+        # only an early-out; the authoritative check is on the real byte count below.
+        $declaredLen = $null
+        try { $declaredLen = [int64]($wr.Headers['Content-Length'] | Select-Object -First 1) } catch { $declaredLen = $null }
+        if ($declaredLen -and $declaredLen -gt $maxBytes) {
+            Write-Warning "App icon Content-Length ($declaredLen bytes) exceeds the 5 MB cap — keeping default PSADT icon"
+            return $false
+        }
 
-        # If it's an ICO, save with correct extension alongside the PNG copy
-        if ($ext -eq '.ico') {
+        $bytes = [byte[]]$wr.Content
+
+        # Authoritative size check on what actually arrived.
+        if ($null -eq $bytes -or $bytes.Length -eq 0) {
+            Write-Warning 'App icon download was empty — keeping default PSADT icon'
+            return $false
+        }
+        if ($bytes.Length -gt $maxBytes) {
+            Write-Warning "App icon ($($bytes.Length) bytes) exceeds the 5 MB cap — keeping default PSADT icon"
+            return $false
+        }
+
+        # Validate by magic bytes, NOT the URL extension — never write a non-image over the PSADT default.
+        $iconExt = $null
+        $b = $bytes
+        if     ($b.Length -ge 4 -and $b[0] -eq 0x89 -and $b[1] -eq 0x50 -and $b[2] -eq 0x4E -and $b[3] -eq 0x47) { $iconExt = '.png' }  # PNG  89 50 4E 47
+        elseif ($b.Length -ge 4 -and $b[0] -eq 0x00 -and $b[1] -eq 0x00 -and $b[2] -eq 0x01 -and $b[3] -eq 0x00) { $iconExt = '.ico' }  # ICO  00 00 01 00
+        elseif ($b.Length -ge 3 -and $b[0] -eq 0xFF -and $b[1] -eq 0xD8 -and $b[2] -eq 0xFF)                     { $iconExt = '.jpg' }  # JPEG FF D8 FF
+        elseif ($b.Length -ge 2 -and $b[0] -eq 0x42 -and $b[1] -eq 0x4D)                                         { $iconExt = '.bmp' }  # BMP  42 4D
+        elseif ($b.Length -ge 3 -and $b[0] -eq 0x47 -and $b[1] -eq 0x49 -and $b[2] -eq 0x46)                     { $iconExt = '.gif' }  # GIF  47 49 46
+
+        if (-not $iconExt) {
+            Write-Warning 'Downloaded app icon is not a recognised image (PNG/ICO/JPEG/BMP/GIF) — keeping default PSADT icon'
+            return $false
+        }
+
+        # Intune/PSADT want a PNG at AppIcon.png regardless of the source format.
+        $iconDest = Join-Path $assetsPath 'AppIcon.png'
+        [System.IO.File]::WriteAllBytes($iconDest, $bytes)
+
+        # If the bytes are genuinely an ICO, also keep AppIcon.ico alongside it.
+        if ($iconExt -eq '.ico') {
             $icoDest = Join-Path $assetsPath 'AppIcon.ico'
-            [System.IO.File]::WriteAllBytes($icoDest, $wr.Content)
+            [System.IO.File]::WriteAllBytes($icoDest, $bytes)
         }
 
         # Also copy to PSAppDeployToolkit\Assets so the toolkit's own default is replaced

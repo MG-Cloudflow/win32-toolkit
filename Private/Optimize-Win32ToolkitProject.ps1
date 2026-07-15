@@ -36,7 +36,7 @@ function Optimize-Win32ToolkitProject {
         $folderPath = Join-Path $ProjectPath $folder
         if (Test-Path $folderPath) {
             Remove-Item -Path $folderPath -Recurse -Force
-            Write-Host "  ✓ Removed folder : $folder\" -ForegroundColor DarkGray
+            Write-Verbose "Removed folder : $folder\"
         }
     }
 
@@ -45,7 +45,7 @@ function Optimize-Win32ToolkitProject {
         Where-Object { $_.Extension -in '.md', '.wsb' }
     foreach ($file in $rootFiles) {
         Remove-Item -Path $file.FullName -Force
-        Write-Host "  ✓ Removed file   : $($file.Name)" -ForegroundColor DarkGray
+        Write-Verbose "Removed file   : $($file.Name)"
     }
 
     # SupportFiles\ — remove the documentation script and logs, keep RequirementScript.ps1
@@ -55,7 +55,7 @@ function Optimize-Win32ToolkitProject {
             Where-Object { $_.Name -like 'TargetedDocumentationScript*' -or $_.Name -like 'Targeted_Documentation_Log*' }
         foreach ($file in $docsArtifacts) {
             Remove-Item -Path $file.FullName -Force
-            Write-Host "  ✓ Removed file   : SupportFiles\$($file.Name)" -ForegroundColor DarkGray
+            Write-Verbose "Removed file   : SupportFiles\$($file.Name)"
         }
     }
 
@@ -67,7 +67,7 @@ function Optimize-Win32ToolkitProject {
         $isEmpty = ($dir.GetFileSystemInfos().Count -eq 0)
         if ($isEmpty) {
             Remove-Item -Path $dir.FullName -Force
-            Write-Host "  ✓ Removed empty  : $($dir.Name)\" -ForegroundColor DarkGray
+            Write-Verbose "Removed empty  : $($dir.Name)\"
         }
     }
 

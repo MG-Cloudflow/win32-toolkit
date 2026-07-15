@@ -17,8 +17,10 @@
 
     PrivateData = @{
         PSData = @{
-            Tags       = @('Intune', 'PSADT', 'Win32', 'Winget', 'Packaging')
-            ProjectUri = ''
+            Tags         = @('Intune', 'PSADT', 'Win32', 'Winget', 'Packaging')
+            ProjectUri   = 'https://github.com/MG-Cloudflow/win32-toolkit'
+            LicenseUri   = 'https://github.com/MG-Cloudflow/win32-toolkit/blob/main/LICENSE'
+            ReleaseNotes = 'End-to-end Win32 app packaging for Intune: winget discovery, download, PSADT v4 scaffolding, Windows Sandbox capture, Intune requirement/detection scripts, .intunewin packaging, and Microsoft Graph publish. Adds manual (non-winget) app support, test VM helpers, and app dependency management.'
         }
     }   
 }

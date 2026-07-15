@@ -1,6 +1,9 @@
 function Get-Win32IntuneWinMetadata {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
     param(
         [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
         [string]$IntuneWinPath
     )
 

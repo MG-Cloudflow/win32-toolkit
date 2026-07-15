@@ -46,7 +46,7 @@ function Download-WingetApp {
     )
 
     $label = if ($AppName) { "$AppName ($AppId)" } else { $AppId }
-    Write-Host "Downloading $label [$Architecture]..." -ForegroundColor Green
+    Write-Verbose "Downloading $label [$Architecture]..."
 
     if (-not (Test-Path -LiteralPath $DownloadPath)) {
         New-Item -ItemType Directory -Path $DownloadPath -Force | Out-Null
@@ -81,9 +81,21 @@ function Download-WingetApp {
 
     # Belt and braces: winget can exit 0 having written only a manifest (a zip/portable/store package),
     # which would leave the project with nothing to install.
-    $installer = @(Get-ChildItem -LiteralPath $DownloadPath -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Extension -in '.exe', '.msi', '.msix', '.appx', '.msixbundle', '.appxbundle' })
+    $produced  = @(Get-ChildItem -LiteralPath $DownloadPath -File -ErrorAction SilentlyContinue)
+    $installer = @($produced | Where-Object { $_.Extension -in '.exe', '.msi', '.msix', '.appx' })
+
     if ($installer.Count -eq 0) {
+        # FAIL FAST on bundles. '.msixbundle'/'.appxbundle' used to count as "an installer landed", so the
+        # download reported SUCCESS — but Get-InstallerFileInfo only ever probes msi/exe/msix/appx, so the
+        # run scaffolded a project around the bundle and died much later with a misleading
+        # "No installer (msi/exe/msix/appx) detected". Bundles are not supported yet (tracked in
+        # knowledge-base/TODO.md); say so HERE, naming the file, while the operator can still act on it.
+        $bundles = @($produced | Where-Object { $_.Extension -in '.msixbundle', '.appxbundle' })
+        if ($bundles.Count -gt 0) {
+            Write-Error "winget downloaded a BUNDLE package for $label ($(($bundles | ForEach-Object Name) -join ', ')) in '$DownloadPath'. .msixbundle/.appxbundle packages are NOT SUPPORTED yet (tracked in knowledge-base/TODO.md) — only .msi/.exe/.msix/.appx installers can be packaged. Extract or obtain a single-architecture .msix/.appx (or an .exe/.msi installer) and use the manual-app flow instead."
+            return $false
+        }
+
         Write-Error "winget reported success for $label but wrote no installer (.exe/.msi/.msix/.appx) to '$DownloadPath'. This is usually a zip/portable/store package with no silent installer."
         return $false
     }

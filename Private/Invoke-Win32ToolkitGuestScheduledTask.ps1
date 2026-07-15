@@ -35,7 +35,7 @@ function Invoke-Win32ToolkitGuestScheduledTask {
     )
 
     $ctx = if ($RunAs -eq 'System') { 'SYSTEM' } else { "$RunAs (interactive)" }
-    Write-Host "  [guest:$ctx] $Label" -ForegroundColor Gray
+    Write-Verbose "  [guest:$ctx] $Label"
 
     $result = Invoke-Command -Session $Session -ScriptBlock {
         param($cmd, $runAs, $timeoutMin)

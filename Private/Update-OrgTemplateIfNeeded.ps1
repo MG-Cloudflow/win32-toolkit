@@ -1,4 +1,5 @@
 function Update-OrgTemplateIfNeeded {
+    [CmdletBinding()]
     param(
         [PSCustomObject]$Template,
         [string]$FilePath

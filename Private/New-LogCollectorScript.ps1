@@ -88,7 +88,9 @@ Write-Host '========================================' -ForegroundColor Cyan
 '@
 
     $collectorPath = Join-Path $sandboxPath 'CollectLogs.ps1'
-    Set-Content -Path $collectorPath -Value $collectorScript -Encoding UTF8
+    # UTF-8 WITH BOM: this runs under Windows PowerShell 5.1 inside the sandbox, which decodes a BOM-less
+    # file as ANSI (PS7's Set-Content -Encoding UTF8 writes no BOM) — non-ASCII paths/text would mojibake.
+    [System.IO.File]::WriteAllText($collectorPath, $collectorScript, (New-Object System.Text.UTF8Encoding($true)))
 
     return $collectorPath
 }

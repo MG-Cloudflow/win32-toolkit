@@ -48,7 +48,7 @@ function Initialize-Win32ToolkitDependencyStaging {
     if ($deps.Count -eq 0) { return 0 }
 
     New-Item -ItemType Directory -Path $depRoot -Force | Out-Null
-    Write-Host "Staging $($deps.Count) dependency(ies) for the test/capture run..." -ForegroundColor Cyan
+    Write-Verbose "Staging $($deps.Count) dependency(ies) for the test/capture run..."
 
     $entries = [System.Collections.Generic.List[object]]::new()
 

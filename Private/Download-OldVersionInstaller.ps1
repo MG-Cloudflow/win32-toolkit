@@ -10,6 +10,8 @@ function Download-OldVersionInstaller {
       InstallerType — extension without dot (exe, msi, msix, appx)
       SilentArgs    — silent install switches for this installer
 #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory = $true)]
         [string]$AppId,
@@ -66,7 +68,7 @@ function Download-OldVersionInstaller {
         New-Item -ItemType Directory -Path $oldVersionDir -Force | Out-Null
     }
 
-    Write-Host "Downloading $verLabel of '$AppId'..." -ForegroundColor Yellow
+    Write-Verbose "Downloading $verLabel of '$AppId'..."
 
     $downloadArgs = @(
         'download',
@@ -110,12 +112,14 @@ function Download-OldVersionInstaller {
 
     # Read the manifest installer type first — it lets the "no installer found" message below name the
     # type (e.g. a 'zip' package downloads no .exe/.msi/.msix/.appx), and drives the silent-args choice.
+    # InstallerType lives in *.installer.yaml — NOT in the locale manifest that winget also writes here
+    # (and that often sorts first). Read it as UTF-8 like every other manifest read.
     $installerTypeName = $null
-    $yamlFile = Get-ChildItem -Path $oldVersionDir -Filter '*.yaml' -File | Select-Object -First 1
+    $yamlFile = Get-WingetManifestFile -Path $oldVersionDir -Kind Installer
     if ($yamlFile) {
-        $yamlContent = Get-Content -Path $yamlFile.FullName -Raw
+        $yamlContent = Get-Content -LiteralPath $yamlFile.FullName -Raw -Encoding UTF8
         if ($yamlContent -match '(?m)^\s*InstallerType:\s*(\S+)') {
-            $installerTypeName = $matches[1].Trim().ToLower()
+            $installerTypeName = $matches[1].Trim().ToLowerInvariant()
         }
     }
 
@@ -142,7 +146,7 @@ function Download-OldVersionInstaller {
     return [PSCustomObject]@{
         InstallerPath = $installer.FullName
         InstallerName = $installer.Name
-        InstallerType = $installer.Extension.TrimStart('.').ToLower()
+        InstallerType = $installer.Extension.TrimStart('.').ToLowerInvariant()
         SilentArgs    = $silentArgs
     }
 }

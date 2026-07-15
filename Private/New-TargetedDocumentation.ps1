@@ -2,6 +2,7 @@ function New-TargetedDocumentation {
     # Returns the EXPECTED capture path (a truthy string) on success — the caller passes it to
     # Wait-ForDocumentationAndProcess -ExpectedJsonPath so the wait can never be satisfied by a
     # stale capture from a previous run. Failure paths return $false.
+    [CmdletBinding()]
     param(
         [string]$ProjectPath,
         [string]$ProjectName,
@@ -17,7 +18,7 @@ function New-TargetedDocumentation {
     )
 
     try {
-        Write-Host "Creating targeted documentation configuration..." -ForegroundColor Yellow
+        Write-Verbose "Creating targeted documentation configuration..."
 
         # Create unique timestamp for this documentation session; the sandbox script writes
         # Documentation\InstallationChanges_<timestamp>.json with this exact name.
@@ -35,7 +36,7 @@ function New-TargetedDocumentation {
                 elseif ($scopeVal -eq 'machine') { $installerScope = 'machine' }
             }
         }
-        Write-Host "Installer scope detected: $installerScope" -ForegroundColor Cyan
+        Write-Verbose "Installer scope detected: $installerScope"
         
         # Define paths
         $supportFilesFolder = Join-Path $ProjectPath "SupportFiles"
@@ -680,12 +681,12 @@ if ($backend -eq 'Sandbox') {
         # mojibakes non-ASCII (matches New-UpdateAssertionScript). PS7 `Set-Content -Encoding UTF8` is BOM-less.
         $docScriptPath = Join-Path $supportFilesFolder "TargetedDocumentationScript.ps1"
         [System.IO.File]::WriteAllText($docScriptPath, $documentationScript, (New-Object System.Text.UTF8Encoding($true)))
-        Write-Host "✓ Targeted documentation script created: $docScriptPath" -ForegroundColor Green
+        Write-Verbose "Targeted documentation script created: $docScriptPath"
 
         # Create the log collector used inside the sandbox (Sandbox\CollectLogs.ps1),
         # so the documentation run's PSADT/MSI install logs are copied back to the project.
         $null = New-LogCollectorScript -ProjectPath $ProjectPath
-        Write-Host "✓ Log collector created for documentation sandbox" -ForegroundColor Green
+        Write-Verbose "Log collector created for documentation sandbox"
 
         # Stage declared dependencies into Sandbox\Dependencies\ so the guest can install them BEFORE the
         # baseline. Without this the capture runs on a machine missing the app's runtime, and the detection
@@ -701,7 +702,7 @@ if ($backend -eq 'Sandbox') {
 
             # Write the sandbox configuration to the file
             $sandboxConfigContent | Set-Content -Path $sandboxConfigFile -Encoding UTF8
-            Write-Host "✓ Targeted documentation sandbox configuration created!" -ForegroundColor Green
+            Write-Verbose "Targeted documentation sandbox configuration created!"
         }
 
         # Clear stale captures from previous runs BEFORE launching, so any capture file present after
@@ -716,7 +717,7 @@ if ($backend -eq 'Sandbox') {
                 catch { Write-Warning "Could not remove stale capture '$($f.Name)': $($_.Exception.Message)" }
             }
             if ($stale.Count -gt 0) {
-                Write-Host "✓ Cleared $($stale.Count) stale capture file(s) from Documentation\" -ForegroundColor Green
+                Write-Verbose "Cleared $($stale.Count) stale capture file(s) from Documentation\"
             }
         }
 
@@ -733,7 +734,7 @@ if ($backend -eq 'Sandbox') {
             $sandboxFeature = Get-WindowsOptionalFeature -Online -FeatureName "Containers-DisposableClientVM" -ErrorAction SilentlyContinue
             if ($sandboxFeature -and $sandboxFeature.State -ne "Enabled") {
                 Write-Warning "Windows Sandbox feature is not enabled. Please enable it in Windows Features."
-                Write-Host "To enable: Control Panel > Programs > Turn Windows features on or off > Windows Sandbox" -ForegroundColor Yellow
+                Write-Warning "To enable: Control Panel > Programs > Turn Windows features on or off > Windows Sandbox"
             }
         } catch {
             Write-Warning "Unable to check Windows Sandbox feature status. Windows Sandbox may not be available on this system."
@@ -770,9 +771,9 @@ if ($backend -eq 'Sandbox') {
             Write-Host "`nThe targeted documentation will be available in the sandbox at:" -ForegroundColor Cyan
             Write-Host "C:\PSADT\Documentation" -ForegroundColor White
         } else {
-            Write-Host "The sandbox did NOT auto-launch — start it manually by double-clicking:" -ForegroundColor Yellow
-            Write-Host "  $sandboxConfigFile" -ForegroundColor Yellow
-            Write-Host 'Otherwise the documentation wait will time out after 30 minutes.' -ForegroundColor Yellow
+            Write-Warning "The sandbox did NOT auto-launch — start it manually by double-clicking:"
+            Write-Warning "  $sandboxConfigFile"
+            Write-Warning 'Otherwise the documentation wait will time out after 30 minutes.'
         }
 
         return $expectedJson

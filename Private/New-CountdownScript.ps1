@@ -1,4 +1,6 @@
 function New-CountdownScript {
+    [CmdletBinding()]
+    [OutputType([string])]
     param([string]$ProjectPath)
 
     $sandboxPath = Join-Path $ProjectPath 'Sandbox'
@@ -104,7 +106,9 @@ Write-Host "========================================" -ForegroundColor Yellow
 '@
 
     $countdownPath = Join-Path $sandboxPath 'Countdown.ps1'
-    Set-Content -Path $countdownPath -Value $countdownScript -Encoding UTF8
+    # UTF-8 WITH BOM: this runs under Windows PowerShell 5.1 inside the sandbox, which decodes a BOM-less
+    # file as ANSI (PS7's Set-Content -Encoding UTF8 writes no BOM) — non-ASCII text would mojibake.
+    [System.IO.File]::WriteAllText($countdownPath, $countdownScript, (New-Object System.Text.UTF8Encoding($true)))
 
     return $countdownPath
 }

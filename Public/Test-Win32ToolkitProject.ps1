@@ -109,7 +109,7 @@ function Test-Win32ToolkitProject {
         # Resolve the project to test
         if (-not $ProjectPath) {
             $BasePath = Get-Win32ToolkitBasePath -BasePath $BasePath
-            Write-Host 'Scanning for PSADT projects...' -ForegroundColor Yellow
+            Write-Verbose 'Scanning for PSADT projects...'
             $projects = Get-PSADTProjects -BasePath $BasePath
 
             if ($projects.Count -eq 0) {
@@ -218,7 +218,7 @@ function Test-Win32ToolkitProject {
                 }
 
                 # Create the countdown helper script inside Sandbox\
-                Write-Host 'Creating countdown script...' -ForegroundColor Yellow
+                Write-Verbose 'Creating countdown script...'
                 $countdownPath = New-CountdownScript -ProjectPath $ProjectPath
                 Write-Host "✓ Countdown script : $countdownPath" -ForegroundColor Green
 
@@ -256,8 +256,7 @@ function Test-Win32ToolkitProject {
                     Write-Host "`n✓ Final demo sandbox launched successfully!" -ForegroundColor Green
                     Write-Host 'Monitor the sandbox for the complete install/uninstall cycle.' -ForegroundColor White
                 } else {
-                    Write-Host 'The sandbox did NOT auto-launch — start it manually by double-clicking:' -ForegroundColor Yellow
-                    Write-Host "  $sandboxConfigFile" -ForegroundColor Yellow
+                    Write-Warning "The sandbox did NOT auto-launch — start it manually by double-clicking: $sandboxConfigFile"
                 }
             }
 
@@ -362,7 +361,7 @@ function Test-Win32ToolkitProject {
                 # The in-guest WinForms countdown is a Windows Sandbox artifact. On Hyper-V the HOST
                 # pauses instead (a Pause phase), so the guest never needs Countdown.ps1.
                 if ($resolvedBackend -eq 'Sandbox') {
-                    Write-Host 'Creating countdown script...' -ForegroundColor Yellow
+                    Write-Verbose 'Creating countdown script...'
                     $countdownPath = New-CountdownScript -ProjectPath $ProjectPath
                     Write-Host "✓ Countdown script : $countdownPath" -ForegroundColor Green
                 }
@@ -390,7 +389,7 @@ function Test-Win32ToolkitProject {
                     }
                 }
                 else {
-                    Write-Host 'Requirement check disabled (-SkipRequirementCheck).' -ForegroundColor DarkYellow
+                    Write-Warning 'Requirement check disabled (-SkipRequirementCheck).'
                 }
                 $assertionPath = New-UpdateAssertionScript -ProjectPath $ProjectPath `
                     -SkipRequirement:$SkipRequirementCheck -OldVersion $targetVersion `
@@ -522,7 +521,7 @@ function Test-Win32ToolkitProject {
                 if ((Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched) {
                     Write-Host "`n✓ Update test sandbox launched." -ForegroundColor Green
                 } else {
-                    Write-Host "The sandbox did NOT auto-launch — start it manually by double-clicking: $sandboxConfigFile" -ForegroundColor Yellow
+                    Write-Warning "The sandbox did NOT auto-launch — start it manually by double-clicking: $sandboxConfigFile"
                 }
 
                 # ── Step 8: Wait for the in-sandbox assertions and report pass/fail ──────

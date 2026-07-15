@@ -109,7 +109,7 @@ The app WILL still publish — but WITHOUT this dependency. Attach it afterwards
         }
 
         if ($id) {
-            Write-Host "  Dependency resolved: $($d.Source):$($d.Ref) -> $id  [$how]" -ForegroundColor Gray
+            Write-Verbose "Dependency resolved: $($d.Source):$($d.Ref) -> $id  [$how]"
             $resolved.Add([pscustomobject]@{
                 TargetId       = $id
                 DependencyType = $d.DependencyType

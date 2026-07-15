@@ -6,22 +6,10 @@ function Apply-OrgTemplate {
     )
 
     try {
-        # Helper: replace first regex match in string using index maths (avoids $ capture-group issues).
-        # A pattern miss is a silent no-op by design (returns input unchanged) — the -Label warning is
-        # the drift signal: it means the installed PSADT template no longer matches what we expect.
+        # Set-TextBlock (replace first regex match via index maths; -Label warns on a miss = PSADT
+        # template drift) lives in Private\Set-Win32ToolkitTextBlock.ps1, dot-sourced by the loader.
         # Scope note: the config.psd1 patches below use broad `-replace` patterns and are deliberately
         # not label-verified here.
-        function Set-TextBlock {
-            param([string]$Text, [string]$Pattern, [string]$Replacement, [switch]$Multiline, [string]$Label)
-            $opts = if ($Multiline) { [System.Text.RegularExpressions.RegexOptions]::Singleline } `
-                                    else { [System.Text.RegularExpressions.RegexOptions]::None }
-            $m = [regex]::Match($Text, $Pattern, $opts)
-            if (-not $m.Success) {
-                if ($Label) { Write-Warning "Org template: '$Label' pattern not found — section skipped (PSADT template drift?)." }
-                return $Text
-            }
-            $Text.Substring(0, $m.Index) + $Replacement + $Text.Substring($m.Index + $m.Length)
-        }
 
         # Escape single quotes so a free-text template value (company name, dialog messages, log path,
         # author) stays a valid single-quoted literal in the generated config.psd1 / strings.psd1 /
@@ -50,8 +38,11 @@ function Apply-OrgTemplate {
                 $cfg = [regex]::Replace($cfg, '(?m)(# Log path used for Toolkit logging\.\r?\n\s*LogPath = )[^\r\n]+', { param($m) $m.Groups[1].Value + "'$logEsc'" })
             }
 
-            Set-Content -Path $configPath -Value $cfg -Encoding UTF8
-            Write-Host '  ✓ config.psd1 updated' -ForegroundColor Green
+            # UTF-8 WITH BOM — read on-device by Windows PowerShell 5.1 (Import-PowerShellDataFile), which
+            # decodes a BOM-less file as ANSI and would mojibake a non-ASCII CompanyName. PS7's
+            # Set-Content -Encoding UTF8 writes NO BOM, so write the bytes ourselves.
+            [System.IO.File]::WriteAllText($configPath, $cfg, (New-Object System.Text.UTF8Encoding($true)))
+            Write-Verbose '  config.psd1 updated'
         }
 
         #── strings.psd1 ───────────────────────────────────────────────────
@@ -72,8 +63,10 @@ function Apply-OrgTemplate {
                 -Pattern '(?s)    ProgressPrompt = @\{.*?(?=\r?\n    RestartPrompt)' `
                 -Replacement $newProg -Multiline -Label 'progress-prompt messages'
 
-            Set-Content -Path $strPath -Value $str -Encoding UTF8
-            Write-Host '  ✓ strings.psd1 updated' -ForegroundColor Green
+            # UTF-8 WITH BOM (see config.psd1 above) — dialog strings are the most likely place for
+            # non-ASCII text (accents, curly quotes, ™/®), and they render on the user's screen.
+            [System.IO.File]::WriteAllText($strPath, $str, (New-Object System.Text.UTF8Encoding($true)))
+            Write-Verbose '  strings.psd1 updated'
         }
 
         #── Invoke-AppDeployToolkit.ps1 ─────────────────────────────────────
@@ -178,8 +171,10 @@ function Apply-OrgTemplate {
                 -Pattern '(?s)    ## (?:Display a message at the end[^\n]*\r?\n    if \(!\$adtSession\.UseDefaultMsi\)\r?\n    \{[\s\S]*?\}|Completion prompt disabled by org template\.)' `
                 -Replacement $newCompletion -Multiline -Label 'completion prompt'
 
-            Set-Content -Path $scriptPath -Value $scr -Encoding UTF8
-            Write-Host '  ✓ Invoke-AppDeployToolkit.ps1 updated' -ForegroundColor Green
+            # UTF-8 WITH BOM (see config.psd1 above) — this script is executed on the device by Windows
+            # PowerShell 5.1; a BOM-less non-ASCII AppScriptAuthor/prompt message would mojibake there.
+            [System.IO.File]::WriteAllText($scriptPath, $scr, (New-Object System.Text.UTF8Encoding($true)))
+            Write-Verbose '  Invoke-AppDeployToolkit.ps1 updated'
         }
 
         Write-Host "✓ Org template '$($Template.TemplateName)' applied to project" -ForegroundColor Green

@@ -51,21 +51,21 @@ function Invoke-Win32ToolkitHyperVRun {
         # Interactive phases need a logged-in desktop, so ask the session to ensure/recover one.
         $needsDesktop = @($Phase | Where-Object { $_.Interactive }).Count -gt 0
 
-        Write-Host "Reverting '$VMName' to '$CheckpointName' and connecting over PowerShell Direct..." -ForegroundColor Cyan
+        Write-Verbose "Reverting '$VMName' to '$CheckpointName' and connecting over PowerShell Direct..."
         $session = New-Win32ToolkitHyperVSession -VMName $VMName -Credential $Credential -CheckpointName $CheckpointName -EnsureDesktop:$needsDesktop
 
-        Write-Host "Copying project into the guest (C:\PSADT)..." -ForegroundColor Cyan
+        Write-Verbose "Copying project into the guest (C:\PSADT)..."
         Copy-Win32ToolkitProjectToGuest -Session $session -ProjectPath $ProjectPath -GuestPath 'C:\PSADT'
         if ($BaselineProjectPath) {
             # -ReadOnly reproduces the Sandbox <ReadOnly>true</ReadOnly> mount, so the baseline's own PSADT
             # run can't write into C:\PSADTOld on Hyper-V while the same run fails under Sandbox.
-            Write-Host 'Copying the update baseline into the guest (C:\PSADTOld, read-only)...' -ForegroundColor Cyan
+            Write-Verbose 'Copying the update baseline into the guest (C:\PSADTOld, read-only)...'
             Copy-Win32ToolkitProjectToGuest -Session $session -ProjectPath $BaselineProjectPath -GuestPath 'C:\PSADTOld' -ReadOnly
         }
 
         # If any phase is interactive, open the VM console so the operator can watch the PSADT GUI.
         if ($needsDesktop) {
-            Write-Host 'Opening the VM console (vmconnect) for interactive GUI testing...' -ForegroundColor Cyan
+            Write-Verbose 'Opening the VM console (vmconnect) for interactive GUI testing...'
             Start-Process -FilePath 'vmconnect.exe' -ArgumentList 'localhost', $VMName -ErrorAction SilentlyContinue
         }
 
@@ -82,7 +82,7 @@ function Invoke-Win32ToolkitHyperVRun {
             }
         }
 
-        Write-Host "Copying results back to the project..." -ForegroundColor Cyan
+        Write-Verbose "Copying results back to the project..."
         $guestGlobs = $Output | ForEach-Object { Join-Path 'C:\PSADT' $_ }
         Copy-Win32ToolkitResultsFromGuest -Session $session -GuestPath $guestGlobs -Destination $ProjectPath -GuestRoot 'C:\PSADT'
 

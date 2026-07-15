@@ -1,4 +1,5 @@
 function Select-Architecture {
+    [CmdletBinding()]
     param(
         [array]$Architectures,
         [string]$AppName,
@@ -38,14 +39,19 @@ function Select-Architecture {
     
     do {
         $selection = Read-Host "`nSelect architecture (1-$($finalArchs.Count + 1))"
-        
-        if ([int]$selection -ge 1 -and [int]$selection -le $finalArchs.Count) {
-            return $finalArchs[$selection - 1]
+
+        # Parse defensively: a raw [int] cast throws on 'x', on an empty line (just pressing Enter)
+        # and on a digit string too large for Int32 — which killed the whole run instead of re-prompting.
+        $parsed = 0
+        if ([int]::TryParse(([string]$selection).Trim(), [ref]$parsed)) {
+            if ($parsed -ge 1 -and $parsed -le $finalArchs.Count) {
+                return $finalArchs[$parsed - 1]
+            }
+            if ($parsed -eq ($finalArchs.Count + 1)) {
+                return "all"
+            }
         }
-        elseif ([int]$selection -eq ($finalArchs.Count + 1)) {
-            return "all"
-        }
-        
-        Write-Host "Invalid selection. Please try again." -ForegroundColor Red
+
+        Write-Host "Invalid selection. Please enter a number between 1 and $($finalArchs.Count + 1)." -ForegroundColor Red
     } while ($true)
 }

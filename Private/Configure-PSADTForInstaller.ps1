@@ -39,7 +39,7 @@ function Configure-PSADTForInstaller {
             Write-Warning 'No installer files detected in Files folder'
             return $false
         }
-        Write-Host "Detected installer: $($fileInfo.FileName) ($($fileInfo.Type.ToUpper()))" -ForegroundColor Green
+        Write-Verbose "Detected installer: $($fileInfo.FileName) ($($fileInfo.Type.ToUpper()))"
 
         # Winget manifest metadata (may be absent)
         $yamlInfo = Get-YAMLInstallerInfo -FilesPath $filesPath
@@ -81,7 +81,7 @@ function Configure-PSADTForInstaller {
             $cfg | Add-Member -NotePropertyName ProcessesToClose -NotePropertyValue @() -Force
         }
         Set-Win32ToolkitAppConfig -ProjectPath $ProjectPath -Config $cfg | Out-Null
-        Write-Host '✓ Wrote SupportFiles\AppConfig.json (App + Installer)' -ForegroundColor Green
+        Write-Verbose 'Wrote SupportFiles\AppConfig.json (App + Installer)'
 
         # MSIX/APPX: write the identity-driven Uninstall section NOW (host-manifest-driven — it needs
         # nothing from the sandbox capture, so the uninstall works even if the capture times out).
@@ -93,14 +93,14 @@ function Configure-PSADTForInstaller {
 
         # ---- Patch the deploy script to be data-driven (fixed, value-free) ----
         if (Set-PSADTDataDrivenScript -ScriptPath $scriptPath) {
-            Write-Host '✓ Deploy script patched to data-driven' -ForegroundColor Green
+            Write-Verbose 'Deploy script patched to data-driven'
         } else {
             Write-Warning 'Data-driven patching of the deploy script did not complete cleanly'
         }
 
         # ---- Org template branding and dialog settings (unchanged) ----
         if ($script:OrgTemplate) {
-            Write-Host 'Applying org template...' -ForegroundColor Cyan
+            Write-Verbose 'Applying org template...'
             Apply-OrgTemplate -ProjectPath $ProjectPath -Template $script:OrgTemplate | Out-Null
         }
 

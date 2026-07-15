@@ -10,6 +10,8 @@ function Get-WingetVersions {
     are excluded from the returned list. If omitted, all available versions are
     returned.
 #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
     param(
         [Parameter(Mandatory = $true)]
         [string]$AppId,
@@ -18,7 +20,7 @@ function Get-WingetVersions {
         [string]$CurrentVersion
     )
 
-    Write-Host "Querying available versions for: $AppId" -ForegroundColor Yellow
+    Write-Verbose "Querying available versions for: $AppId"
 
     $raw = winget show $AppId --versions --accept-source-agreements 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {

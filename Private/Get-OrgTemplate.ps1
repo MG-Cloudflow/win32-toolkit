@@ -1,4 +1,5 @@
 function Get-OrgTemplate {
+    [CmdletBinding()]
     param(
         [string]$TemplateName = '',
         [string]$BasePath
