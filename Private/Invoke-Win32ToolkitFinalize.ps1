@@ -81,6 +81,12 @@ function Invoke-Win32ToolkitFinalize {
         else {
             Write-Warning 'Documentation processing had issues - please review manually'
         }
+
+        # Promote the icon extracted during the install run to Assets\AppIcon.png. A winget IconUrl or a
+        # manual -IconPath already applied takes precedence (winget-primary); otherwise this is how manual
+        # and iconless apps finally get a real Intune tile. Best-effort — never let it derail packaging.
+        try { $null = Import-Win32ToolkitCapturedIcon -ProjectPath $ProjectPath }
+        catch { Write-Warning "Captured-icon promotion skipped: $($_.Exception.Message)" }
     }
     else {
         Write-Warning 'Documentation generation had issues - please review manually'

@@ -317,12 +317,14 @@ Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUnins
  7.  File rename               Normalises installer filename to AppName_arch_version.ext
  8.  PSADT configuration       Detects MSI / EXE / MSIX, configures Invoke-AppDeployToolkit.ps1
  9.  Org template application  Updates config.psd1, strings.psd1, and Invoke-AppDeployToolkit.ps1
-10.  Icon download             Fetches IconUrl from Winget YAML → Assets\AppIcon.png
+10.  Icon download             Fetches IconUrl from Winget YAML → Assets\AppIcon.png (winget-primary)
 11.  Sandbox documentation     Writes TargetedDocumentationScript.ps1 and a .wsb, launches sandbox
 12.  Result processing         Monitors for InstallationChanges JSON from the sandbox, then:
        a. Generates SupportFiles\RequirementScript.ps1 (Intune requirement rule)
        b. Populates uninstall logic in Invoke-AppDeployToolkit.ps1 (EXE only)
        c. Sets AppProcessesToClose from App Paths registry entries
+       d. Promotes the icon extracted from the install run to Assets\AppIcon.png when
+          winget had none (this is how manual / iconless apps get a real tile)
 13.  -RunTest (optional)       Launches sandbox test scenarios (InstallUninstall / Update)
 14.  -PackageIntune /           Copies to Staging\, cleans, runs IntuneWinAppUtil.exe → IntuneWin\
      -PublishIntune (optional)
@@ -338,7 +340,7 @@ Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUnins
 | `Invoke-AppDeployToolkit.ps1` | Main PSADT deployment script, pre-configured for your installer |
 | `Files\<installer>` | Downloaded installer |
 | `Files\installer.yaml` | Winget manifest — metadata used during configuration |
-| `Assets\AppIcon.png` | Application icon from the Winget manifest |
+| `Assets\AppIcon.png` | Application icon — winget IconUrl if present, else extracted from the install run |
 | `Config\config.psd1` | PSADT configuration — branding from org template |
 | `Strings\strings.psd1` | PSADT localisation strings — messages from org template |
 | `SupportFiles\RequirementScript.ps1` | Ready-to-paste Intune Win32 requirement script |
@@ -941,6 +943,12 @@ Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -PublishIntune
 - **MSI installers** use PSADT's Zero-Config MSI feature — `AppName` is left empty so PSADT reads the product name directly from the MSI database. No manual uninstall logic is needed.
 - **EXE installers** have install and uninstall logic generated and inserted automatically from the sandbox documentation run.
 - The **Windows Sandbox** documentation session maps the project folder to `C:\PSADT` inside the sandbox. All output is written back to the host via the mapped folder.
-- If no `IconUrl` is present in the Winget YAML manifest, the default PSADT icon is kept unchanged.
+- **App icon** — the tile icon is sourced winget-first: the Winget `IconUrl` wins when present; otherwise the
+  installed app's real icon is extracted during the documentation/capture run (from the Add/Remove-Programs
+  `DisplayIcon`, else the largest install-dir `.exe`) and promoted to `Assets\AppIcon.png`. A manual app's
+  `-IconPath` always wins. Low-resolution frames (≤48px from `.ico`/image sources) are skipped rather than
+  upscaled. The icon is uploaded to Intune as the app tile (`largeIcon`) at publish time — before this,
+  `Assets\AppIcon.png` only fed PSADT's on-device dialogs and the Intune tile stayed blank. If nothing usable
+  is found, the default PSADT icon is kept and the app publishes without a tile icon.
 - The PSAppDeployToolkit PSGallery update check can be suppressed with `-Force` on `Invoke-Win32Toolkit`.
 - `IntuneWinAppUtil.exe` is stored in `<ModuleRoot>\Tools\` and downloaded once — subsequent packaging runs reuse it.

@@ -206,6 +206,9 @@ function New-Win32ToolkitManualApp {
             $assets = Join-Path $projectFullPath 'Assets'
             if (-not (Test-Path $assets)) { New-Item -Path $assets -ItemType Directory -Force | Out-Null }
             Copy-Item -LiteralPath $IconPath -Destination (Join-Path $assets 'AppIcon.png') -Force
+            # Record provenance so the capture-time icon reconcile (finalize) keeps this operator-supplied
+            # icon over the one extracted from the install run.
+            Set-Win32ToolkitIconSource -ProjectPath $projectFullPath -Source 'manual'
             Write-Host '✓ Applied custom icon' -ForegroundColor Green
         }
 

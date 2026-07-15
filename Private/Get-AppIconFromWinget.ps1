@@ -79,7 +79,9 @@ function Get-AppIconFromWinget {
             return $false
         }
 
-        # Intune/PSADT want a PNG at AppIcon.png regardless of the source format.
+        # Keep the validated bytes as-is so the on-disk asset matches what winget served. (Intune's
+        # largeIcon needs a GENUINE PNG, but that normalization happens once, at publish time, via
+        # Get-Win32ToolkitLargeIconBytes → ConvertTo-Win32ToolkitPngBytes — not on every download here.)
         $iconDest = Join-Path $assetsPath 'AppIcon.png'
         [System.IO.File]::WriteAllBytes($iconDest, $bytes)
 
@@ -92,6 +94,10 @@ function Get-AppIconFromWinget {
         # Also copy to PSAppDeployToolkit\Assets so the toolkit's own default is replaced
         $psdtIconDest = Join-Path $psdtAssetsPath 'AppIcon.png'
         Copy-Item -Path $iconDest -Destination $psdtIconDest -Force
+
+        # Record provenance so the capture-time icon reconcile (finalize) keeps this winget icon over the
+        # one extracted from the install run (the winget-primary precedence decision).
+        Set-Win32ToolkitIconSource -ProjectPath $ProjectPath -Source 'winget'
 
         Write-Host "✓ App icon downloaded and applied to Assets\" -ForegroundColor Green
         return $true
