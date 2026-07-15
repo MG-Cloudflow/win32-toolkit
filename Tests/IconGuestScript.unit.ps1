@@ -35,7 +35,7 @@ try {
     if (Test-Path -LiteralPath $guest) { Ok 'guest script generated' } else { Bad 'guest script was not generated'; throw 'no guest script' }
 
     $tokens = $null; $errs = $null
-    [void][System.Management.Automation.Language.Parser]::ParseFile($guest, [ref]$tokens, [ref]$errs)
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($guest, [ref]$tokens, [ref]$errs)
     if ($errs -and $errs.Count -gt 0) {
         Bad "guest script has $($errs.Count) parse error(s):"
         $errs | Select-Object -First 5 | ForEach-Object { Write-Host "        line $($_.Extent.StartLineNumber): $($_.Message)" -ForegroundColor DarkRed }
@@ -50,6 +50,53 @@ try {
     $bom = [System.IO.File]::ReadAllBytes($guest) | Select-Object -First 3
     if ($bom.Count -ge 3 -and $bom[0] -eq 0xEF -and $bom[1] -eq 0xBB -and $bom[2] -eq 0xBF) { Ok 'guest script has a UTF-8 BOM' }
     else { Bad 'guest script is missing the UTF-8 BOM (5.1 would mojibake it)' }
+
+    # Static guard: PS7-only numeric type accelerators in POWERSHELL syntax that a PS7 host parse cannot
+    # catch but that THROW at runtime on the guest's Windows PowerShell 5.1. 'uint'/'nint'/'nuint' are NOT
+    # accelerators on 5.1 (only added in PS 6+); 'uint16/32/64' ARE fine. This regression bit Save-IconViaApi
+    # once already. Match only PowerShell forms (New-Object '<t>[]' / [<t>] casts) so the C# `uint[]` inside
+    # the Add-Type here-string (valid C#) is not a false positive.
+    $psAccelHit = ($raw -match "New-Object\s+['`"]?(?:uint|nint|nuint)\[") -or
+                  ($raw -match '\[(?:uint|nint|nuint)\]') -or
+                  ($raw -match '\[(?:uint|nint|nuint)\[\]\]')
+    if ($psAccelHit) {
+        Bad 'guest script uses a PS7-only numeric accelerator (uint/nint/nuint) in PowerShell syntax — use the full CLR name (System.UInt32[]) for 5.1'
+    } else { Ok 'no PS7-only numeric type accelerators used in PowerShell syntax' }
+
+    # Strong guard: actually RUN the icon extractor under Windows PowerShell 5.1 (the guest runtime), so a
+    # PS7-only construct fails HERE — not on a device hours later. Slices the three self-contained icon
+    # functions + the P/Invoke Add-Type out of the guest via AST and extracts a real system-exe icon.
+    $ps51 = Get-Command powershell.exe -ErrorAction SilentlyContinue
+    if ($ps51) {
+        $wanted  = @('ConvertFrom-DisplayIcon', 'Save-IconViaApi', 'Save-AppIcon')
+        $funcs   = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
+        $addType = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) |
+                   Where-Object { $_.Extent.Text -match 'PrivateExtractIcons' } | Select-Object -First 1
+        if (@($funcs).Count -eq 3 -and $addType) {
+            $harness = @'
+
+$ErrorActionPreference = 'Stop'
+$out = Join-Path $env:TEMP ('icosmoke_' + [guid]::NewGuid().ToString('N').Substring(0,8) + '.png')
+try {
+    $sysExe = Join-Path $env:WINDIR 'System32\notepad.exe'
+    $r = Save-AppIcon -Path $sysExe -Index 0 -OutFile $out -MinSize 48
+    if ($r -and (Test-Path $out) -and ((Get-Item $out).Length -gt 0)) { 'ICON-OK' } else { 'ICON-FAIL' }
+} catch { 'ICON-THREW: ' + $_.Exception.Message }
+finally { Remove-Item $out -Force -ErrorAction SilentlyContinue }
+'@
+            $slice = "Add-Type -AssemblyName System.Drawing`n" + $addType.Extent.Text + "`n" +
+                     ((@($funcs) | ForEach-Object { $_.Extent.Text }) -join "`n`n") + "`n" + $harness
+            $sliceFile = Join-Path ([System.IO.Path]::GetTempPath()) ('icoslice_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
+            [System.IO.File]::WriteAllText($sliceFile, $slice, (New-Object System.Text.UTF8Encoding($true)))
+            try {
+                $res = (& $ps51.Source -NoProfile -ExecutionPolicy Bypass -File $sliceFile 2>&1 | Out-String).Trim()
+            } finally { Remove-Item $sliceFile -Force -ErrorAction SilentlyContinue }
+            if ($res -match 'ICON-OK') { Ok 'guest icon extractor runs on Windows PowerShell 5.1 (real notepad.exe HICON -> PNG)' }
+            else { Bad "guest icon extractor failed under 5.1: $res" }
+        }
+        else { Bad "could not slice icon functions from the guest script (funcs=$(@($funcs).Count), addType=$([bool]$addType))" }
+    }
+    else { Write-Host '  SKIP: Windows PowerShell 5.1 (powershell.exe) not present for the runtime smoke test' -ForegroundColor DarkYellow }
 }
 finally {
     Remove-Item $proj -Recurse -Force -ErrorAction SilentlyContinue

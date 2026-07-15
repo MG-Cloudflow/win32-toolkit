@@ -647,7 +647,9 @@ public static extern bool DestroyIcon(System.IntPtr hIcon);
         param([string]$Path, [int]$Index, [string]$OutFile, [int]$Size)
         if (-not ('Win32IconApi.Native' -as [type])) { return $false }
         $phicon  = New-Object 'System.IntPtr[]' 1
-        $piconid = New-Object 'uint[]' 1
+        # 'uint[]' is NOT a valid type name on the guest's Windows PowerShell 5.1 ('uint' became an
+        # accelerator only in PS 6+). Use the full CLR name so PrivateExtractIcons' piconid marshals.
+        $piconid = New-Object 'System.UInt32[]' 1
         $n = [Win32IconApi.Native]::PrivateExtractIcons($Path, $Index, $Size, $Size, $phicon, $piconid, 1, 0)
         if ($n -lt 1 -or $phicon[0] -eq [System.IntPtr]::Zero) { return $false }
         $hicon = $phicon[0]
@@ -910,6 +912,14 @@ if ($backend -eq 'Sandbox') {
             if ($stale.Count -gt 0) {
                 Write-Verbose "Cleared $($stale.Count) stale capture file(s) from Documentation\"
             }
+        }
+
+        # Also clear a stale captured icon, for the same reason: if THIS run extracts no icon, the finalize
+        # reconcile must not promote the previous run's leftover AppIcon_Captured.png.
+        $staleIcon = Join-Path $ProjectPath 'Sandbox\Logs\AppIcon_Captured.png'
+        if (Test-Path -LiteralPath $staleIcon) {
+            try { Remove-Item -LiteralPath $staleIcon -Force }
+            catch { Write-Warning "Could not remove stale captured icon: $($_.Exception.Message)" }
         }
 
         # Hyper-V: the generated script + log collector are prepared and stale captures cleared. The
