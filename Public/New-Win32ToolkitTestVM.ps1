@@ -89,6 +89,17 @@ function New-Win32ToolkitTestVM {
         throw "The guest admin password must not be empty. A blank password is blocked for PowerShell Direct (the 'Limit local account use of blank passwords to console logon only' policy) and prevents AutoLogon — the build boots to a login screen instead of an auto-logged-in desktop. Re-run with a strong password."
     }
 
+    # Reuse the last chosen CPU/RAM (persisted by a prior provision or by Set-Win32ToolkitTestVMResource) as the
+    # defaults, unless the caller passed them explicitly. So a re-provision keeps your specs without re-typing.
+    if (-not $PSBoundParameters.ContainsKey('ProcessorCount')) {
+        $storedCpu = Get-Win32ToolkitConfigValue -Name 'HyperVProcessorCount' -Default ''
+        if ($storedCpu) { $ProcessorCount = [int]$storedCpu }
+    }
+    if (-not $PSBoundParameters.ContainsKey('MemoryStartupBytes')) {
+        $storedMem = Get-Win32ToolkitConfigValue -Name 'HyperVMemoryStartupBytes' -Default ''
+        if ($storedMem) { $MemoryStartupBytes = [uint64]$storedMem }
+    }
+
     # --- Reuse an existing, healthy VM -------------------------------------------------------------
     $existing = Get-VM -Name $Name -ErrorAction SilentlyContinue
     if ($existing -and -not $Force) {
@@ -252,9 +263,11 @@ function New-Win32ToolkitTestVM {
         Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName
         Write-Host "✓ Warm '$CheckpointName' checkpoint taken." -ForegroundColor Green
 
-        Set-Win32ToolkitConfigValue -Name 'HyperVVMName'     -Value $Name
-        Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Value $CheckpointName
-        Set-Win32ToolkitConfigValue -Name 'HyperVBaseVhdx'   -Value $vhdx
+        Set-Win32ToolkitConfigValue -Name 'HyperVVMName'            -Value $Name
+        Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint'        -Value $CheckpointName
+        Set-Win32ToolkitConfigValue -Name 'HyperVBaseVhdx'          -Value $vhdx
+        Set-Win32ToolkitConfigValue -Name 'HyperVProcessorCount'    -Value $ProcessorCount
+        Set-Win32ToolkitConfigValue -Name 'HyperVMemoryStartupBytes' -Value $MemoryStartupBytes
         Set-Win32ToolkitGuestCredential -Credential $Credential
     }
 
