@@ -74,7 +74,7 @@ function Show-Win32ToolkitProjectActions {
                     # as the Sandbox LogonCommand, with a HOST pause instead of the in-guest countdown).
                     $scenChoices = @(
                         [pscustomobject]@{ Key = 'InstallUninstall'; Label = 'Install then uninstall (any app)' }
-                        [pscustomobject]@{ Key = 'Update';           Label = 'Update from an older version (winget apps only)' }
+                        [pscustomobject]@{ Key = 'Update';           Label = 'Update from an older version (winget download or a local packaged baseline)' }
                     )
                     $sc = Read-SpectreSelection -Message 'Test scenario' -Choices $scenChoices -ChoiceLabelProperty 'Label' -Color Blue
 
@@ -87,22 +87,73 @@ function Show-Win32ToolkitProjectActions {
                         ) -ChoiceLabelProperty 'Label' -Color Blue
                         if ($mode.Key -eq 'unattended') { $testSplat['Unattended'] = $true }
                     }
+                    $abort = $false
                     if ($sc.Key -eq 'Update') {
-                        if (-not (Read-SpectreConfirm -Message 'Also verify the update-app requirement rule during the test? (recommended)' -DefaultAnswer 'y')) {
-                            $testSplat['SkipRequirementCheck'] = $true
+                        # Old-version baseline source: download an older winget version, OR install a LOCAL
+                        # packaged project as the baseline (the friendly 'project:' way — same as
+                        # -BaselineProject on the cmdlet). A manual (non-winget) app has no winget baseline,
+                        # so a local package is the only option there (and today's default winget path would
+                        # hard-error mid-run for it).
+                        $wingetId = Get-WingetIdFromProject -FilesPath (Join-Path $project.Path 'Files')
+                        $isWinget = -not [string]::IsNullOrWhiteSpace($wingetId)
+                        $baselineCandidates = @(Get-PSADTProjects -BasePath $BasePath | Where-Object { $_.Path -ne $project.Path })
+
+                        $useLocal = $false
+                        if ($isWinget) {
+                            $srcPick = Read-SpectreSelection -Message 'Old-version baseline source' -Choices @(
+                                [pscustomobject]@{ Key = 'winget';  Label = 'Download an older version from winget' }
+                                [pscustomobject]@{ Key = 'project'; Label = "Use a local packaged project ($($baselineCandidates.Count) available)" }
+                            ) -ChoiceLabelProperty 'Label' -Color Blue
+                            $useLocal = ($srcPick.Key -eq 'project')
+                            if ($useLocal -and $baselineCandidates.Count -eq 0) {
+                                Format-SpectrePanel -Data 'No other packaged projects to use as a baseline yet — falling back to the winget download.' -Header 'No local baseline' -Border Rounded -Color Yellow | Out-SpectreHost
+                                $useLocal = $false
+                            }
+                        }
+                        elseif ($baselineCandidates.Count -eq 0) {
+                            # Manual app AND nothing to use as a baseline — the update test cannot run.
+                            Format-SpectrePanel -Data 'This is a manual (non-winget) app, so the update test needs a LOCAL packaged project as the old-version baseline — and none are available yet. Package an older version first, then re-run.' -Header 'No baseline available' -Border Rounded -Color Yellow | Out-SpectreHost
+                            Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                            $abort = $true
+                        }
+                        else {
+                            Write-SpectreHost '[grey]Manual (non-winget) app — choose a local packaged project as the old-version baseline.[/]'
+                            $useLocal = $true
+                        }
+
+                        if (-not $abort -and $useLocal) {
+                            $bmap = [ordered]@{}
+                            $blabels = foreach ($bp in ($baselineCandidates | Sort-Object Template, Name)) {
+                                $bver = $null
+                                try { $bver = (Get-Win32ToolkitAppConfig -ProjectPath $bp.Path).App.Version } catch { $bver = $null }
+                                $label = Get-SpectreEscapedText -Text ('{0}  /  {1}{2}' -f $bp.Template, $bp.Name, $(if ($bver) { "  (v$bver)" } else { '' }))
+                                $bmap[$label] = $bp
+                                $label
+                            }
+                            $bchosen = Read-SpectreSelection -Message 'Baseline project (the OLDER version to upgrade FROM)' -Choices @($blabels) -Color Blue -EnableSearch -PageSize 15
+                            $bproj = $bmap[$bchosen]
+                            if ($bproj) { $testSplat['BaselineProjectPath'] = $bproj.Path } else { $abort = $true }
+                        }
+
+                        if (-not $abort) {
+                            if (-not (Read-SpectreConfirm -Message 'Also verify the update-app requirement rule during the test? (recommended)' -DefaultAnswer 'y')) {
+                                $testSplat['SkipRequirementCheck'] = $true
+                            }
                         }
                     }
-                    Clear-Host; Write-SpectreRule -Title "Running the $($backend.Key) test…" -Color Blue
-                    try {
-                        $verdict = Test-Win32ToolkitProject @testSplat
-                        if ($sc.Key -eq 'Update') {
-                            if     ($verdict -eq $true)  { Format-SpectrePanel -Data 'All in-sandbox assertions passed.' -Header 'UPDATE TEST PASSED' -Border Rounded -Color Green }
-                            elseif ($verdict -eq $false) { Format-SpectrePanel -Data 'One or more assertions FAILED - see Sandbox\Logs\UpdateAssertions.log in the project folder.' -Header 'UPDATE TEST FAILED' -Border Rounded -Color Red }
-                            else                         { Format-SpectrePanel -Data 'No conclusive assertion results (sandbox closed early, timeout, or everything skipped).' -Header 'Inconclusive' -Border Rounded -Color Yellow }
+                    if (-not $abort) {
+                        Clear-Host; Write-SpectreRule -Title "Running the $($backend.Key) test…" -Color Blue
+                        try {
+                            $verdict = Test-Win32ToolkitProject @testSplat
+                            if ($sc.Key -eq 'Update') {
+                                if     ($verdict -eq $true)  { Format-SpectrePanel -Data 'All in-sandbox assertions passed.' -Header 'UPDATE TEST PASSED' -Border Rounded -Color Green }
+                                elseif ($verdict -eq $false) { Format-SpectrePanel -Data 'One or more assertions FAILED - see Sandbox\Logs\UpdateAssertions.log in the project folder.' -Header 'UPDATE TEST FAILED' -Border Rounded -Color Red }
+                                else                         { Format-SpectrePanel -Data 'No conclusive assertion results (sandbox closed early, timeout, or everything skipped).' -Header 'Inconclusive' -Border Rounded -Color Yellow }
+                            }
                         }
+                        catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
+                        Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
                     }
-                    catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
-                    Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
                 }
                 'finish' {
                     Clear-Host; Write-SpectreRule -Title 'Finalizing…' -Color Blue

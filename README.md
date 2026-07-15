@@ -421,8 +421,9 @@ Manual apps are not a lesser path — they get everything the winget flow gets:
 
 - **Dependencies** — `-DependsOn 'winget:Microsoft.VCRedist.2015+.x64'` works exactly the same, including
   being installed in the guest before your app during the capture and test runs.
-- **Test scenarios** — `Test-Win32ToolkitProject` (`InstallUninstall`; `Update` needs `-BaselineProjectPath`
-  since there's no winget version history to pull an older build from).
+- **Test scenarios** — `Test-Win32ToolkitProject` (`InstallUninstall`; `Update` needs a local baseline —
+  `-BaselineProject 'Contoso\App_x64_1.0'` (or `-BaselineProjectPath`) — since there's no winget version
+  history to pull an older build from. The TUI's Update flow prompts for the baseline automatically).
 - **Org templates**, detection rules, the install tattoo, `.intunewin`, Intune publish, the update app.
 
 In the TUI this is **"Package a manual app"**, which asks the same questions and shows the same review panel.
@@ -502,6 +503,30 @@ Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0' -Sc
 
 ---
 
+#### `-BaselineProject <Template\Name>` / `-BaselineProjectPath <path>`
+
+*(Update scenario only)* Use a **local, already-packaged toolkit project** as the old-version baseline instead of
+downloading the old build from winget — the same way a `project:` dependency is referenced. This is the way to test
+an upgrade for a **manual (non-winget) app** (which has no winget version history), and it exercises the real
+tattoo-overwrite path (old install tattoo → new). The baseline package is delivered read-only (`C:\PSADTOld`) and
+installed via **its own** PSADT before the new version. Both forms are mutually exclusive with `-VersionsBack` /
+`-SpecificVersion`.
+
+- `-BaselineProject 'Contoso\Git_x64_2.53.0'` — friendly reference, resolved to
+  `<BasePath>\Projects\Contoso\Git_x64_2.53.0` (also accepts `project:Contoso\Git_x64_2.53.0`).
+- `-BaselineProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'` — an explicit full path.
+
+```powershell
+# Test upgrading 2.55.0 over a locally-packaged 2.53.0, by friendly reference
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.55.0' -Scenario Update -BaselineProject 'Contoso\Git_x64_2.53.0'
+```
+
+In the **TUI**, choosing the `Update` scenario prompts for the baseline source — *download from winget* or *use a
+local packaged project* (which lists your packaged projects, newest to pick as the baseline). For a manual app the
+local project is used automatically.
+
+---
+
 ### How `InstallUninstall` works
 
 1. Creates `Sandbox\Countdown.ps1` — a WinForms dialog with a 2-minute timer and a Skip button
@@ -523,6 +548,10 @@ Sandbox\
 ---
 
 ### How `Update` works
+
+> With a **local baseline** (`-BaselineProject` / `-BaselineProjectPath`), steps 1–5 below are skipped: that
+> packaged project is installed via its own PSADT (read-only at `C:\PSADTOld`) as the old version, then the
+> project under test performs the update. This is also the only path for manual (non-winget) apps.
 
 1. Reads `PackageIdentifier` and current version from the YAML in `Files\`
 2. Calls `winget show <id> --versions` and filters to versions older than the packaged one
