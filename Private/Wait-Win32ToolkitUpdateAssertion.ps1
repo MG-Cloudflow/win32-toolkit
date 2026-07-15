@@ -37,18 +37,27 @@ function Wait-Win32ToolkitUpdateAssertion {
         # streams the log LIVE while the sandbox runs; the Hyper-V run is already finished by the time we
         # read it (the log was copied back), so "waiting for the sandbox" would be nonsense there.
         [ValidateSet('Sandbox', 'HyperV')]
-        [string]$Backend = 'Sandbox'
+        [string]$Backend = 'Sandbox',
+
+        # The assertion log to parse and the label used in the host-side summary. Defaults keep the Update
+        # scenario byte-identical; the InstallUninstall scenario passes 'InstallAssertions.log' / 'INSTALL TEST'.
+        # The ASSERT-line regex and the RESULT COMPLETE marker are shared, so nothing else changes per scenario.
+        [ValidateNotNullOrEmpty()]
+        [string]$LogFileName = 'UpdateAssertions.log',
+
+        [ValidateNotNullOrEmpty()]
+        [string]$Label = 'UPDATE TEST'
     )
 
-    $logPath = Join-Path $ProjectPath 'Sandbox\Logs\UpdateAssertions.log'
+    $logPath = Join-Path $ProjectPath (Join-Path 'Sandbox\Logs' $LogFileName)
 
     Write-Host ''
     if ($Backend -eq 'HyperV') {
-        Write-Host 'Reading the update assertions from the completed Hyper-V run...' -ForegroundColor Yellow
+        Write-Host 'Reading the assertions from the completed Hyper-V run...' -ForegroundColor Yellow
         Write-Host "  Log: $logPath" -ForegroundColor Gray
     }
     else {
-        Write-Host "Waiting for in-sandbox update assertions (up to $TimeoutMinutes min)..." -ForegroundColor Yellow
+        Write-Host "Waiting for in-sandbox assertions (up to $TimeoutMinutes min)..." -ForegroundColor Yellow
         Write-Host "  Live log: $logPath" -ForegroundColor Gray
         Write-Host '  (The sandbox keeps running independently of this wait.)' -ForegroundColor Gray
     }
@@ -61,13 +70,18 @@ function Wait-Win32ToolkitUpdateAssertion {
         if (Test-Path -LiteralPath $logPath) {
             $content = @(Get-Content -LiteralPath $logPath -ErrorAction SilentlyContinue)
             foreach ($line in $content) {
-                if ($line -match 'ASSERT\s+(\S+)\s*=\s*(PASS|FAIL|SKIP)' -and -not $announced.ContainsKey($Matches[1])) {
+                # ANCHORED: a real assertion line is "[timestamp] ASSERT <name> = <result>" — ASSERT must be the
+                # first token (after the optional timestamp). Untrusted values (e.g. an app DisplayName) are
+                # echoed into DIAGNOSTIC lines by the guest; an unanchored scan would let a crafted name like
+                # "Widget ASSERT Rigged = FAIL" forge a result and corrupt the verdict. The timestamp prefix is
+                # optional so bare-line test fixtures still parse.
+                if ($line -match '^\s*(?:\[[^\]]*\]\s+)?ASSERT\s+(\S+)\s*=\s*(PASS|FAIL|SKIP)\b' -and -not $announced.ContainsKey($Matches[1])) {
                     $announced[$Matches[1]] = $Matches[2]
                     $color = switch ($Matches[2]) { 'PASS' { 'Green' } 'FAIL' { 'Red' } default { 'DarkYellow' } }
                     Write-Host "  ASSERT $($Matches[1]) = $($Matches[2])" -ForegroundColor $color
                 }
             }
-            if ($content -match 'RESULT COMPLETE') { $complete = $true; break }
+            if (@($content | Where-Object { $_ -match '^\s*(?:\[[^\]]*\]\s+)?RESULT COMPLETE\s*$' }).Count -gt 0) { $complete = $true; break }
         }
         Start-Sleep -Seconds $PollSeconds
     }
@@ -81,7 +95,7 @@ function Wait-Win32ToolkitUpdateAssertion {
     # Failures are conclusive even on a partial run.
     $failed = @($announced.GetEnumerator() | Where-Object { $_.Value -eq 'FAIL' })
     if ($failed.Count -gt 0) {
-        Write-Host "✗ UPDATE TEST FAILED — $($failed.Count) assertion(s) failed: $(($failed | ForEach-Object { $_.Key }) -join ', ')" -ForegroundColor Red
+        Write-Host "✗ $Label FAILED — $($failed.Count) assertion(s) failed: $(($failed | ForEach-Object { $_.Key }) -join ', ')" -ForegroundColor Red
         Write-Host "  Details: $logPath" -ForegroundColor Gray
         return $false
     }
@@ -95,7 +109,7 @@ function Wait-Win32ToolkitUpdateAssertion {
 
     $passed = @($announced.GetEnumerator() | Where-Object { $_.Value -eq 'PASS' })
     if ($passed.Count -gt 0) {
-        Write-Host "✓ UPDATE TEST PASSED — $($passed.Count) assertion(s) passed$(if ($announced.Count -gt $passed.Count) { ", $($announced.Count - $passed.Count) skipped" })." -ForegroundColor Green
+        Write-Host "✓ $Label PASSED — $($passed.Count) assertion(s) passed$(if ($announced.Count -gt $passed.Count) { ", $($announced.Count - $passed.Count) skipped" })." -ForegroundColor Green
         return $true
     }
 

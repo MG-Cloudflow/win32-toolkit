@@ -60,15 +60,21 @@ foreach ($keep in @('ConvertTo-PSSingleQuoted', 'ConvertTo-XmlEncoded')) {
     else { Bad "$keep has NO call sites — it may have been orphaned" }
 }
 
-# ── (c) module still imports cleanly and exports 12 commands ───────────────────────────────────────
-Write-Host '[c] module imports cleanly and exports 12 commands' -ForegroundColor Cyan
+# ── (c) module still imports cleanly and its public surface is intact ──────────────────────────────
+# (The exact export COUNT is deliberately not pinned — new public commands are added over time; deleting
+# the dead PRIVATE helpers must not reduce the public surface, so assert it did not shrink below the
+# baseline and that the core commands are all still exported.)
+Write-Host '[c] module imports cleanly and its public surface is intact' -ForegroundColor Cyan
 $manifest = Join-Path $repo 'win32-toolkit.psd1'
 try {
     Import-Module $manifest -Force -ErrorAction Stop
     Ok 'Import-Module succeeded'
     $exported = @((Get-Module win32-toolkit).ExportedFunctions.Keys)
-    if ($exported.Count -eq 12) { Ok "exports exactly 12 commands" }
-    else { Bad "expected 12 exported commands, got $($exported.Count): $($exported -join ', ')" }
+    if ($exported.Count -ge 12) { Ok "exports its full public surface ($($exported.Count) commands)" }
+    else { Bad "public surface shrank to $($exported.Count) commands: $($exported -join ', ')" }
+    $core = @('Invoke-Win32Toolkit', 'Test-Win32ToolkitProject', 'Export-Win32ToolkitIntuneWin', 'Publish-Win32ToolkitIntuneApp')
+    $missing = @($core | Where-Object { $_ -notin $exported })
+    if ($missing.Count -eq 0) { Ok 'the core public commands are all still exported' } else { Bad "missing core commands: $($missing -join ', ')" }
 } catch {
     Bad "Import-Module failed: $($_.Exception.Message)"
 } finally {

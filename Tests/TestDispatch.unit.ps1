@@ -29,6 +29,12 @@ $script:launched = 0
 
 $script:depCount = 0
 function Initialize-Win32ToolkitDependencyStaging { param($ProjectPath) return $script:depCount }
+# InstallUninstall now generates an assertion script + records an outcome (both scenarios). Shadow them so
+# the dispatch tests exercise the phase/logon wiring without writing real assertion scripts or result files.
+$script:installAssertGen = 0
+$script:recorded = $null
+function New-InstallAssertionScript { param($ProjectPath) $script:installAssertGen++; 'fake' }
+function Write-Win32ToolkitTestOutcome { param($ProjectPath, $Scenario, $Backend, $Mode, $Verdict, $LogFileName, $Notes) $script:recorded = @{ Scenario = $Scenario; Backend = $Backend; Mode = $Mode; LogFileName = $LogFileName } }
 function Get-Win32ToolkitTestBackend { param($Backend) return $script:backend }
 function Get-Process { param($Name, $ErrorAction) return $script:procs }
 # The single-instance guard goes through the Phase-0 seam helper, NOT Get-Process directly. Without this
@@ -80,7 +86,7 @@ function Get-Win32ToolkitRequirementRule { param($ProjectPath) 'rule' }
 function New-UpdateAssertionScript { param($ProjectPath, [switch]$SkipRequirement, $OldVersion, [switch]$ExpectBaselineTattoo) 'assert.ps1' }
 function New-CountdownScript { param($ProjectPath) $script:countdownMade++; 'cd.ps1' }
 $script:waitArgs = $null
-function Wait-Win32ToolkitUpdateAssertion { param($ProjectPath, $Backend, $TimeoutMinutes, $PollSeconds) $script:waitArgs = @{ Backend = $Backend; TimeoutMinutes = $TimeoutMinutes }; return $true }
+function Wait-Win32ToolkitUpdateAssertion { param($ProjectPath, $Backend, $TimeoutMinutes, $PollSeconds, $LogFileName, $Label) $script:waitArgs = @{ Backend = $Backend; TimeoutMinutes = $TimeoutMinutes; LogFileName = $LogFileName }; return $true }
 function Get-Win32ToolkitBaselineInstallCommand { param($InstallerSandboxPath, $InstallerType, $SilentArgs) "& '$InstallerSandboxPath'" }
 $script:hvBaseline = $null
 $script:hvCopiesLog = $true    # simulate the provider copying UpdateAssertions.log back out of the guest
@@ -171,6 +177,28 @@ if ($di -ge 0 -and $pb -gt $di) { Ok 'Sandbox Update: dependencies before the Pr
 $script:depCount = 0
 Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
 if ($script:logon -notmatch 'InstallDependencies') { Ok 'none declared -> no dependency step in the .wsb' } else { Bad 'phantom dependency step' }
+
+Write-Host '[11] InstallUninstall now has real PASS/FAIL assertions wired on both backends' -ForegroundColor Cyan
+# HyperV: the assertion script is generated, PostInstall/PostUninstall phases surround the install/uninstall,
+# and the outcome is recorded as an InstallUninstall run.
+$script:depCount = 0; $script:backend = 'HyperV'; $script:procs = @(); $script:testMode = 'Interactive'
+$script:installAssertGen = 0; $script:recorded = $null
+Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
+$iuLabels = @($script:hvPhase.Label)
+if ($script:installAssertGen -ge 1) { Ok 'the install-assertion script is generated' } else { Bad 'New-InstallAssertionScript was not called' }
+if ($iuLabels -contains 'Assert: installed' -and $iuLabels -contains 'Assert: uninstalled') { Ok 'PostInstall + PostUninstall assertion phases present' } else { Bad "labels=$($iuLabels -join ',')" }
+$pi = [array]::IndexOf($iuLabels, 'Assert: installed'); $ui = [array]::IndexOf($iuLabels, 'Assert: uninstalled')
+if ($pi -ge 0 -and $ui -gt $pi) { Ok 'installed-assert precedes uninstalled-assert' } else { Bad "order pi=$pi ui=$ui" }
+if ($script:recorded -and $script:recorded.Scenario -eq 'InstallUninstall' -and $script:recorded.Backend -eq 'HyperV') { Ok 'the run is recorded for the docs (InstallUninstall/HyperV)' } else { Bad "recorded=$($script:recorded | Out-String)" }
+
+# Sandbox: the .wsb LogonCommand runs both assertion phases, and the verdict waiter reads InstallAssertions.log.
+$script:backend = 'Sandbox'; $script:procs = @(); $script:recorded = $null; $script:waitArgs = $null
+Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
+if ($script:logon -match 'InstallAssertions\.ps1 -Phase PostInstall' -and $script:logon -match 'InstallAssertions\.ps1 -Phase PostUninstall') { Ok 'Sandbox LogonCommand runs both assertion phases' } else { Bad "logon=$script:logon" }
+$aiIdx = $script:logon.IndexOf('Invoke-AppDeployToolkit.ps1'); $paIdx = $script:logon.IndexOf('PostInstall')
+if ($aiIdx -ge 0 -and $paIdx -gt $aiIdx) { Ok 'PostInstall assert runs AFTER the install' } else { Bad "logon order ai=$aiIdx pa=$paIdx" }
+if ($script:waitArgs -and $script:waitArgs.LogFileName -eq 'InstallAssertions.log') { Ok 'the verdict waiter reads InstallAssertions.log' } else { Bad "waitArgs=$($script:waitArgs | Out-String)" }
+if ($script:recorded -and $script:recorded.Scenario -eq 'InstallUninstall' -and $script:recorded.Backend -eq 'Sandbox') { Ok 'Sandbox run recorded for the docs' } else { Bad "recorded=$($script:recorded | Out-String)" }
 
 Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
 

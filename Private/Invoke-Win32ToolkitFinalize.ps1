@@ -92,7 +92,8 @@ function Invoke-Win32ToolkitFinalize {
         foreach ($scenario in $RunTest) {
             $verdict = Test-Win32ToolkitProject -ProjectPath $ProjectPath -Scenario $scenario
             if ($verdict -eq $false) {
-                Write-Warning "The $scenario test FAILED its assertions — review $ProjectPath\Sandbox\Logs\UpdateAssertions.log before publishing this package."
+                $assertLog = if ($scenario -eq 'InstallUninstall') { 'InstallAssertions.log' } else { 'UpdateAssertions.log' }
+                Write-Warning "The $scenario test FAILED its assertions — review $ProjectPath\Sandbox\Logs\$assertLog before publishing this package."
             }
         }
     }
