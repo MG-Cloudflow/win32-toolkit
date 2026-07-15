@@ -39,11 +39,19 @@ function Test-Win32ToolkitProject {
     downloading the old vendor installer — exercises the tattoo-overwrite path (old tattoo → new
     tattoo) and works for manual (non-winget) projects. Mutually exclusive with -VersionsBack /
     -SpecificVersion. The baseline project is mapped READ-ONLY (its raw copy is never modified).
+.PARAMETER BaselineProject
+    Update scenario only. Same as -BaselineProjectPath but by FRIENDLY reference: '<Template>\<Name>'
+    (or 'project:<Template>\<Name>'), resolved to <BasePath>\Projects\<Template>\<Name> — exactly how a
+    'project:' dependency is referenced, so you don't type the full path. Mutually exclusive with
+    -BaselineProjectPath / -VersionsBack / -SpecificVersion.
 .EXAMPLE
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0' -Scenario Update -VersionsBack 1 -SkipRequirementCheck
 .EXAMPLE
-    # Baseline with a previous toolkit package (tattoo-overwrite test)
+    # Baseline with a previous toolkit package (tattoo-overwrite test), by full path
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Contoso\Git_x64_2.55.0' -Scenario Update -BaselineProjectPath 'C:\Win32Apps\Contoso\Git_x64_2.53.0'
+.EXAMPLE
+    # Same, by friendly reference (resolved under BasePath\Projects\)
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Contoso\Git_x64_2.55.0' -Scenario Update -BaselineProject 'Contoso\Git_x64_2.53.0'
 .EXAMPLE
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0'
 .EXAMPLE
@@ -84,6 +92,13 @@ function Test-Win32ToolkitProject {
         # exclusive with -VersionsBack / -SpecificVersion, and works for manual (non-winget) projects.
         [Parameter(Mandatory = $false)]
         [string]$BaselineProjectPath,
+
+        # Update scenario only: like -BaselineProjectPath but by FRIENDLY reference — '<Template>\<Name>'
+        # (or 'project:<Template>\<Name>'), resolved to <BasePath>\Projects\<Template>\<Name>, the same way a
+        # 'project:' dependency is referenced. Mutually exclusive with -BaselineProjectPath / -VersionsBack /
+        # -SpecificVersion.
+        [Parameter(Mandatory = $false)]
+        [string]$BaselineProject,
 
         # Which test backend to run against. Omit to use the configured/resolved default (Sandbox unless
         # HyperV is configured AND ready). 'HyperV' runs the scenario in the local Hyper-V VM over
@@ -129,8 +144,54 @@ function Test-Win32ToolkitProject {
         Write-Host "Project path     : $ProjectPath"   -ForegroundColor Gray
         Write-Host "Scenario         : $Scenario"      -ForegroundColor Cyan
 
+        # The baseline / version parameters only mean anything for the Update scenario. Rather than silently
+        # ignore them under InstallUninstall (so the user thinks they configured an update-from-baseline test
+        # but got a plain install/uninstall), reject the mismatch up front.
+        if ($Scenario -ne 'Update') {
+            $updateOnly = @('BaselineProject', 'BaselineProjectPath', 'VersionsBack', 'SpecificVersion') |
+                Where-Object { $PSBoundParameters.ContainsKey($_) }
+            if ($updateOnly) {
+                throw "$(@($updateOnly | ForEach-Object { "-$_" }) -join ', ') apply only to -Scenario Update (got '$Scenario')."
+            }
+        }
+
+        # -BaselineProject: resolve a friendly '<Template>\<Name>' (or 'project:<Template>\<Name>') reference
+        # to a packaged project under BasePath, then feed the SAME -BaselineProjectPath machinery below — so
+        # you can name a local package the way a 'project:' dependency does, instead of typing the full path.
+        if ($Scenario -eq 'Update' -and $BaselineProject) {
+            if ($BaselineProjectPath) {
+                throw '-BaselineProject and -BaselineProjectPath are mutually exclusive — both name the baseline package; use one.'
+            }
+            if ($VersionsBack -or $SpecificVersion) {
+                throw '-BaselineProject is mutually exclusive with -VersionsBack / -SpecificVersion (the baseline IS the referenced project).'
+            }
+            $ref = ConvertTo-Win32ToolkitDependencyRef -Reference $BaselineProject
+            if ($ref.Source -ne 'project') {
+                throw "-BaselineProject must reference a packaged project as '<Template>\<Name>' (or 'project:<Template>\<Name>'), not '$BaselineProject'."
+            }
+            # A full path contains backslashes too, so it parses as a 'project' ref and would then be joined
+            # ONTO the Projects root ('...\Projects\C:\...') into a garbage path. Reject a rooted or traversal
+            # ref and point the user at the right parameter.
+            if ([System.IO.Path]::IsPathRooted($ref.Ref) -or $ref.Ref -match '\.\.[\\/]') {
+                throw "-BaselineProject takes a '<Template>\<Name>' reference under Projects\, not a full path — use -BaselineProjectPath for an absolute path."
+            }
+            # Resolve BasePath WITHOUT prompting (a direct -ProjectPath caller leaves $BasePath empty; the
+            # registry value fills it). If nothing is configured, fail clearly instead of hanging on Read-Host.
+            $resolvedBase = Get-Win32ToolkitBasePath -BasePath $BasePath -NonInteractive
+            if ([string]::IsNullOrWhiteSpace($resolvedBase)) {
+                throw '-BaselineProject needs a configured BasePath to resolve against, but none is set. Pass -BaselineProjectPath (a full path), or run the toolkit once to set the base folder.'
+            }
+            $projectsRoot        = (Get-Win32ToolkitPaths -BasePath $resolvedBase).Projects
+            $BaselineProjectPath = Join-Path $projectsRoot $ref.Ref
+            if (-not (Test-Path -LiteralPath $BaselineProjectPath)) {
+                throw "Baseline project '$($ref.Ref)' not found under Projects\ — package that (older) version first, then re-run. (Looked in: $BaselineProjectPath)"
+            }
+            Write-Host "Baseline (ref)   : $($ref.Ref)" -ForegroundColor Gray
+        }
+
         # -BaselineProjectPath validation runs FIRST (before the sandbox pre-flight) so parameter
-        # errors are deterministic regardless of whether a sandbox is open.
+        # errors are deterministic regardless of whether a sandbox is open. (-BaselineProject resolves into
+        # $BaselineProjectPath above, so it flows through exactly the same checks.)
         $baselineApp = $null
         if ($Scenario -eq 'Update' -and $BaselineProjectPath) {
             if ($VersionsBack -or $SpecificVersion) {
