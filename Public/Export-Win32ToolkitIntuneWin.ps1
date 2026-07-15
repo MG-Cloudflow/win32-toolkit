@@ -87,6 +87,11 @@ function Export-Win32ToolkitIntuneWin {
         [int]$PublishTimeoutSeconds
     )
 
+    # Silence stock-cmdlet progress bars (Copy-Item / Remove-Item on the Staging copy) for the packaging
+    # steps — they otherwise paint bars that tear an interactive (Spectre) TUI. Restored before the publish
+    # step (and in finally) so the intentional Azure-upload progress bar is left untouched.
+    $prevProgress = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
     try {
         # Captured BEFORE the picker branch below overwrites $BasePath with the resolved/registry value:
         # only a base the CALLER actually passed may override the layout derived from the project path.
@@ -206,13 +211,25 @@ function Export-Win32ToolkitIntuneWin {
             New-Item -Path $stagingDir -ItemType Directory -Force | Out-Null
         }
 
-        # Always refresh the Staging copy so it matches the current raw project
+        # Always refresh the Staging copy so it matches the current raw project. A previous copy can hold
+        # freshly-written PSADT modules that AV briefly locks, so remove with retry and fail loudly rather
+        # than build the package on top of a stale, half-deleted Staging copy.
         if (Test-Path $stagingPath) {
-            Remove-Item -Path $stagingPath -Recurse -Force
+            if (-not (Remove-Win32ToolkitPathWithRetry -Path $stagingPath)) {
+                throw "Could not clear the previous Staging copy at '$stagingPath' — a file is locked (close any process using it) and retry."
+            }
         }
 
-        Write-Verbose "Copying project to Staging..."
-        Copy-Item -Path $ProjectPath -Destination $stagingPath -Recurse -Force
+        # Copy ONLY what ships. Excluding the non-shipping folders (test scaffolding + Intune\ secrets) up
+        # front — rather than copying everything and stripping afterwards — means there is no freshly-written,
+        # AV-locked file for a later Remove-Item to choke on, the copy is smaller/faster, and the Intune\
+        # Publications.json (tenant + app ids) can never leak into the package even if a strip were to fail.
+        Write-Verbose 'Copying project to Staging (excluding non-shipping folders)...'
+        $excludeFolders = Get-Win32ToolkitNonShippingFolders
+        New-Item -Path $stagingPath -ItemType Directory -Force | Out-Null
+        Get-ChildItem -LiteralPath $ProjectPath -Force |
+            Where-Object { -not ($_.PSIsContainer -and $_.Name -in $excludeFolders) } |
+            ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $stagingPath $_.Name) -Recurse -Force }
         Write-Host "✓ Staging copy     : $stagingPath" -ForegroundColor Green
 
         # ── Step 3: Clean up the Staging copy ────────────────────────────────────
@@ -263,6 +280,10 @@ function Export-Win32ToolkitIntuneWin {
         }
 
         # ── Step 7: Publish to Intune ─────────────────────────────────────────────
+        # Restore the caller's progress preference before publishing: the Azure Storage upload bar
+        # (Invoke-AzBlobUpload) is an intentional, useful progress bar and must be left to render.
+        $ProgressPreference = $prevProgress
+
         if ($intuneWinFile) {
             $doInstall = [bool]$PublishIntune
             $doUpdate  = [bool]$PublishUpdate
@@ -304,5 +325,9 @@ function Export-Win32ToolkitIntuneWin {
         # publish" guard — reach callers (the TUI catch, automation) instead of being downgraded to a
         # non-terminating error that looks like success.
         throw "Export-Win32ToolkitIntuneWin failed: $($_.Exception.Message)"
+    }
+    finally {
+        # Never leak the silenced progress preference to the caller (e.g. the TUI menu loop), on any path.
+        $ProgressPreference = $prevProgress
     }
 }
