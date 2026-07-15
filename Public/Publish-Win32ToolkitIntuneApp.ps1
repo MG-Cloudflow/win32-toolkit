@@ -208,6 +208,25 @@ function Publish-Win32ToolkitIntuneApp {
             'requirementRules' = @($requirementRules)
         }
 
+        # ── App tile icon (largeIcon) ─────────────────────────────────────────────
+        # Attach Assets\AppIcon.png as the Intune tile icon. Bytes are normalized to a genuine PNG
+        # (Get-Win32ToolkitLargeIconBytes → ConvertTo-Win32ToolkitPngBytes); with no usable icon we omit
+        # largeIcon and Intune shows the generic tile. This is the ONLY place an icon reaches Intune —
+        # before this, Assets\AppIcon.png (winget / manual / captured-from-install) only fed PSADT's
+        # on-device dialogs and never appeared on the app tile.
+        $largeIconBytes = Get-Win32ToolkitLargeIconBytes -ProjectPath $ProjectPath
+        if ($largeIconBytes) {
+            $appBody['largeIcon'] = [ordered]@{
+                '@odata.type' = '#microsoft.graph.mimeContent'
+                'type'        = 'image/png'
+                'value'       = [System.Convert]::ToBase64String($largeIconBytes)
+            }
+            Write-Host "  Icon         : Assets\AppIcon.png ($([math]::Round($largeIconBytes.Length / 1KB, 1)) KB)" -ForegroundColor Gray
+        }
+        else {
+            Write-Verbose 'No usable Assets\AppIcon.png — publishing without largeIcon (Intune shows the generic tile).'
+        }
+
         # Resolve declared dependencies to real Intune app ids BEFORE creating the app shell and uploading
         # the blob — a missing dependency should be reported up front, not after a 200 MB upload. Any that
         # cannot be resolved are WARNED about and skipped: the app still publishes (nothing is ever

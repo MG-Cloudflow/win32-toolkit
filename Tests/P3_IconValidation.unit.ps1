@@ -25,6 +25,7 @@ $fail = 0
 function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
+. (Join-Path $repo 'Private\Set-Win32ToolkitIconSource.ps1')   # Get-AppIconFromWinget records icon provenance
 . (Join-Path $repo 'Private\Get-AppIconFromWinget.ps1')
 
 # ── Shadow Invoke-WebRequest: record every call and hand back a crafted response ──────────────────

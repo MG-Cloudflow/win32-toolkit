@@ -592,6 +592,197 @@ foreach ($regKey in $jsonData.NewRegistryKeys) {
 Write-Log "Derived $($jsonData.NewPrograms.Count) new programs from Uninstall registry diff" "INFO"
 # END NewPrograms derivation
 
+# --- Capture the installed application's icon (fills in when winget has no icon, and for manual apps) ---
+# Sources, in priority order: each new ARP 'DisplayIcon' (already captured in NewRegistryKeys above), then
+# the largest .exe under each new InstallLocation. Extracted at up to 256x256 as a REAL PNG with the alpha
+# channel intact, then written to Sandbox\Logs\ so it rides back to the host for BOTH backends (Sandbox maps
+# it live; the Hyper-V provider already copies Sandbox\Logs\*). The host side (finalize) decides whether to
+# promote it, honoring any winget/manual icon already applied.
+#
+# SECURITY: every value used here (DisplayIcon strings, InstallLocation) is RUNTIME registry data. It is only
+# ever passed as an ARGUMENT to Get-Item / the icon APIs — never spliced into generated code — so there is no
+# script-injection surface even though this runs as the capture user.
+try {
+    Write-Host "`nExtracting the installed application icon..." -ForegroundColor Cyan
+    Write-Log "Starting installed-app icon extraction" "INFO"
+
+    $iconOutDir = 'C:\PSADT\Sandbox\Logs'
+    if (-not (Test-Path $iconOutDir)) { New-Item -ItemType Directory -Path $iconOutDir -Force | Out-Null }
+    $iconOut     = Join-Path $iconOutDir 'AppIcon_Captured.png'
+    $iconMinSize = 48   # skip-low-res gate: never upscale a frame this small or smaller
+
+    Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue
+    if (-not ('Win32IconApi.Native' -as [type])) {
+        Add-Type -Namespace Win32IconApi -Name Native -MemberDefinition @"
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern uint PrivateExtractIcons(string szFileName, int nIconIndex, int cxIcon, int cyIcon, System.IntPtr[] phicon, uint[] piconid, uint nIcons, uint flags);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool DestroyIcon(System.IntPtr hIcon);
+"@ -ErrorAction SilentlyContinue
+    }
+
+    # Mirror of ConvertFrom-Win32ToolkitDisplayIcon (kept 5.1-safe & self-contained for the guest).
+    function ConvertFrom-DisplayIcon {
+        param([string]$Value)
+        if (-not $Value) { return $null }
+        $v = $Value.Trim()
+        if (-not $v) { return $null }
+        $idx = 0
+        if ($v.StartsWith('"')) {
+            $end = $v.IndexOf('"', 1)
+            if ($end -lt 0) { return $null }
+            $p    = $v.Substring(1, $end - 1)
+            $rest = $v.Substring($end + 1).Trim()
+            if ($rest -match '^,\s*(-?\d+)') { $idx = [int]$matches[1] }
+        } else {
+            if ($v -match '^(.*),\s*(-?\d+)\s*$') { $p = $matches[1].Trim(); $idx = [int]$matches[2] }
+            else { $p = $v }
+        }
+        if (-not $p) { return $null }
+        $p = [Environment]::ExpandEnvironmentVariables($p)
+        return New-Object PSObject -Property @{ Path = $p; Index = $idx }
+    }
+
+    function Save-IconViaApi {
+        param([string]$Path, [int]$Index, [string]$OutFile, [int]$Size)
+        if (-not ('Win32IconApi.Native' -as [type])) { return $false }
+        $phicon  = New-Object 'System.IntPtr[]' 1
+        $piconid = New-Object 'uint[]' 1
+        $n = [Win32IconApi.Native]::PrivateExtractIcons($Path, $Index, $Size, $Size, $phicon, $piconid, 1, 0)
+        if ($n -lt 1 -or $phicon[0] -eq [System.IntPtr]::Zero) { return $false }
+        $hicon = $phicon[0]
+        try {
+            $bmp = New-Object System.Drawing.Bitmap($Size, $Size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+            try {
+                $g = [System.Drawing.Graphics]::FromImage($bmp)
+                try {
+                    $g.Clear([System.Drawing.Color]::Transparent)
+                    $ico = [System.Drawing.Icon]::FromHandle($hicon)
+                    try { $g.DrawIcon($ico, (New-Object System.Drawing.Rectangle(0, 0, $Size, $Size))) }
+                    finally { $ico.Dispose() }
+                }
+                finally { $g.Dispose() }
+                $bmp.Save($OutFile, [System.Drawing.Imaging.ImageFormat]::Png)
+                return $true
+            }
+            finally { $bmp.Dispose() }
+        }
+        finally { [void][Win32IconApi.Native]::DestroyIcon($hicon) }
+    }
+
+    function Save-AppIcon {
+        param([string]$Path, [int]$Index, [string]$OutFile, [int]$MinSize)
+        if (-not $Path) { return $false }
+        if (-not (Test-Path -LiteralPath $Path)) { return $false }
+        $ext = [System.IO.Path]::GetExtension($Path)
+        if ($ext) { $ext = $ext.ToLower() }
+
+        # .ico file: pick the largest frame; copy an embedded PNG frame byte-for-byte (best quality).
+        if ($ext -eq '.ico') {
+            try {
+                $b = [System.IO.File]::ReadAllBytes($Path)
+                if ($b.Length -lt 6 -or $b[0] -ne 0 -or $b[1] -ne 0 -or $b[2] -ne 1 -or $b[3] -ne 0) { return $false }
+                $count = [System.BitConverter]::ToUInt16($b, 4)
+                $bestSize = -1; $bestOff = 0; $bestLen = 0
+                for ($i = 0; $i -lt $count; $i++) {
+                    $e = 6 + ($i * 16)
+                    if ($e + 16 -gt $b.Length) { break }
+                    $w = $b[$e];     if ($w -eq 0) { $w = 256 }
+                    $h = $b[$e + 1]; if ($h -eq 0) { $h = 256 }
+                    $size = [Math]::Max($w, $h)
+                    if ($size -gt $bestSize) {
+                        $bestSize = $size
+                        $bestLen  = [System.BitConverter]::ToInt32($b, $e + 8)
+                        $bestOff  = [System.BitConverter]::ToInt32($b, $e + 12)
+                    }
+                }
+                if ($bestSize -lt $MinSize) { return $false }
+                if ($bestOff -gt 0 -and $bestLen -gt 8 -and ($bestOff + $bestLen) -le $b.Length -and
+                    $b[$bestOff] -eq 0x89 -and $b[$bestOff + 1] -eq 0x50 -and $b[$bestOff + 2] -eq 0x4E -and $b[$bestOff + 3] -eq 0x47) {
+                    $frame = New-Object 'byte[]' $bestLen
+                    [System.Array]::Copy($b, $bestOff, $frame, 0, $bestLen)
+                    [System.IO.File]::WriteAllBytes($OutFile, $frame)
+                    return $true
+                }
+                return (Save-IconViaApi -Path $Path -Index 0 -OutFile $OutFile -Size ([Math]::Min($bestSize, 256)))
+            }
+            catch { return $false }
+        }
+
+        # A raster image used directly as the DisplayIcon: gate on real dimensions, re-encode PNG.
+        if ($ext -eq '.png' -or $ext -eq '.jpg' -or $ext -eq '.jpeg' -or $ext -eq '.bmp' -or $ext -eq '.gif') {
+            try {
+                $img = [System.Drawing.Image]::FromFile($Path)
+                try {
+                    if ([Math]::Max($img.Width, $img.Height) -lt $MinSize) { return $false }
+                    $img.Save($OutFile, [System.Drawing.Imaging.ImageFormat]::Png)
+                    return $true
+                }
+                finally { $img.Dispose() }
+            }
+            catch { return $false }
+        }
+
+        # PE (.exe/.dll) or unknown: extract the embedded icon at up to 256x256 (best-effort; the exact
+        # low-res gate applies to .ico/raster sources where the native frame size is known cheaply).
+        return (Save-IconViaApi -Path $Path -Index $Index -OutFile $OutFile -Size 256)
+    }
+
+    # Build the candidate list from the new Uninstall keys: DisplayIcon values first, InstallLocations fallback.
+    $iconCandidates = @()
+    $exeLocations   = @()
+    foreach ($rk in $jsonData.NewRegistryKeys) {
+        if (-not $rk.Path) { continue }
+        if ($rk.Path -notmatch '\\Uninstall\\') { continue }
+        $vals = $rk.Values
+        if (-not $vals) { continue }
+        $di = [string]$vals['DisplayIcon']
+        $il = [string]$vals['InstallLocation']
+        if ($di) {
+            $parsed = ConvertFrom-DisplayIcon -Value $di
+            if ($parsed) { $iconCandidates += $parsed }
+        }
+        if ($il) {
+            $loc = [Environment]::ExpandEnvironmentVariables($il).Trim()
+            if ($loc) { $exeLocations += $loc }
+        }
+    }
+
+    $iconDone = $false
+    foreach ($c in $iconCandidates) {
+        if (Save-AppIcon -Path $c.Path -Index $c.Index -OutFile $iconOut -MinSize $iconMinSize) { $iconDone = $true; break }
+    }
+
+    if (-not $iconDone) {
+        # Fallback: the largest .exe under each InstallLocation (skip system roots — never recurse those).
+        $systemRoots = @()
+        foreach ($r in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData, $env:SystemRoot, $env:USERPROFILE, 'C:\')) {
+            if ($r) { $systemRoots += $r.TrimEnd('\').ToLower() }
+        }
+        foreach ($loc in $exeLocations) {
+            if (-not (Test-Path -LiteralPath $loc)) { continue }
+            $full = ''
+            try { $full = [System.IO.Path]::GetFullPath($loc).TrimEnd('\').ToLower() } catch { $full = '' }
+            if ($full -and ($systemRoots -contains $full)) { continue }
+            $exe = Get-ChildItem -LiteralPath $loc -Filter *.exe -Recurse -Depth 2 -ErrorAction SilentlyContinue |
+                   Sort-Object Length -Descending | Select-Object -First 1
+            if ($exe -and (Save-AppIcon -Path $exe.FullName -Index 0 -OutFile $iconOut -MinSize $iconMinSize)) { $iconDone = $true; break }
+        }
+    }
+
+    if ($iconDone) {
+        Write-Host "Captured application icon -> $iconOut" -ForegroundColor Green
+        Write-Log "Captured application icon to $iconOut" "SUCCESS"
+    } else {
+        Write-Host "No suitable application icon found to capture." -ForegroundColor Yellow
+        Write-Log "No suitable application icon found to capture" "INFO"
+    }
+}
+catch {
+    Write-Host "Icon extraction failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    Write-Log "Icon extraction failed: $($_.Exception.Message)" "WARNING"
+}
+
 # Export JSON data
 try {
     $jsonOutput = $jsonData | ConvertTo-Json -Depth 10 -Compress:$false
