@@ -39,6 +39,16 @@ New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 # -NoMetadata: no YAML front matter — the pages must render cleanly on plain GitHub AND in MkDocs.
 $null = New-MarkdownHelp -Module 'win32-toolkit' -OutputFolder $outDir -NoMetadata -Force
 
+# Normalize every generated page to LF + UTF-8 (no BOM). platyPS writes platform line endings, and
+# the CI drift job compares BYTES across machines — without this, a regeneration on another machine
+# is flagged as drift by line endings alone (an invisible diff). Paired with the .gitattributes
+# rule 'docs/reference/*.md text eol=lf'.
+foreach ($f in Get-ChildItem -LiteralPath $outDir -Filter '*.md') {
+    $text = [System.IO.File]::ReadAllText($f.FullName)
+    $text = $text.Replace("`r`n", "`n")
+    [System.IO.File]::WriteAllText($f.FullName, $text, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 # Index page linking every command, grouped the way the README's command table groups them.
 $groups = [ordered]@{
     'Start here'         = @('Show-Win32Toolkit', 'Invoke-Win32Toolkit', 'New-Win32ToolkitManualApp', 'Complete-Win32ToolkitManualApp', 'Test-Win32ToolkitProject')

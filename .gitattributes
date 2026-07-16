@@ -1,0 +1,4 @@
+# The generated command reference must be BYTE-deterministic across machines: the CI drift job
+# regenerates it and fails on any difference, so line endings must never vary by platform.
+# build/Update-Docs.ps1 writes LF; this keeps checkouts from converting them back to CRLF.
+docs/reference/*.md text eol=lf
