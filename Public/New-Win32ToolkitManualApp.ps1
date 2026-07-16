@@ -18,7 +18,7 @@ function New-Win32ToolkitManualApp {
               Invoke-AppDeployToolkit.ps1 is left for you to author. The uninstall stays automated.
               Finish later with Complete-Win32ToolkitManualApp.
 
-    See knowledge-base/designs/manual-app-packaging.md.
+   
 .PARAMETER Name
     Application display name (required; prompted if omitted).
 .PARAMETER Version
@@ -41,10 +41,28 @@ function New-Win32ToolkitManualApp {
     Org template to apply (under <BasePath>\Templates).
 .PARAMETER BasePath
     Base folder (registry-backed default; prompts on first run).
+.PARAMETER Reconfigure
+    Re-prompt for the base folder and save the new value to the registry, ignoring any stored value.
 .PARAMETER Advanced
     Hard app — leave the Install region for manual authoring.
+.PARAMETER Force
+    Overwrite an existing project folder of the same name without prompting.
 .PARAMETER Continue
     Easy app — run the finalize phase (sandbox capture → uninstall → optional test/package/publish) inline.
+.PARAMETER RunTest
+    Test scenario(s) to run during the finalize phase: 'InstallUninstall', 'Update', or both. Implies
+    -Continue behavior for easy apps.
+.PARAMETER PackageIntune
+    Package the project into a .intunewin during the finalize phase.
+.PARAMETER PublishIntune
+    Upload the packaged app to Microsoft Intune during the finalize phase (implies packaging).
+.PARAMETER PublishUpdate
+    Also publish the UPDATE app (a second, requirement-gated Intune app of the same version).
+.PARAMETER DependsOn
+    Dependencies to declare: 'winget:<Id>', 'project:<Template>\<Name>', or 'intune:<AppGuid>'
+    references. Installed first in the test guest and related to the Intune app at publish time.
+.PARAMETER DependencyType
+    How Intune treats the declared dependencies: 'autoInstall' (default) or 'detect'.
 .EXAMPLE
     # Easy app, end to end
     New-Win32ToolkitManualApp -Name 'Acme Tool' -Version '3.1.0' -Architecture x64 `
