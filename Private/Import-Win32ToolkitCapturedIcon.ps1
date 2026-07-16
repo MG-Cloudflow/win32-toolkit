@@ -10,9 +10,11 @@ function Import-Win32ToolkitCapturedIcon {
 
         Precedence (the winget-primary decision): if an authoritative icon is already applied — the
         Assets\.iconsource marker says 'winget' or 'manual' — the captured icon is IGNORED and the existing
-        one is kept. Otherwise (no winget IconUrl, or a manual app with no -IconPath) the captured icon is
-        promoted: validated as a real image, written to Assets\AppIcon.png (and the PSAppDeployToolkit\Assets
-        mirror so PSADT's own dialogs use it too), and the marker is set to 'captured'.
+        one is kept. A 'template' org-logo fallback (B7) is NOT authoritative: a real captured icon is
+        better than the org default, so it overrides 'template'. Otherwise (no winget IconUrl, a manual app
+        with no -IconPath, or only the org-logo fallback) the captured icon is promoted: validated as a real
+        image, written to Assets\AppIcon.png (and the PSAppDeployToolkit\Assets mirror so PSADT's own dialogs
+        use it too), and the marker is set to 'captured'.
 
         Returns $true when the captured icon was promoted, $false otherwise (nothing captured, precedence
         kept the existing icon, or the captured file was not a valid image).

@@ -98,9 +98,13 @@ function New-OrgTemplate {
     Write-Host "  An org extension module (shared functions for your hooks) lives in:" -ForegroundColor DarkGray
     Write-Host "    $tplFolder\PSAppDeployToolkit.<YourOrg>\  (auto-imported by PSADT in every project)" -ForegroundColor DarkGray
     $extModule = Read-TB 'Ship an org PSADT extension module'            ($ExistingTemplate?.ExtensionModule ?? $false)
-    if ($hooksEnabled -or $extModule) {
+    Write-Host "  Org branding: drop AppIcon.png (dialogs + Intune tile fallback) and Banner.Classic.png in:" -ForegroundColor DarkGray
+    Write-Host "    $tplFolder\Assets\" -ForegroundColor DarkGray
+    $customAssets = Read-TB 'Ship org branding assets (logo / banner)'   ($ExistingTemplate?.CustomAssets ?? $false)
+    if ($hooksEnabled -or $extModule -or $customAssets) {
         if (-not (Test-Path $tplFolder)) { New-Item -ItemType Directory -Path $tplFolder -Force | Out-Null }
-        if ($hooksEnabled -and -not (Test-Path (Join-Path $tplFolder 'Hooks'))) { New-Item -ItemType Directory -Path (Join-Path $tplFolder 'Hooks') -Force | Out-Null }
+        if ($hooksEnabled  -and -not (Test-Path (Join-Path $tplFolder 'Hooks')))  { New-Item -ItemType Directory -Path (Join-Path $tplFolder 'Hooks')  -Force | Out-Null }
+        if ($customAssets  -and -not (Test-Path (Join-Path $tplFolder 'Assets'))) { New-Item -ItemType Directory -Path (Join-Path $tplFolder 'Assets') -Force | Out-Null }
         Write-Host "  ✓ Prepared $tplFolder — add your files there, then re-run the pipeline." -ForegroundColor DarkGreen
     }
 
@@ -148,6 +152,7 @@ function New-OrgTemplate {
             FailureAction = $hooksFailure
         }
         ExtensionModule       = $extModule
+        CustomAssets          = $customAssets
     }
 
     $savePath = Join-Path $templateFolder "$templateName.json"

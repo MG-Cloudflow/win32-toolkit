@@ -163,6 +163,11 @@ function Apply-OrgTemplate {
             Write-Verbose '  Invoke-AppDeployToolkit.ps1 updated'
         }
 
+        #── B1/B7: org branding assets (logo + Classic banner) ──────────────
+        # Copies Templates\<name>\Assets\{AppIcon.png, Banner.Classic.png} into the project. The logo is a
+        # precedence-respecting base (winget/manual/captured still win); opt-in via CustomAssets.
+        Add-Win32ToolkitTemplateAssets -ProjectPath $ProjectPath -Template $Template
+
         #── A1/A3: org hook scripts + extension module ──────────────────────
         # Copy-not-splice: operator scripts are copied into SupportFiles\OrgHooks\ (and any org PSADT
         # extension module into the project root); only a compile-time-constant stub is injected at the
