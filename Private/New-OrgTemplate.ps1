@@ -108,6 +108,16 @@ function New-OrgTemplate {
         Write-Host "  ✓ Prepared $tplFolder — add your files there, then re-run the pipeline." -ForegroundColor DarkGreen
     }
 
+    Write-Host ''; Write-Host '--- F: Intune publish defaults (D2/D3) ---' -ForegroundColor Yellow
+    $idMinOS   = Read-TV 'Minimum Windows release (e.g. 1607, 22H2)'      ($ExistingTemplate?.IntuneDefaults?.MinimumWindowsRelease ?? '1607')
+    $idRestart = Read-TV 'Device restart behavior (suppress/allow/force/basedOnReturnCode)' ($ExistingTemplate?.IntuneDefaults?.DeviceRestartBehavior ?? 'suppress')
+    if ($idRestart -notin @('suppress','allow','force','basedOnReturnCode')) { Write-Host "  '$idRestart' invalid — using 'suppress'." -ForegroundColor DarkYellow; $idRestart = 'suppress' }
+    $idRuntime = Read-TI 'Max run time (minutes)'                          ($ExistingTemplate?.IntuneDefaults?.MaxRuntimeMinutes ?? 60)
+    if ($idRuntime -le 0) { $idRuntime = 60 }
+    $idDesc    = Read-TV 'Description boilerplate appended to every app (blank=none)' ($ExistingTemplate?.IntuneDefaults?.DescriptionBoilerplate ?? '')
+    $idPrivacy = Read-TV 'Privacy information URL (blank=none)'            ($ExistingTemplate?.IntuneDefaults?.PrivacyUrl ?? '')
+    $docFooter = Read-TV 'Customer-doc footer line (blank=default)'        ($ExistingTemplate?.DocFooter ?? '')
+
     $template = [PSCustomObject]@{
         TemplateSchemaVersion = $script:TemplateSchemaVersion
         TemplateName          = $templateName
@@ -153,6 +163,14 @@ function New-OrgTemplate {
         }
         ExtensionModule       = $extModule
         CustomAssets          = $customAssets
+        IntuneDefaults        = [PSCustomObject]@{
+            MinimumWindowsRelease  = $idMinOS
+            DeviceRestartBehavior  = $idRestart
+            MaxRuntimeMinutes      = $idRuntime
+            DescriptionBoilerplate = $idDesc
+            PrivacyUrl             = $idPrivacy
+        }
+        DocFooter             = $docFooter
     }
 
     $savePath = Join-Path $templateFolder "$templateName.json"

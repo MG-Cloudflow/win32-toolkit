@@ -1,0 +1,69 @@
+# IntuneDefaults.unit.ps1 — D2/D3 Intune publish defaults + B8 doc branding.
+# Guards: New-Win32ToolkitIntuneDefaults validation/fallbacks; Export-Win32ToolkitDocumentation honors
+# the org min-OS (no '1607' drift) and the B8 company/footer branding, and is unchanged without a template.
+
+$ErrorActionPreference = 'Stop'
+$repo = Split-Path $PSScriptRoot -Parent
+Get-ChildItem (Join-Path $repo 'Private') -Filter *.ps1 | ForEach-Object { . $_.FullName }
+. (Join-Path $repo 'Public\Export-Win32ToolkitDocumentation.ps1')
+
+$fail = 0
+function Ok  { param($m) Write-Host "  PASS: $m" -ForegroundColor Green }
+function Bad { param($m) Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
+
+Write-Host "`n[1] New-Win32ToolkitIntuneDefaults — full template passes values through" -ForegroundColor Cyan
+$t = [pscustomobject]@{ IntuneDefaults = [pscustomobject]@{
+    MinimumWindowsRelease='22H2'; DeviceRestartBehavior='allow'; MaxRuntimeMinutes=120
+    DescriptionBoilerplate='Managed by CloudFlow'; PrivacyUrl='https://cloudflow.be/privacy' } }
+$d = New-Win32ToolkitIntuneDefaults -Template $t
+if ($d.MinimumWindowsRelease -eq '22H2' -and $d.DeviceRestartBehavior -eq 'allow' -and $d.MaxRuntimeMinutes -eq 120 -and
+    $d.DescriptionBoilerplate -eq 'Managed by CloudFlow' -and $d.PrivacyUrl -eq 'https://cloudflow.be/privacy') { Ok 'all values pass through' } else { Bad "values: $($d | ConvertTo-Json -Compress)" }
+
+Write-Host "`n[2] Fallbacks — no template / empty fields -> today's built-in defaults" -ForegroundColor Cyan
+$d2 = New-Win32ToolkitIntuneDefaults -Template $null
+if ($d2.MinimumWindowsRelease -eq '1607' -and $d2.DeviceRestartBehavior -eq 'suppress' -and $d2.MaxRuntimeMinutes -eq 60 -and $d2.DescriptionBoilerplate -eq '' -and $d2.PrivacyUrl -eq '') { Ok 'null template -> exact built-in defaults' } else { Bad "defaults wrong: $($d2 | ConvertTo-Json -Compress)" }
+
+Write-Host "`n[3] Validation — bad restart enum / non-positive runtime are corrected" -ForegroundColor Cyan
+$t3 = [pscustomobject]@{ IntuneDefaults = [pscustomobject]@{ DeviceRestartBehavior='reboot-now'; MaxRuntimeMinutes=0 } }
+$d3 = New-Win32ToolkitIntuneDefaults -Template $t3
+if ($d3.DeviceRestartBehavior -eq 'suppress') { Ok 'invalid restart enum -> suppress' } else { Bad "restart=[$($d3.DeviceRestartBehavior)]" }
+if ($d3.MaxRuntimeMinutes -eq 60) { Ok 'runtime 0 -> 60' } else { Bad "runtime=[$($d3.MaxRuntimeMinutes)]" }
+
+# ── Doc-export fixture ──
+function New-DocProject {
+    param([pscustomobject]$AppConfig)
+    $p = Join-Path ([System.IO.Path]::GetTempPath()) ('docint_' + [guid]::NewGuid().ToString('N').Substring(0,8))
+    New-Item -ItemType Directory -Path (Join-Path $p 'SupportFiles') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $p 'Files') -Force | Out-Null
+    ($AppConfig | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath (Join-Path $p 'SupportFiles\AppConfig.json') -Encoding UTF8
+    return $p
+}
+$appBase = [pscustomobject]@{ App = [pscustomobject]@{ Vendor='Contoso'; Name='App'; DisplayName='App'; Version='1.0'; Arch='x64' } }
+
+Write-Host "`n[4] Doc export — org min-OS replaces the hardcoded 1607 (D3 drift fix)" -ForegroundColor Cyan
+$ac = $appBase.PSObject.Copy(); $ac | Add-Member IntuneDefaults ([pscustomobject]@{ MinimumWindowsRelease='22H2' }) -Force
+$proj = New-DocProject -AppConfig $ac
+$out = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath (Join-Path $proj 'Documentation.md') 6>$null
+$md = Get-Content -LiteralPath $out -Raw
+if ($md -match 'Windows release 22H2 or later') { Ok 'doc min-OS reflects the org default (22H2)' } else { Bad 'doc min-OS did not follow the org default' }
+
+Write-Host "`n[5] Doc export — no IntuneDefaults -> unchanged 1607 wording" -ForegroundColor Cyan
+$proj5 = New-DocProject -AppConfig $appBase
+$out5 = Export-Win32ToolkitDocumentation -ProjectPath $proj5 -OutputPath (Join-Path $proj5 'Documentation.md') 6>$null
+$md5 = Get-Content -LiteralPath $out5 -Raw
+if ($md5 -match 'Windows 10 1607 \(build 14393\)') { Ok 'no template -> original 1607 wording preserved' } else { Bad 'default 1607 wording changed' }
+
+Write-Host "`n[6] Doc export — B8 company + custom footer" -ForegroundColor Cyan
+$ac6 = $appBase.PSObject.Copy(); $ac6 | Add-Member Branding ([pscustomobject]@{ CompanyName='CloudFlow'; DocFooter='(c) 2026 CloudFlow - support@cloudflow.be' }) -Force
+$proj6 = New-DocProject -AppConfig $ac6
+$out6 = Export-Win32ToolkitDocumentation -ProjectPath $proj6 -OutputPath (Join-Path $proj6 'Documentation.md') 6>$null
+$md6 = Get-Content -LiteralPath $out6 -Raw
+if ($md6 -match 'Prepared by CloudFlow') { Ok 'footer shows "Prepared by <company>"' } else { Bad 'company line missing' }
+if ($md6 -match [regex]::Escape('(c) 2026 CloudFlow - support@cloudflow.be')) { Ok 'custom DocFooter line rendered' } else { Bad 'DocFooter missing' }
+
+Write-Host "`n[7] Doc export — no Branding -> plain generated line (unchanged)" -ForegroundColor Cyan
+if ($md5 -match '_Generated by win32-toolkit on \d{4}-\d{2}-\d{2}_' -and $md5 -notmatch 'Prepared by') { Ok 'no branding -> original footer' } else { Bad 'default footer changed' }
+
+Write-Host ""
+if ($fail -eq 0) { Write-Host "IntuneDefaults unit test PASSED" -ForegroundColor Green; exit 0 }
+else { Write-Host "$fail FAILURE(S)" -ForegroundColor Red; exit 1 }

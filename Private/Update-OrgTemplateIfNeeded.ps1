@@ -29,6 +29,8 @@ function Update-OrgTemplateIfNeeded {
     if (-not $Template.PSObject.Properties['Hooks'])                 { $Template | Add-Member -NotePropertyName Hooks -NotePropertyValue ([PSCustomObject]@{ Enabled = $false; FailureAction = 'Fail' }) -Force }
     if (-not $Template.PSObject.Properties['ExtensionModule'])       { $Template | Add-Member -NotePropertyName ExtensionModule -NotePropertyValue $false -Force }
     if (-not $Template.PSObject.Properties['CustomAssets'])          { $Template | Add-Member -NotePropertyName CustomAssets -NotePropertyValue $false -Force }
+    if (-not $Template.PSObject.Properties['IntuneDefaults'])        { $Template | Add-Member -NotePropertyName IntuneDefaults -NotePropertyValue ([PSCustomObject]@{ MinimumWindowsRelease = '1607'; DeviceRestartBehavior = 'suppress'; MaxRuntimeMinutes = 60; DescriptionBoilerplate = ''; PrivacyUrl = '' }) -Force }
+    if (-not $Template.PSObject.Properties['DocFooter'])             { $Template | Add-Member -NotePropertyName DocFooter -NotePropertyValue '' -Force }
     if (-not $Template.PSObject.Properties['UninstallWelcomeDialog']) {
         $Template | Add-Member -NotePropertyName UninstallWelcomeDialog -NotePropertyValue (
             [PSCustomObject]@{ Enabled = $true; CloseProcessesCountdown = 60; PersistPrompt = $false; BlockExecution = $false }
