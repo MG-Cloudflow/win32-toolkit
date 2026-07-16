@@ -19,7 +19,6 @@ function New-OrgTemplate {
 
     Write-Host ''
     Write-Host '=== Organisation Template Wizard ===' -ForegroundColor Cyan
-    Write-Host 'Only Fluent dialog style is supported.' -ForegroundColor DarkGray
     Write-Host 'Press Enter on any prompt to keep the default value.' -ForegroundColor DarkGray
     Write-Host ''
 
@@ -33,9 +32,18 @@ function New-OrgTemplate {
     $companyName  = Read-TV 'Company name (shown in dialog subtitles)'         ($ExistingTemplate?.CompanyName     ?? 'Your Organisation IT')
     $scriptAuthor = Read-TV 'App script author'                                ($ExistingTemplate?.AppScriptAuthor ?? 'IT Packaging Team')
 
-    Write-Host ''; Write-Host '--- B: Branding (Fluent only) ---' -ForegroundColor Yellow
+    Write-Host ''; Write-Host '--- B: Branding & dialog style ---' -ForegroundColor Yellow
+    # DialogStyle (B2): Fluent = modern v4 look; Classic = v3-style dialogs (uses Banner.Classic.png).
+    $dialogStyle = Read-TV 'Dialog style — Fluent or Classic'                    ($ExistingTemplate?.DialogStyle       ?? 'Fluent')
+    if ($dialogStyle -notin @('Fluent','Classic')) {
+        Write-Host "  '$dialogStyle' is not valid — using 'Fluent'." -ForegroundColor DarkYellow
+        $dialogStyle = 'Fluent'
+    }
     $accentColor = Read-TV 'Fluent accent hex e.g. 0xFF0078D7 (blank=default)' ($ExistingTemplate?.FluentAccentColor ?? '')
     $logPath     = Read-TV 'Log path'                                           ($ExistingTemplate?.LogPath           ?? '$envWinDir\Logs\Software')
+    # LanguageOverride (C1): pin all PSADT dialogs to one UI language (e.g. nl, fr-FR, de).
+    # Blank = auto-detect the signed-in user's language on-device (works under SYSTEM).
+    $languageOverride = Read-TV 'Force dialog language e.g. nl / fr-FR (blank=auto-detect)' ($ExistingTemplate?.LanguageOverride ?? '')
 
     Write-Host ''; Write-Host '--- C: Progress Messages ---' -ForegroundColor Yellow
     $pMsgI = Read-TV 'Progress message - Install'   ($ExistingTemplate?.ProgressMessage?.Install   ?? 'Installation in progress. Please wait...')
@@ -82,9 +90,10 @@ function New-OrgTemplate {
         TemplateName          = $templateName
         CompanyName           = $companyName
         AppScriptAuthor       = $scriptAuthor
-        DialogStyle           = 'Fluent'
+        DialogStyle           = $dialogStyle
         FluentAccentColor     = $accentColor
         LogPath               = $logPath
+        LanguageOverride      = $languageOverride
         PsadtVersion          = $psadtVer
         ProgressMessage       = [PSCustomObject]@{ Install = $pMsgI; Repair = $pMsgR; Uninstall = $pMsgU }
         ProgressMessageDetail = [PSCustomObject]@{ Install = $pDtlI; Repair = $pDtlR; Uninstall = $pDtlU }

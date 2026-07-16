@@ -25,6 +25,7 @@ function Update-OrgTemplateIfNeeded {
     if (-not $Template.PSObject.Properties['TemplateSchemaVersion']) { $Template | Add-Member -NotePropertyName TemplateSchemaVersion -NotePropertyValue $currentVer -Force }
     if (-not $Template.PSObject.Properties['PsadtVersion'])          { $Template | Add-Member -NotePropertyName PsadtVersion -NotePropertyValue 'unknown' -Force }
     if (-not $Template.PSObject.Properties['DialogStyle'])           { $Template | Add-Member -NotePropertyName DialogStyle -NotePropertyValue 'Fluent' -Force }
+    if (-not $Template.PSObject.Properties['LanguageOverride'])      { $Template | Add-Member -NotePropertyName LanguageOverride -NotePropertyValue '' -Force }
     if (-not $Template.PSObject.Properties['UninstallWelcomeDialog']) {
         $Template | Add-Member -NotePropertyName UninstallWelcomeDialog -NotePropertyValue (
             [PSCustomObject]@{ Enabled = $true; CloseProcessesCountdown = 60; PersistPrompt = $false; BlockExecution = $false }

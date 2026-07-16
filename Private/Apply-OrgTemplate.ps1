@@ -16,33 +16,19 @@ function Apply-OrgTemplate {
         # deploy script. Used everywhere a value is spliced into a '...' literal below. [string]$null -> ''.
         function Esc { param([string]$s) $s -replace "'", "''" }
 
-        #── config.psd1 ────────────────────────────────────────────────────
+        #── config.psd1 (data-driven, F1) ──────────────────────────────────
+        # REPLACE the scaffolded full config.psd1 with a SPARSE file carrying only the template's
+        # deltas. PSADT superimposes it over its signed module default key-by-key, so every omitted
+        # key keeps the default — no more regex-patching a full copy (which drifted on PSADT text
+        # changes). New config knobs are now one hashtable entry in New-Win32ToolkitSparseConfig.
         $configPath = Join-Path $ProjectPath 'Config\config.psd1'
         if (Test-Path $configPath) {
-            $cfg = Get-Content $configPath -Raw -Encoding UTF8
-
-            $companyEsc = Esc $Template.CompanyName
-            $cfg = [regex]::Replace($cfg, "CompanyName = '[^']*'", { "CompanyName = '$companyEsc'" })
-            $cfg = $cfg -replace "DialogStyle = '(Fluent|Classic)'", "DialogStyle = '$($Template.DialogStyle)'"
-
-            if ($Template.FluentAccentColor -and $Template.FluentAccentColor.Trim() -ne '') {
-                $cfg = $cfg -replace 'FluentAccentColor = [^\r\n]+', "FluentAccentColor = $($Template.FluentAccentColor)"
-            } else {
-                $cfg = $cfg -replace 'FluentAccentColor = [^\r\n]+', 'FluentAccentColor = $null'
-            }
-
-            if ($Template.LogPath -and $Template.LogPath.Trim() -ne '') {
-                # Only target the Toolkit.LogPath (line after its specific comment). A MatchEvaluator keeps
-                # the comment prefix (group 1) and inserts the escaped value literally (no $-token pitfalls).
-                $logEsc = Esc $Template.LogPath
-                $cfg = [regex]::Replace($cfg, '(?m)(# Log path used for Toolkit logging\.\r?\n\s*LogPath = )[^\r\n]+', { param($m) $m.Groups[1].Value + "'$logEsc'" })
-            }
-
-            # UTF-8 WITH BOM — read on-device by Windows PowerShell 5.1 (Import-PowerShellDataFile), which
-            # decodes a BOM-less file as ANSI and would mojibake a non-ASCII CompanyName. PS7's
+            $cfg = New-Win32ToolkitSparseConfig -Template $Template
+            # UTF-8 WITH BOM — read on-device by Windows PowerShell 5.1 (Import-PowerShellDataFile),
+            # which decodes a BOM-less file as ANSI and would mojibake a non-ASCII CompanyName. PS7's
             # Set-Content -Encoding UTF8 writes NO BOM, so write the bytes ourselves.
             [System.IO.File]::WriteAllText($configPath, $cfg, (New-Object System.Text.UTF8Encoding($true)))
-            Write-Verbose '  config.psd1 updated'
+            Write-Verbose '  config.psd1 replaced with sparse template config'
         }
 
         #── strings.psd1 ───────────────────────────────────────────────────
