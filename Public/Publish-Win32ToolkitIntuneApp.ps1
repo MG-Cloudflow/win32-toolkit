@@ -142,12 +142,51 @@ function Publish-Win32ToolkitIntuneApp {
             $description = if ([string]::IsNullOrWhiteSpace($description)) { $descBoilerplate } else { "$description`n`n$descBoilerplate" }
         }
 
+        # MSIX/APPX floor: the default 1607 predates MSIX entirely. The package format needs 1709, and
+        # the -Regions 'all' the generated install uses needs 1803 — on an older device the deployment
+        # would fail on a machine Intune said was applicable. 1809 clears both with margin. Only ever
+        # raises the value: an org that deliberately set something higher keeps it.
+        $installerType = if ($appCfg.PSObject.Properties.Name -contains 'Installer' -and $appCfg.Installer) { [string]$appCfg.Installer.Type } else { '' }
+        if ($installerType -in @('msix', 'appx')) {
+            $releaseOrder = @('1607', '1703', '1709', '1803', '1809', '1903', '1909', '2004', '20H2', '21H1', '21H2', '22H2')
+            $curIdx  = [array]::IndexOf($releaseOrder, $minWinRelease)
+            $floorIdx = [array]::IndexOf($releaseOrder, '1809')
+            if ($curIdx -ge 0 -and $curIdx -lt $floorIdx) {
+                Write-Verbose "MSIX/APPX package: raising minimumSupportedWindowsRelease from '$minWinRelease' to '1809' (MSIX needs 1709; provisioning with -Regions needs 1803)."
+                $minWinRelease = '1809'
+            }
+        }
+
         # ── Architecture: AppConfig.App.Arch, else parse the project folder name ──
+        # Published via allowedArchitectures, NOT applicableArchitectures. The older
+        # applicableArchitectures is a windowsArchitecture flags enum whose members are
+        # none/x86/x64/arm/neutral — 'arm64' is NOT one of them (the member is 'arm'), and its
+        # documented values are only none/x86/x64. So every arm64 app this module published was sending
+        # an undocumented enum value. allowedArchitectures is the modern property and documents
+        # null/x86/x64/arm64; setting it makes Intune set applicableArchitectures to 'none' itself.
         $arch = 'x64'
         if     ($app -and $app.Arch)           { $arch = $app.Arch }
         elseif ($projectName -match '_x86_')   { $arch = 'x86'   }
         elseif ($projectName -match '_arm64_') { $arch = 'arm64' }
         elseif ($projectName -match '_x64_')   { $arch = 'x64'   }
+        # Canonicalize case: the enum values are lower-case and the guard below is case-insensitive, so
+        # an AppConfig 'X64' would otherwise pass through and be POSTed verbatim as an invalid value.
+        $arch = "$arch".Trim().ToLowerInvariant()
+
+        # Two properties, because neither covers every architecture:
+        #  * allowedArchitectures documents null/x86/x64/arm64 — it is the ONLY way to express arm64.
+        #  * 'neutral' and 'arm' are windowsArchitecture members but are NOT in allowedArchitectures'
+        #    documented values, so they keep going out on applicableArchitectures (which is what this
+        #    module always sent, and works). winget reports 'neutral' for plenty of MSIX packages, so
+        #    collapsing it to x64 would silently make those apps not-applicable on x86/arm64 devices.
+        $archField = 'allowedArchitectures'
+        if ($arch -in @('neutral', 'arm')) {
+            $archField = 'applicableArchitectures'
+        }
+        elseif ($arch -notin @('x86', 'x64', 'arm64')) {
+            Write-Warning "Unrecognized architecture '$arch' — publishing as x64."
+            $arch = 'x64'
+        }
 
         # ── Update app: name suffix + requirement rule (applicable only where already installed) ──
         $requirementRules = @()
@@ -210,7 +249,7 @@ function Publish-Win32ToolkitIntuneApp {
             'setupFilePath'                    = 'Invoke-AppDeployToolkit.ps1'
             'installCommandLine'               = 'powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Install'
             'uninstallCommandLine'             = 'powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Uninstall'
-            'applicableArchitectures'          = $arch
+            $archField                         = $arch
             'minimumSupportedWindowsRelease'   = $minWinRelease
             'msiInformation'                   = $null
             'installExperience' = @{

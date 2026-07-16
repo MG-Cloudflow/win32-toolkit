@@ -35,6 +35,7 @@ function NewTmp { $p = Join-Path ([System.IO.Path]::GetTempPath()) ('w32rv_' + [
 . (Join-Path $repo 'Private\Test-Win32ToolkitProductCode.ps1')
 . (Join-Path $repo 'Private\Get-WingetManifestFile.ps1')
 . (Join-Path $repo 'Private\Get-YAMLInstallerInfo.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitInstallerExtension.ps1')  # installer-extension source of truth (bundle support)
 . (Join-Path $repo 'Private\Get-InstallerFileInfo.ps1')
 . (Join-Path $repo 'Private\New-IntuneRequirementScript.ps1')
 

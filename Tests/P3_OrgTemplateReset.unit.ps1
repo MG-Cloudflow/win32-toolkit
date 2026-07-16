@@ -48,6 +48,7 @@ foreach ($rel in 'Public\Invoke-Win32Toolkit.ps1', 'Public\New-Win32ToolkitManua
 # ── (b) BEHAVIOUR — New-Win32ToolkitManualApp is the more testable of the two ────────────────────────
 . (Join-Path $repo 'Private\Sanitize-ProjectName.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitPaths.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitInstallerExtension.ps1')  # installer-extension source of truth (bundle support)
 . (Join-Path $repo 'Private\Get-InstallerFileInfo.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitAppConfig.ps1')
 . (Join-Path $repo 'Private\Set-Win32ToolkitAppConfig.ps1')

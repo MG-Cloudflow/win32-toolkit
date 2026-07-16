@@ -54,8 +54,9 @@ function Resolve-Win32ToolkitBaselineSilentArgs {
 
     switch (($Extension | ForEach-Object { $_.ToLower() })) {
         '.msi'  { return [pscustomobject]@{ SilentArgs = '/qn /norestart'; Guessed = $false } }
-        '.msix' { return [pscustomobject]@{ SilentArgs = '';               Guessed = $false } }
-        '.appx' { return [pscustomobject]@{ SilentArgs = '';               Guessed = $false } }
+        # Appx-family (incl. bundles): install is standardized — no silent args exist.
+        { $_ -in (Get-Win32ToolkitInstallerExtension -PackagesOnly) } {
+                  return [pscustomobject]@{ SilentArgs = '';               Guessed = $false } }
         default { return [pscustomobject]@{ SilentArgs = '/S';             Guessed = $true } }   # typeless .exe — guess
     }
 }

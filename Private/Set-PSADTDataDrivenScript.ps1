@@ -79,10 +79,23 @@ $adtSession = @{
             # SYSTEM (Intune): provision for all users. Interactive (sandbox tests): register for the
             # current user - a provisioned-only package would be invisible to the logged-on operator.
             if ([Security.Principal.WindowsIdentity]::GetCurrent().IsSystem) {
-                try { Add-AppxProvisionedPackage -Online -PackagePath $installerPath -SkipLicense | Out-Null }
+                # -Regions 'all' is REQUIRED, not cosmetic. Per the DISM reference: "When a list of
+                # regions is not specified, the package will be provisioned only if it is pinned to
+                # start layout." Without it, provisioning silently no-ops for most packages: the
+                # command succeeds, the tattoo is written, Intune reports Installed, and no user ever
+                # gets the app.
+                #
+                # There is deliberately NO Add-AppxPackage fallback here. It would run AS SYSTEM and
+                # register the package into SYSTEM's own profile, where no real user can ever see it -
+                # and since it wouldn't throw, the tattoo would still be written and Intune would
+                # report Installed for an app nobody has. A provisioning failure must fail the
+                # deployment loudly. -ErrorAction Stop is what makes that happen: these Appx cmdlets
+                # emit NON-TERMINATING errors by default, so without it a failure would just be logged
+                # and the script would sail on to write the tattoo.
+                try { Add-AppxProvisionedPackage -Online -PackagePath $installerPath -SkipLicense -Regions 'all' -ErrorAction Stop | Out-Null }
                 catch {
-                    Write-ADTLogEntry -Message "Provisioning failed ($($_.Exception.Message)) - falling back to Add-AppxPackage." -Severity 2
-                    Add-AppxPackage -Path $installerPath -ErrorAction Stop
+                    Write-ADTLogEntry -Message "Provisioning failed: $($_.Exception.Message)" -Severity 3
+                    throw
                 }
             } else {
                 Add-AppxPackage -Path $installerPath -ErrorAction Stop
@@ -110,10 +123,16 @@ $adtSession = @{
 ## Data-driven uninstall (values from SupportFiles\AppConfig.json).
     if ($appConfig.Uninstall) {
         $uninstallSuccess = $false
+        # Codes that mean "the app is gone" — checked identically by both loops below so they cannot
+        # drift. 0 = removed. 1605 = "this product is not installed": the goal state already holds
+        # (a user removed it by hand), which is a no-op success, matching how the msix branch treats an
+        # already-absent package. 1641/3010 = removed AND a reboot was initiated/is required. Treating
+        # 1641 or 1605 as failure would make the uninstall throw on a successful removal.
+        $w32tUninstallOk = @(0, 1605, 1641, 3010)
         foreach ($pc in @($appConfig.Uninstall.ProductCodes)) {
             if (-not $pc -or $uninstallSuccess) { continue }
             $r = Start-ADTMsiProcess -Action Uninstall -ProductCode $pc -PassThru
-            if ($r -and $r.ExitCode -in @(0, 3010)) { $uninstallSuccess = $true }
+            if ($r -and $r.ExitCode -in $w32tUninstallOk) { $uninstallSuccess = $true }
         }
         foreach ($u in @($appConfig.Uninstall.Uninstallers)) {
             if (-not $u -or $uninstallSuccess) { continue }
@@ -143,7 +162,15 @@ $adtSession = @{
                     }
                 }
             }
-            if ($r -and $r.ExitCode -in @(0, 3010)) { $uninstallSuccess = $true }
+            if ($r -and $r.ExitCode -in $w32tUninstallOk) { $uninstallSuccess = $true }
+        }
+        # Fail loudly when nothing actually uninstalled. $uninstallSuccess used to be computed and then
+        # never read: every uninstaller could fail and the script still returned 0, so Intune recorded a
+        # successful uninstall and the post-uninstall tattoo removal then made the app UNDETECTED - the
+        # app stays on the device and Intune believes it is gone. Only raise this when there was
+        # something to do (an empty Uninstall section is a separate, configure-time problem).
+        if (-not $uninstallSuccess -and (@($appConfig.Uninstall.ProductCodes).Count + @($appConfig.Uninstall.Uninstallers).Count) -gt 0) {
+            throw 'Uninstall failed: no uninstaller reported success (see the entries above for the cause).'
         }
         foreach ($folder in @($appConfig.Uninstall.CleanupPaths)) {
             if (-not $folder) { continue }

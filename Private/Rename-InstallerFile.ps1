@@ -43,7 +43,9 @@ function Rename-InstallerFile {
     $baseName  = "${cleanName}_${cleanArch}_${cleanVer}"
 
     $renamed = $false
-    foreach ($ext in @('msi', 'exe', 'msix', 'appx')) {
+    # Bundles keep their own extension when renamed (App_x64_1.0.msixbundle) — the extension is
+    # cosmetic; Get-InstallerFileInfo maps both to Type 'msix'/'appx'.
+    foreach ($ext in @((Get-Win32ToolkitInstallerExtension) | ForEach-Object { $_.TrimStart('.') })) {
         # ALL files of this extension are candidates — including one that already carries the target
         # name. Excluding it from this list is what let the old code delete it.
         $candidates = @(Get-ChildItem -Path $FilesPath -Filter "*.$ext" -File -ErrorAction SilentlyContinue |

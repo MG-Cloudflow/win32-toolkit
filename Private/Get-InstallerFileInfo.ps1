@@ -44,7 +44,7 @@ function Get-InstallerFileInfo {
         # "hard app") — name the ignored package so the operator can remove the stray EXE if the
         # package is the real installer.
         $shadowed = @(Get-ChildItem -Path $FilesPath -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Extension -in '.msix', '.appx' })
+            Where-Object { $_.Extension -in (Get-Win32ToolkitInstallerExtension -PackagesOnly) })
         if ($shadowed.Count -gt 0) {
             Write-Warning "Files\ contains both an EXE and a package file ($(($shadowed | ForEach-Object Name) -join ', ')) — using the EXE '$($exeFiles[0].Name)' as the installer. If the MSIX/APPX is the real installer, remove the stray EXE from Files\."
         }
@@ -54,30 +54,32 @@ function Get-InstallerFileInfo {
         return $installerInfo
     }
     
-    # Check for MSIX/APPX files
-    $msixFiles = Get-ChildItem -Path $FilesPath -Filter "*.msix" -File
-    if ($msixFiles) {
-        $installerInfo.FileName = $msixFiles[0].Name
-        $installerInfo.Type = 'msix'
-        $installerInfo.FullPath = $msixFiles[0].FullName
-        return $installerInfo
-    }
-    
-    $appxFiles = Get-ChildItem -Path $FilesPath -Filter "*.appx" -File
-    if ($appxFiles) {
-        $installerInfo.FileName = $appxFiles[0].Name
-        $installerInfo.Type = 'appx'
-        $installerInfo.FullPath = $appxFiles[0].FullName
-        return $installerInfo
-    }
+    # Check for Appx-family packages: .msix/.appx AND their bundles. A bundle installs and uninstalls
+    # exactly like a plain package (Add-AppxProvisionedPackage takes a bundle path; removal is by the
+    # same Name), so it reports the SAME Type — 'msix' for .msix/.msixbundle, 'appx' for .appx/.appxbundle.
+    # Type is install semantics; bundle-ness is content-detected later by Get-Win32ToolkitMsixIdentity.
+    # Families derived from the single extension->Type owner (Get-Win32ToolkitInstallerType), so this
+    # and Download-OldVersionInstaller can never disagree about what a '.msixbundle' is.
+    foreach ($family in @(
+        @{ Type = 'msix'; Extensions = @((Get-Win32ToolkitInstallerExtension -PackagesOnly) | Where-Object { (Get-Win32ToolkitInstallerType -Extension $_) -eq 'msix' }) }
+        @{ Type = 'appx'; Extensions = @((Get-Win32ToolkitInstallerExtension -PackagesOnly) | Where-Object { (Get-Win32ToolkitInstallerType -Extension $_) -eq 'appx' }) }
+    )) {
+        $pkgFiles = @(Get-ChildItem -Path $FilesPath -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in $family.Extensions } | Sort-Object Name)
+        if ($pkgFiles.Count -eq 0) { continue }
 
-    # Nothing supported matched. If the folder holds ONLY a bundle, say exactly that: bundles are not
-    # supported (tracked in knowledge-base/TODO.md), and the caller's generic "No installer
-    # (msi/exe/msix/appx) detected" would send the operator hunting for a missing file that is right there.
-    $bundleFiles = @(Get-ChildItem -Path $FilesPath -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Extension -in '.msixbundle', '.appxbundle' })
-    if ($bundleFiles.Count -gt 0) {
-        Write-Error "Files\ contains only bundle package(s) ($(($bundleFiles | ForEach-Object Name) -join ', ')) — .msixbundle/.appxbundle bundle packages are not supported (tracked in knowledge-base/TODO.md). Supply a single .msi/.exe/.msix/.appx installer instead."
+        # Same first-BY-NAME ambiguity the .msi/.exe branches call out — and it bites harder here:
+        # `winget download` fetches an app's framework dependencies (VCLibs, WinUI, .NET Native) into
+        # Files\ alongside the app, so a dependency package can sort ahead of the real installer and
+        # silently BECOME the installer. Name every candidate rather than quietly picking one.
+        if ($pkgFiles.Count -gt 1) {
+            Write-Warning "Files\ contains $($pkgFiles.Count) $($family.Type) package files ($(($pkgFiles | ForEach-Object Name) -join ', ')) — using '$($pkgFiles[0].Name)' as the installer (first by name; nothing here can tell which is the real one). Framework dependencies downloaded next to the app look exactly like this — if '$($pkgFiles[0].Name)' is not the app, remove the extra package(s) from Files\."
+        }
+
+        $installerInfo.FileName = $pkgFiles[0].Name
+        $installerInfo.Type     = $family.Type
+        $installerInfo.FullPath = $pkgFiles[0].FullName
+        return $installerInfo
     }
 
     return $installerInfo

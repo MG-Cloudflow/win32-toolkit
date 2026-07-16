@@ -40,6 +40,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Get-WingetManifestFile.ps1')
 . (Join-Path $repo 'Private\Get-YAMLInstallerInfo.ps1')
 . (Join-Path $repo 'Private\Get-WingetIdFromProject.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitInstallerExtension.ps1')  # installer-extension source of truth (bundle support)
 . (Join-Path $repo 'Private\Resolve-Win32ToolkitBaselineSilentArgs.ps1')
 . (Join-Path $repo 'Private\Download-OldVersionInstaller.ps1')
 

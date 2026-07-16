@@ -299,6 +299,36 @@ InstallerSwitches:
     if ($mxPs1 -match 'Remove-AppxPackage' -and $mxPs1 -match [regex]::Escape('Where-Object { $_.Name -eq $u.PackageName }')) { Ok 'uninstall snippet: exact-Name Remove-AppxPackage' } else { Bad 'msix uninstall branch missing' }
     if ($mxPs1 -notmatch [regex]::Escape('O''Evil') -and $mxPs1 -notmatch 'Evil\.Msix') { Ok 'identity values only in AppConfig.json, never in the .ps1 (data-vs-code)' } else { Bad 'identity leaked into code' }
 
+    # ── G1: provisioning without -Regions silently no-ops (DISM: "provisioned only if it is pinned to
+    #    start layout") -> Intune reports Installed and no user ever gets the app.
+    if ($mxPs1 -match [regex]::Escape("-Regions 'all'")) { Ok "G1: Add-AppxProvisionedPackage passes -Regions 'all' (else provisioning silently no-ops)" }
+    else { Bad "G1: -Regions 'all' missing from the provisioning call" }
+    # ── G3: no Add-AppxPackage fallback under SYSTEM — it would register the app into SYSTEM's own
+    #    profile, throw nothing, and let the tattoo report a successful install of an app nobody has.
+    if ($mxPs1 -match [regex]::Escape('Add-AppxProvisionedPackage -Online -PackagePath $installerPath -SkipLicense -Regions ''all'' -ErrorAction Stop')) {
+        Ok 'G3: provisioning uses -ErrorAction Stop (Appx cmdlets error non-terminating by default)'
+    } else { Bad 'G3: provisioning call is not -ErrorAction Stop' }
+    $sysBranch = [regex]::Match($mxPs1, '(?s)IsSystem\)\s*\{(.*?)\}\s*else\s*\{')
+    # Strip comment lines first — the snippet's own comment explains why the fallback was removed and
+    # names the cmdlet, which would otherwise match here. Note 'Add-AppxProvisionedPackage' does not
+    # contain 'Add-AppxPackage' as a substring, so the provisioning call cannot false-positive.
+    $sysCode = if ($sysBranch.Success) { (($sysBranch.Groups[1].Value -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n" } else { '' }
+    if ($sysBranch.Success -and $sysCode -notmatch 'Add-AppxPackage') {
+        Ok 'G3: the SYSTEM branch has NO Add-AppxPackage fallback (would register into the SYSTEM profile)'
+    } else { Bad 'G3: SYSTEM branch still falls back to Add-AppxPackage' }
+    if ($sysCode -match 'throw') { Ok 'G3: a provisioning failure rethrows (fails the deployment loudly)' } else { Bad 'G3: provisioning failure does not rethrow' }
+    # ── G5: $uninstallSuccess was computed and never read — every uninstaller could fail and the
+    #    script still returned 0, so Intune recorded a successful uninstall of an app still installed.
+    if ($mxPs1 -match [regex]::Escape('if (-not $uninstallSuccess -and')) { Ok 'G5: uninstall throws when no uninstaller reported success' }
+    else { Bad 'G5: failed uninstall still returns success' }
+    # G5 must not throw on codes that MEAN success: 1605 = product not installed (already gone — the
+    # goal state holds), 1641/3010 = removed + reboot initiated/required. Both loops share one set.
+    if ($mxPs1 -match [regex]::Escape('$w32tUninstallOk = @(0, 1605, 1641, 3010)')) { Ok 'G5: success codes include 1605/1641/3010 (no false uninstall failure)' }
+    else { Bad 'G5: success-code set missing or wrong' }
+    if (([regex]::Matches($mxPs1, [regex]::Escape('-in $w32tUninstallOk'))).Count -eq 2) { Ok 'G5: both uninstall loops share the same success set (cannot drift)' }
+    else { Bad 'G5: the two loops do not share the success set' }
+    if ($mxPs1 -notmatch [regex]::Escape('-in @(0, 3010)')) { Ok 'G5: no stale narrow success check remains' } else { Bad 'G5: a stale @(0,3010) check survives' }
+
     # Tattoo detection: inject ScriptAuthor+Vendor (org template is $null in this harness)
     $mxCfg2 = Get-Win32ToolkitAppConfig -ProjectPath $mxProj
     $mxCfg2.App.ScriptAuthor = 'Contoso IT'; $mxCfg2.App.Vendor = 'Evil Vendor'
