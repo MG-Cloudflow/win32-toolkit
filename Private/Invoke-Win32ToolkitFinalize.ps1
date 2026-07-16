@@ -115,6 +115,13 @@ function Invoke-Win32ToolkitFinalize {
                 $assertLog = if ($scenario -eq 'InstallUninstall') { 'InstallAssertions.log' } else { 'UpdateAssertions.log' }
                 Write-Warning "The $scenario test FAILED its assertions — review $ProjectPath\Sandbox\Logs\$assertLog before publishing this package."
             }
+            elseif ($null -eq $verdict) {
+                # $null means NO verdict — the test errored before running (e.g. a sandbox that never
+                # freed), timed out, or produced no assertions. Packaging continues (matching the
+                # $false policy of warn-don't-block), but a run that never happened must never read
+                # as a pass.
+                Write-Warning "The $scenario test produced NO verdict — it may never have run (see the errors above). The package is about to be processed UNTESTED for this scenario."
+            }
         }
     }
 

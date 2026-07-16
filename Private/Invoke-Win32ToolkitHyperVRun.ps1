@@ -75,8 +75,17 @@ function Invoke-Win32ToolkitHyperVRun {
                 $skipDepPhases       = $true
                 Write-Host "✓ Using checkpoint '$depsCpName' — this project's dependencies are pre-installed in the image." -ForegroundColor Green
             }
-            else {
+            elseif (-not $BaselineProjectPath) {
                 $createDepsCheckpoint = $true
+            }
+            else {
+                # NEVER create the checkpoint during a baseline (Update) run: the read-only C:\PSADTOld
+                # copy-in happens BEFORE the dep phase, so the frozen image would contain an
+                # icacls-locked folder that later baseline copy-ins can neither delete nor overwrite —
+                # poisoning every subsequent Update run of the project (the key hashes deps, not the
+                # baseline, so it would never rotate). USING an existing checkpoint is fine: it was
+                # frozen without a baseline, and this run's C:\PSADTOld is erased by the teardown revert.
+                Write-Verbose 'Deps checkpoint not created during a baseline run (it would freeze the read-only C:\PSADTOld into the image); an InstallUninstall/capture run will create it.'
             }
         }
     }
@@ -196,6 +205,11 @@ function Invoke-Win32ToolkitHyperVRun {
         # (still never holding app/test state), and the R2 marker then matches the next run of the same
         # project for the single-revert skip.
         Remove-Win32ToolkitHyperVSession -Session $session -VMName $VMName -CheckpointName $effectiveCheckpoint -Revert
+        # INTERACTIVE runs leave a vmconnect window attached to the reverted-but-running guest — the
+        # operator can keep poking it after the teardown, invisibly dirtying the VM within the marker's
+        # TTL. Never presume clean after an interactive run; unattended runs (no console, no operator)
+        # keep the single-revert skip.
+        if ($needsDesktop) { $script:HyperVCleanMarker = $null }
         # Any unconsumed prebuild zips (job failed, run threw before the join) are cleaned here.
         foreach ($k in $zipJobs.Keys) {
             if ($zipJobs[$k].Job) { Remove-Job -Job $zipJobs[$k].Job -Force -ErrorAction SilentlyContinue }

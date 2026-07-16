@@ -79,10 +79,10 @@ $ntdRaw = Get-Content -LiteralPath (Join-Path $repo 'Private\New-TargetedDocumen
 $hs = [regex]::Match($ntdRaw, "(?s)\`$documentationScript = @'\r?\n(.*?)\r?\n'@").Groups[1].Value
 if (-not $hs) { Bad 'could not extract the guest here-string'; exit 1 }
 
-# R6: MSI-gated finalize with the 30 s ceiling; exe keeps fixed 30.
-if ($hs -match '\$isMsi = \[bool\]\(Get-ChildItem -Path .C:\\PSADT\\Files. -Filter .\*\.msi.') { Ok 'finalize gate: installer type detected in-guest (no new host deps)' } else { Bad 'no in-guest MSI detection' }
-if ($hs -match 'AddSeconds\(30\)' -and $hs -match 'Get-Process -Name msiexec') { Ok 'MSI: msiexec-quiescence poll capped at the old 30 s' } else { Bad 'quiescence poll missing/uncapped' }
-if ($hs -match '(?s)else \{\s*Write-Host "Please wait 30 seconds\.\.\."') { Ok 'non-MSI: fixed 30 s kept (late file drops have no rescan backstop)' } else { Bad 'exe path lost its fixed wait' }
+# R6 was REVERTED by adversarial review: late FILE drops (MSI async EXE custom actions, NSIS/Inno
+# spawns) have no rescan backstop, so the finalize wait stays a fixed 30 s for EVERY installer type.
+if ($hs -notmatch 'Get-Process -Name msiexec' -and $hs -match 'Please wait 30 seconds') { Ok 'finalize: fixed 30 s for ALL installer types (early exit deliberately reverted)' } else { Bad 'an early-exit finalize crept back in' }
+if ($hs -match 'file-side rescan') { Ok 'the do-not-shorten rationale is documented in the guest template' } else { Bad 'revert rationale missing' }
 
 # R7: 90 s budget, 5 s Uninstall-hive probe, mandatory final full rescan.
 if ($hs -match 'AddSeconds\(90\)') { Ok 'registry late-writer budget stays 90 s (ceiling unchanged)' } else { Bad '90 s budget missing' }

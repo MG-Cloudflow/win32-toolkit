@@ -42,10 +42,12 @@ function Get-Win32ToolkitDepsCheckpointName {
         [void]$sb.Append((Get-Content -LiteralPath $manifest -Raw))
         [void]$sb.Append("|parent:$($parent.Id)|$($parent.CreationTime.ToString('o'))")
 
-        # Every staged payload file, in a deterministic order.
+        # Every staged payload file, in a deterministic order. dependencies.json is hashed as CONTENT
+        # above; any marker/metadata files (e.g. a legacy .staged.json with its per-restage timestamp)
+        # are excluded — the key must rotate only when the PAYLOAD or parent image changes.
         $depRoot = Join-Path $ProjectPath 'Sandbox\Dependencies'
         $files = @(Get-ChildItem -LiteralPath $depRoot -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -ne 'dependencies.json' } | Sort-Object FullName)
+            Where-Object { $_.Name -ne 'dependencies.json' -and $_.Name -ne '.staged.json' } | Sort-Object FullName)
         foreach ($f in $files) {
             $h = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256 -ErrorAction Stop).Hash
             [void]$sb.Append("|$($f.FullName.Substring($depRoot.Length))=$h")

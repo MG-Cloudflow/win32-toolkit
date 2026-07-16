@@ -129,6 +129,21 @@ if ($script:phasesRun -notcontains 'Install dependencies' -and $script:phasesRun
 if (@($script:guestCmds) -match 'InstallDependencies') { Ok 'ON+hit: in-guest InstallDependencies.ps1 removed (capture script skips deps too)' } else { Bad "guest cmds: $($script:guestCmds)" }
 if (@($script:cpCreated).Count -eq 0) { Ok 'ON+hit: nothing re-created' } else { Bad "created: $($script:cpCreated)" }
 
+# b3b: an UPDATE-BASELINE run must never CREATE the checkpoint (the read-only C:\PSADTOld copy-in
+#      precedes the dep phase and would be frozen into the image, poisoning every later baseline run) —
+#      but USING an existing one stays allowed (the teardown revert erases this run's C:\PSADTOld).
+Reset-Run
+$script:cfg['HyperVDepsCheckpoint'] = 'On'
+$baseProj = New-Proj
+$r = Invoke-Win32ToolkitHyperVRun -ProjectPath $projD -Phase $phases -BaselineProjectPath $baseProj 3>$null 6>$null
+if (@($script:cpCreated).Count -eq 0) { Ok 'baseline run: checkpoint NOT created (would freeze the RX-locked C:\PSADTOld)' } else { Bad "created during baseline run: $($script:cpCreated)" }
+if ($script:phasesRun -contains 'Install dependencies') { Ok 'baseline run: dep phase still runs live' } else { Bad 'dep phase lost' }
+Reset-Run
+$script:existingDepsCp = $key
+$r = Invoke-Win32ToolkitHyperVRun -ProjectPath $projD -Phase $phases -BaselineProjectPath $baseProj 3>$null 6>$null
+if ($script:opened[0] -eq $key -and $script:phasesRun -notcontains 'Install dependencies') { Ok 'baseline run: USING an existing deps checkpoint still works' } else { Bad "baseline+hit: opened=$($script:opened) phases=$($script:phasesRun)" }
+Remove-Item $baseProj -Recurse -Force -ErrorAction SilentlyContinue
+
 # b4: a FAILED dep phase never freezes a checkpoint.
 Reset-Run
 $script:depExit = 1618

@@ -79,17 +79,28 @@ function Download-OldVersionInstaller {
         $cacheRoot = $null
         try { $cacheRoot = Get-Win32ToolkitPipelineCacheRoot } catch { $cacheRoot = $null }   # fail open: no cache
         if ($cacheRoot) {
-            $san = { param($v) if ([string]::IsNullOrWhiteSpace($v)) { 'any' } else { ($v -replace '[\\/:*?"<>|]', '_').ToLowerInvariant() } }
+            # Sanitize [ and ] too: they are legal in winget ids/versions but are WILDCARD character
+            # classes to any -Path parameter downstream.
+            $san = { param($v) if ([string]::IsNullOrWhiteSpace($v)) { 'any' } else { ($v -replace '[\\/:*?"<>|\[\]]', '_').ToLowerInvariant() } }
             $keyLeaf  = ('{0}_{1}_{2}_{3}' -f (& $san $Architecture), (& $san $Scope), (& $san $InstallerType), (& $san $Locale))
-            $cacheDir = Join-Path $cacheRoot (Join-Path ($AppId -replace '[\\/:*?"<>|]', '_') (Join-Path ($Version -replace '[\\/:*?"<>|]', '_') $keyLeaf))
+            $cacheDir = Join-Path $cacheRoot (Join-Path ($AppId -replace '[\\/:*?"<>|\[\]]', '_') (Join-Path ($Version -replace '[\\/:*?"<>|\[\]]', '_') $keyLeaf))
         }
     }
 
     $cacheHit = $false
     if ($cacheDir -and (Test-Win32ToolkitCachedInstaller -Path $cacheDir)) {
-        Write-Host "✓ Using the cached download for '$AppId' $verLabel (SHA256-validated against its manifest)." -ForegroundColor Green
-        Copy-Item -Path (Join-Path $cacheDir '*') -Destination $oldVersionDir -Recurse -Force
-        $cacheHit = $true
+        # FAIL OPEN: a cache-layer copy failure must fall through to the real download, never abort it.
+        try {
+            Get-ChildItem -LiteralPath $cacheDir -Force -ErrorAction Stop |
+                Copy-Item -Destination $oldVersionDir -Recurse -Force -ErrorAction Stop
+            Write-Host "✓ Using the cached download for '$AppId' $verLabel (SHA256-validated against its manifest)." -ForegroundColor Green
+            $cacheHit = $true
+        }
+        catch {
+            Write-Verbose "Cache hit could not be materialized ($($_.Exception.Message)) — downloading."
+            Get-ChildItem -LiteralPath $oldVersionDir -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            $cacheHit = $false
+        }
     }
 
     $usedFallback = $false
@@ -138,16 +149,24 @@ function Download-OldVersionInstaller {
         # pinned variant). The write is validated and rolled back on any inconsistency (fail open).
         if ($cacheDir -and -not $usedFallback) {
             try {
-                if (Test-Path -LiteralPath $cacheDir) { Remove-Item -LiteralPath $cacheDir -Recurse -Force -ErrorAction SilentlyContinue }
-                New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
-                Copy-Item -Path (Join-Path $oldVersionDir '*') -Destination $cacheDir -Recurse -Force
-                if (-not (Test-Win32ToolkitCachedInstaller -Path $cacheDir)) {
-                    Remove-Item -LiteralPath $cacheDir -Recurse -Force -ErrorAction SilentlyContinue
+                # Publish ~atomically: stage into a temp sibling, validate, then swap into place — a
+                # concurrent run reading the key sees either the old complete entry or the new one,
+                # never a half-written directory (which the SHA check would reject as a miss anyway).
+                $stage = "$cacheDir.tmp-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+                New-Item -ItemType Directory -Path $stage -Force | Out-Null
+                Get-ChildItem -LiteralPath $oldVersionDir -Force -ErrorAction Stop |
+                    Copy-Item -Destination $stage -Recurse -Force -ErrorAction Stop
+                if (Test-Win32ToolkitCachedInstaller -Path $stage) {
+                    if (Test-Path -LiteralPath $cacheDir) { Remove-Item -LiteralPath $cacheDir -Recurse -Force -ErrorAction SilentlyContinue }
+                    Move-Item -LiteralPath $stage -Destination $cacheDir -Force -ErrorAction Stop
+                }
+                else {
+                    Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
                 }
             }
             catch {
                 Write-Verbose "Could not cache the download (non-fatal): $($_.Exception.Message)"
-                Remove-Item -LiteralPath $cacheDir -Recurse -Force -ErrorAction SilentlyContinue
+                if ($stage -and (Test-Path -LiteralPath $stage)) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
             }
         }
     }

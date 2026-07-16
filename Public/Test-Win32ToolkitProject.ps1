@@ -592,11 +592,11 @@ function Test-Win32ToolkitProject {
                     $assertLog = Join-Path $ProjectPath 'Sandbox\Logs\UpdateAssertions.log'
                     if (-not (Test-Path -LiteralPath $assertLog)) {
                         Write-Warning "No UpdateAssertions.log came back from the VM — the assertions never ran, or the copy-out failed. Check $ProjectPath\Sandbox\Logs and the phase warnings above."
-                        Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($Unattended) { 'Unattended' } else { 'Interactive' }) -Verdict $null -Notes 'Assertions log did not return from the VM.'
+                        Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $null -Notes 'Assertions log did not return from the VM.'
                         return $null
                     }
                     $updVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -TimeoutMinutes 1 -PollSeconds 1
-                    Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($Unattended) { 'Unattended' } else { 'Interactive' }) -Verdict $updVerdict
+                    Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict
                     return $updVerdict
                 }
 
@@ -656,7 +656,11 @@ function Test-Win32ToolkitProject {
                 }
                 Write-Host '  5. ASSERT: requirement still met; tattoo = new version; old ARP entry gone' -ForegroundColor Cyan
                 Write-Host '  6. Copy PSADT/MSI logs to project\Sandbox\Logs'          -ForegroundColor Cyan
+                if ($sbInteractive) {
                 Write-Host '  7. Keep the sandbox open for final verification'         -ForegroundColor White
+                } else {
+                Write-Host '  7. Shut the sandbox down automatically'                  -ForegroundColor White
+                }
                 Write-Host '================================================'          -ForegroundColor Cyan
 
                 if ((Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched) {

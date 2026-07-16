@@ -82,17 +82,22 @@ if ($backend -eq 'Sandbox') {
         # USERPROFILE, exactly where the fresh WDAG profile's first-logon churn lands, and an early
         # PRE scan would push that churn into the install diff as noise.
         Write-Host "Probing readiness (machine scope; up to 60 seconds)..." -ForegroundColor Cyan
+        # Machine scope still scans LOCALAPPDATA/APPDATA (installers can write there even machine-wide),
+        # so the churn condition watches BOTH profile roots at the snapshot's own depth ballpark and
+        # demands TWO consecutive stable comparisons — the desktop being up alone proves nothing about
+        # first-logon profile churn. Earliest exit ~9 s; the 60 s cap keeps the worst case identical.
         $settleDeadline = (Get-Date).AddSeconds(60)
         $prevCount = -1
+        $stableRuns = 0
         do {
             $ok = $false
             try {
                 $explorerUp = [bool](Get-Process -Name explorer -ErrorAction SilentlyContinue)
-                $svcUp      = $null -ne (Get-Service -Name msiserver -ErrorAction SilentlyContinue)
-                $count      = @(Get-ChildItem -Path $env:LOCALAPPDATA -Recurse -Depth 1 -ErrorAction SilentlyContinue).Count
-                $stable     = ($prevCount -ge 0) -and ([Math]::Abs($count - $prevCount) -le 2)
-                $prevCount  = $count
-                $ok = $explorerUp -and $svcUp -and $stable
+                $count = @(Get-ChildItem -Path $env:LOCALAPPDATA -Recurse -Depth 2 -ErrorAction SilentlyContinue).Count +
+                         @(Get-ChildItem -Path $env:APPDATA -Recurse -Depth 2 -ErrorAction SilentlyContinue).Count
+                if ($prevCount -ge 0 -and [Math]::Abs($count - $prevCount) -le 2) { $stableRuns++ } else { $stableRuns = 0 }
+                $prevCount = $count
+                $ok = $explorerUp -and ($stableRuns -ge 2)
             } catch { $ok = $false }
             if ($ok) { break }
             Start-Sleep -Seconds 3
@@ -364,33 +369,19 @@ Write-Log "PSADT installation process completed with exit code: $($installProces
 Write-Host "`nWaiting for installation to fully finalize..." -ForegroundColor Yellow
 Write-Host "Allowing time for background processes, registry updates, and file operations to complete." -ForegroundColor Gray
 
-# MSI installers: the trailing work is the Windows Installer service itself, and it is OBSERVABLE —
-# poll for msiexec quiescence (none running + a 3 s double-check grace) and proceed early, CAPPED at
-# the old 30 s so the worst case is identical. NON-MSI installers keep the fixed 30 s: a detached
-# NSIS/Inno child's late FILE drops have no rescan backstop (the registry retry below rescans registry
-# only), so their window is never shortened.
-$isMsi = [bool](Get-ChildItem -Path 'C:\PSADT\Files' -Filter '*.msi' -ErrorAction SilentlyContinue | Select-Object -First 1)
-if ($isMsi) {
-    Write-Host "MSI install: waiting for the Windows Installer service to go quiet (max 30 s)..." -ForegroundColor Cyan
-    $finalizeDeadline = (Get-Date).AddSeconds(30)
-    do {
-        if (-not (Get-Process -Name msiexec -ErrorAction SilentlyContinue)) {
-            Start-Sleep -Seconds 3
-            if (-not (Get-Process -Name msiexec -ErrorAction SilentlyContinue)) { break }
-        }
-        Start-Sleep -Seconds 1
-    } until ((Get-Date) -gt $finalizeDeadline)
-    Write-Log "Installation finalization wait completed (msiexec quiescence, max 30 s)" "INFO"
+# The fixed 30 s stays for EVERY installer type — deliberately. An msiexec-quiescence early exit was
+# built and then REVERTED by adversarial review: late FILE drops from detached children (MSI async EXE
+# custom actions, NSIS/Inno spawns) have NO rescan backstop — the late-writer loop below rescans
+# REGISTRY only — so any early exit here can permanently lose files from the diff that feeds the
+# generated uninstall logic and processes-to-close. Do not shorten this wait without adding a
+# file-side rescan.
+Write-Host "Please wait 30 seconds..." -ForegroundColor Cyan
+for ($i = 30; $i -gt 0; $i--) {
+    Write-Progress -Activity "Finalizing Installation" -Status "Waiting for background processes and registry updates to complete..." -SecondsRemaining $i -PercentComplete ((30 - $i) / 30 * 100)
+    Start-Sleep -Seconds 1
 }
-else {
-    Write-Host "Please wait 30 seconds..." -ForegroundColor Cyan
-    for ($i = 30; $i -gt 0; $i--) {
-        Write-Progress -Activity "Finalizing Installation" -Status "Waiting for background processes and registry updates to complete..." -SecondsRemaining $i -PercentComplete ((30 - $i) / 30 * 100)
-        Start-Sleep -Seconds 1
-    }
-    Write-Progress -Activity "Finalizing Installation" -Completed
-    Write-Log "Installation finalization wait completed (30 seconds)" "INFO"
-}
+Write-Progress -Activity "Finalizing Installation" -Completed
+Write-Log "Installation finalization wait completed (30 seconds)" "INFO"
 Write-Host "Installation finalization complete!" -ForegroundColor Green
 
 Write-Host "`nCapturing POST-INSTALLATION state..." -ForegroundColor Yellow
@@ -463,7 +454,8 @@ try {
         Write-Host "No registry changes detected — polling the Uninstall hives for late writers (up to 90 s)..." -ForegroundColor Yellow
         Write-Log "Registry diff empty - polling Uninstall hives every 5 s (90 s budget) for delayed writes" "INFO"
         $uninstallHives = @($targetRegistryPaths | Where-Object { $_ -like '*CurrentVersion\Uninstall*' })
-        $retryBudget = (Get-Date).AddSeconds(90)
+        $retryStart  = Get-Date
+        $retryBudget = $retryStart.AddSeconds(90)
         do {
             Start-Sleep -Seconds 5
             $probe = @(Get-TargetedRegistrySnapshot -Description "Uninstall-hive probe" -RegistryPaths $uninstallHives)
@@ -473,6 +465,13 @@ try {
                 break
             }
         } until ((Get-Date) -gt $retryBudget)
+
+        # The final rescan is a ONE-SHOT diff — never before t=30 s into the budget. The old loop's
+        # earliest full rescan was its first 30 s retry; a probe hit at t=6 s must not pull the single
+        # rescan earlier than that, or writes landing between the early hit and t=30 (which the old
+        # code caught) would be permanently lost.
+        $elapsed = ((Get-Date) - $retryStart).TotalSeconds
+        if ($elapsed -lt 30) { Start-Sleep -Seconds ([int][Math]::Ceiling(30 - $elapsed)) }
 
         # Final full-hive rescan + full diff (runs on probe hit AND on budget exhaustion).
         Write-Host "Re-scanning all registry hives (final)..." -ForegroundColor Cyan
@@ -919,20 +918,23 @@ if ($backend -eq 'Sandbox') {
 }
 '@
 
-        # Replace placeholders with actual values
-        $documentationScript = $documentationScript -replace '__PROJECTNAME__', $ProjectName
-        $documentationScript = $documentationScript -replace '__TIMESTAMP__', $timestamp
-        $documentationScript = $documentationScript -replace '__SCOPE__', $installerScope
-        $documentationScript = $documentationScript -replace '__BACKEND__', $Backend
+        # Replace placeholders with actual values. .Replace(), NOT -replace: the regex operator treats
+        # the replacement as a .NET SUBSTITUTION string, so a project name containing $_ / $& would
+        # splice template text into itself. Values landing inside '...' assignments are single-quote
+        # escaped so an apostrophe in a project name cannot break the generated script's parse.
+        $documentationScript = $documentationScript.Replace('__PROJECTNAME__', ($ProjectName -replace "'", "''"))
+        $documentationScript = $documentationScript.Replace('__TIMESTAMP__', [string]$timestamp)
+        $documentationScript = $documentationScript.Replace('__SCOPE__', [string]$installerScope)
+        $documentationScript = $documentationScript.Replace('__BACKEND__', [string]$Backend)
         # Auto-close: 30 s watched (the operator's Ctrl+C inspect window) / 5 s unattended (VSMB flush
-        # only — SandboxTestMode=Unattended is the operator's opt-in that no one is watching captures).
-        # Fail-safe to 30: a config-layer hiccup must never leave the placeholder empty (that would
-        # corrupt the generated script's arithmetic) or shorten the operator's window.
+        # only). Mode comes from the SHARED resolver so the -Unattended/config/non-interactive-host
+        # precedence cannot drift from the test scenarios. Fail-safe to 30: a resolver hiccup must never
+        # leave the placeholder empty or shorten the operator's window.
         $autoCloseSeconds = 30
         try {
-            if ((Get-Win32ToolkitConfigValue -Name 'SandboxTestMode' -Default 'Interactive') -eq 'Unattended') { $autoCloseSeconds = 5 }
+            if ((Get-Win32ToolkitTestMode -Backend Sandbox) -eq 'Unattended') { $autoCloseSeconds = 5 }
         } catch { $autoCloseSeconds = 30 }
-        $documentationScript = $documentationScript -replace '__AUTOCLOSE__', $autoCloseSeconds
+        $documentationScript = $documentationScript.Replace('__AUTOCLOSE__', [string]$autoCloseSeconds)
 
         # Save the documentation script inside the PSADT project's SupportFiles folder. Write UTF-8 WITH a
         # BOM: the guest runs it under Windows PowerShell 5.1, which decodes a BOM-less file as ANSI and

@@ -107,6 +107,8 @@ foreach ($phase in 'PreBaseline', 'PreUpdate', 'PostUpdate') {
 if ($src -match 'Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90') { Ok 'single-instance guard waits up to 90 s before failing' } else { Bad 'guard still throws immediately' }
 
 # ── (e) capture auto-close is mode-gated ───────────────────────────────────────────────────────────
+# The duration now flows through the SHARED resolver (Get-Win32ToolkitTestMode), so -Unattended/config/
+# host precedence cannot drift from the test scenarios; the resolver reads the shadowed config above.
 Write-Host '[e] capture auto-close: 30 s watched / 5 s unattended' -ForegroundColor Cyan
 . (Join-Path $repo 'Private\New-TargetedDocumentation.ps1')
 function New-LogCollectorScript { param($ProjectPath) 'x' }

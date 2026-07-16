@@ -61,7 +61,13 @@ function Copy-Win32ToolkitProjectToGuest {
             # runspace. Silence at the source so the guest 'Removed N of M files' bar from Remove-Item
             # -Recurse isn't relayed back and painted over the host's Spectre TUI. (5.1-safe assignment.)
             $ProgressPreference = 'SilentlyContinue'
-            if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue }
+            if (Test-Path -LiteralPath $dest) {
+                # A previous -ReadOnly copy of this path grants only RX (no DELETE) — and a deps
+                # checkpoint could have frozen such a folder into the image. Reset the ACL first so the
+                # cleanup always succeeds (self-heal); harmless when the ACL is normal.
+                & icacls.exe $dest /reset /t /c /q 2>$null | Out-Null
+                Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue
+            }
             New-Item -ItemType Directory -Path $dest -Force | Out-Null
             Add-Type -AssemblyName 'System.IO.Compression.FileSystem' -ErrorAction SilentlyContinue
             [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $dest)

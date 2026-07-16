@@ -63,11 +63,19 @@ function Invoke-Win32ToolkitGuestScheduledTask {
         Start-ScheduledTask -TaskName $taskName
         $deadline = (Get-Date).AddMinutes($timeoutMin)
         if ($preInfo) {
+            # A task that NEVER starts (scheduler refuses it, principal problem) must fail fast, not
+            # burn the full phase timeout: if nothing has transitioned and it was never seen Running
+            # within 120 s of Start-ScheduledTask, bail — the stale LastTaskResult (267011,
+            # "has not yet run") is returned and surfaces as a failed phase, like the old fast path.
+            $startupDeadline = (Get-Date).AddSeconds(120)
+            $sawRunning = $false
             do {
                 $state = (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State
+                if ($state -eq 'Running') { $sawRunning = $true }
                 $info  = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
                 $ran   = $info -and (($info.LastRunTime -ne $preInfo.LastRunTime) -or ($info.LastTaskResult -ne $preInfo.LastTaskResult))
                 if ($ran -and $state -ne 'Running') { break }
+                if (-not $ran -and -not $sawRunning -and (Get-Date) -gt $startupDeadline) { break }
                 Start-Sleep -Seconds 1
             } until ((Get-Date) -gt $deadline)
         }
