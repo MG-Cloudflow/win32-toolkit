@@ -1,0 +1,79 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths: ['docs/**', 'mkdocs.yml', 'README.md']
+  pull_request:
+    paths: ['Public/**', 'Private/**', '*.psd1', '*.psm1', 'docs/**', 'build/Update-Docs.ps1']
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  # The command reference is GENERATED from comment-based help (build/Update-Docs.ps1). This job
+  # fails any PR where the committed docs/reference/ no longer matches the help — one source of
+  # truth, no silent drift. (Windows runner: the module imports Windows-only concepts.)
+  reference-drift:
+    name: Reference matches help
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Regenerate reference
+        run: ./build/Update-Docs.ps1
+
+      - name: Fail on drift
+        run: |
+          $diff = git status --porcelain -- docs/reference
+          if ($diff) {
+            git --no-pager diff -- docs/reference
+            throw "docs/reference is out of date - run build/Update-Docs.ps1 and commit the result."
+          }
+          Write-Host 'Reference is in sync with the comment-based help.'
+
+  # Build + deploy the MkDocs Material site to GitHub Pages on pushes to main.
+  # One-time repo setup: Settings > Pages > Source = 'GitHub Actions'.
+  build-site:
+    name: Build site
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install MkDocs Material
+        run: pip install mkdocs-material
+
+      - name: Build
+        run: mkdocs build --strict
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    if: github.event_name == 'push'
+    needs: build-site
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
