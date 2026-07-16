@@ -39,16 +39,6 @@ New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 # -NoMetadata: no YAML front matter — the pages must render cleanly on plain GitHub AND in MkDocs.
 $null = New-MarkdownHelp -Module 'win32-toolkit' -OutputFolder $outDir -NoMetadata -Force
 
-# Normalize every generated page to LF + UTF-8 (no BOM). platyPS writes platform line endings, and
-# the CI drift job compares BYTES across machines — without this, a regeneration on another machine
-# is flagged as drift by line endings alone (an invisible diff). Paired with the .gitattributes
-# rule 'docs/reference/*.md text eol=lf'.
-foreach ($f in Get-ChildItem -LiteralPath $outDir -Filter '*.md') {
-    $text = [System.IO.File]::ReadAllText($f.FullName)
-    $text = $text.Replace("`r`n", "`n")
-    [System.IO.File]::WriteAllText($f.FullName, $text, (New-Object System.Text.UTF8Encoding($false)))
-}
-
 # Index page linking every command, grouped the way the README's command table groups them.
 $groups = [ordered]@{
     'Start here'         = @('Show-Win32Toolkit', 'Invoke-Win32Toolkit', 'New-Win32ToolkitManualApp', 'Complete-Win32ToolkitManualApp', 'Test-Win32ToolkitProject')
@@ -72,6 +62,16 @@ foreach ($g in $groups.Keys) {
     [void]$sb.AppendLine()
 }
 [System.IO.File]::WriteAllText((Join-Path $outDir 'README.md'), $sb.ToString(), (New-Object System.Text.UTF8Encoding($false)))
+
+# Normalize EVERY generated page (incl. the index just written — StringBuilder.AppendLine emits
+# platform CRLF) to LF + UTF-8 (no BOM). The CI drift job compares BYTES across machines: without
+# this, a regeneration elsewhere is flagged as drift by line endings alone (an invisible diff).
+# Paired with the .gitattributes rule 'docs/reference/*.md text eol=lf'. MUST stay the LAST step.
+foreach ($f in Get-ChildItem -LiteralPath $outDir -Filter '*.md') {
+    $text = [System.IO.File]::ReadAllText($f.FullName)
+    $text = $text.Replace("`r`n", "`n")
+    [System.IO.File]::WriteAllText($f.FullName, $text, (New-Object System.Text.UTF8Encoding($false)))
+}
 
 $count = @(Get-ChildItem -LiteralPath $outDir -Filter '*.md').Count
 Write-Host "✓ docs/reference regenerated: $count page(s)." -ForegroundColor Green
