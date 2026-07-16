@@ -31,6 +31,7 @@ $fail = 0
 function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
+. (Join-Path $repo 'Private\Get-Win32ToolkitInstallerExtension.ps1')  # installer-extension source of truth (bundle support)
 . (Join-Path $repo 'Private\Rename-InstallerFile.ps1')
 . (Join-Path $repo 'Private\Get-InstallerFileInfo.ps1')
 

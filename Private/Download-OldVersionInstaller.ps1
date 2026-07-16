@@ -173,7 +173,7 @@ function Download-OldVersionInstaller {
 
     # Locate the downloaded installer file
     $installer = Get-ChildItem -Path $oldVersionDir -File |
-        Where-Object { $_.Extension -in '.exe', '.msi', '.msix', '.appx' } |
+        Where-Object { $_.Extension -in (Get-Win32ToolkitInstallerExtension) } |
         Select-Object -First 1
 
     # Read the manifest installer type first — it lets the "no installer found" message below name the
@@ -191,7 +191,7 @@ function Download-OldVersionInstaller {
 
     if (-not $installer) {
         $typeHint = if ($installerTypeName) { " (manifest InstallerType: '$installerTypeName')" } else { '' }
-        throw "winget download completed but no installer file (.exe/.msi/.msix/.appx) was found in $oldVersionDir$typeHint. This baseline may be a zip/portable/store package with no silent installer — use -SpecificVersion for a different version, or test with -Scenario InstallUninstall."
+        throw "winget download completed but no installer file (.exe/.msi/.msix/.appx/.msixbundle/.appxbundle) was found in $oldVersionDir$typeHint. This baseline may be a zip/portable/store package with no silent installer — use -SpecificVersion for a different version, or test with -Scenario InstallUninstall."
     }
 
     $yamlInfo   = Get-YAMLInstallerInfo -FilesPath $oldVersionDir

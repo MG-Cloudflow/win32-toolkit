@@ -21,7 +21,7 @@ function Test-Win32ToolkitCachedInstaller {
     if (-not (Test-Path -LiteralPath $Path)) { return $false }
 
     $installer = Get-ChildItem -LiteralPath $Path -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Extension -in '.exe', '.msi', '.msix', '.appx' } |
+        Where-Object { $_.Extension -in (Get-Win32ToolkitInstallerExtension) } |
         Select-Object -First 1
     if (-not $installer) { return $false }
 
