@@ -85,6 +85,25 @@ function New-OrgTemplate {
     $cpMessage = Read-TV 'Completion message'                   ($ExistingTemplate?.CompletionPrompt?.Message         ?? 'The installation has completed successfully.')
     $cpButton  = Read-TV 'Button label'                         ($ExistingTemplate?.CompletionPrompt?.ButtonRightText ?? 'OK')
 
+    Write-Host ''; Write-Host '--- E: Org scripts & extension module (A1/A3) ---' -ForegroundColor Yellow
+    $tplFolder = Join-Path $templateFolder $templateName
+    Write-Host "  Hook scripts run in every packaged app's deploy phases. Drop .ps1 files in:" -ForegroundColor DarkGray
+    Write-Host "    $tplFolder\Hooks\{PreInstall,PostInstall,PreUninstall,PostUninstall,PreRepair,PostRepair}.ps1" -ForegroundColor DarkGray
+    Write-Host '  They run on-device under Windows PowerShell 5.1 — keep them 5.1-safe.' -ForegroundColor DarkGray
+    $hooksEnabled = Read-TB 'Enable org hook scripts'                    ($ExistingTemplate?.Hooks?.Enabled ?? $false)
+    $hooksFailure = if ($hooksEnabled) {
+        $fa = Read-TV 'On hook error — Fail (stop the deploy) or Continue' ($ExistingTemplate?.Hooks?.FailureAction ?? 'Fail')
+        if ($fa -notin @('Fail','Continue')) { Write-Host "  '$fa' invalid — using 'Fail'." -ForegroundColor DarkYellow; 'Fail' } else { $fa }
+    } else { ($ExistingTemplate?.Hooks?.FailureAction ?? 'Fail') }
+    Write-Host "  An org extension module (shared functions for your hooks) lives in:" -ForegroundColor DarkGray
+    Write-Host "    $tplFolder\PSAppDeployToolkit.<YourOrg>\  (auto-imported by PSADT in every project)" -ForegroundColor DarkGray
+    $extModule = Read-TB 'Ship an org PSADT extension module'            ($ExistingTemplate?.ExtensionModule ?? $false)
+    if ($hooksEnabled -or $extModule) {
+        if (-not (Test-Path $tplFolder)) { New-Item -ItemType Directory -Path $tplFolder -Force | Out-Null }
+        if ($hooksEnabled -and -not (Test-Path (Join-Path $tplFolder 'Hooks'))) { New-Item -ItemType Directory -Path (Join-Path $tplFolder 'Hooks') -Force | Out-Null }
+        Write-Host "  ✓ Prepared $tplFolder — add your files there, then re-run the pipeline." -ForegroundColor DarkGreen
+    }
+
     $template = [PSCustomObject]@{
         TemplateSchemaVersion = $script:TemplateSchemaVersion
         TemplateName          = $templateName
@@ -124,6 +143,11 @@ function New-OrgTemplate {
             Message         = $cpMessage
             ButtonRightText = $cpButton
         }
+        Hooks                 = [PSCustomObject]@{
+            Enabled       = $hooksEnabled
+            FailureAction = $hooksFailure
+        }
+        ExtensionModule       = $extModule
     }
 
     $savePath = Join-Path $templateFolder "$templateName.json"

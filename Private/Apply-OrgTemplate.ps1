@@ -163,6 +163,12 @@ function Apply-OrgTemplate {
             Write-Verbose '  Invoke-AppDeployToolkit.ps1 updated'
         }
 
+        #── A1/A3: org hook scripts + extension module ──────────────────────
+        # Copy-not-splice: operator scripts are copied into SupportFiles\OrgHooks\ (and any org PSADT
+        # extension module into the project root); only a compile-time-constant stub is injected at the
+        # v4 markers. Opt-in per template (Hooks.Enabled / ExtensionModule); a no-op when both are off.
+        Add-Win32ToolkitOrgHooks -ProjectPath $ProjectPath -Template $Template
+
         Write-Host "✓ Org template '$($Template.TemplateName)' applied to project" -ForegroundColor Green
         return $true
     }
