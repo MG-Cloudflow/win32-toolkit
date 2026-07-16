@@ -110,6 +110,10 @@ function Configure-PSADTForInstaller {
             if (-not (Update-PSADTMsixUninstallLogic -ProjectPath $ProjectPath)) {
                 Write-Warning 'MSIX uninstall data could not be written — the package would have no working uninstall.'
             }
+            # Same capture-independent reasoning: an MSIX writes no App Paths / Uninstall / InstallLocation
+            # artifacts, so the capture-based ProcessesToClose writer finds nothing. The manifest declares
+            # the app's executables outright — read them here.
+            [void](Update-PSADTMsixProcessesToClose -ProjectPath $ProjectPath)
         }
 
         # ---- Patch the deploy script to be data-driven (fixed, value-free) ----

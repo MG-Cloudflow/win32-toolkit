@@ -80,14 +80,30 @@ function Update-PSADTProcessesToClose {
             }
         }
 
-        $sorted = @($candidates | Sort-Object)
-
         $cfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
+
+        # MERGE, never clobber. This runs at finalize, AFTER configure may already have written a
+        # manifest-derived list (Update-PSADTMsixProcessesToClose): all three sources above are classic
+        # Win32 artifacts that an MSIX never writes, so for a package this pass finds nothing — and an
+        # unconditional overwrite would have thrown away the known-good 'pwsh' and shipped @().
+        # Union also means a capture that misses can never destroy data another source proved.
+        $existing = @()
+        if ($cfg.PSObject.Properties.Name -contains 'ProcessesToClose') {
+            $existing = @($cfg.ProcessesToClose | Where-Object { $_ })
+        }
+        $merged = [System.Collections.Generic.List[string]]::new()
+        foreach ($p in @($existing) + @($candidates)) {
+            if ($p -and $p -notin $merged) { $merged.Add($p) }
+        }
+        $sorted = @($merged | Sort-Object)
+
         $cfg | Add-Member -NotePropertyName ProcessesToClose -NotePropertyValue $sorted -Force
         Set-Win32ToolkitAppConfig -ProjectPath $ProjectPath -Config $cfg | Out-Null
 
+        $added = @($candidates | Where-Object { $_ -notin $existing })
         if ($sorted.Count -gt 0) {
-            Write-Host "✓ ProcessesToClose data written: $($sorted -join ', ')" -ForegroundColor Green
+            $suffix = if ($existing.Count -gt 0 -and $added.Count -eq 0) { ' (unchanged — the capture added nothing)' } else { '' }
+            Write-Host "✓ ProcessesToClose data written: $($sorted -join ', ')$suffix" -ForegroundColor Green
         } else {
             Write-Warning 'ProcessesToClose: no user-launchable processes detected, wrote @()'
         }
