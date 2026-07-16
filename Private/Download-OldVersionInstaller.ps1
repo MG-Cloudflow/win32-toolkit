@@ -212,7 +212,11 @@ function Download-OldVersionInstaller {
     return [PSCustomObject]@{
         InstallerPath = $installer.FullName
         InstallerName = $installer.Name
-        InstallerType = $installer.Extension.TrimStart('.').ToLowerInvariant()
+        # Normalized to INSTALL SEMANTICS, never the raw extension: a '.msixbundle' must report 'msix'.
+        # Consumers key off this — the guest dependency script dispatches on `-eq 'msix' -or -eq 'appx'`
+        # (a raw 'msixbundle' would fall through to Start-Process and hang the sandbox on the App
+        # Installer GUI) and Get-Win32ToolkitBaselineInstallCommand ValidateSets exe|msi|msix|appx.
+        InstallerType = Get-Win32ToolkitInstallerType -Extension $installer.Extension
         SilentArgs    = $silentArgs
     }
 }

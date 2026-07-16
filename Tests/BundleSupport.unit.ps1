@@ -126,6 +126,32 @@ finally {
     Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+Write-Host '[8] Extension -> Type has ONE owner and always normalizes bundles to their family' -ForegroundColor Cyan
+# Review regression: Download-OldVersionInstaller derived Type from the RAW extension, so a bundle
+# baseline/dependency produced Type 'msixbundle'. That value (a) missed the guest dependency script's
+# `-eq 'msix' -or -eq 'appx'` dispatch and fell through to `Start-Process <file>.msixbundle` — opening
+# the App Installer GUI and hanging the sandbox forever — and (b) hard-failed
+# Get-Win32ToolkitBaselineInstallCommand's [ValidateSet('exe','msi','msix','appx')].
+foreach ($c in @(
+    @{ In = '.msixbundle'; Out = 'msix' }
+    @{ In = 'msixbundle';  Out = 'msix' }
+    @{ In = '.MSIXBUNDLE'; Out = 'msix' }
+    @{ In = '.appxbundle'; Out = 'appx' }
+    @{ In = '.msix';       Out = 'msix' }
+    @{ In = '.appx';       Out = 'appx' }
+    @{ In = '.exe';        Out = 'exe'  }
+    @{ In = '.msi';        Out = 'msi'  }
+)) {
+    $t = Get-Win32ToolkitInstallerType -Extension $c.In
+    if ($t -eq $c.Out) { Ok "'$($c.In)' -> '$($c.Out)'" } else { Bad "'$($c.In)' -> '$t' (expected '$($c.Out)')" }
+}
+# Every Type this can emit for a package MUST be one the downstream ValidateSet accepts.
+$valid = @('exe','msi','msix','appx')
+$emitted = @((Get-Win32ToolkitInstallerExtension) | ForEach-Object { Get-Win32ToolkitInstallerType -Extension $_ } | Sort-Object -Unique)
+if (-not (@($emitted | Where-Object { $_ -notin $valid })).Count) {
+    Ok "every accepted extension maps to a valid Type ($($emitted -join '/')) — no 'msixbundle' can reach a consumer"
+} else { Bad "extensions emit invalid Type(s): $(($emitted | Where-Object { $_ -notin $valid }) -join ',')" }
+
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All BundleSupport tests passed.' -ForegroundColor Green; exit 0 }
 else { Write-Host "$fail BundleSupport test(s) FAILED." -ForegroundColor Red; exit 1 }

@@ -94,6 +94,21 @@ try {
     $bj = Get-Body (New-Proj -Name 'Junk' -Arch 'sparc' -InstallerType 'msi')
     if ($bj.allowedArchitectures -eq 'x64') { Ok "junk arch -> x64" } else { Bad "junk arch -> [$($bj.allowedArchitectures)]" }
 
+    Write-Host '[3b] neutral / arm keep using applicableArchitectures (they are NOT allowedArchitectures values)' -ForegroundColor Cyan
+    # winget reports 'neutral' for many MSIX packages. Collapsing it to x64 (as the first cut of the
+    # arch guard did) would silently make those apps not-applicable on x86 and arm64 devices.
+    foreach ($a in 'neutral', 'arm') {
+        $bn = Get-Body (New-Proj -Name "N$a" -Arch $a -InstallerType 'msix')
+        if ($bn.applicableArchitectures -eq $a -and $bn.PSObject.Properties.Name -notcontains 'allowedArchitectures') {
+            Ok "'$a' -> applicableArchitectures = '$a' (not coerced to x64)"
+        } else { Bad "'$a': applicable=[$($bn.applicableArchitectures)] allowed=[$($bn.allowedArchitectures)]" }
+    }
+
+    Write-Host '[3c] Architecture case is canonicalized before it is sent' -ForegroundColor Cyan
+    # -notin is case-insensitive, so an AppConfig 'X64' passed the guard and was POSTed verbatim.
+    $bc = Get-Body (New-Proj -Name 'Upper' -Arch 'X64' -InstallerType 'msi')
+    if ($bc.allowedArchitectures -eq 'x64') { Ok "'X64' -> 'x64'" } else { Bad "case not canonicalized: [$($bc.allowedArchitectures)]" }
+
     Write-Host '[4] G8: an MSIX floors minimumSupportedWindowsRelease at 1809' -ForegroundColor Cyan
     # 1607 predates MSIX (needs 1709) and the -Regions provisioning flag (needs 1803).
     $bm = Get-Body (New-Proj -Name 'Msix' -Arch 'x64' -InstallerType 'msix' -MinRelease '1607')

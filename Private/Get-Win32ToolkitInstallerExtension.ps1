@@ -42,3 +42,44 @@ function Get-Win32ToolkitInstallerExtension {
     if ($PackagesOnly) { return , $packages }
     return , (@('.exe', '.msi') + $packages)
 }
+
+function Get-Win32ToolkitInstallerType {
+    <#
+    .SYNOPSIS
+        Maps an installer file extension to its INSTALL-SEMANTICS type — the single owner of that
+        mapping.
+
+    .DESCRIPTION
+        The toolkit's installer Type is 'exe' | 'msi' | 'msix' | 'appx'. Bundles collapse into their
+        family ('.msixbundle' -> 'msix', '.appxbundle' -> 'appx') because they install and uninstall
+        identically; bundle-ness only matters to Get-Win32ToolkitMsixIdentity, which content-detects it.
+
+        This exists because there were TWO independent extension->Type derivations: Get-InstallerFileInfo
+        (which normalized) and Download-OldVersionInstaller (which returned the RAW extension). Once
+        bundles became acceptable inputs, the un-normalized one started emitting Type 'msixbundle',
+        which silently fell through the guest script's `-eq 'msix' -or -eq 'appx'` dependency dispatch
+        into `Start-Process <file>.msixbundle` — opening the App Installer GUI and hanging the sandbox —
+        and hard-failed Get-Win32ToolkitBaselineInstallCommand's ValidateSet. Both derivations now call
+        this, so the mapping cannot drift again.
+
+    .PARAMETER Extension
+        File extension, with or without the leading dot (case-insensitive).
+
+    .OUTPUTS
+        [string] 'exe' | 'msi' | 'msix' | 'appx', or the lower-cased extension when unrecognized.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Extension
+    )
+
+    $e = $Extension.TrimStart('.').ToLowerInvariant()
+    switch ($e) {
+        'msixbundle' { return 'msix' }
+        'appxbundle' { return 'appx' }
+        default      { return $e }
+    }
+}

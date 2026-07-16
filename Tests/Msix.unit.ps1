@@ -118,6 +118,28 @@ try {
         Ok 'bundle-as-.msix -> identity found (was: $null -> no Uninstall section -> silent no-op uninstall)'
     } else { Bad "bundle-as-.msix: [$($lid | ConvertTo-Json -Compress)] warn=[$($wL -join ';')]" }
 
+    Write-Host "[1e] Identity selection: direct child by LOCAL name (decoy + namespace-prefix regressions)" -ForegroundColor Cyan
+    # A DESCENDANT search (GetElementsByTagName) would return a nested <Identity> that appears earlier
+    # in document order — here the decoy inside <Properties> — instead of the real one.
+    $dcDir = Join-Path $base 'decoy'; New-Item -ItemType Directory -Path $dcDir -Force | Out-Null
+    '<?xml version="1.0"?><Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Properties><Identity Name="DECOY.First" /></Properties><Identity Name="REAL.App" Publisher="CN=R" Version="1.0.0.0" /></Package>' |
+        Set-Content -Path (Join-Path $dcDir 'AppxManifest.xml') -Encoding UTF8
+    $decoy = Join-Path $base 'decoy.msix'
+    Compress-Archive -Path (Join-Path $dcDir 'AppxManifest.xml') -DestinationPath "$decoy.zip" -Force
+    Move-Item "$decoy.zip" $decoy -Force
+    $did = Get-Win32ToolkitMsixIdentity -Path $decoy -WarningAction SilentlyContinue
+    if ($did -and $did.PackageName -eq 'REAL.App') { Ok 'a nested decoy <Identity> never wins over the root one' } else { Bad "decoy won: [$($did.PackageName)]" }
+
+    # A namespace-PREFIXED manifest: matching the qualified name 'Identity' would miss <b:Identity>.
+    $pfDir = Join-Path $base 'prefixed'; New-Item -ItemType Directory -Path (Join-Path $pfDir 'AppxMetadata') -Force | Out-Null
+    '<?xml version="1.0" encoding="utf-8"?><b:Bundle xmlns:b="http://schemas.microsoft.com/appx/2013/bundle"><b:Identity Name="Prefixed.App" Publisher="CN=P" Version="1.0.0.0" /><b:Packages /></b:Bundle>' |
+        Set-Content -Path (Join-Path $pfDir 'AppxMetadata\AppxBundleManifest.xml') -Encoding UTF8
+    $pfx = Join-Path $base 'prefixed.msixbundle'
+    Compress-Archive -Path (Join-Path $pfDir '*') -DestinationPath "$pfx.zip" -Force
+    Move-Item "$pfx.zip" $pfx -Force
+    $pid2 = Get-Win32ToolkitMsixIdentity -Path $pfx -WarningAction SilentlyContinue
+    if ($pid2 -and $pid2.PackageName -eq 'Prefixed.App' -and $pid2.IsBundle) { Ok 'a namespace-prefixed <b:Identity> is found (selection is by LOCAL name)' } else { Bad "prefixed bundle: [$($pid2 | ConvertTo-Json -Compress)]" }
+
     Write-Host "[1d] Update-PSADTMsixUninstallLogic writes the Uninstall section for a BUNDLE" -ForegroundColor Cyan
     $bp = Join-Path $base 'bundleproj'
     New-Item -ItemType Directory -Path (Join-Path $bp 'Files') -Force | Out-Null

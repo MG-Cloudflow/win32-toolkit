@@ -66,9 +66,16 @@ function Get-Win32ToolkitMsixIdentity {
         finally { $reader.Dispose() }
 
         # Root element differs (<Package> vs <Bundle>) and the two manifests use different XML
-        # namespaces, so select the Identity by tag name rather than by property path — that works for
-        # both shapes without hard-coding either namespace.
-        $identity = $manifest.DocumentElement.GetElementsByTagName('Identity') | Select-Object -First 1
+        # namespaces, so select the Identity by LOCAL name among the root's DIRECT CHILDREN.
+        # Deliberately NOT GetElementsByTagName: that is a DESCENDANT search on the QUALIFIED name, so
+        # (a) a nested <Identity> appearing earlier in document order (e.g. inside <Properties>, or a
+        # decoy) would win over the real one, and (b) a namespace-PREFIXED manifest (<b:Identity ...>)
+        # would not match 'Identity' at all and the whole package would read as identity-less. Matching
+        # LocalName on direct children is both namespace-agnostic and immune to nested decoys — and
+        # preserves the old $manifest.Package.Identity child-access semantics.
+        $identity = $manifest.DocumentElement.ChildNodes |
+            Where-Object { $_.NodeType -eq 'Element' -and $_.LocalName -eq 'Identity' } |
+            Select-Object -First 1
 
         # GetAttribute, not property access: on a nameless <Identity>, PowerShell's XML adapter falls
         # back to the base XmlNode.Name property and '$identity.Name' returns the literal 'Identity' —

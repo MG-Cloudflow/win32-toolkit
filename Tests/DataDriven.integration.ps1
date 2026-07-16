@@ -321,6 +321,13 @@ InstallerSwitches:
     #    script still returned 0, so Intune recorded a successful uninstall of an app still installed.
     if ($mxPs1 -match [regex]::Escape('if (-not $uninstallSuccess -and')) { Ok 'G5: uninstall throws when no uninstaller reported success' }
     else { Bad 'G5: failed uninstall still returns success' }
+    # G5 must not throw on codes that MEAN success: 1605 = product not installed (already gone — the
+    # goal state holds), 1641/3010 = removed + reboot initiated/required. Both loops share one set.
+    if ($mxPs1 -match [regex]::Escape('$w32tUninstallOk = @(0, 1605, 1641, 3010)')) { Ok 'G5: success codes include 1605/1641/3010 (no false uninstall failure)' }
+    else { Bad 'G5: success-code set missing or wrong' }
+    if (([regex]::Matches($mxPs1, [regex]::Escape('-in $w32tUninstallOk'))).Count -eq 2) { Ok 'G5: both uninstall loops share the same success set (cannot drift)' }
+    else { Bad 'G5: the two loops do not share the success set' }
+    if ($mxPs1 -notmatch [regex]::Escape('-in @(0, 3010)')) { Ok 'G5: no stale narrow success check remains' } else { Bad 'G5: a stale @(0,3010) check survives' }
 
     # Tattoo detection: inject ScriptAuthor+Vendor (org template is $null in this harness)
     $mxCfg2 = Get-Win32ToolkitAppConfig -ProjectPath $mxProj

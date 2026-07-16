@@ -58,9 +58,11 @@ function Get-InstallerFileInfo {
     # exactly like a plain package (Add-AppxProvisionedPackage takes a bundle path; removal is by the
     # same Name), so it reports the SAME Type — 'msix' for .msix/.msixbundle, 'appx' for .appx/.appxbundle.
     # Type is install semantics; bundle-ness is content-detected later by Get-Win32ToolkitMsixIdentity.
+    # Families derived from the single extension->Type owner (Get-Win32ToolkitInstallerType), so this
+    # and Download-OldVersionInstaller can never disagree about what a '.msixbundle' is.
     foreach ($family in @(
-        @{ Type = 'msix'; Extensions = @('.msix', '.msixbundle') }
-        @{ Type = 'appx'; Extensions = @('.appx', '.appxbundle') }
+        @{ Type = 'msix'; Extensions = @((Get-Win32ToolkitInstallerExtension -PackagesOnly) | Where-Object { (Get-Win32ToolkitInstallerType -Extension $_) -eq 'msix' }) }
+        @{ Type = 'appx'; Extensions = @((Get-Win32ToolkitInstallerExtension -PackagesOnly) | Where-Object { (Get-Win32ToolkitInstallerType -Extension $_) -eq 'appx' }) }
     )) {
         $pkgFiles = @(Get-ChildItem -Path $FilesPath -File -ErrorAction SilentlyContinue |
             Where-Object { $_.Extension -in $family.Extensions } | Sort-Object Name)

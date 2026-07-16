@@ -123,10 +123,16 @@ $adtSession = @{
 ## Data-driven uninstall (values from SupportFiles\AppConfig.json).
     if ($appConfig.Uninstall) {
         $uninstallSuccess = $false
+        # Codes that mean "the app is gone" — checked identically by both loops below so they cannot
+        # drift. 0 = removed. 1605 = "this product is not installed": the goal state already holds
+        # (a user removed it by hand), which is a no-op success, matching how the msix branch treats an
+        # already-absent package. 1641/3010 = removed AND a reboot was initiated/is required. Treating
+        # 1641 or 1605 as failure would make the uninstall throw on a successful removal.
+        $w32tUninstallOk = @(0, 1605, 1641, 3010)
         foreach ($pc in @($appConfig.Uninstall.ProductCodes)) {
             if (-not $pc -or $uninstallSuccess) { continue }
             $r = Start-ADTMsiProcess -Action Uninstall -ProductCode $pc -PassThru
-            if ($r -and $r.ExitCode -in @(0, 3010)) { $uninstallSuccess = $true }
+            if ($r -and $r.ExitCode -in $w32tUninstallOk) { $uninstallSuccess = $true }
         }
         foreach ($u in @($appConfig.Uninstall.Uninstallers)) {
             if (-not $u -or $uninstallSuccess) { continue }
@@ -156,7 +162,7 @@ $adtSession = @{
                     }
                 }
             }
-            if ($r -and $r.ExitCode -in @(0, 3010)) { $uninstallSuccess = $true }
+            if ($r -and $r.ExitCode -in $w32tUninstallOk) { $uninstallSuccess = $true }
         }
         # Fail loudly when nothing actually uninstalled. $uninstallSuccess used to be computed and then
         # never read: every uninstaller could fail and the script still returned 0, so Intune recorded a

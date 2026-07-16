@@ -185,6 +185,25 @@ function New-Win32ToolkitManualApp {
         if (-not ($cfg.PSObject.Properties.Name -contains 'ProcessesToClose')) {
             $cfg | Add-Member -NotePropertyName ProcessesToClose -NotePropertyValue @() -Force
         }
+
+        # ---- Org-template Intune publish defaults + doc branding (data only) ----
+        # Mirrors Configure-PSADTForInstaller: a manual app never goes through that function, so without
+        # this every org-template Intune default (min-OS, restart behavior, max runtime, description
+        # boilerplate, privacy URL) and the doc branding were silently dropped for manual apps.
+        if ($script:OrgTemplate -and $script:OrgTemplate.PSObject.Properties['IntuneDefaults'] -and $script:OrgTemplate.IntuneDefaults) {
+            $cfg | Add-Member -NotePropertyName IntuneDefaults -NotePropertyValue (New-Win32ToolkitIntuneDefaults -Template $script:OrgTemplate) -Force
+        }
+        if ($script:OrgTemplate) {
+            $companyM   = if ($script:OrgTemplate.PSObject.Properties['CompanyName']) { [string]$script:OrgTemplate.CompanyName } else { '' }
+            $docFooterM = if ($script:OrgTemplate.PSObject.Properties['DocFooter'])   { [string]$script:OrgTemplate.DocFooter }   else { '' }
+            if (-not [string]::IsNullOrWhiteSpace($companyM) -or -not [string]::IsNullOrWhiteSpace($docFooterM)) {
+                $cfg | Add-Member -NotePropertyName Branding -NotePropertyValue ([pscustomobject]@{
+                    CompanyName = $companyM
+                    DocFooter   = $docFooterM
+                }) -Force
+            }
+        }
+
         Set-Win32ToolkitAppConfig -ProjectPath $projectFullPath -Config $cfg | Out-Null
         Write-Host '✓ Wrote SupportFiles\AppConfig.json' -ForegroundColor Green
 

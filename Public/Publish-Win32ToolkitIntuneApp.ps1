@@ -169,8 +169,22 @@ function Publish-Win32ToolkitIntuneApp {
         elseif ($projectName -match '_x86_')   { $arch = 'x86'   }
         elseif ($projectName -match '_arm64_') { $arch = 'arm64' }
         elseif ($projectName -match '_x64_')   { $arch = 'x64'   }
-        if ($arch -notin @('x86', 'x64', 'arm64')) {
-            Write-Warning "Unrecognized architecture '$arch' — publishing as x64. (allowedArchitectures accepts x86, x64 or arm64.)"
+        # Canonicalize case: the enum values are lower-case and the guard below is case-insensitive, so
+        # an AppConfig 'X64' would otherwise pass through and be POSTed verbatim as an invalid value.
+        $arch = "$arch".Trim().ToLowerInvariant()
+
+        # Two properties, because neither covers every architecture:
+        #  * allowedArchitectures documents null/x86/x64/arm64 — it is the ONLY way to express arm64.
+        #  * 'neutral' and 'arm' are windowsArchitecture members but are NOT in allowedArchitectures'
+        #    documented values, so they keep going out on applicableArchitectures (which is what this
+        #    module always sent, and works). winget reports 'neutral' for plenty of MSIX packages, so
+        #    collapsing it to x64 would silently make those apps not-applicable on x86/arm64 devices.
+        $archField = 'allowedArchitectures'
+        if ($arch -in @('neutral', 'arm')) {
+            $archField = 'applicableArchitectures'
+        }
+        elseif ($arch -notin @('x86', 'x64', 'arm64')) {
+            Write-Warning "Unrecognized architecture '$arch' — publishing as x64."
             $arch = 'x64'
         }
 
@@ -235,7 +249,7 @@ function Publish-Win32ToolkitIntuneApp {
             'setupFilePath'                    = 'Invoke-AppDeployToolkit.ps1'
             'installCommandLine'               = 'powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Install'
             'uninstallCommandLine'             = 'powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Uninstall'
-            'allowedArchitectures'             = $arch
+            $archField                         = $arch
             'minimumSupportedWindowsRelease'   = $minWinRelease
             'msiInformation'                   = $null
             'installExperience' = @{
