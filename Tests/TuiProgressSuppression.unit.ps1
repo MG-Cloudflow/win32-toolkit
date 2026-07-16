@@ -74,6 +74,40 @@ foreach ($g in $guestGuards) {
     else { Bad "$($g.File): guest Invoke-Command block does NOT set `$ProgressPreference right after $($g.Param)" }
 }
 
+# ── (c) TUI ROOT guard: the whole text UI runs with progress silenced ───────────────────────────────
+# Per-site guards are whack-a-mole — a bar leaked back into the menu (Remove-Item's "Removed N of M
+# files") because progress comes from ~14 places, explicit (Write-Progress in New-TargetedDocumentation
+# / Invoke-AzBlobUpload) and implicit (Invoke-WebRequest, Expand-Archive, Copy-Item, Remove-Item
+# -Recurse, Install-Module). PowerShell's progress renderer owns a screen region, paints over the
+# Spectre UI, and survives Clear-Host. $ProgressPreference is dynamically scoped, so ONE guard at the
+# TUI root covers every command the menu launches. Source-asserted: Show-Win32Toolkit refuses to run
+# without an interactive console, so it cannot be invoked from a test host.
+Write-Host '[c] Show-Win32Toolkit silences progress for the whole TUI and restores it on exit' -ForegroundColor Cyan
+$tui = Get-Content -LiteralPath (Join-Path $repo 'Public\Show-Win32Toolkit.ps1') -Raw
+
+if ($tui -match '\$prevProgress\s*=\s*\$ProgressPreference\s*\r?\n\s*\$ProgressPreference\s*=\s*''SilentlyContinue''') {
+    Ok 'the TUI saves the caller preference and sets SilentlyContinue'
+} else { Bad 'Show-Win32Toolkit does not silence $ProgressPreference at the root' }
+
+if ($tui -match 'finally\s*\{\s*\$ProgressPreference\s*=\s*\$prevProgress\s*\}') {
+    Ok 'restored in a finally (a scripted caller keeps its bars, even if the TUI throws)'
+} else { Bad 'Show-Win32Toolkit does not restore $ProgressPreference in a finally' }
+
+# The guard must wrap the MENU LOOP — a guard set after it would leave the UI unprotected.
+$setIdx  = $tui.IndexOf("`$ProgressPreference = 'SilentlyContinue'")
+$loopIdx = $tui.IndexOf('Show-Win32ToolkitMainMenu')
+$finIdx  = $tui.LastIndexOf('$ProgressPreference = $prevProgress')
+if ($setIdx -ge 0 -and $loopIdx -gt $setIdx -and $finIdx -gt $loopIdx) {
+    Ok 'the guard encloses the main menu loop (set -> loop -> restore)'
+} else { Bad "guard does not enclose the menu loop (set=$setIdx loop=$loopIdx restore=$finIdx)" }
+
+# Nothing inside the module may force progress back ON — that would defeat the root guard.
+$forcers = @(Get-ChildItem (Join-Path $repo 'Private'), (Join-Path $repo 'Public') -Filter *.ps1 -Recurse |
+    Select-String -Pattern '\$ProgressPreference\s*=\s*''Continue''' |
+    ForEach-Object { $_.Path })
+if ($forcers.Count -eq 0) { Ok "no module code forces `$ProgressPreference back to 'Continue'" }
+else { Bad "these force progress back on inside the TUI: $(($forcers | Split-Path -Leaf) -join ', ')" }
+
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'ALL PASS' -ForegroundColor Green; exit 0 }
 else { Write-Host "$fail FAILED" -ForegroundColor Red; exit 1 }
