@@ -3,13 +3,14 @@ function Show-Win32Toolkit {
 .SYNOPSIS
     Launches the interactive, menu-driven text UI (TUI) for win32-toolkit.
 .DESCRIPTION
-    A fool-proof, first-line-friendly front-end over the whole pipeline. Checks prerequisites,
-    guides first-run setup, and presents a menu (package from winget, package a manual app, work with
-    an existing project, browse, templates, settings). Built on PwshSpectreConsole — offered for
-    one-time install on first launch if absent. Requires PowerShell 7.2+ and an interactive console.
+    A fool-proof, first-line-friendly front-end over the whole pipeline: package an app from winget
+    or a manual installer, test and update-test existing projects (Windows Sandbox or the Hyper-V
+    VM), manage dependencies, package and publish to Intune, manage org templates, the test VM, and
+    settings — all from guided menus. The first screen is a prerequisite health check that tells you
+    exactly what is missing and how to fix it.
 
-    This is Phase 1 (shell): health screen, main menu, Settings, and read-only Browse are live;
-    the packaging wizards arrive in later phases. See knowledge-base/designs/tui.md.
+    Built on PwshSpectreConsole — offered for one-time install on first launch if absent. Requires
+    PowerShell 7.2+ and an interactive console.
 .PARAMETER BasePath
     Optional base folder override for this session. If omitted, the registry-saved value is used, or
     first-run setup prompts for it.

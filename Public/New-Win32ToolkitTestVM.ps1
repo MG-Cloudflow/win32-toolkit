@@ -12,7 +12,6 @@ function New-Win32ToolkitTestVM {
         let all reboots finish; once you confirm, it freezes a STANDARD (memory-state) checkpoint so later
         runs revert to that warm, fully-patched, logged-in desktop with no boot. The VM name, checkpoint
         name, and guest credential are saved to config for the resolver/provider.
-        See knowledge-base/designs/hyperv-golden-image-build.md.
     .PARAMETER IsoPath
         Build the golden VHDX from this Windows 11 x64 ISO. Mutually exclusive with -VhdxPath.
     .PARAMETER VhdxPath
@@ -22,8 +21,13 @@ function New-Win32ToolkitTestVM {
     .PARAMETER Credential
         Guest local-admin credential (baked into the unattend when building; used for PowerShell Direct).
         Prompted if omitted.
-    .PARAMETER MemoryStartupBytes / ProcessorCount / SwitchName
-        VM hardware. Defaults: 4 GB, 2 vCPU, 'Default Switch' (NAT).
+    .PARAMETER MemoryStartupBytes
+        Static startup memory for the VM (default 4 GB; accepts size literals like 8GB). Saved to config
+        so a re-provision keeps your choice.
+    .PARAMETER ProcessorCount
+        Virtual processor count (default 2). Saved to config so a re-provision keeps your choice.
+    .PARAMETER SwitchName
+        Hyper-V virtual switch to connect (default 'Default Switch', NAT).
     .PARAMETER CheckpointName
         Warm checkpoint name (default 'clean-base').
     .PARAMETER ImageIndex

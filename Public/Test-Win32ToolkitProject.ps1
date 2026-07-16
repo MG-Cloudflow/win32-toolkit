@@ -1,14 +1,19 @@
 function Test-Win32ToolkitProject {
 <#
 .SYNOPSIS
-    Tests a PSADT project by running it inside Windows Sandbox.
+    Tests a PSADT project in a disposable guest — Windows Sandbox or the Hyper-V test VM.
 .DESCRIPTION
-    Launches a Windows Sandbox session that executes a chosen test scenario against a
-    PSADT V4 project. If no ProjectPath is supplied, an interactive menu is shown
-    that lists all PSADT projects found under BasePath.
+    Runs a chosen test scenario against a PSADT V4 project in the configured test backend:
+    Windows Sandbox (default) or the local Hyper-V test VM (see New-Win32ToolkitTestVM). If no
+    ProjectPath is supplied, an interactive menu lists all PSADT projects found under BasePath.
 
-    The function is designed to be scenario-driven: new test types can be added as
-    additional switch cases without changing the overall structure.
+    Tests run WATCHED by default (PSADT shows its GUI and a countdown/pause gives you a
+    verification window) or UNATTENDED via -Unattended / the SandboxTestMode & HyperVTestMode
+    config values (silent, back-to-back, no operator needed — under Sandbox the guest shuts
+    itself down afterwards so chained runs proceed).
+
+    The function is scenario-driven: new test types can be added as additional switch cases
+    without changing the overall structure.
 .PARAMETER ProjectPath
     Full path to the PSADT project folder (the folder that contains
     Invoke-AppDeployToolkit.ps1). If omitted, a numbered selection menu is shown.
@@ -44,22 +49,35 @@ function Test-Win32ToolkitProject {
     (or 'project:<Template>\<Name>'), resolved to <BasePath>\Projects\<Template>\<Name> — exactly how a
     'project:' dependency is referenced, so you don't type the full path. Mutually exclusive with
     -BaselineProjectPath / -VersionsBack / -SpecificVersion.
+.PARAMETER Backend
+    Which test backend to use for this run: 'Sandbox' (Windows Sandbox) or 'HyperV' (the local
+    Hyper-V test VM over PowerShell Direct). Omit to use the configured default (the TestBackend
+    config value — Sandbox unless HyperV is configured AND ready; an unready HyperV falls back to
+    Sandbox with a warning).
+.PARAMETER Unattended
+    Run SILENT and back-to-back on either backend: no PSADT GUI, no countdown/pause, and under
+    Sandbox the guest shuts itself down afterwards so chained runs proceed unaided. The default is
+    watched/interactive. Overrides the SandboxTestMode / HyperVTestMode config values; on a
+    non-interactive host Unattended is auto-selected with a warning. Note the context difference:
+    Sandbox-unattended runs as the sandbox admin user, HyperV-unattended runs as SYSTEM (the same
+    context Intune uses) — their results are not equivalent evidence.
 .EXAMPLE
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0' -Scenario Update -VersionsBack 1 -SkipRequirementCheck
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario Update -VersionsBack 1 -SkipRequirementCheck
 .EXAMPLE
     # Baseline with a previous toolkit package (tattoo-overwrite test), by full path
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Contoso\Git_x64_2.55.0' -Scenario Update -BaselineProjectPath 'C:\Win32Apps\Contoso\Git_x64_2.53.0'
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.55.0' -Scenario Update -BaselineProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'
 .EXAMPLE
     # Same, by friendly reference (resolved under BasePath\Projects\)
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Contoso\Git_x64_2.55.0' -Scenario Update -BaselineProject 'Contoso\Git_x64_2.53.0'
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.55.0' -Scenario Update -BaselineProject 'Contoso\Git_x64_2.53.0'
 .EXAMPLE
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0'
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'
 .EXAMPLE
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0' -Scenario InstallUninstall
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario InstallUninstall
 .EXAMPLE
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0' -Scenario Update -VersionsBack 1
+    # Silent, no operator needed — ideal for automation
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario InstallUninstall -Backend HyperV -Unattended
 .EXAMPLE
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Git_x64_2.53.0' -Scenario Update -SpecificVersion '2.47.0'
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario Update -SpecificVersion '2.47.0'
 .EXAMPLE
     Test-Win32ToolkitProject -BasePath 'D:\Packaging' -Scenario Update
 #>
