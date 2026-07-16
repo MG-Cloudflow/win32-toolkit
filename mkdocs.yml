@@ -9,29 +9,73 @@ docs_dir: docs
 
 theme:
   name: material
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  icon:
+    repo: fontawesome/brands/github
+  font:
+    text: Inter
+    code: JetBrains Mono
   palette:
+    # 3-way: follow the OS by default, with explicit light/dark toggles.
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: indigo
+      primary: custom
+      accent: custom
       toggle:
-        icon: material/weather-night
-        name: Dark mode
+        icon: material/brightness-7
+        name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: indigo
+      primary: custom
+      accent: custom
       toggle:
-        icon: material/weather-sunny
-        name: Light mode
+        icon: material/brightness-4
+        name: Switch to system preference
   features:
+    - navigation.tabs
+    - navigation.tabs.sticky
     - navigation.sections
+    - navigation.indexes
     - navigation.top
-    - content.code.copy
+    - navigation.footer
+    - navigation.instant
+    - navigation.instant.progress
+    - toc.follow
     - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/MG-Cloudflow/win32-toolkit
 
 markdown_extensions:
   - admonition
+  - attr_list
+  - md_in_html
+  - def_list
   - tables
   - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
