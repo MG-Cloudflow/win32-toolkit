@@ -19,8 +19,11 @@ function Get-Win32ToolkitTemplateUsage {
         [Parameter(Mandatory)][string]$BasePath
     )
 
+    # Mirror the tier writers' empty→'Default' fallback (Invoke-Win32Toolkit / New-Win32ToolkitManualApp):
+    # a template whose name sanitizes to '' still lands its projects under <tier>\Default, so the usage
+    # check must look there too or an in-use delete would give no warning.
     $segment = Sanitize-ProjectName -Name $Name
-    if ([string]::IsNullOrWhiteSpace($segment)) { return @() }
+    if ([string]::IsNullOrWhiteSpace($segment)) { $segment = 'Default' }
 
     $paths = Get-Win32ToolkitPaths -BasePath $BasePath
     $inUse = [System.Collections.Generic.List[string]]::new()

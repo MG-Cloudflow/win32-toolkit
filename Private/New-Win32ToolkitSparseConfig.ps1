@@ -66,10 +66,17 @@ function New-Win32ToolkitSparseConfig {
     $ui['DialogStyle'] = Format-Psd1String $style
 
     # FluentAccentColor is a BARE literal in config.psd1 (e.g. 0xFF0078D7) — never quoted, per the
-    # PSADT config comment. Emit only when set; omit → PSADT default accent.
+    # PSADT config comment. Normalize any hex form to a canonical 0x literal; a value that isn't a
+    # usable hex colour is OMITTED (degrades to the PSADT default) rather than emitted bare, which would
+    # make the whole config.psd1 fail to parse on-device and abort the SYSTEM deploy.
     $accent = Get-Field $Template 'FluentAccentColor'
-    if ($accent -and $accent.Trim() -ne '') {
-        $ui['FluentAccentColor'] = $accent.Trim()
+    if (-not [string]::IsNullOrWhiteSpace($accent)) {
+        $accentLiteral = ConvertTo-Win32ToolkitAccentLiteral -Value $accent
+        if ($accentLiteral) {
+            $ui['FluentAccentColor'] = $accentLiteral
+        } else {
+            Write-Warning "Org template FluentAccentColor '$accent' is not a valid hex colour (use 0xAARRGGBB, #RRGGBB, or RRGGBB) — using the PSADT default accent."
+        }
     }
 
     # LanguageOverride (C1): pin every dialog to one PSADT UI language; omit → per-user auto-detect.

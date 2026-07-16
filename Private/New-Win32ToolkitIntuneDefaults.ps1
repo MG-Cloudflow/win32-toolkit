@@ -35,8 +35,23 @@ function New-Win32ToolkitIntuneDefaults {
     [void][int]::TryParse([string](& $get 'MaxRuntimeMinutes' 60), [ref]$runtime)
     if ($runtime -le 0) { $runtime = 60 }
 
+    # minimumSupportedWindowsRelease is a Graph enum — an unrecognized token 400s the whole publish, so
+    # validate it here (as we do the restart enum). Fall back to the safe '1607' floor with a warning
+    # rather than let a bad value reach the app body. Match case-insensitively, emit the canonical token.
+    $validReleases = @(
+        '1607', '1703', '1709', '1803', '1809', '1903', '1909', '2004', '20H2', '21H1', '21H2', '22H2'
+        'Windows11_21H2', 'Windows11_22H2', 'Windows11_23H2', 'Windows11_24H2'
+    )
+    $release = [string](& $get 'MinimumWindowsRelease' '1607')
+    $canon = $validReleases | Where-Object { $_ -ieq $release } | Select-Object -First 1
+    if ($canon) { $release = $canon }
+    else {
+        Write-Warning "IntuneDefaults MinimumWindowsRelease '$release' is not a recognized Intune release token — using '1607'."
+        $release = '1607'
+    }
+
     return [pscustomobject]@{
-        MinimumWindowsRelease  = [string](& $get 'MinimumWindowsRelease'  '1607')
+        MinimumWindowsRelease  = $release
         DeviceRestartBehavior  = $restart
         MaxRuntimeMinutes      = $runtime
         DescriptionBoilerplate = [string](& $get 'DescriptionBoilerplate' '')

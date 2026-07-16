@@ -41,6 +41,10 @@ Write-Host "`n[2] Duplicate rejects blank name + collision" -ForegroundColor Cya
 try { Copy-Win32ToolkitTemplate -SourceName 'Contoso' -NewName '   ' -BasePath $b; Bad 'blank name accepted' } catch { Ok 'blank name rejected' }
 try { Copy-Win32ToolkitTemplate -SourceName 'Contoso' -NewName 'Fabrikam' -BasePath $b; Bad 'collision accepted' } catch { Ok 'name collision rejected' }
 try { Copy-Win32ToolkitTemplate -SourceName 'Contoso' -NewName 'Bad/Name' -BasePath $b; Bad 'illegal char accepted' } catch { Ok 'illegal filename char rejected' }
+# review fix: '.' / '..' pass the char guard but resolve outside Templates — must be rejected.
+try { Copy-Win32ToolkitTemplate -SourceName 'Contoso' -NewName '..' -BasePath $b; Bad "'..' accepted" } catch { Ok "'..' rejected (no path traversal)" }
+try { Copy-Win32ToolkitTemplate -SourceName 'Contoso' -NewName '.' -BasePath $b; Bad "'.' accepted" } catch { Ok "'.' rejected" }
+if (-not (Test-Path (Join-Path $b '..json')) -and -not (Test-Path (Join-Path $b 'Contoso\brand.png'))) { Ok 'no stray files leaked into BasePath' } else { Bad 'traversal leaked files into BasePath' }
 
 Write-Host "`n[3] Usage check — unused template reports no usage" -ForegroundColor Cyan
 $b3 = New-Base
@@ -70,6 +74,16 @@ Write-Host "`n[7] Delete an unused template succeeds without -Force" -Foreground
 $b7 = New-Base
 $res7 = Remove-Win32ToolkitTemplate -Name 'Contoso' -BasePath $b7
 if ($res7.Removed -and -not (Test-Path (Join-Path $b7 'Templates\Contoso.json'))) { Ok 'unused template deleted without -Force' } else { Bad "unexpected: $($res7 | ConvertTo-Json -Compress)" }
+
+Write-Host "`n[8] Usage check honors the empty-segment -> Default fallback (review fix)" -ForegroundColor Cyan
+# A template whose name sanitizes to '' ('_' -> '') lands projects under <tier>\Default; the usage
+# check must look there or an in-use delete gives no warning.
+$b8 = Join-Path ([System.IO.Path]::GetTempPath()) ('tplmgr_' + [guid]::NewGuid().ToString('N').Substring(0,8))
+New-Item -ItemType Directory -Path (Join-Path $b8 'Templates') -Force | Out-Null
+([pscustomobject]@{ TemplateName='_' } | ConvertTo-Json) | Set-Content -LiteralPath (Join-Path $b8 'Templates\_.json') -Encoding UTF8
+New-Item -ItemType Directory -Path (Join-Path $b8 'Projects\Default\App_x64_1.0') -Force | Out-Null
+$u8 = @(Get-Win32ToolkitTemplateUsage -Name '_' -BasePath $b8)
+if ($u8.Count -eq 1 -and $u8[0] -like '*Projects\Default') { Ok "empty-segment template -> checks the Default tier" } else { Bad "usage=[$($u8 -join ',')]" }
 
 Write-Host ""
 if ($fail -eq 0) { Write-Host "TemplateManage unit test PASSED" -ForegroundColor Green; exit 0 }

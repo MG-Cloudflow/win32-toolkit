@@ -25,9 +25,19 @@ if ($d2.MinimumWindowsRelease -eq '1607' -and $d2.DeviceRestartBehavior -eq 'sup
 
 Write-Host "`n[3] Validation — bad restart enum / non-positive runtime are corrected" -ForegroundColor Cyan
 $t3 = [pscustomobject]@{ IntuneDefaults = [pscustomobject]@{ DeviceRestartBehavior='reboot-now'; MaxRuntimeMinutes=0 } }
-$d3 = New-Win32ToolkitIntuneDefaults -Template $t3
+$d3 = New-Win32ToolkitIntuneDefaults -Template $t3 -WarningAction SilentlyContinue
 if ($d3.DeviceRestartBehavior -eq 'suppress') { Ok 'invalid restart enum -> suppress' } else { Bad "restart=[$($d3.DeviceRestartBehavior)]" }
 if ($d3.MaxRuntimeMinutes -eq 60) { Ok 'runtime 0 -> 60' } else { Bad "runtime=[$($d3.MaxRuntimeMinutes)]" }
+
+Write-Host "`n[3b] MinimumWindowsRelease validation (review fix) — bad token -> 1607, valid passes" -ForegroundColor Cyan
+$tBad = [pscustomobject]@{ IntuneDefaults = [pscustomobject]@{ MinimumWindowsRelease='23H2' } }  # not a Win10 token
+$dBad = New-Win32ToolkitIntuneDefaults -Template $tBad -WarningVariable wr -WarningAction SilentlyContinue
+if ($dBad.MinimumWindowsRelease -eq '1607') { Ok "invalid release '23H2' -> 1607" } else { Bad "release=[$($dBad.MinimumWindowsRelease)]" }
+if ($wr) { Ok 'invalid release warned' } else { Bad 'no warning for invalid release' }
+$dOk = New-Win32ToolkitIntuneDefaults -Template ([pscustomobject]@{ IntuneDefaults=[pscustomobject]@{ MinimumWindowsRelease='22H2' } })
+if ($dOk.MinimumWindowsRelease -eq '22H2') { Ok 'valid release 22H2 passes through' } else { Bad "release=[$($dOk.MinimumWindowsRelease)]" }
+$dWin11 = New-Win32ToolkitIntuneDefaults -Template ([pscustomobject]@{ IntuneDefaults=[pscustomobject]@{ MinimumWindowsRelease='windows11_22h2' } })
+if ($dWin11.MinimumWindowsRelease -eq 'Windows11_22H2') { Ok 'case-insensitive Win11 token -> canonical form' } else { Bad "release=[$($dWin11.MinimumWindowsRelease)]" }
 
 # ── Doc-export fixture ──
 function New-DocProject {

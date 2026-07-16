@@ -4,6 +4,7 @@
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitAccentLiteral.ps1')
 . (Join-Path $repo 'Private\New-Win32ToolkitSparseConfig.ps1')
 
 $fail = 0
@@ -57,6 +58,29 @@ Write-Host "`n[5] Invalid DialogStyle falls back to Fluent (never emits garbage)
 $t5 = [pscustomobject]@{ CompanyName='X'; DialogStyle='Neon' }
 $p5 = Import-Sparse (New-Win32ToolkitSparseConfig -Template $t5)
 if ($p5.UI.DialogStyle -eq 'Fluent') { Ok "invalid style -> Fluent" } else { Bad "style=[$($p5.UI.DialogStyle)]" }
+
+Write-Host "`n[6] FluentAccentColor — every hex form normalizes to a PARSEABLE 0x literal (review fix)" -ForegroundColor Cyan
+# The bug: a bare/#-prefixed hex was emitted verbatim, producing a config.psd1 that THROWS on load
+# (aborting the on-device SYSTEM deploy). Each accepted form must now round-trip through Import.
+foreach ($case in @(
+    @{ In='0xFF0078D7'; Expect=0xFF0078D7 }
+    @{ In='#0078D7';    Expect=0xFF0078D7 }   # 6-digit RGB -> FF alpha
+    @{ In='0078D7';     Expect=0xFF0078D7 }   # bare 6-digit
+    @{ In='FF0078D7';   Expect=0xFF0078D7 }   # bare 8-digit ARGB
+)) {
+    $tc = [pscustomobject]@{ CompanyName='X'; DialogStyle='Fluent'; FluentAccentColor=$case.In }
+    $pc = Import-Sparse (New-Win32ToolkitSparseConfig -Template $tc)
+    if ($pc.UI.ContainsKey('FluentAccentColor') -and $pc.UI.FluentAccentColor -eq $case.Expect) {
+        Ok "accent '$($case.In)' -> parseable 0x literal ($($pc.UI.FluentAccentColor))"
+    } else { Bad "accent '$($case.In)' -> [$($pc.UI.FluentAccentColor)] (expected $($case.Expect))" }
+}
+
+Write-Host "`n[7] Garbage accent is OMITTED + warns (degrades to PSADT default, never breaks the config)" -ForegroundColor Cyan
+$tg = [pscustomobject]@{ CompanyName='X'; DialogStyle='Fluent'; FluentAccentColor='blue' }
+$cg = New-Win32ToolkitSparseConfig -Template $tg -WarningVariable wa -WarningAction SilentlyContinue
+$pg = Import-Sparse $cg   # must still parse
+if (-not $pg.UI.ContainsKey('FluentAccentColor')) { Ok 'invalid accent omitted' } else { Bad 'invalid accent emitted' }
+if ($wa) { Ok 'invalid accent warned' } else { Bad 'no warning for invalid accent' }
 
 Write-Host ""
 if ($fail -eq 0) { Write-Host "SparseConfig unit test PASSED" -ForegroundColor Green; exit 0 }

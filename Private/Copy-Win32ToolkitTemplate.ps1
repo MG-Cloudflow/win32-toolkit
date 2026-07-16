@@ -23,6 +23,9 @@ function Copy-Win32ToolkitTemplate {
     $NewName = $NewName.Trim()
     if ([string]::IsNullOrWhiteSpace($NewName)) { throw 'The new template name cannot be empty.' }
     if ($NewName -match '[<>:"/\\|?*]') { throw "The template name '$NewName' contains characters that are not allowed in a file name." }
+    # '.'/'..' pass the char guard but resolve outside Templates (Join-Path templatesDir '..' = BasePath),
+    # scattering the sidecar folder into the base — reject the relative segments explicitly.
+    if ($NewName -in @('.', '..')) { throw "The template name '$NewName' is not allowed." }
 
     $templatesDir = (Get-Win32ToolkitPaths -BasePath $BasePath).Templates
     $srcJson = Join-Path $templatesDir "$SourceName.json"

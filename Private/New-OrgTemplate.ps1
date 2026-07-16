@@ -40,6 +40,11 @@ function New-OrgTemplate {
         $dialogStyle = 'Fluent'
     }
     $accentColor = Read-TV 'Fluent accent hex e.g. 0xFF0078D7 (blank=default)' ($ExistingTemplate?.FluentAccentColor ?? '')
+    if (-not [string]::IsNullOrWhiteSpace($accentColor)) {
+        $accentNorm = ConvertTo-Win32ToolkitAccentLiteral -Value $accentColor
+        if ($accentNorm) { $accentColor = $accentNorm }
+        else { Write-Host "  '$accentColor' is not a valid hex colour — ignoring (PSADT default accent). Use 0xAARRGGBB, #RRGGBB, or RRGGBB." -ForegroundColor DarkYellow; $accentColor = '' }
+    }
     $logPath     = Read-TV 'Log path'                                           ($ExistingTemplate?.LogPath           ?? '$envWinDir\Logs\Software')
     # LanguageOverride (C1): pin all PSADT dialogs to one UI language (e.g. nl, fr-FR, de).
     # Blank = auto-detect the signed-in user's language on-device (works under SYSTEM).
