@@ -19,7 +19,6 @@ function New-OrgTemplate {
 
     Write-Host ''
     Write-Host '=== Organisation Template Wizard ===' -ForegroundColor Cyan
-    Write-Host 'Only Fluent dialog style is supported.' -ForegroundColor DarkGray
     Write-Host 'Press Enter on any prompt to keep the default value.' -ForegroundColor DarkGray
     Write-Host ''
 
@@ -33,9 +32,23 @@ function New-OrgTemplate {
     $companyName  = Read-TV 'Company name (shown in dialog subtitles)'         ($ExistingTemplate?.CompanyName     ?? 'Your Organisation IT')
     $scriptAuthor = Read-TV 'App script author'                                ($ExistingTemplate?.AppScriptAuthor ?? 'IT Packaging Team')
 
-    Write-Host ''; Write-Host '--- B: Branding (Fluent only) ---' -ForegroundColor Yellow
+    Write-Host ''; Write-Host '--- B: Branding & dialog style ---' -ForegroundColor Yellow
+    # DialogStyle (B2): Fluent = modern v4 look; Classic = v3-style dialogs (uses Banner.Classic.png).
+    $dialogStyle = Read-TV 'Dialog style — Fluent or Classic'                    ($ExistingTemplate?.DialogStyle       ?? 'Fluent')
+    if ($dialogStyle -notin @('Fluent','Classic')) {
+        Write-Host "  '$dialogStyle' is not valid — using 'Fluent'." -ForegroundColor DarkYellow
+        $dialogStyle = 'Fluent'
+    }
     $accentColor = Read-TV 'Fluent accent hex e.g. 0xFF0078D7 (blank=default)' ($ExistingTemplate?.FluentAccentColor ?? '')
+    if (-not [string]::IsNullOrWhiteSpace($accentColor)) {
+        $accentNorm = ConvertTo-Win32ToolkitAccentLiteral -Value $accentColor
+        if ($accentNorm) { $accentColor = $accentNorm }
+        else { Write-Host "  '$accentColor' is not a valid hex colour — ignoring (PSADT default accent). Use 0xAARRGGBB, #RRGGBB, or RRGGBB." -ForegroundColor DarkYellow; $accentColor = '' }
+    }
     $logPath     = Read-TV 'Log path'                                           ($ExistingTemplate?.LogPath           ?? '$envWinDir\Logs\Software')
+    # LanguageOverride (C1): pin all PSADT dialogs to one UI language (e.g. nl, fr-FR, de).
+    # Blank = auto-detect the signed-in user's language on-device (works under SYSTEM).
+    $languageOverride = Read-TV 'Force dialog language e.g. nl / fr-FR (blank=auto-detect)' ($ExistingTemplate?.LanguageOverride ?? '')
 
     Write-Host ''; Write-Host '--- C: Progress Messages ---' -ForegroundColor Yellow
     $pMsgI = Read-TV 'Progress message - Install'   ($ExistingTemplate?.ProgressMessage?.Install   ?? 'Installation in progress. Please wait...')
@@ -77,14 +90,48 @@ function New-OrgTemplate {
     $cpMessage = Read-TV 'Completion message'                   ($ExistingTemplate?.CompletionPrompt?.Message         ?? 'The installation has completed successfully.')
     $cpButton  = Read-TV 'Button label'                         ($ExistingTemplate?.CompletionPrompt?.ButtonRightText ?? 'OK')
 
+    Write-Host ''; Write-Host '--- E: Org scripts & extension module (A1/A3) ---' -ForegroundColor Yellow
+    $tplFolder = Join-Path $templateFolder $templateName
+    Write-Host "  Hook scripts run in every packaged app's deploy phases. Drop .ps1 files in:" -ForegroundColor DarkGray
+    Write-Host "    $tplFolder\Hooks\{PreInstall,PostInstall,PreUninstall,PostUninstall,PreRepair,PostRepair}.ps1" -ForegroundColor DarkGray
+    Write-Host '  They run on-device under Windows PowerShell 5.1 — keep them 5.1-safe.' -ForegroundColor DarkGray
+    $hooksEnabled = Read-TB 'Enable org hook scripts'                    ($ExistingTemplate?.Hooks?.Enabled ?? $false)
+    $hooksFailure = if ($hooksEnabled) {
+        $fa = Read-TV 'On hook error — Fail (stop the deploy) or Continue' ($ExistingTemplate?.Hooks?.FailureAction ?? 'Fail')
+        if ($fa -notin @('Fail','Continue')) { Write-Host "  '$fa' invalid — using 'Fail'." -ForegroundColor DarkYellow; 'Fail' } else { $fa }
+    } else { ($ExistingTemplate?.Hooks?.FailureAction ?? 'Fail') }
+    Write-Host "  An org extension module (shared functions for your hooks) lives in:" -ForegroundColor DarkGray
+    Write-Host "    $tplFolder\PSAppDeployToolkit.<YourOrg>\  (auto-imported by PSADT in every project)" -ForegroundColor DarkGray
+    $extModule = Read-TB 'Ship an org PSADT extension module'            ($ExistingTemplate?.ExtensionModule ?? $false)
+    Write-Host "  Org branding: drop AppIcon.png (dialogs + Intune tile fallback) and Banner.Classic.png in:" -ForegroundColor DarkGray
+    Write-Host "    $tplFolder\Assets\" -ForegroundColor DarkGray
+    $customAssets = Read-TB 'Ship org branding assets (logo / banner)'   ($ExistingTemplate?.CustomAssets ?? $false)
+    if ($hooksEnabled -or $extModule -or $customAssets) {
+        if (-not (Test-Path $tplFolder)) { New-Item -ItemType Directory -Path $tplFolder -Force | Out-Null }
+        if ($hooksEnabled  -and -not (Test-Path (Join-Path $tplFolder 'Hooks')))  { New-Item -ItemType Directory -Path (Join-Path $tplFolder 'Hooks')  -Force | Out-Null }
+        if ($customAssets  -and -not (Test-Path (Join-Path $tplFolder 'Assets'))) { New-Item -ItemType Directory -Path (Join-Path $tplFolder 'Assets') -Force | Out-Null }
+        Write-Host "  ✓ Prepared $tplFolder — add your files there, then re-run the pipeline." -ForegroundColor DarkGreen
+    }
+
+    Write-Host ''; Write-Host '--- F: Intune publish defaults (D2/D3) ---' -ForegroundColor Yellow
+    $idMinOS   = Read-TV 'Minimum Windows release (e.g. 1607, 22H2)'      ($ExistingTemplate?.IntuneDefaults?.MinimumWindowsRelease ?? '1607')
+    $idRestart = Read-TV 'Device restart behavior (suppress/allow/force/basedOnReturnCode)' ($ExistingTemplate?.IntuneDefaults?.DeviceRestartBehavior ?? 'suppress')
+    if ($idRestart -notin @('suppress','allow','force','basedOnReturnCode')) { Write-Host "  '$idRestart' invalid — using 'suppress'." -ForegroundColor DarkYellow; $idRestart = 'suppress' }
+    $idRuntime = Read-TI 'Max run time (minutes)'                          ($ExistingTemplate?.IntuneDefaults?.MaxRuntimeMinutes ?? 60)
+    if ($idRuntime -le 0) { $idRuntime = 60 }
+    $idDesc    = Read-TV 'Description boilerplate appended to every app (blank=none)' ($ExistingTemplate?.IntuneDefaults?.DescriptionBoilerplate ?? '')
+    $idPrivacy = Read-TV 'Privacy information URL (blank=none)'            ($ExistingTemplate?.IntuneDefaults?.PrivacyUrl ?? '')
+    $docFooter = Read-TV 'Customer-doc footer line (blank=default)'        ($ExistingTemplate?.DocFooter ?? '')
+
     $template = [PSCustomObject]@{
         TemplateSchemaVersion = $script:TemplateSchemaVersion
         TemplateName          = $templateName
         CompanyName           = $companyName
         AppScriptAuthor       = $scriptAuthor
-        DialogStyle           = 'Fluent'
+        DialogStyle           = $dialogStyle
         FluentAccentColor     = $accentColor
         LogPath               = $logPath
+        LanguageOverride      = $languageOverride
         PsadtVersion          = $psadtVer
         ProgressMessage       = [PSCustomObject]@{ Install = $pMsgI; Repair = $pMsgR; Uninstall = $pMsgU }
         ProgressMessageDetail = [PSCustomObject]@{ Install = $pDtlI; Repair = $pDtlR; Uninstall = $pDtlU }
@@ -115,6 +162,20 @@ function New-OrgTemplate {
             Message         = $cpMessage
             ButtonRightText = $cpButton
         }
+        Hooks                 = [PSCustomObject]@{
+            Enabled       = $hooksEnabled
+            FailureAction = $hooksFailure
+        }
+        ExtensionModule       = $extModule
+        CustomAssets          = $customAssets
+        IntuneDefaults        = [PSCustomObject]@{
+            MinimumWindowsRelease  = $idMinOS
+            DeviceRestartBehavior  = $idRestart
+            MaxRuntimeMinutes      = $idRuntime
+            DescriptionBoilerplate = $idDesc
+            PrivacyUrl             = $idPrivacy
+        }
+        DocFooter             = $docFooter
     }
 
     $savePath = Join-Path $templateFolder "$templateName.json"

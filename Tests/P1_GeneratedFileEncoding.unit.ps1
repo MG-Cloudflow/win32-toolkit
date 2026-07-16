@@ -40,6 +40,10 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Test-Win32ToolkitProductCode.ps1')
 . (Join-Path $repo 'Private\Set-PSADTDataDrivenScript.ps1')
 . (Join-Path $repo 'Private\Set-Win32ToolkitTextBlock.ps1')   # Set-TextBlock, promoted out of Apply-OrgTemplate
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitAccentLiteral.ps1') # accent normalizer — New-Win32ToolkitSparseConfig dep
+. (Join-Path $repo 'Private\New-Win32ToolkitSparseConfig.ps1') # sparse config.psd1 generator (F1) — Apply-OrgTemplate dep
+. (Join-Path $repo 'Private\Test-Win32ToolkitPS51Syntax.ps1')  # 5.1 hook syntax check (A1) — Add-Win32ToolkitOrgHooks dep
+. (Join-Path $repo 'Private\Add-Win32ToolkitOrgHooks.ps1')     # org hooks + extension module (A1/A3) — Apply-OrgTemplate dep
 . (Join-Path $repo 'Private\Apply-OrgTemplate.ps1')
 . (Join-Path $repo 'Private\New-CountdownScript.ps1')
 . (Join-Path $repo 'Private\New-LogCollectorScript.ps1')

@@ -16,7 +16,7 @@ function Set-Win32ToolkitIconSource {
         [string]$ProjectPath,
 
         [Parameter(Mandatory)]
-        [ValidateSet('winget', 'manual', 'captured')]
+        [ValidateSet('winget', 'manual', 'captured', 'template')]
         [string]$Source
     )
 

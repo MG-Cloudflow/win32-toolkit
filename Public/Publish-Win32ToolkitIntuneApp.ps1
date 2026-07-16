@@ -121,6 +121,27 @@ function Publish-Win32ToolkitIntuneApp {
         $wingetId = ''
         if ($yamlInfo -and $yamlInfo.PackageIdentifier) { $wingetId = $yamlInfo.PackageIdentifier }
 
+        # ── Org-template Intune defaults (D2/D3) ──────────────────────────────────
+        # Persisted into AppConfig at configure time (Configure-PSADTForInstaller) from the active org
+        # template. When absent — no template, or a pre-3.0 project — every value falls back to the exact
+        # built-in default, so non-template projects publish byte-identically to before.
+        $intuneDefaults = if ($appCfg.PSObject.Properties.Name -contains 'IntuneDefaults') { $appCfg.IntuneDefaults } else { $null }
+        function Get-Win32ToolkitIntuneDefault {
+            param([string]$Name, $Fallback)
+            if ($intuneDefaults -and ($intuneDefaults.PSObject.Properties.Name -contains $Name) -and
+                -not [string]::IsNullOrWhiteSpace([string]$intuneDefaults.$Name)) { return $intuneDefaults.$Name }
+            return $Fallback
+        }
+        $minWinRelease   = [string](Get-Win32ToolkitIntuneDefault 'MinimumWindowsRelease' '1607')
+        $restartBehavior = [string](Get-Win32ToolkitIntuneDefault 'DeviceRestartBehavior' 'suppress')
+        $maxRuntime      = [int](Get-Win32ToolkitIntuneDefault 'MaxRuntimeMinutes' 60)
+        if ($maxRuntime -le 0) { $maxRuntime = 60 }
+        $privacyUrl      = [string](Get-Win32ToolkitIntuneDefault 'PrivacyUrl' '')
+        $descBoilerplate = [string](Get-Win32ToolkitIntuneDefault 'DescriptionBoilerplate' '')
+        if ($descBoilerplate) {
+            $description = if ([string]::IsNullOrWhiteSpace($description)) { $descBoilerplate } else { "$description`n`n$descBoilerplate" }
+        }
+
         # ── Architecture: AppConfig.App.Arch, else parse the project folder name ──
         $arch = 'x64'
         if     ($app -and $app.Arch)           { $arch = $app.Arch }
@@ -182,7 +203,7 @@ function Publish-Win32ToolkitIntuneApp {
             'description'                      = $description
             'publisher'                        = $publisher
             'informationUrl'                   = $informationUrl
-            'privacyInformationUrl'            = ''
+            'privacyInformationUrl'            = $privacyUrl
             'notes'                            = (@('win32-toolkit'; if ($AsUpdate) { 'update' }; if ($wingetId) { $wingetId }) | Where-Object { $_ }) -join '; '
             'isFeatured'                       = $false
             'fileName'                         = 'Invoke-AppDeployToolkit.ps1'
@@ -190,12 +211,12 @@ function Publish-Win32ToolkitIntuneApp {
             'installCommandLine'               = 'powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Install'
             'uninstallCommandLine'             = 'powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Uninstall'
             'applicableArchitectures'          = $arch
-            'minimumSupportedWindowsRelease'   = '1607'
+            'minimumSupportedWindowsRelease'   = $minWinRelease
             'msiInformation'                   = $null
             'installExperience' = @{
                 'runAsAccount'          = 'system'
-                'deviceRestartBehavior' = 'suppress'
-                'maxRunTimeInMinutes'   = 60
+                'deviceRestartBehavior' = $restartBehavior
+                'maxRunTimeInMinutes'   = $maxRuntime
             }
             'returnCodes' = @(
                 @{ 'returnCode' = 0;    'type' = 'success'    }

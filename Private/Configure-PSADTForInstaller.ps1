@@ -80,6 +80,27 @@ function Configure-PSADTForInstaller {
         if (-not ($cfg.PSObject.Properties.Name -contains 'ProcessesToClose')) {
             $cfg | Add-Member -NotePropertyName ProcessesToClose -NotePropertyValue @() -Force
         }
+
+        # ---- Org-template Intune publish defaults (D2/D3) — data only ----
+        # Persist the active template's Intune defaults so Publish (which may run standalone, without an
+        # org template loaded) can honor them. Written ONLY when the template supplies them, so
+        # non-template projects keep no IntuneDefaults section and Publish uses its built-in fallbacks.
+        if ($script:OrgTemplate -and $script:OrgTemplate.PSObject.Properties['IntuneDefaults'] -and $script:OrgTemplate.IntuneDefaults) {
+            $cfg | Add-Member -NotePropertyName IntuneDefaults -NotePropertyValue (New-Win32ToolkitIntuneDefaults -Template $script:OrgTemplate) -Force
+        }
+
+        # ---- Org documentation branding (B8) — data only, used by Export-Win32ToolkitDocumentation ----
+        if ($script:OrgTemplate) {
+            $company   = if ($script:OrgTemplate.PSObject.Properties['CompanyName']) { [string]$script:OrgTemplate.CompanyName } else { '' }
+            $docFooter = if ($script:OrgTemplate.PSObject.Properties['DocFooter'])   { [string]$script:OrgTemplate.DocFooter }   else { '' }
+            if (-not [string]::IsNullOrWhiteSpace($company) -or -not [string]::IsNullOrWhiteSpace($docFooter)) {
+                $cfg | Add-Member -NotePropertyName Branding -NotePropertyValue ([pscustomobject]@{
+                    CompanyName = $company
+                    DocFooter   = $docFooter
+                }) -Force
+            }
+        }
+
         Set-Win32ToolkitAppConfig -ProjectPath $ProjectPath -Config $cfg | Out-Null
         Write-Verbose 'Wrote SupportFiles\AppConfig.json (App + Installer)'
 

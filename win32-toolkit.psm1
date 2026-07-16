@@ -4,7 +4,7 @@
 # In a .psm1, $script: is module scope — persists for the module lifetime,
 # never visible in the caller's global session.
 $script:OrgTemplate           = $null
-$script:TemplateSchemaVersion = '2.0'
+$script:TemplateSchemaVersion = '3.0'
 
 # Ensure downloads (winget icons, IntuneWinAppUtil.exe, GitHub/PSGallery, Graph/Azure)
 # negotiate a modern TLS version — add TLS 1.2 (and 1.3 where the OS supports it)
