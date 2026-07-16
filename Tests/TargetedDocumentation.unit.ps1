@@ -18,6 +18,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 
 . (Join-Path $repo 'Private\ConvertTo-XmlEncoded.ps1')
 . (Join-Path $repo 'Private\New-Win32ToolkitSandboxConfig.ps1')   # Sandbox .wsb built via the shared seam helper
+. (Join-Path $repo 'Private\Get-Win32ToolkitConfigValue.ps1')     # the generator reads SandboxTestMode (auto-close)
 . (Join-Path $repo 'Private\New-TargetedDocumentation.ps1')
 
 # Shadows so nothing external runs.

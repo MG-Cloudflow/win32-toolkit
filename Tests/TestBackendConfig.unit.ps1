@@ -70,26 +70,26 @@ function Get-VMCheckpoint { param([string]$VMName, [string]$Name, $ErrorAction) 
 function Get-Win32ToolkitGuestCredential { [pscredential]::new('u', (ConvertTo-SecureString 'p' -AsPlainText -Force)) }
 function Get-Win32ToolkitConfigValue { param([string]$Name, [string]$Default) $Default }
 
-if (@(Test-Win32ToolkitHyperVReady).Count -eq 0) { Ok 'all prereqs present -> ready (no reasons)' } else { Bad "unexpected reasons: $(@(Test-Win32ToolkitHyperVReady) -join '; ')" }
+if (@(Test-Win32ToolkitHyperVReady -Force).Count -eq 0) { Ok 'all prereqs present -> ready (no reasons)' } else { Bad "unexpected reasons: $(@(Test-Win32ToolkitHyperVReady -Force) -join '; ')" }
 
 function Test-Win32ToolkitElevated { $false }
-if (@(Test-Win32ToolkitHyperVReady) -match 'elevated') { Ok 'not elevated -> reason' } else { Bad 'elevation not flagged' }
+if (@(Test-Win32ToolkitHyperVReady -Force) -match 'elevated') { Ok 'not elevated -> reason' } else { Bad 'elevation not flagged' }
 function Test-Win32ToolkitElevated { $true }
 
 function Get-Module { param([switch]$ListAvailable, [string]$Name) $null }
-if (@(Test-Win32ToolkitHyperVReady) -match 'module') { Ok 'Hyper-V module missing -> reason' } else { Bad 'module not flagged' }
+if (@(Test-Win32ToolkitHyperVReady -Force) -match 'module') { Ok 'Hyper-V module missing -> reason' } else { Bad 'module not flagged' }
 function Get-Module { param([switch]$ListAvailable, [string]$Name) [pscustomobject]@{ Name = 'Hyper-V' } }
 
 function Get-VM { param([string]$Name, $ErrorAction) $null }
-if (@(Test-Win32ToolkitHyperVReady) -match 'not found') { Ok 'missing VM -> reason' } else { Bad 'missing VM not flagged' }
+if (@(Test-Win32ToolkitHyperVReady -Force) -match 'not found') { Ok 'missing VM -> reason' } else { Bad 'missing VM not flagged' }
 function Get-VM { param([string]$Name, $ErrorAction) [pscustomobject]@{ Name = $Name } }
 
 function Get-VMCheckpoint { param([string]$VMName, [string]$Name, $ErrorAction) $null }
-if (@(Test-Win32ToolkitHyperVReady) -match 'checkpoint') { Ok 'missing checkpoint -> reason' } else { Bad 'missing checkpoint not flagged' }
+if (@(Test-Win32ToolkitHyperVReady -Force) -match 'checkpoint') { Ok 'missing checkpoint -> reason' } else { Bad 'missing checkpoint not flagged' }
 function Get-VMCheckpoint { param([string]$VMName, [string]$Name, $ErrorAction) [pscustomobject]@{ Name = $Name } }
 
 function Get-Win32ToolkitGuestCredential { $null }
-if (@(Test-Win32ToolkitHyperVReady) -match 'credential') { Ok 'no guest credential -> reason' } else { Bad 'missing credential not flagged' }
+if (@(Test-Win32ToolkitHyperVReady -Force) -match 'credential') { Ok 'no guest credential -> reason' } else { Bad 'missing credential not flagged' }
 
 if ($fail -eq 0) {
     Write-Host "`nAll TestBackendConfig tests passed." -ForegroundColor Green

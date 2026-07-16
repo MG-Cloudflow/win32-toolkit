@@ -108,6 +108,9 @@ function New-Win32ToolkitTestVM {
             # Reuse is the intended fast path on a re-run — a normal success outcome, not a problem, so keep it
             # on Write-Host (a Write-Warning here reads as a spurious alarm on the happy path).
             Write-Host "VM '$Name' already exists with checkpoint '$CheckpointName' — reusing." -ForegroundColor Yellow
+            # Adopting a VM changes exactly what the readiness probe checks (name/checkpoint/credential):
+            # a stale cached verdict for the PREVIOUS configuration must not survive this.
+            Clear-Win32ToolkitHyperVStateCache
             Set-Win32ToolkitConfigValue -Name 'HyperVVMName'     -Value $Name
             Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Value $CheckpointName
             Set-Win32ToolkitGuestCredential -Credential $Credential
@@ -116,6 +119,9 @@ function New-Win32ToolkitTestVM {
     }
     if ($existing -and $Force) {
         if ($PSCmdlet.ShouldProcess($Name, 'Remove existing VM before rebuild')) {
+            # Clear BEFORE the destruction: if the rebuild aborts mid-way, a <=60 s-old 'ready' verdict
+            # must not steer backend resolution at a VM that no longer exists.
+            Clear-Win32ToolkitHyperVStateCache
             Stop-VM -Name $Name -TurnOff -Force -ErrorAction SilentlyContinue
             Get-VMCheckpoint -VMName $Name -ErrorAction SilentlyContinue | Remove-VMCheckpoint -ErrorAction SilentlyContinue
             Remove-VM -Name $Name -Force -ErrorAction SilentlyContinue
@@ -145,6 +151,9 @@ function New-Win32ToolkitTestVM {
 
     # --- Create + configure the Gen2 VM ------------------------------------------------------------
     if ($PSCmdlet.ShouldProcess($Name, 'Create Gen2 VM + take clean-base checkpoint')) {
+        # Invalidate the process-local clean marker / readiness cache — a brand-new VM + checkpoint
+        # supersede anything cached about the previous one.
+        Clear-Win32ToolkitHyperVStateCache
         New-VM -Name $Name -Generation 2 -MemoryStartupBytes $MemoryStartupBytes -VHDPath $vhdx -Path $paths.VMs -SwitchName $SwitchName -ErrorAction Stop | Out-Null
         Set-VMFirmware  -VMName $Name -EnableSecureBoot On -SecureBootTemplate 'MicrosoftWindows'
         Set-VMProcessor -VMName $Name -Count $ProcessorCount

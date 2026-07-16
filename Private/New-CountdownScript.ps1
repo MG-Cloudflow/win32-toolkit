@@ -1,12 +1,23 @@
 function New-CountdownScript {
     [CmdletBinding()]
     [OutputType([string])]
-    param([string]$ProjectPath)
+    param(
+        [string]$ProjectPath,
+
+        # Countdown duration. The 120 s default is the WATCHED-mode human verification window and is
+        # deliberately unchanged; unattended runs simply omit Countdown.ps1 from the chain entirely.
+        [ValidateRange(5, 3600)]
+        [int]$Seconds = 120
+    )
 
     $sandboxPath = Join-Path $ProjectPath 'Sandbox'
     if (-not (Test-Path $sandboxPath)) {
         New-Item -ItemType Directory -Path $sandboxPath -Force | Out-Null
     }
+
+    # Human-readable duration + initial mm:ss for the generated WinForms labels.
+    $durationText = if ($Seconds % 60 -eq 0) { "$([int]($Seconds / 60)) minute$(if ($Seconds -ne 60) { 's' })" } else { "$Seconds seconds" }
+    $initialLabel = '{0:00}:{1:00}' -f [math]::Floor($Seconds / 60), ($Seconds % 60)
 
     $countdownScript = @'
 Add-Type -AssemblyName System.Windows.Forms
@@ -42,7 +53,7 @@ $instructionLabel = New-Object System.Windows.Forms.Label
 $instructionLabel.Location = New-Object System.Drawing.Point(30,60)
 $instructionLabel.Size = New-Object System.Drawing.Size(440,40)
 $instructionLabel.Font = New-Object System.Drawing.Font("Arial",10)
-$instructionLabel.Text = "Please test the application now.`nUninstallation will begin automatically in 2 minutes."
+$instructionLabel.Text = "Please test the application now.`nUninstallation will begin automatically in __DURATION__."
 $instructionLabel.TextAlign = "MiddleCenter"
 $form.Controls.Add($instructionLabel)
 
@@ -51,7 +62,7 @@ $countdownLabel = New-Object System.Windows.Forms.Label
 $countdownLabel.Location = New-Object System.Drawing.Point(30,120)
 $countdownLabel.Size = New-Object System.Drawing.Size(440,40)
 $countdownLabel.Font = New-Object System.Drawing.Font("Arial",16,[System.Drawing.FontStyle]::Bold)
-$countdownLabel.Text = "Time remaining: 02:00"
+$countdownLabel.Text = "Time remaining: __INITIAL__"
 $countdownLabel.ForeColor = [System.Drawing.Color]::Blue
 $countdownLabel.TextAlign = "MiddleCenter"
 $form.Controls.Add($countdownLabel)
@@ -66,7 +77,7 @@ $form.Controls.Add($skipButton)
 
 # Timer for countdown
 $timer = New-Object System.Windows.Forms.Timer
-$secondsRemaining = 120  # 2 minutes
+$secondsRemaining = __SECONDS__
 $timer.Interval = 1000  # 1 second
 
 $timer.Add_Tick({
@@ -104,6 +115,11 @@ Write-Host "`n========================================" -ForegroundColor Yellow
 Write-Host "STARTING UNINSTALLATION PROCESS" -ForegroundColor Yellow
 Write-Host "========================================" -ForegroundColor Yellow
 '@
+
+    # Fill the duration placeholders (numeric literal + label texts — nothing untrusted).
+    $countdownScript = $countdownScript -replace '__SECONDS__', $Seconds
+    $countdownScript = $countdownScript -replace '__DURATION__', $durationText
+    $countdownScript = $countdownScript -replace '__INITIAL__', $initialLabel
 
     $countdownPath = Join-Path $sandboxPath 'Countdown.ps1'
     # UTF-8 WITH BOM: this runs under Windows PowerShell 5.1 inside the sandbox, which decodes a BOM-less

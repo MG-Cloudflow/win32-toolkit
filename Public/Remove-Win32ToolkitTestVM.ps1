@@ -23,6 +23,8 @@ function Remove-Win32ToolkitTestVM {
     }
 
     if ($PSCmdlet.ShouldProcess($Name, "Stop + remove VM$(if ($RemoveVhdx) { ' + delete VHDX' })")) {
+        # Invalidate the process-local clean marker / readiness cache before mutating VM state.
+        Clear-Win32ToolkitHyperVStateCache
         $vhds = @($vm.HardDrives.Path)
         Stop-VM -Name $Name -TurnOff -Force -ErrorAction SilentlyContinue
         Get-VMCheckpoint -VMName $Name -ErrorAction SilentlyContinue | Remove-VMCheckpoint -ErrorAction SilentlyContinue

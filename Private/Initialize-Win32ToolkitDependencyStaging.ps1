@@ -42,6 +42,78 @@ function Initialize-Win32ToolkitDependencyStaging {
     $depRoot    = Join-Path $ProjectPath 'Sandbox\Dependencies'
     $scriptPath = Join-Path $ProjectPath 'Sandbox\InstallDependencies.ps1'
 
+    # ── Staging reuse (hash-validated, HOST-side integrity marker) ────────────────────────────────
+    # A full pipeline stages the SAME dependencies 2-3 times (capture + each test), wiping and
+    # re-downloading identical binaries each time. Reuse the existing staging when: the cache is on,
+    # the DECLARED set is unchanged, the staging is < 6 h old (deps are unpinned 'latest' — bound the
+    # staleness), and the staged tree matches the marker EXACTLY. Three properties make this safe on
+    # BOTH backends (under Sandbox the whole project — including this staging — was mounted READ-WRITE
+    # into a guest that ran an untrusted installer):
+    #   1. the marker lives OUTSIDE the project, under <BasePath>\Cache\winget\staging\ — the guest can
+    #      tamper the staged files but can never forge the record they are checked against;
+    #   2. EVERY recorded file (installers, dependencies.json, AND the generated
+    #      Sandbox\InstallDependencies.ps1 the guest executes) must re-hash to its recorded SHA256;
+    #   3. the on-disk file SET must equal the recorded set — a guest-ADDED file is a miss, not a ride-along.
+    # Any mismatch or error restages from scratch (today's behavior).
+    $declaredJson = ConvertTo-Json -InputObject @($deps | ForEach-Object { "$($_.Source):$($_.Ref)" }) -Compress
+    $declaredHash = $null
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { $declaredHash = ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($declaredJson))) -replace '-', '') }
+        finally { $sha.Dispose() }
+    } catch { $declaredHash = $null }
+
+    # Marker path: host-side cache root, keyed by the (case-normalized) project path.
+    $stagedMark = $null
+    try {
+        $cacheRoot = Get-Win32ToolkitPipelineCacheRoot
+        if ($cacheRoot -and $declaredHash) {
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                $projKey = ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($ProjectPath.ToLowerInvariant().TrimEnd('\')))) -replace '-', '').Substring(0, 16)
+            } finally { $sha.Dispose() }
+            $markDir = Join-Path $cacheRoot 'staging'
+            if (-not (Test-Path -LiteralPath $markDir)) { New-Item -ItemType Directory -Path $markDir -Force | Out-Null }
+            $stagedMark = Join-Path $markDir "$projKey.json"
+        }
+    } catch { $stagedMark = $null }
+
+    # Enumerates the CURRENT staged tree as project-relative path -> SHA256 (covers the staged payloads,
+    # dependencies.json, and the generated guest script — everything the guest run consumes).
+    $enumerateStaged = {
+        $list = @()
+        if (Test-Path -LiteralPath $depRoot) {
+            $list += @(Get-ChildItem -LiteralPath $depRoot -Recurse -File -ErrorAction SilentlyContinue)
+        }
+        if (Test-Path -LiteralPath $scriptPath) { $list += Get-Item -LiteralPath $scriptPath }
+        @($list | Sort-Object FullName | ForEach-Object {
+            @{ Path = $_.FullName.Substring($ProjectPath.Length + 1); Sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256 -ErrorAction Stop).Hash }
+        })
+    }
+
+    if ($deps.Count -gt 0 -and $stagedMark -and (Test-Path -LiteralPath $stagedMark)) {
+        try {
+            $mark = Get-Content -LiteralPath $stagedMark -Raw | ConvertFrom-Json
+            $fresh = $mark.DeclaredHash -eq $declaredHash -and
+                     $mark.StagedAt -and (((Get-Date) - [datetime]$mark.StagedAt).TotalHours -lt 6)
+            if ($fresh) {
+                $current  = @(& $enumerateStaged)
+                $expected = @($mark.Files)
+                if ($current.Count -ne $expected.Count) { $fresh = $false }
+                else {
+                    for ($i = 0; $i -lt $current.Count; $i++) {
+                        if ($current[$i].Path -ne $expected[$i].Path -or $current[$i].Sha256 -ne $expected[$i].Sha256) { $fresh = $false; break }
+                    }
+                }
+            }
+            if ($fresh) {
+                Write-Host "✓ Dependencies already staged (hash-validated, $([int]$mark.Count) item(s)) — reusing." -ForegroundColor Green
+                return [int]$mark.Count
+            }
+        }
+        catch { Write-Verbose "Dependency staging reuse check failed (restaging): $($_.Exception.Message)" }
+    }
+
     # Always start clean: a stale dependency from a previous run would silently install in the guest.
     if (Test-Path -LiteralPath $depRoot)    { Remove-Item -LiteralPath $depRoot -Recurse -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $scriptPath) { Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue }
@@ -123,8 +195,11 @@ if (-not (Test-Path -LiteralPath $manifest)) { Write-Host 'No dependencies to in
 $deps = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
 foreach ($d in @($deps)) {
     Write-Host ("Installing dependency: " + $d.Name) -ForegroundColor Cyan
+    $rc = 0
     if ($d.Type -eq 'psadt') {
         & $d.Path -DeployMode Silent
+        $rc = $LASTEXITCODE
+        if ($null -eq $rc) { $rc = 0 }
     }
     elseif ($d.Type -eq 'msix' -or $d.Type -eq 'appx') {
         # Start-Process on a msix opens the App Installer GUI and blocks forever.
@@ -132,17 +207,40 @@ foreach ($d in @($deps)) {
     }
     elseif ($d.SilentArgs) {
         $p = Start-Process -FilePath $d.Path -ArgumentList $d.SilentArgs -Wait -PassThru
-        Write-Host ("  exit code: " + $p.ExitCode)
+        $rc = $p.ExitCode
+        Write-Host ("  exit code: " + $rc)
     }
     else {
         $p = Start-Process -FilePath $d.Path -Wait -PassThru
-        Write-Host ("  exit code: " + $p.ExitCode)
+        $rc = $p.ExitCode
+        Write-Host ("  exit code: " + $rc)
+    }
+    # PROPAGATE failure (0 = success, 3010 = success-needs-reboot; Intune installs dependencies first
+    # and a failed dependency blocks the app). Exiting non-zero here is what stops the Hyper-V dep phase
+    # from reporting success — and, with the deps-checkpoint feature, from FREEZING a broken image that
+    # every later run of the project would silently reuse.
+    if ($rc -ne 0 -and $rc -ne 3010) {
+        Write-Host ("  FAILED: " + $d.Name + " (exit " + $rc + ")") -ForegroundColor Red
+        exit $rc
     }
     Write-Host ("  installed: " + $d.Name) -ForegroundColor Green
 }
 Write-Host 'All dependencies installed.' -ForegroundColor Green
+exit 0
 '@
     [System.IO.File]::WriteAllText($scriptPath, $guest, (New-Object System.Text.UTF8Encoding($true)))
+
+    # Record what was staged (declared-set hash + per-file SHA256 over EVERYTHING the guest consumes,
+    # incl. the generated script) in the HOST-side marker so the next call in this pipeline can REUSE it
+    # instead of wiping + re-downloading. Best-effort: a failure just means the next call restages.
+    if ($stagedMark) {
+        try {
+            $files = @(& $enumerateStaged)
+            $markJson = ConvertTo-Json -InputObject @{ DeclaredHash = $declaredHash; StagedAt = (Get-Date).ToString('o'); Count = $entries.Count; Files = $files } -Depth 4
+            [System.IO.File]::WriteAllText($stagedMark, $markJson, (New-Object System.Text.UTF8Encoding($false)))
+        }
+        catch { Write-Verbose "Could not record the staging marker (reuse disabled for the next call): $($_.Exception.Message)" }
+    }
 
     Write-Host "✓ Dependencies staged: $(($entries | ForEach-Object { $_.Name }) -join ', ')" -ForegroundColor Green
     return $entries.Count

@@ -18,6 +18,9 @@ function Reset-Win32ToolkitTestVM {
     )
 
     if ($PSCmdlet.ShouldProcess($Name, "Restore checkpoint '$CheckpointName'")) {
+        # Invalidate the process-local clean marker / readiness cache — this action changes VM state
+        # outside the session lifecycle that maintains them (fail-safe: worst case is one extra revert).
+        Clear-Win32ToolkitHyperVStateCache
         Restore-VMCheckpoint -VMName $Name -Name $CheckpointName -Confirm:$false -ErrorAction Stop
     }
 }

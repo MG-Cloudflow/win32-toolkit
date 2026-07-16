@@ -63,7 +63,7 @@ else { Bad "success path: run=$okRun, ProgressPreference='$ProgressPreference'" 
 Write-Host '[b] the guest Invoke-Command scriptblocks set $ProgressPreference = SilentlyContinue' -ForegroundColor Cyan
 $guestGuards = @(
     @{ File = 'Private\Copy-Win32ToolkitProjectToGuest.ps1'; Param = 'param($zip, $dest)' },
-    @{ File = 'Private\Copy-Win32ToolkitResultsFromGuest.ps1'; Param = 'param($globs)' }
+    @{ File = 'Private\Copy-Win32ToolkitResultsFromGuest.ps1'; Param = 'param($globs, $rootPrefix)' }
 )
 foreach ($g in $guestGuards) {
     $src = Get-Content -LiteralPath (Join-Path $repo $g.File) -Raw

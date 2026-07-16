@@ -13,7 +13,19 @@ function Test-Win32ToolkitHyperVReady {
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
-    param()
+    param(
+        # Bypass the memoized verdict (used right after an action that could have changed readiness).
+        [switch]$Force
+    )
+
+    # Memoize for 60 s: a single pipeline start calls this 3-5 times (backend resolution, health screen,
+    # per-scenario checks) and each probe costs a module scan + Get-VM. Any VM-management cmdlet clears
+    # the cache via Clear-Win32ToolkitHyperVStateCache; the short TTL bounds staleness from actions this
+    # process cannot see (another console deleting the VM), and the worst case is a 60 s-old verdict.
+    if (-not $Force -and $script:HyperVReadyCache -and
+        (((Get-Date) - $script:HyperVReadyCache.At).TotalSeconds -lt 60)) {
+        return $script:HyperVReadyCache.Reasons
+    }
 
     $missing = [System.Collections.Generic.List[string]]::new()
 
@@ -41,6 +53,8 @@ function Test-Win32ToolkitHyperVReady {
     if (-not (Get-Win32ToolkitGuestCredential)) {
         $missing.Add('guest credential is not configured')
     }
+
+    $script:HyperVReadyCache = @{ Reasons = $missing.ToArray(); At = Get-Date }
 
     # No unary comma: callers wrap in @(), so returning the bare array lets an EMPTY result surface as
     # zero elements (ready). `, $arr` would wrap even an empty array into a 1-element array (never ready).

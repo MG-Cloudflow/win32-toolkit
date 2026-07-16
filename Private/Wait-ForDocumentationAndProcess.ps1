@@ -17,7 +17,10 @@ function Wait-ForDocumentationAndProcess {
         $jsonFound = $false
         $jsonFile = $null
         $maxWaitMinutes = 30
-        $checkIntervalSeconds = 10
+        # 2 s cadence (was 10 s): a Test-Path + small-file read on a local/VSMB path is trivial, and the
+        # 10 s quantum added ~5 s of dead tail to every capture. The 30-min CEILING is unchanged — it is
+        # the correct bound for an unobservable guest.
+        $checkIntervalSeconds = 2
         $totalChecks = ($maxWaitMinutes * 60) / $checkIntervalSeconds
 
         if ($ExpectedJsonPath) {
@@ -28,29 +31,36 @@ function Wait-ForDocumentationAndProcess {
         Write-Verbose "Maximum wait time: $maxWaitMinutes minutes"
 
         for ($i = 1; $i -le $totalChecks; $i++) {
+            $candidate = $null
             if ($ExpectedJsonPath) {
-                if (Test-Path -LiteralPath $ExpectedJsonPath) {
-                    $jsonFile = $ExpectedJsonPath
-                    $jsonFound = $true
-                    Write-Host "✓ JSON documentation file found: $(Split-Path $ExpectedJsonPath -Leaf)" -ForegroundColor Green
-                    break
-                }
+                if (Test-Path -LiteralPath $ExpectedJsonPath) { $candidate = $ExpectedJsonPath }
             }
             else {
                 $latest = Get-LatestInstallationCapture -ProjectPath $ProjectPath
-                if ($latest) {
-                    $jsonFile = $latest.FullName
+                if ($latest) { $candidate = $latest.FullName }
+            }
+
+            if ($candidate) {
+                # The guest writes the JSON over VSMB / to the mapped folder while we poll — the faster
+                # cadence raises the odds of catching it MID-WRITE. Only accept a capture that parses as
+                # complete JSON; a torn read simply stays in the loop and is retried next tick (a partial
+                # capture feeding requirement/uninstall generation would corrupt the package quietly).
+                $parsed = $null
+                try { $parsed = Get-Content -LiteralPath $candidate -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { $parsed = $null }
+                if ($parsed) {
+                    $jsonFile = $candidate
                     $jsonFound = $true
-                    Write-Host "✓ JSON documentation file found: $($latest.Name)" -ForegroundColor Green
+                    Write-Host "✓ JSON documentation file found: $(Split-Path $candidate -Leaf)" -ForegroundColor Green
                     break
                 }
+                Write-Verbose "Capture file present but not yet complete JSON — still being written; retrying..."
             }
 
             $minutesWaited = ($i * $checkIntervalSeconds) / 60
             Write-Verbose "Waiting... ($([math]::Round($minutesWaited, 1)) minutes elapsed)"
             Start-Sleep -Seconds $checkIntervalSeconds
         }
-        
+
         if (-not $jsonFound) {
             Write-Warning "Documentation JSON file not found after $maxWaitMinutes minutes. Please check the Windows Sandbox manually."
             return $false

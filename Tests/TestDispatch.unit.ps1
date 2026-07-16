@@ -16,7 +16,12 @@ $fail = 0
 function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
+. (Join-Path $repo 'Private\Get-Win32ToolkitTestMode.ps1')          # mode resolver (Interactive/Unattended)
+. (Join-Path $repo 'Private\Wait-Win32ToolkitSandboxFree.ps1')      # the guard now waits instead of throwing
 . (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1')
+# Deterministic mode resolution regardless of the host running the tests (CI stdin is redirected,
+# which would otherwise force Unattended and flip the interactive-default assertions below).
+function Test-Win32ToolkitHostNonInteractive { $false }
 
 # --- shadows --------------------------------------------------------------------------------------
 $script:backend  = 'HyperV'

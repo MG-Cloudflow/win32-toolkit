@@ -114,6 +114,10 @@ function Set-Win32ToolkitTestVMResource {
 
     Write-Host "Reconfiguring '$Name': $curCpu vCPU / $([math]::Round($curMem / 1GB, 2)) GB  ->  $newCpu vCPU / $([math]::Round($newMem / 1GB, 2)) GB" -ForegroundColor Cyan
 
+    # Invalidate the process-local clean marker / readiness cache — the checkpoint is about to be
+    # destroyed and recreated, so nothing cached about the VM's state may survive this.
+    Clear-Win32ToolkitHyperVStateCache
+
     # 1. Off. Static memory / vCPU count cannot change on a running VM. CONFIRM it actually powered off before
     #    anything destructive: if Stop-VM silently failed and we removed the checkpoint anyway, we'd destroy the
     #    only recovery point for a change that then can't apply (VM stuck running, OLD hardware, NO checkpoint).
