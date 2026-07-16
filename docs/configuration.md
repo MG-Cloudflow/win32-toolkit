@@ -20,7 +20,7 @@ There is no public `Set-...ConfigValue` command — the setter is a private help
 Set-ItemProperty -Path 'HKCU:\Software\CloudFlow\win32-toolkit' -Name 'PipelineCache' -Value 'Off'
 ```
 
-Do **not** hand-edit `HyperVGuestUser` / `HyperVGuestSecret` — see [Guest credential](#guest-credential-hypervguestuser--hypervguestsecret).
+Do **not** hand-edit `HyperVGuestUser` / `HyperVGuestSecret` — see [Guest credential](#guest-credential).
 
 ## All values
 
@@ -69,7 +69,9 @@ Caches update-baseline downloads under `<BasePath>\Cache\winget\` and reuses dep
 
 When `On`: after a project's dependencies install once in the test VM, a `clean-base+deps-<hash>` checkpoint is taken, and later runs of that project restore it instead of re-installing the dependencies. The hash covers the dependency set, every staged installer byte, and the parent checkpoint identity — any change falls back to `clean-base` plus a live install. VM maintenance (resource changes, re-checkpointing) deletes the checkpoint; it is simply recreated on the next run. Leave `Off` unless you repeatedly test the same dependency-heavy project.
 
-## Guest credential (`HyperVGuestUser` / `HyperVGuestSecret`)
+## Guest credential
+
+`HyperVGuestUser` / `HyperVGuestSecret`:
 
 PowerShell Direct needs the test VM's local-admin credential on every Hyper-V run. The username is stored plain; the password is protected with Windows DPAPI (`ConvertFrom-SecureString`, no key), which means it is **bound to your Windows user on this machine** — it cannot be copied to another machine or read by another user, and if a different Windows account tries to use it the module warns and treats it as unset. It is written when you provision the VM (you are prompted, password typed twice); to change it, re-provision or re-run the provisioning command rather than editing the registry.
 

@@ -55,12 +55,15 @@ Everything above can be adjusted in the Intune portal after upload.
    registry value **equals the packaged version** — Intune confirms both presence *and* version.
 2. **Capture fallback:** projects without a tattoo fall back to the **newest**
    `InstallationChanges_*.json` sandbox capture — a registry key (Uninstall keys preferred) or a
-   `Program Files` path.
+   machine-wide file path (`Program Files` locations ranked first; per-user profile paths are
+   never used, since Intune detects as SYSTEM).
 3. **None:** the app is still created, with a warning — add a detection rule in the portal.
 
 **App icon** — `Assets\AppIcon.png` (from winget, a manual `-IconPath`, or captured during the
-install run) is normalized to a genuine PNG and attached as the app tile icon (`largeIcon`). No
-usable icon means Intune shows the generic tile.
+install run) is normalized to a genuine PNG and attached as the app tile icon (`largeIcon`).
+When none of those sources produced an icon, the file still contains the **PSADT default logo**
+from the project scaffold — and that is what appears as the Intune tile. To use your own, drop a
+PNG at `Assets\AppIcon.png` before publishing.
 
 <!-- SCREENSHOT: the published app in the Intune portal showing tile icon, detection rule, and shell defaults -->
 

@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths: ['docs/**', 'mkdocs.yml', 'README.md']
   pull_request:
-    paths: ['Public/**', 'Private/**', '*.psd1', '*.psm1', 'docs/**', 'build/Update-Docs.ps1']
+    paths: ['Public/**', 'Private/**', '*.psd1', '*.psm1', 'docs/**', 'build/Update-Docs.ps1', 'mkdocs.yml', 'README.md']
 
 permissions:
   contents: read
@@ -39,11 +39,11 @@ jobs:
           }
           Write-Host 'Reference is in sync with the comment-based help.'
 
-  # Build + deploy the MkDocs Material site to GitHub Pages on pushes to main.
-  # One-time repo setup: Settings > Pages > Source = 'GitHub Actions'.
+  # Build the MkDocs Material site. Runs the STRICT build on PRs too — a site-breaking docs change
+  # (bad nav entry, unresolvable link) must fail the PR, not the post-merge Pages deploy.
+  # One-time repo setup for deployment: Settings > Pages > Source = 'GitHub Actions'.
   build-site:
     name: Build site
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -57,10 +57,11 @@ jobs:
       - name: Install MkDocs Material
         run: pip install mkdocs-material
 
-      - name: Build
+      - name: Build (strict)
         run: mkdocs build --strict
 
       - name: Upload Pages artifact
+        if: github.event_name == 'push'
         uses: actions/upload-pages-artifact@v3
         with:
           path: site

@@ -23,7 +23,7 @@ flowchart LR
 
 | Requirement | Notes |
 |---|---|
-| Windows 11 (Pro/Enterprise/Education for Sandbox) | Windows Sandbox is not available on Home |
+| Windows 10/11 — Pro, Enterprise, or Education for Sandbox | Windows Sandbox is not available on Home |
 | PowerShell 7.2+ | `winget install Microsoft.PowerShell` |
 | winget | For the winget packaging flow (manual apps work without it) |
 | Windows Sandbox **or** Hyper-V | Sandbox: `Enable-WindowsOptionalFeature -Online -FeatureName 'Containers-DisposableClientVM'` + reboot. Hyper-V backend: see [the Hyper-V test VM](docs/hyperv-vm.md) |
@@ -61,7 +61,7 @@ Get-Command -Module win32-toolkit
 2. **First-run setup** — you're asked once for a base folder (where all projects/output live) and
    walked through creating your first **org template** (your branding + defaults — see
    [org templates](docs/org-templates.md)).
-3. **Package an app** — choose *Package a winget app*, search for `Git.Git`, pick the architecture,
+3. **Package an app** — choose *Package an app from winget (search)*, search for `Git.Git`, pick the architecture,
    and let it run: download → project scaffold → the Sandbox opens and captures the install →
    detection & uninstall logic are generated from what the installer actually did.
 4. **Find your package** — `<BasePath>\IntuneWin\<Template>\Git_x64_<version>.intunewin`, ready for

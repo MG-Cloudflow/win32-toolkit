@@ -22,11 +22,13 @@ Enable-WindowsOptionalFeature -Online -FeatureName 'Containers-DisposableClientV
 
 Then **restart the PC** — the feature does not work until after a reboot.
 
-Don't worry about getting everything perfect: the very first screen of the TUI is a **system
+Don't worry about getting everything perfect: early in the first launch the TUI shows a **system
 check** table that names each prerequisite (PowerShell version, winget, PSAppDeployToolkit v4,
 Windows Sandbox, base folder, and the publish/packaging tools), marks what is missing, and tells
-you what it is needed for. Fixable items can be resolved from **Settings**, or the toolkit offers
-to fix them the first time you use a feature that needs them.
+you what it is needed for. Most missing pieces don't block you — the toolkit offers to install
+them the first time a feature needs them (PSADT and the Graph module install themselves on first
+use; the base folder can be changed later in **Settings**). On a truly fresh machine two prompts
+come *before* that screen: the one-time PwshSpectreConsole install and the base-folder question.
 
 <!-- SCREENSHOT: The TUI health/system-check table showing OK and missing rows -->
 
@@ -83,10 +85,10 @@ From the main menu choose **Package an app from winget (search)**. The wizard wa
 
 The build runs on its own from here — this is what happens, in order:
 
-- **Download** — winget downloads the Git installer into the new project's `Files\` folder.
 - **Project scaffold** — a full PSAppDeployToolkit v4 project is created under
-  `<BasePath>\Projects\<Template>\Git_x64_<version>\`, the installer is detected (EXE/MSI) and
-  the deployment script is configured, and your org-template branding is applied.
+  `<BasePath>\Projects\<Template>\Git_x64_<version>\` with your org-template branding applied.
+- **Download** — winget downloads the Git installer into the new project's `Files\` folder; the
+  installer type is detected (EXE/MSI) and the deployment script is configured for it.
 - **A Windows Sandbox window opens** — this is normal, don't close it. The toolkit installs Git
   inside the disposable sandbox and records every change it makes (files, registry, services,
   shortcuts).
@@ -138,7 +140,8 @@ Everything the wizard just did is a thin front-end over one public command. This
 reproduces the whole tutorial — build, sandbox capture, package — without any menus:
 
 ```powershell
-Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -TemplateName 'Contoso' -Force -PackageIntune
+# Use the template name YOU created in step 2 (omit -TemplateName to pick from a menu)
+Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -TemplateName 'YourTemplate' -Force -PackageIntune
 ```
 
 Add `-RunTest InstallUninstall` to also test the package, or `-PublishIntune` to upload it. See

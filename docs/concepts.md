@@ -97,8 +97,8 @@ location for a single call, pass `-BasePath`; to change the saved value, pass `-
 the prompt returns.
 
 (When the pipeline cache is on, a fifth folder — `Cache\winget\` — holds re-downloadable
-installers for update-test baselines; every cached file is hash-checked against the winget
-manifest before reuse, so a stale or tampered entry is simply re-downloaded.)
+installers for update-test baselines; the cached installer is SHA256-checked against its winget
+manifest before every reuse, so a stale or tampered entry is simply re-downloaded.)
 
 **`Projects\` is never modified during packaging.** The project folder is your source of truth —
 capture results, test artifacts, and your own manual edits live there. When you package, the
@@ -134,8 +134,10 @@ The tile icon is sourced in a fixed order of preference:
    during result processing — this is how manual and iconless apps still get a real tile.
 3. **Manual `-IconPath`** — for manual apps, an icon you supply explicitly always wins over both.
 
-Low-resolution frames (48px or smaller) are skipped rather than upscaled. If nothing usable is
-found, the default PSADT icon stays in place and the app publishes without a tile icon.
+For `.ico` and image sources, frames smaller than 48px are skipped rather than upscaled (icons
+extracted from an `.exe` are taken at the best size the executable embeds). If nothing usable is
+found, the PSADT default logo stays at `Assets\AppIcon.png` — and that is what publishes as the
+Intune tile. Replace the file before publishing if you want a different one.
 
 ## How detection & uninstall are generated
 
@@ -210,6 +212,8 @@ An app can declare other toolkit projects as dependencies (for example, a runtim
 [Set-Win32ToolkitAppDependency](reference/Set-Win32ToolkitAppDependency.md) records the link on
 the project; during captures and tests the dependencies are installed into the guest *before*
 the baseline snapshot is taken, so the dependency's files, registry keys, and services never
-pollute the app's own diff. At publish time,
-[Sync-Win32ToolkitAppDependency](reference/Sync-Win32ToolkitAppDependency.md) mirrors the
-relationships into Intune so the service installs things in the right order.
+pollute the app's own diff. At publish time
+[Publish-Win32ToolkitIntuneApp](reference/Publish-Win32ToolkitIntuneApp.md) attaches the
+relationships in Intune so the service installs things in the right order;
+[Sync-Win32ToolkitAppDependency](reference/Sync-Win32ToolkitAppDependency.md) is the follow-up
+tool for re-attaching them on apps that are already published.

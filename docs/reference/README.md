@@ -1,6 +1,6 @@
 # Command reference
 
-> Generated from the module's built-in help by [`build/Update-Docs.ps1`](../../build/Update-Docs.ps1) — do not edit these pages by hand. The same content is available offline via `Get-Help <command> -Full`.
+> Generated from the module's built-in help by `build/Update-Docs.ps1` — do not edit these pages by hand. The same content is available offline via `Get-Help <command> -Full`.
 
 ## Start here
 

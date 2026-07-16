@@ -12,27 +12,31 @@ Export-Win32ToolkitIntuneWin [[-ProjectPath] <String>] [[-BasePath] <String>] [-
 ```
 
 ## DESCRIPTION
-Works with the win32-toolkit 3-tier folder layout:
+Works with the win32-toolkit template-grouped folder layout:
 
     \<BasePath\>\
-      Projects\    raw PSADT projects - never modified
-      Staging\     cleaned copy produced during packaging (kept for re-runs)
-      IntuneWin\   finished .intunewin files
+      Projects\\\<Template\>\\\<App\>\    raw PSADT projects - never modified
+      Staging\\\<Template\>\\\<App\>\     cleaned copy produced during packaging (kept for re-runs)
+      IntuneWin\\\<Template\>\         finished .intunewin files
 
 Steps performed:
 1.
 Resolves the target project (interactive picker if ProjectPath is omitted).
 2.
-Locates or auto-downloads IntuneWinAppUtil.exe into the module's Tools\ folder.
+Locates or auto-downloads IntuneWinAppUtil.exe into the module's Tools\ folder
+   (Authenticode-verified as Microsoft-signed before use).
 3.
-Copies the raw project into Staging\\\<ProjectName\>\ (re-copies if already present
-   so the Staging copy always reflects the latest raw project state).
+Copies the raw project into Staging\\\<Template\>\\\<ProjectName\>\, EXCLUDING everything that
+   must never ship: Docs\, Examples\, Sandbox\ (test artifacts), Documentation\ (captures),
+   and Intune\ (Publications.json - tenant + app ids that must never travel to a device).
+   Re-copied on every run so Staging always reflects the latest raw project.
 4.
-Runs Optimize-Win32ToolkitProject against the Staging copy - removes Docs\,
-   Examples\, *.md, Sandbox\, Documentation\, and empty dirs.
-   The original Projects\ folder is untouched.
+Runs Optimize-Win32ToolkitProject against the Staging copy as a safety net - strips any
+   surviving non-shipping folder (a locked Intune\ folder aborts packaging), root *.md and
+   *.wsb files, the TargetedDocumentationScript, and empty dirs.
+Projects\ stays untouched.
 5.
-Runs IntuneWinAppUtil.exe against the Staging copy, outputting to IntuneWin\.
+Runs IntuneWinAppUtil.exe against the Staging copy, outputting to IntuneWin\\\<Template\>\.
 6.
 Renames the produced Invoke-AppDeployToolkit.intunewin → \<ProjectName\>.intunewin.
 

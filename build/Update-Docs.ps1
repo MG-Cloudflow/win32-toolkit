@@ -48,7 +48,9 @@ $groups = [ordered]@{
 $sb = New-Object System.Text.StringBuilder
 [void]$sb.AppendLine('# Command reference')
 [void]$sb.AppendLine()
-[void]$sb.AppendLine('> Generated from the module''s built-in help by [`build/Update-Docs.ps1`](../../build/Update-Docs.ps1) — do not edit these pages by hand. The same content is available offline via `Get-Help <command> -Full`.')
+# No relative link to build\ here: it sits OUTSIDE docs_dir, and `mkdocs build --strict` fails the
+# whole Pages build on links it cannot resolve among the documentation files.
+[void]$sb.AppendLine('> Generated from the module''s built-in help by `build/Update-Docs.ps1` — do not edit these pages by hand. The same content is available offline via `Get-Help <command> -Full`.')
 [void]$sb.AppendLine()
 foreach ($g in $groups.Keys) {
     [void]$sb.AppendLine("## $g")
