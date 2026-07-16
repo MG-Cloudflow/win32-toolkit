@@ -27,19 +27,44 @@ function Invoke-Win32Toolkit {
     prompted for it and the choice is saved. An explicit value overrides but is not persisted.
 .PARAMETER Reconfigure
     Re-prompt for the base folder and save the new value to the registry, ignoring any stored value.
+.PARAMETER RunTest
+    Test scenario(s) to run right after the project is built and documented: 'InstallUninstall',
+    'Update', or both (array — scenarios run in the order given). Each runs in the configured test
+    backend (Windows Sandbox by default, Hyper-V when configured and ready). A failed scenario is
+    reported with a warning but does not stop packaging/publishing.
+.PARAMETER UpdateVersionsBack
+    For -RunTest Update: automatically use the version N releases older than the packaged one as the
+    update baseline (1 = the immediately previous release), so a scripted pipeline never blocks on
+    the interactive version picker. Ignored when -UpdateSpecificVersion is also supplied.
+.PARAMETER UpdateSpecificVersion
+    For -RunTest Update: use this exact older version as the update baseline. Takes precedence over
+    -UpdateVersionsBack when both are supplied. Omit both to pick interactively.
+.PARAMETER PackageIntune
+    After creating the project, package it into a .intunewin file using IntuneWinAppUtil.exe.
+.PARAMETER PublishIntune
+    After packaging, upload the .intunewin file to Microsoft Intune via Graph API.
+    Implies -PackageIntune. Requires the Microsoft.Graph.Authentication module.
+.PARAMETER PublishUpdate
+    Also publish the UPDATE app: a second Intune app of the same version whose requirement rule makes
+    it applicable only to devices that already have the app installed. Implies packaging.
+.PARAMETER DependsOn
+    Dependencies to declare for this app before packaging: 'winget:<Id>', 'project:<Template>\<Name>',
+    or 'intune:<AppGuid>' references (array). Declared dependencies install first in the test guest
+    and are related to the Intune app at publish time.
+.PARAMETER DependencyType
+    How Intune should treat the declared dependencies: 'autoInstall' (default) installs them
+    automatically; 'detect' only requires their presence.
 .EXAMPLE
     Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force
 .EXAMPLE
     Invoke-Win32Toolkit -SearchTerm 'visual studio code' -BasePath 'D:\Packaging'
 .EXAMPLE
     Invoke-Win32Toolkit -NewTemplate -TemplateName 'Contoso'
-.PARAMETER PackageIntune
-    After creating the project, package it into a .intunewin file using IntuneWinAppUtil.exe.
-.PARAMETER PublishIntune
-    After packaging, upload the .intunewin file to Microsoft Intune via Graph API.
-    Implies -PackageIntune. Requires the Microsoft.Graph.Authentication module.
 .EXAMPLE
     Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -PackageIntune -PublishIntune
+.EXAMPLE
+    # Fully scripted pipeline incl. both tests; the Update baseline is the previous release
+    Invoke-Win32Toolkit -Id 'Mozilla.Firefox' -Architecture x64 -Force -RunTest InstallUninstall, Update -UpdateVersionsBack 1 -PackageIntune
 #>
     [CmdletBinding()]
     param(

@@ -11,7 +11,7 @@ function Complete-Win32ToolkitManualApp {
     Intune.
 
     Works on any win32-toolkit project (manual or winget), so it can also re-finalise a project after
-    hand edits. See knowledge-base/designs/manual-app-packaging.md.
+    hand edits.
 .PARAMETER ProjectPath
     Full path to the PSADT project folder (must contain Invoke-AppDeployToolkit.ps1).
 .PARAMETER RunTest

@@ -1,0 +1,71 @@
+site_name: win32-toolkit
+site_description: End-to-end Win32 app packaging for Microsoft Intune — winget or manual sources, PSADT v4, sandboxed capture & testing, .intunewin packaging, Graph publish.
+site_url: https://mg-cloudflow.github.io/win32-toolkit/
+repo_url: https://github.com/MG-Cloudflow/win32-toolkit
+repo_name: MG-Cloudflow/win32-toolkit
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+
+markdown_extensions:
+  - admonition
+  - tables
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Home: README.md
+  - Learn:
+      - Getting started: getting-started.md
+      - Concepts: concepts.md
+  - Guides:
+      - Org templates: org-templates.md
+      - Manual (non-winget) apps: manual-apps.md
+      - Testing packages: testing.md
+      - The Hyper-V test VM: hyperv-vm.md
+      - App dependencies: dependencies.md
+      - Packaging (.intunewin): packaging.md
+      - Publishing to Intune: publishing.md
+  - Reference:
+      - Configuration values: configuration.md
+      - Commands: reference/README.md
+      - Command pages:
+          - Show-Win32Toolkit: reference/Show-Win32Toolkit.md
+          - Invoke-Win32Toolkit: reference/Invoke-Win32Toolkit.md
+          - New-Win32ToolkitManualApp: reference/New-Win32ToolkitManualApp.md
+          - Complete-Win32ToolkitManualApp: reference/Complete-Win32ToolkitManualApp.md
+          - Test-Win32ToolkitProject: reference/Test-Win32ToolkitProject.md
+          - Export-Win32ToolkitIntuneWin: reference/Export-Win32ToolkitIntuneWin.md
+          - Publish-Win32ToolkitIntuneApp: reference/Publish-Win32ToolkitIntuneApp.md
+          - Export-Win32ToolkitDocumentation: reference/Export-Win32ToolkitDocumentation.md
+          - Set-Win32ToolkitAppDependency: reference/Set-Win32ToolkitAppDependency.md
+          - Sync-Win32ToolkitAppDependency: reference/Sync-Win32ToolkitAppDependency.md
+          - New-Win32ToolkitTestVM: reference/New-Win32ToolkitTestVM.md
+          - Set-Win32ToolkitTestVMResource: reference/Set-Win32ToolkitTestVMResource.md
+          - Reset-Win32ToolkitTestVM: reference/Reset-Win32ToolkitTestVM.md
+          - Remove-Win32ToolkitTestVM: reference/Remove-Win32ToolkitTestVM.md
