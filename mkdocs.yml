@@ -1,6 +1,6 @@
 site_name: win32-toolkit
 site_description: End-to-end Win32 app packaging for Microsoft Intune — winget or manual sources, PSADT v4, sandboxed capture & testing, .intunewin packaging, Graph publish.
-site_url: https://mg-cloudflow.github.io/win32-toolkit/
+site_url: https://win32toolkit.com/
 repo_url: https://github.com/MG-Cloudflow/win32-toolkit
 repo_name: MG-Cloudflow/win32-toolkit
 edit_uri: edit/main/docs/
