@@ -4,8 +4,8 @@
 installer), and it builds a branded [PSAppDeployToolkit v4](https://psappdeploytoolkit.com/) project,
 installs the app in a disposable Windows Sandbox / Hyper-V guest to **capture what the installer
 really does**, generates the Intune detection & uninstall logic from that capture, tests the
-install/uninstall/update paths, packages the `.intunewin`, and publishes it to Intune — dependencies,
-icon, and requirement rules included.
+install/uninstall/update paths, packages the `.intunewin`, and publishes it to Intune, with
+dependencies, icon, and requirement rules included.
 
 Built for Intune admins and packagers. The primary experience is a guided, menu-driven console UI
 (`Show-Win32Toolkit`); every step is also scriptable through 14 PowerShell commands.
@@ -23,7 +23,7 @@ flowchart LR
 
 | Requirement | Notes |
 |---|---|
-| Windows 10/11 — Pro, Enterprise, or Education for Sandbox | Windows Sandbox is not available on Home |
+| Windows 10/11 (Pro, Enterprise, or Education for Sandbox) | Windows Sandbox is not available on Home |
 | PowerShell 7.2+ | `winget install Microsoft.PowerShell` |
 | winget | For the winget packaging flow (manual apps work without it) |
 | Windows Sandbox **or** Hyper-V | Sandbox: `Enable-WindowsOptionalFeature -Online -FeatureName 'Containers-DisposableClientVM'` + reboot. Hyper-V backend: see [the Hyper-V test VM](docs/hyperv-vm.md) |
@@ -36,11 +36,11 @@ Microsoft.Graph.Authentication (publishing), IntuneWinAppUtil.exe (packaging).
 ## Install
 
 ```powershell
-# Option A — clone
+# Option A: clone
 git clone https://github.com/MG-Cloudflow/win32-toolkit.git
 cd win32-toolkit
 
-# Option B — download the ZIP from GitHub, then unblock it before extracting:
+# Option B: download the ZIP from GitHub, then unblock it before extracting:
 #   Right-click the .zip -> Properties -> Unblock  (or)
 Unblock-File .\win32-toolkit-main.zip
 ```
@@ -53,19 +53,19 @@ Get-Command -Module win32-toolkit
 
 ## Quickstart
 
-> ~5 minutes of your input; the install capture then runs unattended (10–20 min for a typical app).
+> ~5 minutes of your input; the install capture then runs unattended (10 to 20 min for a typical app).
 
-1. **Launch the UI** — double-click `Launch-Win32Toolkit.cmd`, or run `Show-Win32Toolkit` in
+1. **Launch the UI**: double-click `Launch-Win32Toolkit.cmd`, or run `Show-Win32Toolkit` in
    PowerShell 7. The first screen is a **prerequisite health check** that tells you exactly what's
    missing and how to fix it.
-2. **First-run setup** — you're asked once for a base folder (where all projects/output live) and
-   walked through creating your first **org template** (your branding + defaults — see
+2. **First-run setup**: you're asked once for a base folder (where all projects/output live) and
+   walked through creating your first **org template** (your branding + defaults, see
    [org templates](docs/org-templates.md)).
-3. **Package an app** — choose *Package an app from winget (search)*, search for `Git.Git`, pick the architecture,
-   and let it run: download → project scaffold → the Sandbox opens and captures the install →
+3. **Package an app**: choose *Package an app from winget (search)*, search for `Git.Git`, pick the architecture,
+   and let it run: download, then project scaffold, then the Sandbox opens and captures the install, and
    detection & uninstall logic are generated from what the installer actually did.
-4. **Find your package** — `<BasePath>\IntuneWin\<Template>\Git_x64_<version>.intunewin`, ready for
-   Intune (or publish straight from the menu — needs an Intune admin account, see
+4. **Find your package**: `<BasePath>\IntuneWin\<Template>\Git_x64_<version>.intunewin`, ready for
+   Intune (or publish straight from the menu, which needs an Intune admin account, see
    [publishing](docs/publishing.md)).
 
 The same thing as one command:
@@ -81,7 +81,7 @@ Full walkthrough with what-you'll-see at every step: **[Getting started](docs/ge
 ```
 <BasePath>\                      chosen on first run (saved; override with -BasePath / -Reconfigure)
 ├── Templates\<name>.json        org templates (branding + defaults)
-├── Projects\<Template>\<App>\   the source of truth — never modified by packaging
+├── Projects\<Template>\<App>\   the source of truth, never modified by packaging
 ├── Staging\<Template>\<App>\    cleaned working copy used to build the package
 ├── IntuneWin\<Template>\        finished .intunewin files
 └── Cache\                       download cache (re-runs skip re-downloading)
@@ -98,21 +98,21 @@ packaged for multiple customers side by side. Details: [concepts](docs/concepts.
 |---|---|
 | [Show-Win32Toolkit](docs/reference/Show-Win32Toolkit.md) | The guided console UI over everything below |
 | [Invoke-Win32Toolkit](docs/reference/Invoke-Win32Toolkit.md) | Full winget pipeline in one command |
-| [New-Win32ToolkitManualApp](docs/reference/New-Win32ToolkitManualApp.md) | Package an app that isn't in winget — [guide](docs/manual-apps.md) |
+| [New-Win32ToolkitManualApp](docs/reference/New-Win32ToolkitManualApp.md) | Package an app that isn't in winget ([guide](docs/manual-apps.md)) |
 | [Complete-Win32ToolkitManualApp](docs/reference/Complete-Win32ToolkitManualApp.md) | Finish an advanced manual app after authoring its install |
-| [Test-Win32ToolkitProject](docs/reference/Test-Win32ToolkitProject.md) | Install/uninstall & update tests in Sandbox or Hyper-V — [guide](docs/testing.md) |
+| [Test-Win32ToolkitProject](docs/reference/Test-Win32ToolkitProject.md) | Install/uninstall & update tests in Sandbox or Hyper-V ([guide](docs/testing.md)) |
 
 **Pipeline steps**
 
 | Command | What it does |
 |---|---|
-| [Export-Win32ToolkitIntuneWin](docs/reference/Export-Win32ToolkitIntuneWin.md) | Package a project into a `.intunewin` — [guide](docs/packaging.md) |
-| [Publish-Win32ToolkitIntuneApp](docs/reference/Publish-Win32ToolkitIntuneApp.md) | Upload to Intune via Graph — [guide](docs/publishing.md) |
+| [Export-Win32ToolkitIntuneWin](docs/reference/Export-Win32ToolkitIntuneWin.md) | Package a project into a `.intunewin` ([guide](docs/packaging.md)) |
+| [Publish-Win32ToolkitIntuneApp](docs/reference/Publish-Win32ToolkitIntuneApp.md) | Upload to Intune via Graph ([guide](docs/publishing.md)) |
 | [Export-Win32ToolkitDocumentation](docs/reference/Export-Win32ToolkitDocumentation.md) | Customer-facing one-pager for a packaged app |
-| [Set-Win32ToolkitAppDependency](docs/reference/Set-Win32ToolkitAppDependency.md) | Declare app dependencies — [guide](docs/dependencies.md) |
+| [Set-Win32ToolkitAppDependency](docs/reference/Set-Win32ToolkitAppDependency.md) | Declare app dependencies ([guide](docs/dependencies.md)) |
 | [Sync-Win32ToolkitAppDependency](docs/reference/Sync-Win32ToolkitAppDependency.md) | Re-attach dependencies on already-published apps |
 
-**Hyper-V test VM** (optional faster backend — [guide](docs/hyperv-vm.md))
+**Hyper-V test VM** (optional faster backend, [guide](docs/hyperv-vm.md))
 
 | Command | What it does |
 |---|---|
@@ -123,8 +123,13 @@ packaged for multiple customers side by side. Details: [concepts](docs/concepts.
 
 ## Documentation
 
-Guides, concepts, configuration, and the full command reference live in **[docs/](docs/README.md)** —
+Guides, concepts, configuration, and the full command reference live in **[docs/](docs/README.md)**,
 also published as a browsable site via GitHub Pages. Offline: `Get-Help <command> -Full`.
+
+## Credits
+
+win32-toolkit stands on tools built by others. See **[Community tools and credits](docs/credits.md)**
+for the full list, with authors and licenses.
 
 ## License
 
