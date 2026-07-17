@@ -31,6 +31,11 @@ function New-OrgTemplate {
     $templateName = Read-TV 'Template name'                                    $defaultTemplateName
     $companyName  = Read-TV 'Company name (shown in dialog subtitles)'         ($ExistingTemplate?.CompanyName     ?? 'Your Organisation IT')
     $scriptAuthor = Read-TV 'App script author'                                ($ExistingTemplate?.AppScriptAuthor ?? 'IT Packaging Team')
+    # Pinning the tenant is what lets publish REFUSE the wrong customer. Without it the toolkit cannot
+    # know which tenant is correct and can only warn.
+    Write-Host '  Pin this template to a customer tenant so publishing to the wrong one is refused.' -ForegroundColor DarkGray
+    Write-Host '  Tenant GUID or domain (e.g. contoso.onmicrosoft.com). Blank = unpinned (not recommended).' -ForegroundColor DarkGray
+    $tenantId     = Read-TV 'Intune tenant (blank = unpinned)'                 ($ExistingTemplate?.TenantId ?? '')
 
     Write-Host ''; Write-Host '--- B: Branding & dialog style ---' -ForegroundColor Yellow
     # DialogStyle (B2): Fluent = modern v4 look; Classic = v3-style dialogs (uses Banner.Classic.png).
@@ -128,6 +133,7 @@ function New-OrgTemplate {
         TemplateName          = $templateName
         CompanyName           = $companyName
         AppScriptAuthor       = $scriptAuthor
+        TenantId              = $tenantId
         DialogStyle           = $dialogStyle
         FluentAccentColor     = $accentColor
         LogPath               = $logPath

@@ -31,6 +31,8 @@ function Update-OrgTemplateIfNeeded {
     if (-not $Template.PSObject.Properties['CustomAssets'])          { $Template | Add-Member -NotePropertyName CustomAssets -NotePropertyValue $false -Force }
     if (-not $Template.PSObject.Properties['IntuneDefaults'])        { $Template | Add-Member -NotePropertyName IntuneDefaults -NotePropertyValue ([PSCustomObject]@{ MinimumWindowsRelease = '1607'; DeviceRestartBehavior = 'suppress'; MaxRuntimeMinutes = 60; DescriptionBoilerplate = ''; PrivacyUrl = '' }) -Force }
     if (-not $Template.PSObject.Properties['DocFooter'])             { $Template | Add-Member -NotePropertyName DocFooter -NotePropertyValue '' -Force }
+    # Unpinned by default: an existing template keeps working, and publish warns rather than refusing.
+    if (-not $Template.PSObject.Properties['TenantId'])              { $Template | Add-Member -NotePropertyName TenantId -NotePropertyValue '' -Force }
     if (-not $Template.PSObject.Properties['UninstallWelcomeDialog']) {
         $Template | Add-Member -NotePropertyName UninstallWelcomeDialog -NotePropertyValue (
             [PSCustomObject]@{ Enabled = $true; CloseProcessesCountdown = 60; PersistPrompt = $false; BlockExecution = $false }

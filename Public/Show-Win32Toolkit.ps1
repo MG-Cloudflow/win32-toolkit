@@ -83,6 +83,7 @@ function Show-Win32Toolkit {
                 'project'   { Show-Win32ToolkitProjectActions -BasePath $base }
                 'browse'    { Show-Win32ToolkitBrowse   -BasePath $base }
                 'templates' { Show-Win32ToolkitTemplates -BasePath $base }
+                'intune'    { Show-Win32ToolkitIntuneConnection -BasePath $base }
                 'settings'  { $base = Show-Win32ToolkitSettings -BasePath $base }
                 'exit'      { Write-SpectreHost '[grey]Goodbye.[/]'; return }
                 default     { return }

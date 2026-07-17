@@ -22,12 +22,15 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Wait-Win32ToolkitUploadState.ps1')   # the SAS-URI / commit poller Publish now uses
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitPngBytes.ps1') # normalizes the tile icon
 . (Join-Path $repo 'Private\Get-Win32ToolkitLargeIconBytes.ps1') # the app-tile icon (largeIcon) Publish now attaches
+. (Join-Path $repo 'Private\Get-Win32ToolkitTenantInfo.ps1')    # tenant banner lookup (Assert dep)
+. (Join-Path $repo 'Private\Assert-Win32ToolkitTenant.ps1')     # Publish verifies the tenant before writing
 . (Join-Path $repo 'Public\Publish-Win32ToolkitIntuneApp.ps1')
 
 $APPID = '11111111-2222-3333-4444-555555555555'
 
 # --- shadow the entire Graph + packaging layer ----------------------------------------------------
 function Connect-Win32ToolkitGraph { }
+function Get-Win32ToolkitTenantInfo { $null }   # never let the tenant-name lookup hit the network
 $INNER = 'IntuneWinPackage/Contents/payload.bin'
 function Get-Win32IntuneWinMetadata {
     param($Path)

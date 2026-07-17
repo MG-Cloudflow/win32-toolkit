@@ -17,6 +17,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Wait-Win32ToolkitUploadState.ps1')   # the SAS-URI / commit poller Publish now uses
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitPngBytes.ps1') # normalizes the tile icon
 . (Join-Path $repo 'Private\Get-Win32ToolkitLargeIconBytes.ps1') # the app-tile icon (largeIcon) Publish now attaches
+. (Join-Path $repo 'Private\Assert-Win32ToolkitTenant.ps1')      # Publish verifies the tenant before writing
 . (Join-Path $repo 'Public\Publish-Win32ToolkitIntuneApp.ps1')
 
 $APPID = '11111111-2222-3333-4444-555555555555'
@@ -26,6 +27,7 @@ $INNER = 'IntuneWinPackage/Contents/payload.bin'
 # --- shadows --------------------------------------------------------------------------------------
 function Connect-Win32ToolkitGraph { }
 function Get-MgContext { [pscustomobject]@{ TenantId = 'tenant-1' } }
+function Get-Win32ToolkitTenantInfo { $null }   # never let the tenant-name lookup hit the network
 function Get-Win32IntuneWinMetadata { param($Path) [pscustomobject]@{ InnerEntryName = $INNER; UnencryptedSize = 100; SizeEncrypted = 128; EncryptionKey = 'k'; MacKey = 'mk'; InitializationVector = 'iv'; Mac = 'm'; FileDigest = 'fd'; FileDigestAlgorithm = 'SHA256' } }
 function Get-Win32DetectionRules { param($ProjectPath) @(@{ '@odata.type' = '#microsoft.graph.win32LobAppRegistryDetection' }) }
 function Get-Win32ToolkitRequirementRule { param($ProjectPath) 'rule' }

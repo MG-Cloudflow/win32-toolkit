@@ -89,6 +89,14 @@ function Configure-PSADTForInstaller {
             $cfg | Add-Member -NotePropertyName IntuneDefaults -NotePropertyValue (New-Win32ToolkitIntuneDefaults -Template $script:OrgTemplate) -Force
         }
 
+        # ---- Tenant pin — the guard Publish/Sync enforce before writing anything ----
+        # Persisted into the project so a STANDALONE publish (no org template loaded) is still checked.
+        if ($script:OrgTemplate -and $script:OrgTemplate.PSObject.Properties['TenantId'] -and $script:OrgTemplate.TenantId) {
+            $cfg | Add-Member -NotePropertyName Intune -NotePropertyValue ([pscustomobject]@{
+                TenantId = [string]$script:OrgTemplate.TenantId
+            }) -Force
+        }
+
         # ---- Org documentation branding (B8) — data only, used by Export-Win32ToolkitDocumentation ----
         if ($script:OrgTemplate) {
             $company   = if ($script:OrgTemplate.PSObject.Properties['CompanyName']) { [string]$script:OrgTemplate.CompanyName } else { '' }
