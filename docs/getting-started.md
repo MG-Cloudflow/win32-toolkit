@@ -1,4 +1,4 @@
-# Getting started — package your first app
+# Getting started: package your first app
 
 This tutorial walks you through packaging **Git for Windows** (winget ID `Git.Git`) end-to-end
 using the interactive menu (TUI): search winget, build a PSADT project, capture the install in
@@ -20,12 +20,12 @@ To enable Windows Sandbox, open PowerShell **as administrator** and run:
 Enable-WindowsOptionalFeature -Online -FeatureName 'Containers-DisposableClientVM' -All
 ```
 
-Then **restart the PC** — the feature does not work until after a reboot.
+Then **restart the PC**. The feature does not work until after a reboot.
 
 Don't worry about getting everything perfect: early in the first launch the TUI shows a **system
 check** table that names each prerequisite (PowerShell version, winget, PSAppDeployToolkit v4,
 Windows Sandbox, base folder, and the publish/packaging tools), marks what is missing, and tells
-you what it is needed for. Most missing pieces don't block you — the toolkit offers to install
+you what it is needed for. Most missing pieces don't block you: the toolkit offers to install
 them the first time a feature needs them (PSADT and the Graph module install themselves on first
 use; the base folder can be changed later in **Settings**). On a truly fresh machine two prompts
 come *before* that screen: the one-time PwshSpectreConsole install and the base-folder question.
@@ -33,7 +33,7 @@ come *before* that screen: the one-time PwshSpectreConsole install and the base-
 <!-- SCREENSHOT: The TUI health/system-check table showing OK and missing rows -->
 
 Everything else (PSAppDeployToolkit v4, `IntuneWinAppUtil.exe`, the Graph module for publishing)
-is installed or downloaded on demand — you will simply be asked to confirm.
+is installed or downloaded on demand, and you will simply be asked to confirm.
 
 ## 1. Launch the menu
 
@@ -48,8 +48,8 @@ Import-Module C:\path\to\win32-toolkit\win32-toolkit.psd1
 Show-Win32Toolkit
 ```
 
-On the very first launch you are offered a **one-time install of PwshSpectreConsole** — the
-component that renders the menus. Answer `Y`; it installs for your user account only.
+On the very first launch you are offered a **one-time install of PwshSpectreConsole** (the
+component that renders the menus). Answer `Y`; it installs for your user account only.
 
 <!-- SCREENSHOT: The TUI main menu with the figlet banner and the option list -->
 
@@ -57,48 +57,48 @@ component that renders the menus. Answer `Y`; it installs for your user account 
 
 Two short one-time steps, both guided:
 
-1. **Base folder** — a welcome panel asks where all output should live (default `C:\Win32Apps`).
+1. **Base folder**: a welcome panel asks where all output should live (default `C:\Win32Apps`).
    Press Enter to accept. The choice is saved to the registry, so you pick it exactly once.
-2. **Org template** — before your first package, create a template that stores your company
+2. **Org template**: before your first package, create a template that stores your company
    branding and dialog preferences (company name, accent colour, install/uninstall messages,
    deferral behaviour, and so on). Open **Org templates** from the main menu and follow the
-   wizard — one question per line, sensible defaults everywhere. See
+   wizard, one question per line, sensible defaults everywhere. See
    [Org templates](org-templates.md) for what each prompt controls.
 
 ## 3. Package Git
 
 From the main menu choose **Package an app from winget (search)**. The wizard walks you through:
 
-1. **Search** — type `git` and press Enter.
-2. **Select** — a filterable list of winget results appears; pick **Git (Git.Git)**.
-3. **Architecture** — pick `x64` (the wizard only asks when the app ships more than one).
-4. **Template** — pick the org template you created in step 2.
-5. **Dependencies** — asked whether this app needs another app installed first. For Git, answer
+1. **Search**: type `git` and press Enter.
+2. **Select**: a filterable list of winget results appears; pick **Git (Git.Git)**.
+3. **Architecture**: pick `x64` (the wizard only asks when the app ships more than one).
+4. **Template**: pick the org template you created in step 2.
+5. **Dependencies**: asked whether this app needs another app installed first. For Git, answer
    `n`.
-6. **After building** — a multi-select of extra actions: run an install/uninstall test, package
+6. **After building**, a multi-select of extra actions: run an install/uninstall test, package
    to `.intunewin`, publish to Intune. For a first run, toggle **Package to .intunewin** with the
    space bar and press Enter.
-7. **Review and confirm** — a summary panel shows the app, ID, architecture, template, and chosen
+7. **Review and confirm**: a summary panel shows the app, ID, architecture, template, and chosen
    actions. Confirm to start the build.
 
 ### What you'll see
 
-The build runs on its own from here — this is what happens, in order:
+The build runs on its own from here. This is what happens, in order:
 
-- **Project scaffold** — a full PSAppDeployToolkit v4 project is created under
+- **Project scaffold**: a full PSAppDeployToolkit v4 project is created under
   `<BasePath>\Projects\<Template>\Git_x64_<version>\` with your org-template branding applied.
-- **Download** — winget downloads the Git installer into the new project's `Files\` folder; the
+- **Download**: winget downloads the Git installer into the new project's `Files\` folder; the
   installer type is detected (EXE/MSI) and the deployment script is configured for it.
-- **A Windows Sandbox window opens** — this is normal, don't close it. The toolkit installs Git
+- **A Windows Sandbox window opens**. This is normal, don't close it. The toolkit installs Git
   inside the disposable sandbox and records every change it makes (files, registry, services,
   shortcuts).
-- **The capture runs unattended** — expect roughly **10–20 minutes** depending on the app and
+- **The capture runs unattended**. Expect roughly **10-20 minutes** depending on the app and
   your hardware (Windows Sandbox boots a clean Windows every time). You don't need to touch
   anything; go get a coffee. The sandbox closes itself when done.
-- **Results are processed** — from the captured changes the toolkit generates:
-  - `SupportFiles\RequirementScript.ps1` — a ready-to-paste Intune requirement script;
+- **Results are processed**. From the captured changes the toolkit generates:
+  - `SupportFiles\RequirementScript.ps1`, a ready-to-paste Intune requirement script;
   - the **uninstall logic** in the deployment script (for EXE installers, derived from the
-    captured uninstall registry entry — you never write it by hand);
+    captured uninstall registry entry; you never write it by hand);
   - the list of app processes to close before install/uninstall;
   - the app icon (from winget, or extracted from the actual install when winget has none).
 
@@ -114,7 +114,7 @@ area, cleaned it, and ran Microsoft's `IntuneWinAppUtil.exe`. The result is:
 <BasePath>\IntuneWin\<Template>\Git_x64_<version>.intunewin
 ```
 
-That file is what you upload to Intune — manually via the portal, or automatically (next step).
+That file is what you upload to Intune: manually via the portal, or automatically (next step).
 You can package any existing project at any time via **Work with an existing project** →
 package.
 
@@ -129,7 +129,7 @@ Two things to know before you try it:
 
 - You sign in interactively (browser pop-up); the toolkit requests only the
   `DeviceManagementApps.ReadWrite.All` Graph scope.
-- **The first sign-in may require admin consent** in your tenant for that scope — if consent has
+- **The first sign-in may require admin consent** in your tenant for that scope. If consent has
   not been granted, ask a Global Administrator or use a pre-consented account.
 
 Details, dependencies between apps, and troubleshooting: [Publishing](publishing.md).
@@ -137,7 +137,7 @@ Details, dependencies between apps, and troubleshooting: [Publishing](publishing
 ## 6. The same thing as one command
 
 Everything the wizard just did is a thin front-end over one public command. This single line
-reproduces the whole tutorial — build, sandbox capture, package — without any menus:
+reproduces the whole tutorial (build, sandbox capture, package) without any menus:
 
 ```powershell
 # Use the template name YOU created in step 2 (omit -TemplateName to pick from a menu)

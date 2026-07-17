@@ -75,26 +75,124 @@
   box-shadow: 0 6px 20px rgba(79, 70, 229, .35);
 }
 
-/* Home hero */
+/* ── Home hero ────────────────────────────────────────────────────────────────
+   The landing page leads with a claim, not a link list. Uses an h2 (the page
+   already owns the h1) styled up to hero size, so the document outline stays sane. */
 .tk-hero {
   text-align: center;
-  padding: 1.4rem 0 0.4rem 0;
+  padding: 2.2rem 1rem 1.8rem;
+  margin: 0 0 2rem;
+  border-radius: 18px;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  background:
+    radial-gradient(1200px circle at 50% -20%,
+      color-mix(in srgb, var(--md-primary-fg-color) 14%, transparent) 0%,
+      transparent 60%),
+    var(--md-default-bg-color);
 }
-.tk-hero h1 {
-  font-size: 2.1rem;
-  margin-bottom: 0.4rem;
+.md-typeset .tk-hero h1,
+.md-typeset .tk-hero h2 {
+  font-size: 2.2rem;
+  line-height: 1.15;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin: 0 0 0.7rem;
+  /* Gradient wordmark, with a plain-colour fallback for anything that can't clip it. */
+  color: var(--md-primary-fg-color);
+  background: linear-gradient(92deg, var(--md-primary-fg-color) 10%, #7c3aed 55%, var(--md-accent-fg-color) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  border-bottom: none;
 }
 .tk-hero p {
-  max-width: 38rem;
-  margin: 0 auto 1rem auto;
+  max-width: 42rem;
+  margin: 0 auto 1.4rem;
+  font-size: 0.86rem;
+  line-height: 1.7;
   color: var(--md-default-fg-color--light);
 }
+.md-typeset .tk-hero .md-button { margin: 0.2rem 0.25rem; }
 
-/* Mermaid diagrams: breathing room + centered */
+@media screen and (max-width: 44.9em) {
+  .md-typeset .tk-hero h1,
+  .md-typeset .tk-hero h2 { font-size: 1.6rem; }
+  .tk-hero { padding: 1.6rem 0.8rem 1.4rem; }
+}
+
+/* ── Mermaid diagrams ─────────────────────────────────────────────────────────
+   The .md files keep plain ```mermaid fences (so they stay readable on GitHub and
+   in any editor); everything below is presentation only, applied to the SVG that
+   Material renders on the site. Material already themes mermaid from the palette,
+   so this layers brand shape/depth on top rather than re-colouring from scratch.
+   Fills/strokes need !important because mermaid writes them as inline attributes. */
 .md-typeset .mermaid {
   display: flex;
   justify-content: center;
-  margin: 1.2rem 0;
+  margin: 1.6rem 0;
+  padding: 1.2rem 0.6rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 1px 1px, var(--md-default-fg-color--lightest) 1px, transparent 0) 0 0 / 22px 22px,
+    var(--md-default-bg-color);
+  overflow-x: auto;
+}
+
+/* Nodes: rounded, brand-tinted, lifted off the canvas */
+.md-typeset .mermaid .node rect,
+.md-typeset .mermaid .node polygon,
+.md-typeset .mermaid .node circle,
+.md-typeset .mermaid .node ellipse,
+.md-typeset .mermaid .node path {
+  rx: 8px;
+  ry: 8px;
+  fill: color-mix(in srgb, var(--md-primary-fg-color) 8%, var(--md-default-bg-color)) !important;
+  stroke: color-mix(in srgb, var(--md-primary-fg-color) 45%, transparent) !important;
+  stroke-width: 1.4px !important;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .08));
+}
+
+/* Decision diamonds: accent them so branch points read at a glance */
+.md-typeset .mermaid .node polygon {
+  fill: color-mix(in srgb, var(--md-accent-fg-color) 10%, var(--md-default-bg-color)) !important;
+  stroke: color-mix(in srgb, var(--md-accent-fg-color) 55%, transparent) !important;
+}
+
+.md-typeset .mermaid .nodeLabel,
+.md-typeset .mermaid .label,
+.md-typeset .mermaid text {
+  font-family: var(--md-text-font-family), sans-serif !important;
+  fill: var(--md-default-fg-color) !important;
+  color: var(--md-default-fg-color) !important;
+}
+
+/* Edges: softer than the default black, arrowheads matched to the line */
+.md-typeset .mermaid .edgePath .path,
+.md-typeset .mermaid .flowchart-link {
+  stroke: var(--md-default-fg-color--light) !important;
+  stroke-width: 1.6px !important;
+}
+.md-typeset .mermaid .arrowheadPath,
+.md-typeset .mermaid marker path {
+  fill: var(--md-default-fg-color--light) !important;
+  stroke: none !important;
+}
+
+/* Edge labels sit ON the line: give them the page background so they stay legible */
+.md-typeset .mermaid .edgeLabel {
+  background-color: var(--md-default-bg-color) !important;
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.md-typeset .mermaid .edgeLabel rect { opacity: 0 !important; }
+
+/* Subgraph containers */
+.md-typeset .mermaid .cluster rect {
+  fill: color-mix(in srgb, var(--md-default-fg-color) 3%, transparent) !important;
+  stroke: var(--md-default-fg-color--lightest) !important;
+  rx: 12px;
+  ry: 12px;
 }
 
 /* Tables: modern rounded look */

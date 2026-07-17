@@ -50,14 +50,15 @@ $sb = New-Object System.Text.StringBuilder
 [void]$sb.AppendLine()
 # No relative link to build\ here: it sits OUTSIDE docs_dir, and `mkdocs build --strict` fails the
 # whole Pages build on links it cannot resolve among the documentation files.
-[void]$sb.AppendLine('> Generated from the module''s built-in help by `build/Update-Docs.ps1` — do not edit these pages by hand. The same content is available offline via `Get-Help <command> -Full`.')
+[void]$sb.AppendLine('> Generated from the module''s built-in help by `build/Update-Docs.ps1`. Do not edit these pages by hand. The same content is available offline via `Get-Help <command> -Full`.')
 [void]$sb.AppendLine()
 foreach ($g in $groups.Keys) {
     [void]$sb.AppendLine("## $g")
     [void]$sb.AppendLine()
     foreach ($cmd in $groups[$g]) {
         $syn = (Get-Help $cmd).Synopsis.Trim()
-        [void]$sb.AppendLine("- [$cmd]($cmd.md) — $syn")
+        # Colon, not an em-dash: the docs deliberately avoid em-dashes.
+        [void]$sb.AppendLine("- [$cmd]($cmd.md): $syn")
     }
     [void]$sb.AppendLine()
 }

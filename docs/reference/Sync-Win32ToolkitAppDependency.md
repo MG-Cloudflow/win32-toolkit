@@ -1,7 +1,7 @@
 # Sync-Win32ToolkitAppDependency
 
 ## SYNOPSIS
-Pushes a project's declared dependencies onto the app it ALREADY published in Intune - without
+Pushes a project's declared dependencies onto the app it ALREADY published in Intune, without
 re-publishing it.
 
 ## SYNTAX
