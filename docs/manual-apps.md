@@ -15,11 +15,19 @@ The only question is whether the toolkit can install your app **silently and una
 
 | Mode | When it applies | What you do |
 |---|---|---|
-| **Easy** | An **MSI** (installed via PSADT Zero-Config), an **MSIX/APPX** (installed via `Add-AppxPackage`/provisioning), or an **EXE where you know the silent switches** (`-SilentArgs`) | Nothing extra — the install is data-driven and the flow can run end to end |
+| **Easy** | An **MSI** (installed via PSADT Zero-Config), an **MSIX/APPX** (installed via `Add-AppxPackage`/provisioning), or an **EXE where you know the silent switches** (`-SilentArgs`) | Nothing to author — the install is data-driven and the flow can run end to end |
 | **Advanced** | An **EXE with no known silent switches**, or you pass `-Advanced` explicitly | You author the Install region of the deploy script yourself, then finalise with [Complete-Win32ToolkitManualApp](reference/Complete-Win32ToolkitManualApp.md) |
 
-The **uninstall stays automated in both modes** — it is derived from what the install capture observed
-(or, for MSIX/APPX, from the package identity), never from anything you write.
+The **uninstall stays automated in both modes**, never from anything you write. Where it comes from
+depends on the installer: an **MSI** is removed by PSADT Zero-Config from the MSI itself, an
+**MSIX/APPX** by its package identity, and an **EXE** from what the install capture observed. Only the
+EXE case needs the capture to have worked.
+
+"Easy" means there is no install *script* for you to write. For an **MSIX/APPX** there is still one
+prerequisite outside the toolkit: the package must be **signed and the certificate trusted on your
+devices**, or Windows refuses to install it — see
+[Installer types](concepts.md#installer-types-msi-exe-msix-appx). A package you got from winget is
+already signed; your own LOB package is not.
 
 ## SourcePath: file or folder
 

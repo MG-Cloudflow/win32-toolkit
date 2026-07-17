@@ -13,13 +13,15 @@ function Add-Win32ToolkitTemplateAssets {
         NO config change (light + dark both use AppIcon.png; Classic uses the banner).
 
         AppIcon.png (B7 — also the Intune tile via Publish's Get-Win32ToolkitLargeIconBytes) is applied
-        as a precedence-respecting BASE: only when nothing better has been stamped. Ordering in the
-        pipeline (Apply-OrgTemplate → Get-AppIconFromWinget → capture/finalize) makes this correct:
-          * a manual -IconPath is stamped BEFORE Apply — .iconsource='manual' → org logo is skipped
-          * a winget icon is applied AFTER Apply — it overwrites the org logo and re-stamps 'winget'
+        as a precedence-respecting BASE: only when nothing better has been stamped. Every app-specific
+        icon still wins, because each runs AFTER this and overwrites:
+          * a winget icon (Get-AppIconFromWinget, after Configure) overwrites it, re-stamping 'winget'
+          * a manual -IconPath (New-Win32ToolkitManualApp, after Apply-OrgTemplate) likewise re-stamps
+            'manual' — note it lands after, not before, this runs; the Copy-Item -Force is what wins
           * a captured icon (finalize) overrides 'template' (it only defers to winget/manual)
           * nothing else applies → the org logo persists as both the dialog icon and the Intune tile
-        So the org logo is the floor, and every app-specific icon wins over it, in pipeline order.
+        So the org logo is the floor. winget and manual never compete: they are mutually exclusive
+        entry points, and both are treated as authoritative once stamped.
 
         Banner.Classic.png is pure branding (no icon precedence) and is copied whenever present.
 
