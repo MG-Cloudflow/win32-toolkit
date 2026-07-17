@@ -217,7 +217,20 @@ function Publish-Win32ToolkitIntuneApp {
         }
 
         # ── Graph authentication ──────────────────────────────────────────────────
-        Connect-Win32ToolkitGraph
+        # Pass the project's pinned tenant so a cached session for a DIFFERENT customer is torn down
+        # and re-established rather than silently reused (see Connect-Win32ToolkitGraph).
+        $pinnedTenant = ''
+        if ($appCfg.PSObject.Properties.Name -contains 'Intune' -and $appCfg.Intune) { $pinnedTenant = [string]$appCfg.Intune.TenantId }
+        if (-not $pinnedTenant -and $script:OrgTemplate -and $script:OrgTemplate.PSObject.Properties['TenantId']) {
+            $pinnedTenant = [string]$script:OrgTemplate.TenantId
+        }
+        if ($pinnedTenant) { Connect-Win32ToolkitGraph -TenantId $pinnedTenant } else { Connect-Win32ToolkitGraph }
+
+        # THE POINT OF NO RETURN. Everything below writes to a customer's tenant, so verify which one
+        # BEFORE the app shell is created. A pinned mismatch throws here rather than uploading.
+        $tenantCheck = Assert-Win32ToolkitTenant -ProjectPath $ProjectPath -Operation 'publish'
+        $tenantLabel = if ($tenantCheck.DisplayName) { "$($tenantCheck.DisplayName) ($($tenantCheck.TenantId))" } else { $tenantCheck.TenantId }
+        Write-Host "  Tenant       : $tenantLabel" -ForegroundColor Gray
 
         # ── Extract .intunewin metadata ───────────────────────────────────────────
         Write-Verbose 'Extracting .intunewin metadata...'

@@ -44,7 +44,16 @@ function Sync-Win32ToolkitAppDependency {
     if (-not (Test-Path -LiteralPath $ProjectPath)) { throw "Project not found: $ProjectPath" }
 
     $baseUri = 'https://graph.microsoft.com/beta/deviceAppManagement'
-    Connect-Win32ToolkitGraph
+
+    # Pin to the project's tenant so a cached session for another customer is not reused, then verify
+    # before any relationship is written.
+    $pinnedTenant = ''
+    $syncCfg = try { Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath } catch { $null }
+    if ($syncCfg -and $syncCfg.PSObject.Properties.Name -contains 'Intune' -and $syncCfg.Intune) {
+        $pinnedTenant = [string]$syncCfg.Intune.TenantId
+    }
+    if ($pinnedTenant) { Connect-Win32ToolkitGraph -TenantId $pinnedTenant } else { Connect-Win32ToolkitGraph }
+    $null   = Assert-Win32ToolkitTenant -ProjectPath $ProjectPath -Operation 'dependency sync'
     $tenant = try { (Get-MgContext).TenantId } catch { 'unknown' }
 
     if (-not $AppId) {

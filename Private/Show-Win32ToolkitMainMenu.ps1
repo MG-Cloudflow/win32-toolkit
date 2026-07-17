@@ -13,6 +13,7 @@ function Show-Win32ToolkitMainMenu {
         [pscustomobject]@{ Key = 'project';   Label = 'Work with an existing project (test / package / publish)' }
         [pscustomobject]@{ Key = 'browse';    Label = 'Browse projects' }
         [pscustomobject]@{ Key = 'templates'; Label = 'Org templates' }
+        [pscustomobject]@{ Key = 'intune';    Label = 'Microsoft Intune connection (connect / sign out)' }
         [pscustomobject]@{ Key = 'settings';  Label = 'Settings' }
         [pscustomobject]@{ Key = 'exit';      Label = 'Exit' }
     )

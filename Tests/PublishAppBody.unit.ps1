@@ -29,6 +29,11 @@ Get-ChildItem (Join-Path $repo 'Private') -Filter *.ps1 | ForEach-Object { . $_.
 # ── Graph shadows ────────────────────────────────────────────────────────────────────────────────
 $script:capturedBody = $null
 function Connect-Win32ToolkitGraph { }
+# Publish now verifies WHICH TENANT it is about to write to (Assert-Win32ToolkitTenant) before the app
+# shell is created. These fixtures pin no tenant, so the guard warns and proceeds; it still needs a
+# live session to report, and the tenant-name lookup must not attempt a real Graph call from a test.
+function Get-MgContext { [pscustomobject]@{ TenantId = 'tenant-1'; Account = 'test@contoso.com'; Scopes = @('DeviceManagementApps.ReadWrite.All'); ContextScope = 'Process'; AuthType = 'Delegated' } }
+function Get-Win32ToolkitTenantInfo { $null }
 function Get-Win32IntuneWinMetadata { param($IntuneWinPath) [pscustomobject]@{ UnencryptedSize = 1MB; SizeEncrypted = 1MB; FileName = 'x.intunewin'; EncryptionInfo = @{} } }
 function Invoke-MgGraphRequest {
     param($Method, $Uri, $Body, $ContentType, $OutputType)

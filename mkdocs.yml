@@ -89,6 +89,7 @@ nav:
       - Concepts: concepts.md
   - Guides:
       - Org templates: org-templates.md
+      - Connecting to Intune: intune-connection.md
       - Manual (non-winget) apps: manual-apps.md
       - Testing packages: testing.md
       - The Hyper-V test VM: hyperv-vm.md
@@ -107,6 +108,8 @@ nav:
           - Export-Win32ToolkitIntuneWin: reference/Export-Win32ToolkitIntuneWin.md
           - Publish-Win32ToolkitIntuneApp: reference/Publish-Win32ToolkitIntuneApp.md
           - Export-Win32ToolkitDocumentation: reference/Export-Win32ToolkitDocumentation.md
+          - Connect-Win32ToolkitIntune: reference/Connect-Win32ToolkitIntune.md
+          - Disconnect-Win32ToolkitIntune: reference/Disconnect-Win32ToolkitIntune.md
           - Set-Win32ToolkitAppDependency: reference/Set-Win32ToolkitAppDependency.md
           - Sync-Win32ToolkitAppDependency: reference/Sync-Win32ToolkitAppDependency.md
           - New-Win32ToolkitTestVM: reference/New-Win32ToolkitTestVM.md

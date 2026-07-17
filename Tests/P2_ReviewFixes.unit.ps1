@@ -27,6 +27,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Wait-Win32ToolkitUploadState.ps1')
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitPngBytes.ps1')   # normalizes the tile icon
 . (Join-Path $repo 'Private\Get-Win32ToolkitLargeIconBytes.ps1')   # the app-tile icon (largeIcon) Publish now attaches
+. (Join-Path $repo 'Private\Assert-Win32ToolkitTenant.ps1')        # Publish verifies the tenant before writing
 . (Join-Path $repo 'Public\Publish-Win32ToolkitIntuneApp.ps1')
 
 $APPID = '11111111-2222-3333-4444-555555555555'
@@ -45,6 +46,7 @@ function Get-Win32DetectionRules { param($ProjectPath) @(@{ '@odata.type' = '#mi
 function Get-Win32ToolkitAppConfig { param($ProjectPath) [pscustomobject]@{ App = [pscustomobject]@{ DisplayName = 'Test App'; Version = '1.0'; Publisher = 'ACME' } } }
 function Get-YAMLInstallerInfo { param($FilesPath) $null }
 function Get-MgContext { [pscustomobject]@{ TenantId = 'tenant-1' } }
+function Get-Win32ToolkitTenantInfo { $null }   # never let the tenant-name lookup hit the network
 function Resolve-Win32ToolkitDependencies { param($ProjectPath, $TenantId, $BaseUri) @() }
 function Set-Win32ToolkitAppRelationships { param($AppId, $Dependency, $BaseUri) 0 }
 function Set-Win32ToolkitPublication { param($ProjectPath, $AppId, $TenantId, $DisplayName, $DisplayVersion, $WingetId) 'p' }

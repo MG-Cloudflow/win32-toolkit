@@ -42,6 +42,7 @@ Every prompt shows a default in brackets. Press **Enter** to accept it.
 | Section | Field | What it controls |
 |---|---|---|
 | Identity | Template name / Company name / App script author | File+folder name, dialog subtitle, deploy-script author |
+| | **Intune tenant** | Pins this customer's tenant. Publishing then **refuses** to write to any other one. See [Connecting to Intune](intune-connection.md) |
 | Branding & dialog style | **Dialog style** | `Fluent` (modern) or `Classic` (v3-style, uses the Classic banner) |
 | | Fluent accent hex | Accent colour, e.g. `0xFF0078D7` (blank = PSADT default) |
 | | Log path | Where deploy scripts write logs (default `$envWinDir\Logs\Software`) |
