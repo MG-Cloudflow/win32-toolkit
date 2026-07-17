@@ -1,7 +1,7 @@
 # Test-Win32ToolkitProject
 
 ## SYNOPSIS
-Tests a PSADT project in a disposable guest - Windows Sandbox or the Hyper-V test VM.
+Tests a PSADT project in a disposable guest: Windows Sandbox or the Hyper-V test VM.
 
 ## SYNTAX
 

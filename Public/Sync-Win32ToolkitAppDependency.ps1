@@ -1,7 +1,7 @@
 function Sync-Win32ToolkitAppDependency {
     <#
     .SYNOPSIS
-        Pushes a project's declared dependencies onto the app it ALREADY published in Intune — without
+        Pushes a project's declared dependencies onto the app it ALREADY published in Intune, without
         re-publishing it.
     .DESCRIPTION
         Publish-Win32ToolkitIntuneApp always creates a NEW app (it has no update path), so "just re-publish

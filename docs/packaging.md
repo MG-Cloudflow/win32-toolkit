@@ -24,23 +24,23 @@ flowchart LR
     C -->|optional| D[Publish to Intune]
 ```
 
-1. **Resolve the project.** Without `-ProjectPath`, a numbered picker scans `BasePath\Projects\`. With `-ProjectPath` but no `-BasePath`, the base folder is derived from the path — the project must sit in the `<BasePath>\Projects\<Template>\<ProjectName>` layout, otherwise the command stops and asks you to pass `-BasePath` explicitly rather than creating `Staging\` and `IntuneWin\` somewhere unexpected.
+1. **Resolve the project.** Without `-ProjectPath`, a numbered picker scans `BasePath\Projects\`. With `-ProjectPath` but no `-BasePath`, the base folder is derived from the path. The project must sit in the `<BasePath>\Projects\<Template>\<ProjectName>` layout, otherwise the command stops and asks you to pass `-BasePath` explicitly rather than creating `Staging\` and `IntuneWin\` somewhere unexpected.
 2. **Get the packaging tool.** See [IntuneWinAppUtil.exe](#intunewinapputilexe-auto-download-and-verification) below.
-3. **Copy the project to Staging.** Only shipping content is copied — see the next section.
+3. **Copy the project to Staging.** Only shipping content is copied (see the next section).
 4. **Run the optimizer** on the Staging copy as a safety net.
 5. **Build the package** with `IntuneWinAppUtil.exe` and rename the output to `<ProjectName>.intunewin`.
 6. **Offer to publish** (see [Publishing straight after packaging](#publishing-straight-after-packaging)).
 
 ## The Staging copy: what ships and what never does
 
-The raw project under `Projects\` is your source of truth and is **never modified during packaging**. Each run copies it fresh into `Staging\<Template>\<ProjectName>` — but the copy *excludes* the non-shipping folders up front, so they never exist in Staging at all:
+The raw project under `Projects\` is your source of truth and is **never modified during packaging**. Each run copies it fresh into `Staging\<Template>\<ProjectName>`, but the copy *excludes* the non-shipping folders up front, so they never exist in Staging at all:
 
 | Excluded folder | Why it must not ship |
 |---|---|
-| `Sandbox\` | Test scaffolding — `.wsb` configs, countdown scripts, the old-version installer, dependency installers |
+| `Sandbox\` | Test scaffolding: `.wsb` configs, countdown scripts, the old-version installer, dependency installers |
 | `Documentation\` | Sandbox install-capture JSON and logs |
-| `Intune\` | **Privacy:** holds `Publications.json` — your tenant id and Intune app ids. These must never travel to an end-user device |
-| `Docs\`, `Examples\` | PSADT v4 boilerplate — pure package bloat |
+| `Intune\` | **Privacy:** holds `Publications.json`, your tenant id and Intune app ids. These must never travel to an end-user device |
+| `Docs\`, `Examples\` | PSADT v4 boilerplate: pure package bloat |
 
 Excluding at copy time (rather than copying everything and deleting afterwards) means the copy is smaller and faster, there is no freshly-written file for antivirus to lock mid-delete, and the tenant/app ids in `Intune\Publications.json` cannot leak into the package even if a later cleanup step were to fail.
 
@@ -49,16 +49,16 @@ Excluding at copy time (rather than copying everything and deleting afterwards) 
 After the copy, the optimizer runs on the Staging copy anyway. It is normally a no-op for the folders above, but it catches anything that slipped through and additionally removes:
 
 - `*.md` and `*.wsb` files in the project root
-- `SupportFiles\TargetedDocumentationScript*` and its log files (`SupportFiles\RequirementScript.ps1` is **kept** — Intune needs it)
+- `SupportFiles\TargetedDocumentationScript*` and its log files (`SupportFiles\RequirementScript.ps1` is **kept**; Intune needs it)
 - Any empty subdirectories
 
-If a locked file prevents stripping a bloat folder, you get a warning and a slightly larger package. If the `Intune\` folder itself cannot be removed, packaging **refuses to continue** — a larger package is acceptable, leaked tenant ids are not.
+If a locked file prevents stripping a bloat folder, you get a warning and a slightly larger package. If the `Intune\` folder itself cannot be removed, packaging **refuses to continue**. A larger package is acceptable, leaked tenant ids are not.
 
 ## IntuneWinAppUtil.exe: auto-download and verification
 
-The packager is Microsoft's official Win32 Content Prep Tool. On first use it is downloaded automatically into the module's `Tools\` folder (latest GitHub release first, raw repository file as fallback) — no manual setup.
+The packager is Microsoft's official Win32 Content Prep Tool. On first use it is downloaded automatically into the module's `Tools\` folder (latest GitHub release first, raw repository file as fallback). No manual setup.
 
-Because this binary is executed on your packaging machine, its **Authenticode signature is verified on every run** — both right after a download and for a copy that already sits in `Tools\`. The signature must be valid and issued to *Microsoft Corporation*; anything else is deleted on the spot so a rejected binary can never be silently reused. If the download fails, the error tells you where to fetch the tool manually and where to place it.
+Because this binary is executed on your packaging machine, its **Authenticode signature is verified on every run**, both right after a download and for a copy that already sits in `Tools\`. The signature must be valid and issued to *Microsoft Corporation*; anything else is deleted on the spot so a rejected binary can never be silently reused. If the download fails, the error tells you where to fetch the tool manually and where to place it.
 
 ## Where the output lands
 
@@ -68,10 +68,10 @@ Output is grouped by [org template](org-templates.md), like every other tier:
 C:\Win32Apps\
   Projects\
     Contoso\
-      Git_x64_2.53.0\            raw project — Sandbox\, Documentation\, Intune\ intact
+      Git_x64_2.53.0\            raw project (Sandbox\, Documentation\, Intune\ intact)
   Staging\
     Contoso\
-      Git_x64_2.53.0\            lean copy — kept after the run
+      Git_x64_2.53.0\            lean copy, kept after the run
   IntuneWin\
     Contoso\
       Git_x64_2.53.0.intunewin   ready to upload

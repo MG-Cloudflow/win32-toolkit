@@ -12,7 +12,7 @@ A template is two things on disk:
 | Definition | `Templates\<name>.json` | All the settings (created/edited by the wizard) |
 | Sidecar folder *(optional)* | `Templates\<name>\` | Files the template ships: `Hooks\`, `Assets\`, `PSAppDeployToolkit.<Org>\` |
 
-Templates also **group your output** — the template name (sanitized) becomes a folder segment in
+Templates also **group your output**. The template name (sanitized) becomes a folder segment in
 every tier, so work for different customers stays separated:
 
 | Tier | Path under BasePath |
@@ -31,13 +31,13 @@ Invoke-Win32Toolkit -NewTemplate -TemplateName 'Contoso'
 ```
 
 This opens the wizard, saves the JSON, and exits. If you never create one, the toolkit prompts you
-the first time you run the pipeline — you cannot package without a template.
+the first time you run the pipeline. You cannot package without a template.
 
 <!-- SCREENSHOT: the wizard running in a terminal, showing the Identity and Branding sections with bracketed defaults -->
 
 ## The wizard, section by section
 
-Every prompt shows a default in brackets — press **Enter** to accept it.
+Every prompt shows a default in brackets. Press **Enter** to accept it.
 
 | Section | Field | What it controls |
 |---|---|---|
@@ -60,18 +60,18 @@ these).
 
 ## Branding: dialog style, language, logos
 
-- **Dialog style** — `Fluent` is the modern v4 look; `Classic` renders the older v3-style dialogs and
+- **Dialog style**: `Fluent` is the modern v4 look; `Classic` renders the older v3-style dialogs and
   uses `Banner.Classic.png`. Some estates (kiosks, servers) prefer Classic.
-- **Language** — leave the language override blank and PSADT shows dialogs in the signed-in user's
+- **Language**: leave the language override blank and PSADT shows dialogs in the signed-in user's
   language (this works correctly even though the package runs as SYSTEM). Set it (e.g. `nl`) to pin
   every dialog to one of PSADT's 27 shipped languages.
-- **Logos & banner** — enable *Ship org branding assets*, then drop files in
+- **Logos & banner**: enable *Ship org branding assets*, then drop files in
   `Templates\<name>\Assets\`:
-  - `AppIcon.png` — brands PSADT dialogs/toasts **and** becomes the Intune tile when the app has no
+  - `AppIcon.png` brands PSADT dialogs/toasts **and** becomes the Intune tile when the app has no
     icon of its own (see precedence below).
-  - `Banner.Classic.png` — the banner shown by Classic dialogs.
+  - `Banner.Classic.png` is the banner shown by Classic dialogs.
 
-  You don't touch any config — PSADT's defaults already point at these filenames.
+  You don't touch any config. PSADT's defaults already point at these filenames.
 
 ### App-icon precedence
 
@@ -81,7 +81,7 @@ available source, in this order:
 1. **winget** icon (downloaded from the package's manifest)
 2. **manual** icon (a `-IconPath` you passed for a manual app)
 3. **captured** icon (extracted from the app during the sandbox install run)
-4. **org template** logo (your `Assets\AppIcon.png`) — the fallback
+4. **org template** logo (your `Assets\AppIcon.png`), the fallback
 5. PSADT's default logo (only if you ship none of the above)
 
 So your org logo is the floor: every app-specific icon wins over it, but when an app has no icon of
@@ -97,29 +97,29 @@ PreUninstall.ps1 PostUninstall.ps1
 PreRepair.ps1    PostRepair.ps1
 ```
 
-Each file runs in the matching PSADT deploy phase of **every** app built from the template — map a
+Each file runs in the matching PSADT deploy phase of **every** app built from the template: map a
 drive, drop a shortcut, remove a legacy agent, write a tattoo key, once per customer instead of
 per app. Inside a hook you have the full `$adtSession` and every PSADT function available.
 
 Important:
 
 - **They run on the device under Windows PowerShell 5.1** (Intune's `powershell.exe`). Keep them
-  5.1-safe — no `?:` ternary, `??`, `?.`, or `&&`/`||`. The toolkit parse-checks each hook under real
+  5.1-safe: no `?:` ternary, `??`, `?.`, or `&&`/`||`. The toolkit parse-checks each hook under real
   5.1 when applying the template and warns about PS7-only syntax.
-- **On error** you choose `Fail` (a throwing hook fails the deployment — the default, and the safe
-  choice for a setup step that must succeed) or `Continue` (log and carry on).
+- **On error** you choose `Fail` (a throwing hook fails the deployment; this is the default, and the
+  safe choice for a setup step that must succeed) or `Continue` (log and carry on).
 - Post-install / post-uninstall hooks run **before** the detection tattoo is written, so a failing
   hook correctly prevents the app being detected as installed.
 
-Your scripts are **copied** into the package (`SupportFiles\OrgHooks\`) and dot-sourced at runtime —
-their contents are never spliced into generated code.
+Your scripts are **copied** into the package (`SupportFiles\OrgHooks\`) and dot-sourced at runtime.
+Their contents are never spliced into generated code.
 
 ## Org PSADT extension module
 
 For functions shared across your hooks (or manual deploy-script edits), enable the extension module
 and place a module folder at `Templates\<name>\PSAppDeployToolkit.<YourOrg>\` (a `.psd1` + `.psm1`).
-It's copied into every project's root, where PSADT v4 auto-imports it — so `Set-ContosoTattoo`,
-`Remove-ContosoLegacyAgent`, etc. are available everywhere. Use exit codes in the 70000–79999 range
+It's copied into every project's root, where PSADT v4 auto-imports it, so `Set-ContosoTattoo`,
+`Remove-ContosoLegacyAgent`, etc. are available everywhere. Use exit codes in the 70000-79999 range
 per PSADT guidance. The module runs on-device as 5.1 too, so the same syntax rule applies (the
 toolkit parse-checks it).
 
@@ -135,7 +135,7 @@ The template can set the Intune install experience and metadata for every app it
 | Description boilerplate | *(none)* | Appended to every app's Intune description |
 | Privacy URL | *(none)* | Published as the app's privacy information URL |
 
-These are stored in the project at configure time and read back when you publish — so
+These are stored in the project at configure time and read back when you publish, so
 `Publish-Win32ToolkitIntuneApp` honours them even when run on its own. A project built without a
 template publishes exactly as before.
 
@@ -150,12 +150,12 @@ matches what you actually published.
 
 The Templates screen (`Show-Win32Toolkit` → Org templates) lists your templates and offers:
 
-- **Create / Edit** — the wizard (edit is pre-filled).
-- **View** — the current settings at a glance.
-- **Duplicate** — clones the JSON *and* the whole sidecar folder (hooks, module, assets) under a new
+- **Create / Edit** opens the wizard (edit is pre-filled).
+- **View** shows the current settings at a glance.
+- **Duplicate** clones the JSON *and* the whole sidecar folder (hooks, module, assets) under a new
   name. This is the natural way to spin up `Customer-B` from `Customer-A`.
-- **Delete** — removes the template definition and its sidecar folder. It first checks whether the
-  template's segment still holds projects and, if so, warns you and asks for confirmation — but it
+- **Delete** removes the template definition and its sidecar folder. It first checks whether the
+  template's segment still holds projects and, if so, warns you and asks for confirmation. But it
   **never** deletes anything in `Projects\`, `Staging\`, or `IntuneWin\`; only the template itself.
 
 ## Under the hood: data-driven config
@@ -178,14 +178,14 @@ working, and the offer repeats next time).
 Independently of templates, PSADT reads machine policy from
 `HKLM\SOFTWARE\Policies\PSAppDeployToolkit\config` on the device and **overrides** the packaged
 `config.psd1` with any values it finds there. You can deploy this key by GPO or an Intune settings
-policy to force a setting across the whole estate — for example, silencing balloon notifications
-everywhere — without repackaging anything.
+policy to force a setting across the whole estate (for example, silencing balloon notifications
+everywhere) without repackaging anything.
 
 Two things to know:
 
 - It applies to `config.psd1` values only. Dialog **strings** are deliberately excluded.
 - It **silently wins over your template values.** If a device behaves differently from what a
-  template specifies, check for this policy key first — it's the usual culprit.
+  template specifies, check for this policy key first; it's the usual culprit.
 
 ## Next steps
 

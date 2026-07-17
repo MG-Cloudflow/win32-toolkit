@@ -1,7 +1,7 @@
 # Publishing to Intune
 
 This page covers getting a packaged `.intunewin` into your tenant with
-[Publish-Win32ToolkitIntuneApp](reference/Publish-Win32ToolkitIntuneApp.md) — whether you call it
+[Publish-Win32ToolkitIntuneApp](reference/Publish-Win32ToolkitIntuneApp.md), whether you call it
 directly, or let `-PublishIntune` on [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md) or
 [Export-Win32ToolkitIntuneWin](reference/Export-Win32ToolkitIntuneWin.md) call it for you. For
 producing the `.intunewin` itself, see [Packaging](packaging.md).
@@ -13,11 +13,11 @@ module is missing, the publisher offers to install it from the PowerShell Galler
 the prompt); in a non-interactive session it stops with the exact `Install-Module` command to run.
 
 Only one delegated scope is requested: **`DeviceManagementApps.ReadWrite.All`**. Sign-in is
-interactive — a browser window opens for you to pick an account.
+interactive: a browser window opens for you to pick an account.
 
 **Admin-consent reality:** in most tenants this scope requires admin consent for the *Microsoft
 Graph Command Line Tools* app. The first sign-in either shows a consent prompt you can accept
-(if you are allowed to consent) or fails with a "need admin approval" error — in that case a Global
+(if you are allowed to consent) or fails with a "need admin approval" error. In that case a Global
 Administrator must grant consent once, and every later sign-in works silently.
 
 **Pre-connect pattern:** if a Graph session with the right scope already exists, the publisher
@@ -48,21 +48,21 @@ project's `AppConfig.json` (winget manifest as fallback). Shell defaults:
 
 Everything above can be adjusted in the Intune portal after upload.
 
-**Detection rule** — one rule is created, by priority:
+**Detection rule:** one rule is created, by priority:
 
 1. **Install tattoo (preferred):** the generated deploy script writes
    `HKLM\SOFTWARE\<Author>\<Vendor>\<App>\Version` at install time, so the rule checks that
-   registry value **equals the packaged version** — Intune confirms both presence *and* version.
+   registry value **equals the packaged version**, so Intune confirms both presence *and* version.
 2. **Capture fallback:** projects without a tattoo fall back to the **newest**
-   `InstallationChanges_*.json` sandbox capture — a registry key (Uninstall keys preferred) or a
+   `InstallationChanges_*.json` sandbox capture: a registry key (Uninstall keys preferred) or a
    machine-wide file path (`Program Files` locations ranked first; per-user profile paths are
    never used, since Intune detects as SYSTEM).
-3. **None:** the app is still created, with a warning — add a detection rule in the portal.
+3. **None:** the app is still created, with a warning. Add a detection rule in the portal.
 
-**App icon** — `Assets\AppIcon.png` (from winget, a manual `-IconPath`, or captured during the
+**App icon:** `Assets\AppIcon.png` (from winget, a manual `-IconPath`, or captured during the
 install run) is normalized to a genuine PNG and attached as the app tile icon (`largeIcon`).
 When none of those sources produced an icon, the file still contains the **PSADT default logo**
-from the project scaffold — and that is what appears as the Intune tile. To use your own, drop a
+from the project scaffold, and that is what appears as the Intune tile. To use your own, drop a
 PNG at `Assets\AppIcon.png` before publishing.
 
 <!-- SCREENSHOT: the published app in the Intune portal showing tile icon, detection rule, and shell defaults -->
@@ -72,12 +72,12 @@ PNG at `Assets\AppIcon.png` before publishing.
 The app shell is created first, then the encrypted content is uploaded to Azure Storage in chunks,
 committed, and linked to the app. The two waits (storage URI, commit) poll with exponential
 back-off up to the timeout. When it finishes you get the app id and a direct portal link.
-The wire protocol is deliberately not documented here — it is an implementation detail.
+The wire protocol is deliberately not documented here: it is an implementation detail.
 
 ## Publishing updates
 
-To publish the same package a second time as an **update app** — one that only applies to devices
-that already have the app installed — pass `-AsUpdate` to `Publish-Win32ToolkitIntuneApp`, or
+To publish the same package a second time as an **update app** (one that only applies to devices
+that already have the app installed), pass `-AsUpdate` to `Publish-Win32ToolkitIntuneApp`, or
 `-PublishUpdate` to `Invoke-Win32Toolkit` / `Export-Win32ToolkitIntuneWin`. The update app gets
 `(Update)` appended to its display name (configurable) and a **requirement rule** (a PowerShell
 presence check) that gates it to machines where the app already exists. Detection stays the
@@ -85,21 +85,21 @@ version-aware tattoo rule, so older installs get updated and detect once they re
 If no requirement rule can be built, the publish fails fast rather than creating an app that would
 apply to every device.
 
-**Re-publish behavior:** every publish creates a **new** app — Intune has no overwrite. To retire
+**Re-publish behavior:** every publish creates a **new** app. Intune has no overwrite. To retire
 an old version, delete it or configure supersedence in the portal.
 
 ## Dependencies at publish time
 
 Dependencies declared on the project (see [Dependencies](dependencies.md)) are resolved to real
-Intune app **ids** before anything uploads — a missing dependency is reported up front, not after
+Intune app **ids** before anything uploads, so a missing dependency is reported up front, not after
 a 200 MB upload. Unresolvable ones are warned about and skipped; nothing is ever auto-published as
 a side effect. The relationship is attached **after** the upload completes (Intune only allows it
-then), and only to the install app — never to the `(Update)` app.
+then), and only to the install app, never to the `(Update)` app.
 
 ## Customer-facing documentation
 
-To produce a one-page hand-over sheet (`Documentation.md`) for the packaged app — deployment
-settings, detection method in plain English, captured-change summary, test history — run
+To produce a one-page hand-over sheet (`Documentation.md`) for the packaged app, covering deployment
+settings, detection method in plain English, captured-change summary and test history, run
 [Export-Win32ToolkitDocumentation](reference/Export-Win32ToolkitDocumentation.md). The output is
 customer-safe by default: no tenant id, no Intune app id, no raw host paths. Pass
 `-IncludeIntuneIds` only for an **internal copy** (or when the customer owns the tenant) to add
@@ -109,6 +109,6 @@ the app id and a portal deep-link.
 
 | Symptom | Cause and fix |
 |---|---|
-| **403 when attaching a dependency** (app itself uploaded fine) | Your Intune RBAC role lacks the **Relate** permission on Mobile apps. A correct Graph scope is not enough — ask an Intune admin to add Relate to your role, then re-attach in the portal. |
-| **"Need admin approval" at sign-in** | The `DeviceManagementApps.ReadWrite.All` scope needs tenant admin consent — see [Authentication](#authentication). |
+| **403 when attaching a dependency** (app itself uploaded fine) | Your Intune RBAC role lacks the **Relate** permission on Mobile apps. A correct Graph scope is not enough. Ask an Intune admin to add Relate to your role, then re-attach in the portal. |
+| **"Need admin approval" at sign-in** | The `DeviceManagementApps.ReadWrite.All` scope needs tenant admin consent, see [Authentication](#authentication). |
 | **Timeout waiting for storage URI or commit** | Large packages take longer to server-side validate. Raise the wait: `-TimeoutSeconds` on the publisher, or `-PublishTimeoutSeconds 900` on `Export-Win32ToolkitIntuneWin` (default 300 s). |

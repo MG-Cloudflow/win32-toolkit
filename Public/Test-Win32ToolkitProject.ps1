@@ -1,7 +1,7 @@
 function Test-Win32ToolkitProject {
 <#
 .SYNOPSIS
-    Tests a PSADT project in a disposable guest — Windows Sandbox or the Hyper-V test VM.
+    Tests a PSADT project in a disposable guest: Windows Sandbox or the Hyper-V test VM.
 .DESCRIPTION
     Runs a chosen test scenario against a PSADT V4 project in the configured test backend:
     Windows Sandbox (default) or the local Hyper-V test VM (see New-Win32ToolkitTestVM). If no
