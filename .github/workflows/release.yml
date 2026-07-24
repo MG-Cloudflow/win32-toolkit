@@ -1,0 +1,31 @@
+name: release-please
+
+# On every push to main, release-please looks at the conventional commits since the last release and
+# maintains a "release PR". Merging THAT PR is what actually cuts a release: it bumps the version in
+# .release-please-manifest.json and win32-toolkit.psd1, updates docs/changelog.md, tags vX.Y.Z, and
+# publishes a GitHub Release. Nothing is released until a human merges the release PR.
+#
+# GITHUB_TOKEN is sufficient for a GitHub-Releases-only setup. Note GitHub's rule that events raised by
+# GITHUB_TOKEN do not trigger further workflows, so the release PR (and the tag/release it later cuts)
+# will not themselves start other workflows. That is fine here: the docs site rebuilds on the human
+# merge of the release PR, not on the tag. If a future workflow must fire on `release: published`,
+# swap `token:` for a stored PAT.
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          # Manifest mode: config-file and manifest-file default to release-please-config.json and
+          # .release-please-manifest.json at the repo root, so no release-type/package-name inputs here.
+          token: ${{ secrets.GITHUB_TOKEN }}

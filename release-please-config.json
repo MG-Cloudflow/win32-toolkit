@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bootstrap-sha": "7fc4eb45e157f33938d251b187db6fbf419dd595",
+  "include-component-in-tag": false,
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "changelog-path": "docs/changelog.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "win32-toolkit.psd1"
+        }
+      ]
+    }
+  }
+}
