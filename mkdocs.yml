@@ -117,4 +117,5 @@ nav:
           - Reset-Win32ToolkitTestVM: reference/Reset-Win32ToolkitTestVM.md
           - Remove-Win32ToolkitTestVM: reference/Remove-Win32ToolkitTestVM.md
   - About:
+      - Changelog: changelog.md
       - Community tools and credits: credits.md
