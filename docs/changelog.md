@@ -1,8 +1,16 @@
 # Changelog
 
+## 1.0.1 (2026-07-24)
+
+### Bug Fixes
+
+* **org-template:** the Organisation Template wizard no longer crashes with "You cannot call a method on a null-valued expression" on a machine where PSAppDeployToolkit is not installed yet. This blocked first-run and new-template creation for every new user ([#49](https://github.com/MG-Cloudflow/win32-toolkit/issues/49)).
+
+This release also introduces the automated release process and this changelog page. From here on, versions are bumped and published automatically from [Conventional Commits](https://www.conventionalcommits.org).
+
 ## 1.0.0 (2026-07-24)
 
-The first release of win32-toolkit: end-to-end Win32 app packaging for Microsoft Intune, driven by a guided console UI or fully scriptable from PowerShell. From here on, every release and version bump on this page is generated automatically from [Conventional Commits](https://www.conventionalcommits.org).
+The first release of win32-toolkit: end-to-end Win32 app packaging for Microsoft Intune, driven by a guided console UI or fully scriptable from PowerShell.
 
 ### Features
 
