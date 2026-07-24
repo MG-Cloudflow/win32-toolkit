@@ -76,6 +76,7 @@ function Show-Win32Toolkit {
             Clear-Host
             Write-SpectreFigletText -Text 'win32-toolkit' -Color Blue
             Show-Win32ToolkitHealth -BasePath $base
+            Show-Win32ToolkitUpdateNotice
 
             switch (Show-Win32ToolkitMainMenu) {
                 'winget'    { Invoke-Win32ToolkitWingetWizard -BasePath $base }
