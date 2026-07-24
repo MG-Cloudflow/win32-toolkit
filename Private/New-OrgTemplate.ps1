@@ -12,10 +12,13 @@ function New-OrgTemplate {
         New-Item -ItemType Directory -Path $templateFolder -Force | Out-Null
     }
 
-    # Detect installed PSADT version for embedding in template
-    $psadtVer = (Get-Module -Name PSAppDeployToolkit -ListAvailable |
-        Sort-Object Version -Descending | Select-Object -First 1).Version.ToString()
-    if (-not $psadtVer) { $psadtVer = 'unknown' }
+    # Detect the installed PSADT version to embed in the template. On a fresh machine PSADT is not
+    # installed yet (it is pulled in later, during packaging), so this MUST tolerate its absence:
+    # calling .Version.ToString() on a $null module throws "You cannot call a method on a null-valued
+    # expression" and blocks the wizard at first run (issue #49). Bind the module first, then guard.
+    $psadtModule = Get-Module -Name PSAppDeployToolkit -ListAvailable |
+        Sort-Object Version -Descending | Select-Object -First 1
+    $psadtVer = if ($psadtModule) { $psadtModule.Version.ToString() } else { 'unknown' }
 
     Write-Host ''
     Write-Host '=== Organisation Template Wizard ===' -ForegroundColor Cyan
