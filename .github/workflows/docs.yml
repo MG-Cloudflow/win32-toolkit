@@ -6,6 +6,7 @@ on:
     paths: ['docs/**', 'mkdocs.yml', 'README.md']
   pull_request:
     paths: ['Public/**', 'Private/**', '*.psd1', '*.psm1', 'docs/**', 'build/Update-Docs.ps1', 'mkdocs.yml', 'README.md']
+  workflow_dispatch:   # manual "redeploy the docs site" button (Actions tab, or: gh workflow run docs.yml)
 
 permissions:
   contents: read
@@ -67,14 +68,14 @@ jobs:
           GOOGLE_ANALYTICS_KEY: ${{ vars.GOOGLE_ANALYTICS_KEY || secrets.GOOGLE_ANALYTICS_KEY }}
 
       - name: Upload Pages artifact
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
 
   deploy-pages:
     name: Deploy to GitHub Pages
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     needs: build-site
     runs-on: ubuntu-latest
     environment:
