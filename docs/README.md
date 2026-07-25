@@ -1,3 +1,7 @@
+---
+description: "Turn any app into a tested, branded, published Intune Win32 package. winget or manual source, PSADT v4, sandbox capture, .intunewin, and Graph publish."
+---
+
 # win32-toolkit documentation
 
 <div class="tk-hero" markdown>

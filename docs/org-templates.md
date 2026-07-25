@@ -1,3 +1,7 @@
+---
+description: "Create and apply org templates to brand every packaged app consistently across your Intune Win32 deployments."
+---
+
 # Org templates
 
 An **org template** captures everything that should be the same across every app you package for a

@@ -1,3 +1,7 @@
+---
+description: "Install win32-toolkit and package your first Intune Win32 app end to end, from a winget ID to a published app, in a few guided steps."
+---
+
 # Getting started: package your first app
 
 This tutorial walks you through packaging **Git for Windows** (winget ID `Git.Git`) end-to-end
