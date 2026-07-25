@@ -60,9 +60,11 @@ jobs:
       - name: Build (strict)
         run: mkdocs build --strict
         env:
-          # GA4 Measurement ID (public, client-side) from a repo VARIABLE. Unset => empty => the
-          # !ENV default in mkdocs.yml yields no analytics, and the build stays green.
-          GOOGLE_ANALYTICS_KEY: ${{ vars.GOOGLE_ANALYTICS_KEY }}
+          # GA4 Measurement ID from a repo variable OR secret (the ID is public/client-side, so either
+          # works; a variable is slightly more conventional). Falls back to the secret when the variable
+          # is unset. Neither set => empty => the !ENV default in mkdocs.yml yields no analytics, and
+          # the strict build stays green.
+          GOOGLE_ANALYTICS_KEY: ${{ vars.GOOGLE_ANALYTICS_KEY || secrets.GOOGLE_ANALYTICS_KEY }}
 
       - name: Upload Pages artifact
         if: github.event_name == 'push'
