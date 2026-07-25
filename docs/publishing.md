@@ -1,3 +1,7 @@
+---
+description: "Publish your Win32 app to Microsoft Intune through the Graph beta API, with detection rules, requirements, and assignments."
+---
+
 # Publishing to Intune
 
 This page covers getting a packaged `.intunewin` into your tenant with

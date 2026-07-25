@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{#
+  SEO head additions. base.html already emits the canonical link and the meta description (from a
+  page's front-matter `description:` or the global site_description), so we do NOT re-emit those.
+  We add Open Graph + Twitter Card tags (Material only emits those with the social plugin, which we
+  deliberately do not use) and homepage JSON-LD structured data.
+#}
+{% block extrahead %}
+  {{ super() }}
+
+  {#- Page title, resolved the way base.html does -#}
+  {% set _title = config.site_name %}
+  {% if page and page.meta and page.meta.title %}
+    {% set _title = page.meta.title ~ " - " ~ config.site_name %}
+  {% elif page and page.title and not page.is_homepage %}
+    {% set _title = (page.title | striptags) ~ " - " ~ config.site_name %}
+  {% endif %}
+
+  {#- Description: a page's front-matter `description:` wins, else the site description -#}
+  {% set _desc = config.site_description %}
+  {% if page and page.meta and page.meta.description %}
+    {% set _desc = page.meta.description %}
+  {% endif %}
+
+  {#- Absolute URL, provided by MkDocs because site_url is set -#}
+  {% set _url = page.canonical_url if (page and page.canonical_url) else config.site_url %}
+
+  {#- Optional share image. Set extra.image in mkdocs.yml to a 1200x630 PNG/JPG once one exists.
+      Unset today => no image tags emitted (nothing 404s) and the Twitter card degrades to summary.
+      SVG is intentionally not used: social scrapers do not preview it. -#}
+  {% set _image = config.extra.image | default("") %}
+  {% if _image and not _image.startswith("http") %}
+    {% set _image = (config.site_url | trim("/")) ~ "/" ~ (_image | trim("/")) %}
+  {% endif %}
+
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="{{ _title }}" />
+  <meta property="og:description" content="{{ _desc }}" />
+  <meta property="og:url" content="{{ _url }}" />
+  <meta property="og:site_name" content="{{ config.site_name }}" />
+  {% if _image %}
+  <meta property="og:image" content="{{ _image }}" />
+  <meta property="og:image:alt" content="{{ config.site_name }}" />
+  {% endif %}
+
+  <meta name="twitter:card" content="{{ 'summary_large_image' if _image else 'summary' }}" />
+  <meta name="twitter:title" content="{{ _title }}" />
+  <meta name="twitter:description" content="{{ _desc }}" />
+  {% if _image %}
+  <meta name="twitter:image" content="{{ _image }}" />
+  {% endif %}
+
+  {% if page and page.is_homepage %}
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": {{ config.site_name | tojson }},
+    "description": {{ config.site_description | tojson }},
+    "url": {{ config.site_url | tojson }},
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Windows",
+    "softwareRequirements": "PowerShell 7.2 or later",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "author": { "@type": "Organization", "name": "CloudFlow", "url": "https://cloudflow.be/" },
+    "license": "https://github.com/MG-Cloudflow/win32-toolkit/blob/main/LICENSE",
+    "downloadUrl": "https://www.powershellgallery.com/packages/win32-toolkit",
+    "sameAs": [
+      {{ config.repo_url | tojson }},
+      "https://www.powershellgallery.com/packages/win32-toolkit"
+    ]
+  }
+  </script>
+  {% endif %}
+{% endblock %}

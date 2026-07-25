@@ -1,3 +1,7 @@
+---
+description: "How win32-toolkit works: winget discovery, PSADT v4 scaffolding, sandbox install capture, detection and requirement rules, and Intune publishing."
+---
+
 # Concepts: how it all fits together
 
 This page explains the moving parts of win32-toolkit: what the pipeline actually does from

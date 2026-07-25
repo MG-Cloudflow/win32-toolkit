@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://win32toolkit.com/sitemap.xml

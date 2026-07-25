@@ -4,11 +4,17 @@ site_url: https://win32toolkit.com/
 repo_url: https://github.com/MG-Cloudflow/win32-toolkit
 repo_name: MG-Cloudflow/win32-toolkit
 edit_uri: edit/main/docs/
+site_author: Maxime Guillemin
+copyright: >-
+  Copyright &copy; 2026 Maxime Guillemin, CloudFlow.
+  <a href="#__consent">Change cookie settings</a>
 
 docs_dir: docs
 
 theme:
   name: material
+  language: en
+  custom_dir: overrides
   logo: assets/logo.svg
   favicon: assets/logo.svg
   icon:
@@ -60,6 +66,27 @@ extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/MG-Cloudflow/win32-toolkit
+  # GA4 Measurement ID is supplied at build time via the GOOGLE_ANALYTICS_KEY repo variable, so it is
+  # not committed. Unset => empty => no analytics injected (the strict build stays green either way).
+  analytics:
+    provider: google
+    property: !ENV [GOOGLE_ANALYTICS_KEY, ""]
+  # GDPR cookie consent: because an analytics cookie category is declared here, Google Analytics only
+  # loads AFTER the visitor accepts. Reject or no choice => GA never runs, no cookie is set.
+  consent:
+    title: Cookie consent
+    description: >-
+      We use cookies to recognize your repeated visits and preferences, and to measure whether
+      visitors find what they are looking for in the documentation. With your consent, you help us
+      make the documentation better.
+    actions:
+      - accept
+      - reject
+      - manage
+    cookies:
+      analytics:
+        name: Google Analytics
+        checked: false
 
 markdown_extensions:
   - admonition

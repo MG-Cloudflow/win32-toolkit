@@ -1,3 +1,7 @@
+---
+description: "Connect win32-toolkit to Microsoft Intune with Microsoft Graph authentication before you publish Win32 apps."
+---
+
 # Connecting to Intune
 
 Publishing signs you in automatically, so for a single tenant you may never think about this page.

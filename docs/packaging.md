@@ -1,3 +1,7 @@
+---
+description: "Build a validated .intunewin package from your PSADT v4 project with IntuneWinAppUtil, ready to upload to Microsoft Intune."
+---
+
 # Packaging a project into a `.intunewin`
 
 [Export-Win32ToolkitIntuneWin](reference/Export-Win32ToolkitIntuneWin.md) compiles a finished PSADT project into the `.intunewin` file that Intune's Win32 app model requires. It never touches your raw project: everything happens on a disposable **Staging** copy, and the output lands in its own **IntuneWin** tier.

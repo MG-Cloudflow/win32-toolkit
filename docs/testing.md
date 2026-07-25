@@ -1,3 +1,7 @@
+---
+description: "Prove a Win32 package installs and detects correctly in a disposable Windows sandbox or Hyper-V test VM before you publish."
+---
+
 # Testing packages
 
 Before a package ever reaches a device, you can prove it installs, uninstalls, and updates cleanly, in a

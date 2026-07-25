@@ -1,3 +1,7 @@
+---
+description: "Package non-winget installers with win32-toolkit using your own downloaded setup files and PSADT v4."
+---
+
 # Manual apps (not in winget)
 
 Plenty of apps never make it into winget: a vendor MSI, an in-house installer, a legacy EXE. For those,
