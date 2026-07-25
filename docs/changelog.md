@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.1](https://github.com/MG-Cloudflow/win32-toolkit/compare/v1.1.0...v1.1.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* **tui:** UTF-8 rendering, wrap long health cells, stop Spectre output leaking ([5ae604e](https://github.com/MG-Cloudflow/win32-toolkit/commit/5ae604e6a040bec1b55e3e6d656c5e98d89473c4))
+* **tui:** UTF-8 rendering, wrap long health cells, stop Spectre output leaking ([27126de](https://github.com/MG-Cloudflow/win32-toolkit/commit/27126de2d2f08a45eea6278987112a270508d1af))
+
 ## [1.1.0](https://github.com/MG-Cloudflow/win32-toolkit/compare/v1.0.1...v1.1.0) (2026-07-25)
 
 
