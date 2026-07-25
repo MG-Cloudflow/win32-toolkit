@@ -89,7 +89,9 @@ if ($tui -match '\$prevProgress\s*=\s*\$ProgressPreference\s*\r?\n\s*\$ProgressP
     Ok 'the TUI saves the caller preference and sets SilentlyContinue'
 } else { Bad 'Show-Win32Toolkit does not silence $ProgressPreference at the root' }
 
-if ($tui -match 'finally\s*\{\s*\$ProgressPreference\s*=\s*\$prevProgress\s*\}') {
+# Tolerant of a multi-line finally (it also restores the console OutputEncoding), but still requires the
+# $ProgressPreference restore to be the first thing inside the finally block.
+if ($tui -match 'finally\s*\{[^{}]*\$ProgressPreference\s*=\s*\$prevProgress') {
     Ok 'restored in a finally (a scripted caller keeps its bars, even if the TUI throws)'
 } else { Bad 'Show-Win32Toolkit does not restore $ProgressPreference in a finally' }
 
