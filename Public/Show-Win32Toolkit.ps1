@@ -64,6 +64,19 @@ function Show-Win32Toolkit {
     # Restored in the finally so a scripted caller's own preference survives the TUI.
     $prevProgress = $ProgressPreference
     $ProgressPreference = 'SilentlyContinue'
+
+    # ── UTF-8 output so Spectre renders in full, not the cramped OEM/code-page fallback ──────────
+    # PwshSpectreConsole warns that a non-UTF-8 console "limits Spectre Console functionality": tables
+    # and borders render in a degraded mode (mis-measured columns, mid-word wrapping). Set UTF-8 for the
+    # life of the TUI and restore it in the finally so a scripted caller's console is left unchanged.
+    # Guarded so a host that rejects the change never blocks launch.
+    $prevOutputEncoding = $null
+    try {
+        $prevOutputEncoding = [System.Console]::OutputEncoding
+        [System.Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+    }
+    catch { }
+
     try {
         # ── Resolve the base folder (first-run setup via the UI if unset) ──────────
         $base = Get-Win32ToolkitBasePath -BasePath $BasePath -NonInteractive
@@ -93,5 +106,8 @@ function Show-Win32Toolkit {
             }
         }
     }
-    finally { $ProgressPreference = $prevProgress }
+    finally {
+        $ProgressPreference = $prevProgress
+        if ($prevOutputEncoding) { try { [System.Console]::OutputEncoding = $prevOutputEncoding } catch { } }
+    }
 }

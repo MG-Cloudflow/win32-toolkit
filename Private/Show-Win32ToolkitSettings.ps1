@@ -9,7 +9,10 @@ function Show-Win32ToolkitSettings {
     param([string]$BasePath)
 
     while ($true) {
-        Write-SpectreRule -Title 'Settings' -Color Grey
+        # Out-SpectreHost: render without leaking the rule object into this function's output, which the
+        # caller captures ($base = Show-Win32ToolkitSettings ...). A leak there makes $base an array and
+        # the next 'Show-Win32ToolkitHealth -BasePath $base' fails to bind the [string] BasePath.
+        Write-SpectreRule -Title 'Settings' -Color Grey | Out-SpectreHost
         Write-SpectreHost "Base folder: [blue]$(Get-SpectreEscapedText -Text $BasePath)[/]"
         $choices = @(
             [pscustomobject]@{ Key = 'basepath'; Label = 'Change the base folder' }

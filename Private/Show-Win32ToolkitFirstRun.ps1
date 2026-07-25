@@ -8,7 +8,9 @@ function Show-Win32ToolkitFirstRun {
     [OutputType([string])]
     param()
 
-    Format-SpectrePanel -Data "Welcome! Choose the base folder where all output lives (Templates, Projects, Staging, IntuneWin).`nThis is saved to the registry so you only pick it once." -Header 'First-run setup' -Border Rounded -Color Blue
+    # Out-SpectreHost so the panel renders without leaking into this function's return value, which the
+    # caller captures ($base = Show-Win32ToolkitFirstRun).
+    Format-SpectrePanel -Data "Welcome! Choose the base folder where all output lives (Templates, Projects, Staging, IntuneWin).`nThis is saved to the registry so you only pick it once." -Header 'First-run setup' -Border Rounded -Color Blue | Out-SpectreHost
     $folder = Read-SpectreText -Message 'Base folder' -DefaultAnswer 'C:\Win32Apps'
     if ([string]::IsNullOrWhiteSpace($folder)) { $folder = 'C:\Win32Apps' }
     $saved = Get-Win32ToolkitBasePath -Set $folder
