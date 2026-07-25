@@ -36,11 +36,14 @@ Microsoft.Graph.Authentication (publishing), IntuneWinAppUtil.exe (packaging).
 ## Install
 
 ```powershell
-# Option A: clone
+# Option A: PowerShell Gallery (simplest)
+Install-Module win32-toolkit -Scope CurrentUser
+
+# Option B: clone
 git clone https://github.com/MG-Cloudflow/win32-toolkit.git
 cd win32-toolkit
 
-# Option B: download the ZIP from GitHub, then unblock it before extracting:
+# Option C: download the ZIP from GitHub, then unblock it before extracting:
 #   Right-click the .zip -> Properties -> Unblock  (or)
 Unblock-File .\win32-toolkit-main.zip
 ```

@@ -23,9 +23,34 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@v4
+        id: release   # REQUIRED so steps.release.outputs.* resolves for the publish job below
         with:
           # Manifest mode: config-file and manifest-file default to release-please-config.json and
           # .release-please-manifest.json at the repo root, so no release-type/package-name inputs here.
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Publishes to the PowerShell Gallery ONLY when merging the release PR actually cut a release. This
+  # runs in the SAME workflow run via needs:, so the "GITHUB_TOKEN events do not trigger workflows"
+  # rule never applies (that only affects a separate `release: published` workflow, which we avoid).
+  # Publishing is gated on the PSGALLERY_API_KEY secret: if it is unset, the script skips cleanly so a
+  # missing secret never blocks a release. Set it under Settings > Secrets and variables > Actions.
+  publish-psgallery:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: windows-latest
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}   # publish exactly the tagged version
+
+      - name: Publish module to the PowerShell Gallery
+        shell: pwsh
+        env:
+          PSGALLERY_API_KEY: ${{ secrets.PSGALLERY_API_KEY }}
+        run: ./build/Publish-ToPSGallery.ps1 -ApiKey $env:PSGALLERY_API_KEY

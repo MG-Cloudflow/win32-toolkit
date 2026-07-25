@@ -14,6 +14,7 @@ function Show-Win32ToolkitSettings {
         $choices = @(
             [pscustomobject]@{ Key = 'basepath'; Label = 'Change the base folder' }
             [pscustomobject]@{ Key = 'testvm';   Label = 'Hyper-V test VM (backend / provision / reset / remove)' }
+            [pscustomobject]@{ Key = 'update';   Label = "Update check: $(if ((Get-Win32ToolkitConfigValue -Name 'UpdateCheck' -Default 'On') -eq 'Off') { 'Off' } else { 'On' }) (toggle / check now)" }
             [pscustomobject]@{ Key = 'recheck';  Label = 'Re-run the system check' }
             [pscustomobject]@{ Key = 'back';     Label = 'Back to main menu' }
         )
@@ -29,6 +30,18 @@ function Show-Win32ToolkitSettings {
             # Out-Null so nothing this subtree emits leaks into $base (the caller captures
             # Show-Win32ToolkitSettings's output). Panels inside render via Out-SpectreHost.
             'testvm'  { Show-Win32ToolkitTestVM | Out-Null }
+            'update'  {
+                $now = Get-Win32ToolkitConfigValue -Name 'UpdateCheck' -Default 'On'
+                $new = if ($now -eq 'Off') { 'On' } else { 'Off' }
+                Set-Win32ToolkitConfigValue -Name 'UpdateCheck' -Value $new
+                Write-SpectreHost "[green]Update check set to:[/] $new"
+                if ($new -eq 'On') {
+                    $info = Get-Win32ToolkitUpdateInfo -Force
+                    if ($info -and $info.UpdateAvailable) { Show-Win32ToolkitUpdateNotice -Force }
+                    elseif ($info)                        { Write-SpectreHost "[grey]You are on the latest version (v$($info.Installed)).[/]" }
+                    else                                  { Write-SpectreHost '[grey]Could not check for updates right now.[/]' }
+                }
+            }
             'recheck' { Show-Win32ToolkitHealth -BasePath $BasePath }
             'back'    { return $BasePath }
         }

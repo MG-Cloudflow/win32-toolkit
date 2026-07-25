@@ -37,11 +37,16 @@ is installed or downloaded on demand, and you will simply be asked to confirm.
 
 ## 1. Launch the menu
 
-Two equivalent ways:
+The simplest install is from the **PowerShell Gallery**, then start the menu:
 
-- **Double-click `Launch-Win32Toolkit.cmd`** in the toolkit folder. It opens PowerShell 7,
-  imports the module, and starts the menu.
-- Or from a PowerShell 7 window:
+```powershell
+Install-Module win32-toolkit -Scope CurrentUser
+Show-Win32Toolkit
+```
+
+Prefer a local copy of the repo? Clone or download it, then either **double-click
+`Launch-Win32Toolkit.cmd`** (it opens PowerShell 7, imports the module, and starts the menu), or from
+a PowerShell 7 window:
 
 ```powershell
 Import-Module C:\path\to\win32-toolkit\win32-toolkit.psd1
@@ -146,3 +151,20 @@ Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -TemplateName 'YourTemplate'
 
 Add `-RunTest InstallUninstall` to also test the package, or `-PublishIntune` to upload it. See
 [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md) for the full parameter reference.
+
+## Staying up to date
+
+The menu checks GitHub for a newer release at most once a day. The check is cached, has a short
+timeout, and fails silently, so it never blocks or slows the toolkit. When a newer version exists,
+one muted line appears above the menu:
+
+```text
+Update available: v1.0.1 -> v1.2.0  (Update-Module win32-toolkit, or https://github.com/MG-Cloudflow/win32-toolkit/releases)
+```
+
+Update with `Update-Module win32-toolkit` if you installed from the PowerShell Gallery, or `git pull`
+in your clone. To turn the check off, use **Settings > Update check** (which also has a "check now"),
+or set the environment variable `WIN32TOOLKIT_NO_UPDATE_CHECK`. The toolkit also respects the
+community `DO_NOT_TRACK` and `NO_UPDATE_NOTIFIER` variables, and never checks under CI.
+
+Every release and its changes are listed on the [Changelog](changelog.md).
