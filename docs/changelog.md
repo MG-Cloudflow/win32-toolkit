@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.0](https://github.com/MG-Cloudflow/win32-toolkit/compare/v1.0.1...v1.1.0) (2026-07-25)
+
+
+### Features
+
+* in-app update check + automated PowerShell Gallery publishing ([8e2b676](https://github.com/MG-Cloudflow/win32-toolkit/commit/8e2b676239b4e4b2832940304421f8c1c1353d46))
+* in-app update check + automated PowerShell Gallery publishing ([83ef36a](https://github.com/MG-Cloudflow/win32-toolkit/commit/83ef36a31d58b2ba2fe611831d79c95f0540a0fd))
+* show the installed version under the TUI banner ([58ed996](https://github.com/MG-Cloudflow/win32-toolkit/commit/58ed996aaa825806583a7e52c34d5dbdaf6b3abc))
+
 ## 1.0.1 (2026-07-24)
 
 ### Bug Fixes
