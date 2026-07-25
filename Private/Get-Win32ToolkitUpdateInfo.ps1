@@ -38,12 +38,8 @@ function Get-Win32ToolkitUpdateInfo {
     if ((Get-Win32ToolkitConfigValue -Name 'UpdateCheck' -Default 'On') -eq 'Off') { Write-Verbose 'Update check: disabled in Settings.'; return $null }
 
     # ── installed version ───────────────────────────────────────────────────────────────────────
-    $installed = $null
-    try { $installed = (Get-Module 'win32-toolkit' | Select-Object -First 1).Version } catch { }
-    if (-not $installed) {
-        try { $installed = [version](Import-PowerShellDataFile (Join-Path (Split-Path $PSScriptRoot -Parent) 'win32-toolkit.psd1')).ModuleVersion } catch { }
-    }
-    if (-not $installed) { return $null }
+    $installed = Get-Win32ToolkitVersion
+    if ([string]::IsNullOrWhiteSpace($installed)) { return $null }
 
     $repo        = 'MG-Cloudflow/win32-toolkit'
     $releasesUrl = "https://github.com/$repo/releases"

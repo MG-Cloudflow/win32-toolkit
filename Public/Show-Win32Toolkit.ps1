@@ -75,6 +75,8 @@ function Show-Win32Toolkit {
         while ($true) {
             Clear-Host
             Write-SpectreFigletText -Text 'win32-toolkit' -Color Blue
+            $w32tVersion = Get-Win32ToolkitVersion
+            if ($w32tVersion) { Write-SpectreHost "[grey]v$w32tVersion[/]" }
             Show-Win32ToolkitHealth -BasePath $base
             Show-Win32ToolkitUpdateNotice
 

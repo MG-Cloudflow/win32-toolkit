@@ -21,6 +21,7 @@ $fail = 0
 function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
+. (Join-Path $repo 'Private\Get-Win32ToolkitVersion.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitUpdateInfo.ps1')
 
 # ── shadows ──────────────────────────────────────────────────────────────────────────────────────
@@ -49,6 +50,10 @@ $cacheFile = Join-Path $tmp 'CloudFlow\win32-toolkit\update-check.json'
 function Reset-Cache { Remove-Item $cacheFile -Force -ErrorAction SilentlyContinue; $script:irmCalls = 0 }
 
 try {
+    Write-Host "`n[0] Get-Win32ToolkitVersion returns the manifest version" -ForegroundColor Cyan
+    $ver = Get-Win32ToolkitVersion
+    if ($ver -and ($ver -as [version])) { Ok "resolved a valid version ($ver)" } else { Bad "expected a valid version, got '$ver'" }
+
     Write-Host "`n[1] opt-out env vars short-circuit BEFORE any network call" -ForegroundColor Cyan
     foreach ($v in 'WIN32TOOLKIT_NO_UPDATE_CHECK', 'DO_NOT_TRACK', 'NO_UPDATE_NOTIFIER', 'CI') {
         Reset-Cache
