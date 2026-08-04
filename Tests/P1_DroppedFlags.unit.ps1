@@ -40,12 +40,9 @@ function Test-WingetInstalled { $true }
 function Get-Win32ToolkitBasePath { param($BasePath, [switch]$Reconfigure) $script:tmpBase }
 function Get-OrgTemplate { param($TemplateName, $BasePath) [pscustomobject]@{ TemplateName = 'TestTpl' } }
 
-# `winget show --id ... ` — the -Id fast path scrapes this text.
-function winget {
-    $global:LASTEXITCODE = 0
-    'Found Git [Git.Git]'
-    '  Version: 2.45.0'
-}
+# The -Id fast path resolves via Resolve-Win32ToolkitWingetId. This test is about the DOWNLOAD failure,
+# not id resolution, so shadow the resolver to a valid app and let the pipeline reach the failing download.
+function Resolve-Win32ToolkitWingetId { param($Id) [pscustomobject]@{ Name = 'Git'; Id = $Id; Version = '2.45.0'; Source = 'winget' } }
 
 function Get-WingetAppDetails { param($AppId) @('x64') }
 function Select-Architecture  { param($Architectures, $AppName, $PreSelected) 'x64' }
