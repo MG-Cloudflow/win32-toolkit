@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.2](https://github.com/MG-Cloudflow/win32-toolkit/compare/v1.1.1...v1.1.2) (2026-08-04)
+
+
+### Bug Fixes
+
+* **winget:** resolve package Ids locale-independently (closes [#60](https://github.com/MG-Cloudflow/win32-toolkit/issues/60)) ([7fdb3f6](https://github.com/MG-Cloudflow/win32-toolkit/commit/7fdb3f628542c0fdf3e80aac68eb312a0305f65e))
+* **winget:** resolve package Ids locale-independently (issue [#60](https://github.com/MG-Cloudflow/win32-toolkit/issues/60)) ([7edba46](https://github.com/MG-Cloudflow/win32-toolkit/commit/7edba46e750f9a9dbd73faa95cb302de3e043e7f))
+
 ## [1.1.1](https://github.com/MG-Cloudflow/win32-toolkit/compare/v1.1.0...v1.1.1) (2026-07-25)
 
 
