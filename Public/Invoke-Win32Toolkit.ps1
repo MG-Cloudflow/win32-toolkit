@@ -151,21 +151,14 @@ function Invoke-Win32Toolkit {
         # Load (or create) org template once for this run
         $script:OrgTemplate = Get-OrgTemplate -TemplateName $TemplateName -BasePath $BasePath
 
-        # -Id fast path: skip search entirely
+        # -Id fast path: skip search entirely. Resolution is locale-independent (existence by exit code,
+        # Name/Version from the column-parsed search table) so it works on non-English winget (issue #60).
         if ($Id) {
             Write-Verbose "Resolving package ID: $Id"
-            $showOutput = winget show --id "$Id" --exact --accept-source-agreements | Out-String
-            if ($LASTEXITCODE -ne 0 -or $showOutput -notmatch 'Found') {
+            $selectedApp = Resolve-Win32ToolkitWingetId -Id $Id
+            if (-not $selectedApp) {
                 Write-Error "Package ID '$Id' not found in winget. Verify the ID and try again."
                 return
-            }
-            $resolvedName    = if ($showOutput -match '(?m)^Found\s+(.+?)\s+\[') { $matches[1].Trim() } else { $Id }
-            $resolvedVersion = if ($showOutput -match '(?m)^\s*Version:\s*(.+)')  { $matches[1].Trim() } else { 'Unknown' }
-            $selectedApp = [PSCustomObject]@{
-                Name    = $resolvedName
-                Id      = $Id
-                Version = $resolvedVersion
-                Source  = 'winget'
             }
             Write-Host "`nSelected: $($selectedApp.Name) v$($selectedApp.Version)" -ForegroundColor Cyan
         }
