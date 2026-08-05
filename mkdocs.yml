@@ -119,6 +119,7 @@ nav:
       - Connecting to Intune: intune-connection.md
       - Manual (non-winget) apps: manual-apps.md
       - Testing packages: testing.md
+      - Validating the installer UI: ui-validation.md
       - The Hyper-V test VM: hyperv-vm.md
       - App dependencies: dependencies.md
       - Packaging (.intunewin): packaging.md
@@ -132,6 +133,7 @@ nav:
           - New-Win32ToolkitManualApp: reference/New-Win32ToolkitManualApp.md
           - Complete-Win32ToolkitManualApp: reference/Complete-Win32ToolkitManualApp.md
           - Test-Win32ToolkitProject: reference/Test-Win32ToolkitProject.md
+          - Test-Win32ToolkitProjectUI: reference/Test-Win32ToolkitProjectUI.md
           - Export-Win32ToolkitIntuneWin: reference/Export-Win32ToolkitIntuneWin.md
           - Publish-Win32ToolkitIntuneApp: reference/Publish-Win32ToolkitIntuneApp.md
           - Export-Win32ToolkitDocumentation: reference/Export-Win32ToolkitDocumentation.md

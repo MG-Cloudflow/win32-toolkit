@@ -41,7 +41,7 @@ $null = New-MarkdownHelp -Module 'win32-toolkit' -OutputFolder $outDir -NoMetada
 
 # Index page linking every command, grouped the way the README's command table groups them.
 $groups = [ordered]@{
-    'Start here'         = @('Show-Win32Toolkit', 'Invoke-Win32Toolkit', 'New-Win32ToolkitManualApp', 'Complete-Win32ToolkitManualApp', 'Test-Win32ToolkitProject')
+    'Start here'         = @('Show-Win32Toolkit', 'Invoke-Win32Toolkit', 'New-Win32ToolkitManualApp', 'Complete-Win32ToolkitManualApp', 'Test-Win32ToolkitProject', 'Test-Win32ToolkitProjectUI')
     'Pipeline steps'     = @('Export-Win32ToolkitIntuneWin', 'Publish-Win32ToolkitIntuneApp', 'Export-Win32ToolkitDocumentation', 'Set-Win32ToolkitAppDependency', 'Sync-Win32ToolkitAppDependency')
     'Test-VM management' = @('New-Win32ToolkitTestVM', 'Set-Win32ToolkitTestVMResource', 'Reset-Win32ToolkitTestVM', 'Remove-Win32ToolkitTestVM')
 }

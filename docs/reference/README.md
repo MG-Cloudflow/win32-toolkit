@@ -9,6 +9,7 @@
 - [New-Win32ToolkitManualApp](New-Win32ToolkitManualApp.md): Creates a Win32 packaging project for an app that is NOT in winget.
 - [Complete-Win32ToolkitManualApp](Complete-Win32ToolkitManualApp.md): Finalises a scaffolded project: sandbox capture → uninstall automation → test/package/upload.
 - [Test-Win32ToolkitProject](Test-Win32ToolkitProject.md): Tests a PSADT project in a disposable guest: Windows Sandbox or the Hyper-V test VM.
+- [Test-Win32ToolkitProjectUI](Test-Win32ToolkitProjectUI.md): Drives and validates a project's PSADT dialogs in the Hyper-V test VM — standalone, no operator.
 
 ## Pipeline steps
 
