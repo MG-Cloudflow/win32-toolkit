@@ -2,8 +2,8 @@ function Show-Win32ToolkitTestVM {
     <#
     .SYNOPSIS
         Hyper-V test-VM screen (Spectre): set the default backend, provision / reset / remove the VM.
-        Thin front-end over New/Reset/Remove-Win32ToolkitTestVM + the test-backend config.
-        See knowledge-base/designs/hyperv-backend-plan.md.
+        Thin front-end over New/Reset/Remove-Win32ToolkitTestVM, Repair-Win32ToolkitTestVMCheckpoint
+        and the test-backend config. See knowledge-base/designs/hyperv-backend-plan.md.
     #>
     [CmdletBinding()]
     param()
@@ -40,7 +40,7 @@ function Show-Win32ToolkitTestVM {
             [pscustomobject]@{ Key = 'provision'; Label = 'Provision the test VM from a Windows 11 ISO (one-time, ~30-60 min)' }
             [pscustomobject]@{ Key = 'resources'; Label = 'Change VM resources (CPU / memory) — reconfigures + re-checkpoints (minutes)' }
             [pscustomobject]@{ Key = 'reset';     Label = 'Reset the VM to its clean checkpoint' }
-            [pscustomobject]@{ Key = 'autologon'; Label = 'Configure guest AutoLogon + re-checkpoint (fix a login-screen checkpoint)' }
+            [pscustomobject]@{ Key = 'autologon'; Label = 'Configure guest AutoLogon + re-checkpoint (fix a login-screen / missing checkpoint or credential)' }
             [pscustomobject]@{ Key = 'remove';    Label = 'Remove the test VM (and its VHDX)' }
             [pscustomobject]@{ Key = 'back';      Label = 'Back' }
         ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 10
@@ -175,16 +175,11 @@ function Show-Win32ToolkitTestVM {
             'autologon' {
                 Clear-Host; Write-SpectreRule -Title 'Configuring guest AutoLogon + re-checkpoint…' -Color Blue
                 try {
-                    $vm = Get-Win32ToolkitConfigValue -Name 'HyperVVMName'     -Default 'win32tk-golden'
-                    $cp = Get-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Default 'clean-base'
-                    $gc = Get-Win32ToolkitGuestCredential
-                    if (-not $gc) { throw 'No guest credential is configured — provision the VM first.' }
-                    Reset-Win32ToolkitTestVM
-                    Set-Win32ToolkitGuestAutoLogon -VMName $vm -Credential $gc
-                    if (Confirm-Win32ToolkitGuestDesktop -VMName $vm -Credential $gc) {
-                        Get-VMCheckpoint -VMName $vm -ErrorAction SilentlyContinue | Remove-VMCheckpoint -ErrorAction SilentlyContinue
-                        Set-VM -Name $vm -CheckpointType Standard
-                        Checkpoint-VM -VMName $vm -SnapshotName $cp
+                    # Repair-… handles the half-provisioned states an interrupted provision leaves behind:
+                    # it PROMPTS for the baked-in guest credential when none is stored (persisting it only
+                    # after PowerShell Direct verifies it) and boots the VM when there is no checkpoint to
+                    # revert to — this screen must never dead-end on the very pieces it exists to fix.
+                    if (Repair-Win32ToolkitTestVMCheckpoint) {
                         Format-SpectrePanel -Data 'AutoLogon configured and the checkpoint re-taken at a logged-in desktop. Interactive GUI testing is now safe.' -Header 'Done' -Border Rounded -Color Green | Out-SpectreHost
                     } else {
                         Format-SpectrePanel -Data 'Could not reach a desktop to re-checkpoint. Log in once in the VM window, then run this again.' -Header 'Warning' -Border Rounded -Color Yellow | Out-SpectreHost
