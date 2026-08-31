@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.3](https://github.com/MG-Cloudflow/win32-toolkit/compare/v1.1.2...v1.1.3) (2026-08-31)
+
+
+### Bug Fixes
+
+* **hyperv:** make the AutoLogon re-checkpoint action repair a half-provisioned VM ([0e3fe7e](https://github.com/MG-Cloudflow/win32-toolkit/commit/0e3fe7ef59603bcb521654e4ae19701fbff8ed93))
+* **hyperv:** make the AutoLogon re-checkpoint action repair a half-provisioned VM ([60107a0](https://github.com/MG-Cloudflow/win32-toolkit/commit/60107a00e357b379eef4dda930efa562087a074e))
+
 ## [1.1.2](https://github.com/MG-Cloudflow/win32-toolkit/compare/v1.1.1...v1.1.2) (2026-08-04)
 
 
