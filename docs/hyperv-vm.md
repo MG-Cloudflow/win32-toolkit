@@ -59,6 +59,13 @@ future test run reverts to exactly that moment**. A patched, logged-in, idle des
 start instantly and never compete with Windows Update or first-run pop-ups. `-Unattended` skips the
 pause (CI/automation) and checkpoints the bare first-boot desktop instead.
 
+> **Closed the window during the pause?** The checkpoint and the stored guest credential are only
+> saved at the very end, so aborting here leaves the VM existing but the backend "not ready"
+> (*checkpoint not found; guest credential is not configured*). You do **not** need to rebuild:
+> run the TUI's **Configure guest AutoLogon + re-checkpoint** action — it asks for the guest
+> credential the image was built with (verifying it over PowerShell Direct before saving it),
+> boots the VM, and takes the missing `clean-base` checkpoint at the logged-in desktop.
+
 <!-- SCREENSHOT: the yellow "PREPARE THE VM, THEN CONFIRM" console banner during New-Win32ToolkitTestVM, next to the open VM console window -->
 
 ## Enable the backend
@@ -100,7 +107,14 @@ Checkpoint-VM -VMName 'win32tk-golden' -SnapshotName 'clean-base'
 
 `Show-Win32Toolkit` → **Hyper-V test VM** shows backend readiness and the VM's current CPU/RAM, and
 wraps everything above: set the default backend, provision from an ISO, change resources, reset,
-fix a login-screen checkpoint (AutoLogon + re-checkpoint), and remove the VM.
+repair (AutoLogon + re-checkpoint), and remove the VM.
+
+The **Configure guest AutoLogon + re-checkpoint** action is the repair path whenever the backend
+banner says "not ready" but the VM exists. It fixes a checkpoint frozen at the login screen *and*
+the two leftovers of an interrupted provision: a missing `clean-base` checkpoint (it boots the VM
+and takes a fresh one at the logged-in desktop) and a missing stored guest credential (it prompts
+for the one the image was built with and saves it only after PowerShell Direct accepts it — so a
+typo is never stored).
 
 <!-- SCREENSHOT: the TUI Hyper-V test VM screen showing "Hyper-V backend is READY" and the menu options -->
 
