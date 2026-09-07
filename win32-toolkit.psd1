@@ -1,6 +1,6 @@
 @{
     RootModule        = 'win32-toolkit.psm1'
-    ModuleVersion     = '1.1.4' # x-release-please-version
+    ModuleVersion     = '1.1.5' # x-release-please-version
     GUID              = '87252f46-6d9c-4d65-b2ec-6af8e915b40c'
     Author            = 'Maxime Guillemin'
     CompanyName       = 'CloudFlow'
