@@ -78,6 +78,13 @@ function New-Win32ToolkitTestVM {
     if (-not (Get-Module -ListAvailable -Name Hyper-V)) {
         throw 'The Hyper-V PowerShell module is not installed/enabled on this host.'
     }
+    # Paths are usually pasted from Explorer's "Copy as path", which wraps them in double quotes —
+    # strip them (a literal " is illegal in a Windows path) so Test-Path / Mount-DiskImage see the
+    # real file instead of failing with a confusing not-found (issue #66). Same normalization the
+    # manual-app prompts already apply. Runs BEFORE the guards so a quoted-blank paste counts as
+    # "not supplied".
+    if ($IsoPath)  { $IsoPath  = $IsoPath.Trim().Trim('"') }
+    if ($VhdxPath) { $VhdxPath = $VhdxPath.Trim().Trim('"') }
     if (-not $IsoPath -and -not $VhdxPath) {
         throw 'Supply -IsoPath (build the golden VHDX from an ISO) or -VhdxPath (attach an existing VHDX).'
     }

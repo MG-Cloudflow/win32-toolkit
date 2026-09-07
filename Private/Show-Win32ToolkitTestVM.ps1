@@ -57,6 +57,10 @@ function Show-Win32ToolkitTestVM {
             }
             'provision' {
                 $iso = Read-SpectreText -Message 'Path to a Windows 11 x64 ISO (blank to cancel)' -DefaultAnswer ''
+                # Explorer's "Copy as path" wraps the path in double quotes — strip them so the
+                # blank-cancel check and provisioning see the real path (issue #66). The public
+                # cmdlet trims too; doing it here keeps the TUI's own messages/checks clean.
+                if ($iso) { $iso = $iso.Trim().Trim('"') }
                 if (-not [string]::IsNullOrWhiteSpace($iso)) {
                     # Detect a leftover VM / golden VHDX from a previous build. Without this, the underlying
                     # New-Win32ToolkitGoldenVhdx throws "VHDX already exists (use -Force)" the instant it starts
