@@ -82,7 +82,12 @@ function Show-Win32Toolkit {
         $base = Get-Win32ToolkitBasePath -BasePath $BasePath -NonInteractive
         Clear-Host
         Write-SpectreFigletText -Text 'win32-toolkit' -Color Blue
-        if (-not $base) { $base = Show-Win32ToolkitFirstRun }
+        if (-not $base) {
+            # First-run saves the chosen folder to the registry; re-read it instead of capturing the
+            # screen's output (TUI screens render THROUGH their success stream — see 'settings' below).
+            Show-Win32ToolkitFirstRun
+            $base = Get-Win32ToolkitBasePath -NonInteractive
+        }
 
         # ── Main loop ──────────────────────────────────────────────────────────────
         while ($true) {
@@ -100,7 +105,19 @@ function Show-Win32Toolkit {
                 'browse'    { Show-Win32ToolkitBrowse   -BasePath $base }
                 'templates' { Show-Win32ToolkitTemplates -BasePath $base }
                 'intune'    { Show-Win32ToolkitIntuneConnection -BasePath $base }
-                'settings'  { $base = Show-Win32ToolkitSettings -BasePath $base }
+                'settings'  {
+                    # NEVER capture a TUI screen's output (issue #67): PwshSpectreConsole 2.6.x render
+                    # commands RETURN their rendered ANSI text — it only displays when the stream
+                    # reaches Out-Default — so capturing a screen both blanks its rendering and turns
+                    # the captured "value" into an array (the next Show-Win32ToolkitHealth -BasePath
+                    # then failed to bind [string]). Settings persists a base-folder change to the
+                    # registry; adopt it by re-reading, so an unchanged registry keeps a session
+                    # -BasePath override intact.
+                    $before = Get-Win32ToolkitBasePath -NonInteractive
+                    Show-Win32ToolkitSettings -BasePath $base
+                    $after = Get-Win32ToolkitBasePath -NonInteractive
+                    if ($after -and $after -ne $before) { $base = $after }
+                }
                 'exit'      { Write-SpectreHost '[grey]Goodbye.[/]'; return }
                 default     { return }
             }

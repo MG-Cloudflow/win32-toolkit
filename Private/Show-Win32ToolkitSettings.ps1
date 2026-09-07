@@ -1,18 +1,17 @@
 function Show-Win32ToolkitSettings {
     <#
     .SYNOPSIS
-        Settings screen (base folder, re-check). Returns the (possibly updated) base folder.
-        See knowledge-base/designs/tui.md.
+        Settings screen (base folder, test VM, update check, re-check). Persists a base-folder change
+        to the registry and RETURNS NOTHING — the caller re-reads Get-Win32ToolkitBasePath. TUI screens
+        render THROUGH their success stream (PwshSpectreConsole 2.6.x render commands return their
+        rendered text; it displays at Out-Default), so callers must never capture or Out-Null them
+        (issue #67). See knowledge-base/designs/tui.md.
     #>
     [CmdletBinding()]
-    [OutputType([string])]
     param([string]$BasePath)
 
     while ($true) {
-        # Out-SpectreHost: render without leaking the rule object into this function's output, which the
-        # caller captures ($base = Show-Win32ToolkitSettings ...). A leak there makes $base an array and
-        # the next 'Show-Win32ToolkitHealth -BasePath $base' fails to bind the [string] BasePath.
-        Write-SpectreRule -Title 'Settings' -Color Grey | Out-SpectreHost
+        Write-SpectreRule -Title 'Settings' -Color Grey
         Write-SpectreHost "Base folder: [blue]$(Get-SpectreEscapedText -Text $BasePath)[/]"
         $choices = @(
             [pscustomobject]@{ Key = 'basepath'; Label = 'Change the base folder' }
@@ -30,9 +29,9 @@ function Show-Win32ToolkitSettings {
                     Write-SpectreHost "[green]Saved:[/] $(Get-SpectreEscapedText -Text $BasePath)"
                 }
             }
-            # Out-Null so nothing this subtree emits leaks into $base (the caller captures
-            # Show-Win32ToolkitSettings's output). Panels inside render via Out-SpectreHost.
-            'testvm'  { Show-Win32ToolkitTestVM | Out-Null }
+            # Bare call — the subtree's rendered text must flow out to Out-Default to be visible.
+            # (An earlier '| Out-Null' here made every rule/panel inside the test-VM screen invisible.)
+            'testvm'  { Show-Win32ToolkitTestVM }
             'update'  {
                 $now = Get-Win32ToolkitConfigValue -Name 'UpdateCheck' -Default 'On'
                 $new = if ($now -eq 'Off') { 'On' } else { 'Off' }
@@ -46,7 +45,7 @@ function Show-Win32ToolkitSettings {
                 }
             }
             'recheck' { Show-Win32ToolkitHealth -BasePath $BasePath }
-            'back'    { return $BasePath }
+            'back'    { return }
         }
     }
 }
