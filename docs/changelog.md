@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.6](https://github.com/MG-Cloudflow/win32-toolkit/compare/v1.1.5...v1.1.6) (2026-09-07)
+
+
+### Bug Fixes
+
+* **hyperv:** strip "Copy as path" quotes from ISO/VHDX paths before provisioning ([30a80b1](https://github.com/MG-Cloudflow/win32-toolkit/commit/30a80b1e76f1b7990e80bae0bef93b9e4d240eb6))
+
 ## [1.1.5](https://github.com/MG-Cloudflow/win32-toolkit/compare/v1.1.4...v1.1.5) (2026-09-07)
 
 
