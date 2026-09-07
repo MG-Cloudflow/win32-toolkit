@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.5](https://github.com/MG-Cloudflow/win32-toolkit/compare/v1.1.4...v1.1.5) (2026-09-07)
+
+
+### Bug Fixes
+
+* **winget:** parse the search table by header column offsets so versions resolve ([662731c](https://github.com/MG-Cloudflow/win32-toolkit/commit/662731c7a8be40da0154cd1ff9822034549846a5))
+
 ## [1.1.4](https://github.com/MG-Cloudflow/win32-toolkit/compare/v1.1.3...v1.1.4) (2026-09-07)
 
 
