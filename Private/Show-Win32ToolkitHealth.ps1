@@ -7,9 +7,10 @@ function Show-Win32ToolkitHealth {
     param([string]$BasePath)
 
     $checks = Test-Win32ToolkitPrerequisites -BasePath $BasePath
-    # Out-SpectreHost renders and returns NOTHING. Without it, Write-SpectreRule/Format-SpectreTable
-    # (PwshSpectreConsole 2.6.3+) return the renderable to the pipeline; when a caller CAPTURES this
-    # screen's output (Settings' "recheck" branch), those objects pollute the captured value.
+    # PwshSpectreConsole 2.6.x render commands — Write-SpectreRule, Format-SpectreTable, and
+    # Out-SpectreHost itself — RETURN the rendered ANSI text; it only displays when the stream reaches
+    # Out-Default. So this screen renders THROUGH its success stream: callers must invoke it as a bare
+    # statement, never capture or Out-Null it (issue #67; knowledge-base/designs/tui.md).
     Write-SpectreRule -Title 'System check' -Color Grey | Out-SpectreHost
     $rows = foreach ($c in $checks) {
         [pscustomobject]@{
