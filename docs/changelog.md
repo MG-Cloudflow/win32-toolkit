@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.4](https://github.com/MG-Cloudflow/win32-toolkit/compare/v1.1.3...v1.1.4) (2026-09-07)
+
+
+### Bug Fixes
+
+* **tui:** stop capturing TUI screen output so Settings cannot corrupt the base path ([14508b1](https://github.com/MG-Cloudflow/win32-toolkit/commit/14508b1dbc5e462fa277ac866f35a64ddbbd25be))
+* **tui:** stop capturing TUI screen output so Settings cannot corrupt the base path ([ccafdc1](https://github.com/MG-Cloudflow/win32-toolkit/commit/ccafdc1672d07478d458cfdf4e86d69ca4686975)), closes [#67](https://github.com/MG-Cloudflow/win32-toolkit/issues/67)
+
 ## [1.1.3](https://github.com/MG-Cloudflow/win32-toolkit/compare/v1.1.2...v1.1.3) (2026-08-31)
 
 
