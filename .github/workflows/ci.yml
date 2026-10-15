@@ -1,12 +1,26 @@
 name: CI
 
+# PSADT version matrix (spec D12/D3): every supported PSAppDeployToolkit minor is tested on every push and
+# PR, with the suites that need a real PSADT REQUIRED to run (W32T_REQUIRE_PSADT=1: a missing module fails
+# instead of skipping). Both 'test (<version>)' legs are permanent required checks; bump 4.2.0-rc2 to 4.2.0
+# when PSADT 4.2 GA ships (re-run the research probes and refresh the goldens in the same change).
+# A weekly canary runs the suite against the newest PSADT on PSGallery, prereleases included; it never
+# blocks a merge (continue-on-error) but shows early when a new PSADT breaks the template contract.
+
 on:
   push:
   pull_request:
+  schedule:
+    - cron: '0 5 * * 1'   # canary: Mondays 05:00 UTC
+  workflow_dispatch:      # manual canary (and lint/test) run from the Actions tab
+
+permissions:
+  contents: read
 
 jobs:
-  lint-and-test:
-    name: Lint and test
+  lint:
+    name: lint
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
     defaults:
       run:
@@ -23,6 +37,78 @@ jobs:
 
       - name: Lint (PSScriptAnalyzer)
         run: ./scripts/Invoke-Lint.ps1
+
+  test:
+    name: test (${{ matrix.psadt }})
+    if: github.event_name != 'schedule'
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Supported range 4.1.x and 4.2.x ($script:PsadtSupportedRange). Never drop the 4.1 leg (D3).
+        psadt: ['4.1.8', '4.2.0-rc2']
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Save PSAppDeployToolkit ${{ matrix.psadt }} (not installed)
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP 'psadt'
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          Save-Module -Name PSAppDeployToolkit -RequiredVersion '${{ matrix.psadt }}' -AllowPrerelease -Repository PSGallery -Path $dest -Force -ErrorAction Stop
+          Get-ChildItem -Path (Join-Path $dest 'PSAppDeployToolkit') -Directory | ForEach-Object { "Saved: $($_.FullName)" }
+
+      - name: Require this PSADT version in every suite
+        run: |
+          "PSModulePath=$(Join-Path $env:RUNNER_TEMP 'psadt');$env:PSModulePath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          'W32T_REQUIRE_PSADT=1' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          'W32T_PSADT_VERSION=${{ matrix.psadt }}' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Show the selected PSADT
+        run: |
+          $mod = Import-Module ./win32-toolkit.psd1 -Force -PassThru
+          $sel = & $mod { Select-Win32ToolkitPsadtModule }
+          $sel | Format-List Status, VersionText, IsPrerelease, PreferredSource, Reason
+          if ($sel.Status -ne 'Selected') { throw "PSAppDeployToolkit ${{ matrix.psadt }} was not selected: $($sel.Reason)" }
+
+      - name: Run tests
+        run: ./Tests/Run-All.ps1
+
+  canary:
+    name: canary (newest PSADT, prereleases included)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    continue-on-error: true
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Save the newest PSAppDeployToolkit (not installed)
+        run: |
+          $newest = Find-Module -Name PSAppDeployToolkit -AllowPrerelease -Repository PSGallery -ErrorAction Stop
+          $version = [string]$newest.Version
+          "Newest PSAppDeployToolkit on PSGallery: $version"
+          "Canary: PSAppDeployToolkit **$version** (newest on PSGallery, prereleases included)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $dest = Join-Path $env:RUNNER_TEMP 'psadt'
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          Save-Module -Name PSAppDeployToolkit -RequiredVersion $version -AllowPrerelease -Repository PSGallery -Path $dest -Force -ErrorAction Stop
+          "PSModulePath=$dest;$env:PSModulePath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          'W32T_REQUIRE_PSADT=1' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "W32T_PSADT_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Show the selected PSADT
+        run: |
+          # A version outside the supported range is not selectable: the PSADT suites then FAIL (as intended -
+          # a new minor needs a new deploy-script shape before the range is widened, L5).
+          $mod = Import-Module ./win32-toolkit.psd1 -Force -PassThru
+          $sel = & $mod { Select-Win32ToolkitPsadtModule }
+          $sel | Format-List Status, VersionText, IsPrerelease, PreferredSource, Reason
 
       - name: Run tests
         run: ./Tests/Run-All.ps1

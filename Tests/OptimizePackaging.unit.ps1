@@ -13,6 +13,10 @@
         - Optimize uses both; a surviving 'Intune' folder is FATAL (never ship tenant/app ids), the rest warn.
         - (Export excludes them at copy time — covered by DataDriven.integration / adversarial review.)
 
+      [d] Staging end to end (Export's copy filter + Optimize): Invoke-AppDeployToolkit.exe, the bundled
+          PSAppDeployToolkit\ module and a PSAppDeployToolkit.<Org>\ extension module survive (DOC-05;
+          D16: no further trimming).
+
     Run:  pwsh -File Tests\OptimizePackaging.unit.ps1
 #>
 [CmdletBinding()]
@@ -83,10 +87,17 @@ else { Bad "permanent lock: result=$rPerm, attempts=$($script:rmN)" }
 # ── (c) Optimize strips non-shipping folders, keeps the package payload ────────────────────────────
 Write-Host '[c] Optimize-Win32ToolkitProject' -ForegroundColor Cyan
 $proj = New-TempDir
-foreach ($sub in 'Files', 'Assets', 'Sandbox\Dependencies\dep', 'Documentation', 'Intune', 'Docs', 'Examples', 'SupportFiles') {
+foreach ($sub in 'Files', 'Assets', 'Sandbox\Dependencies\dep', 'Documentation', 'Intune', 'Docs', 'Examples', 'SupportFiles',
+    'PSAppDeployToolkit', 'PSAppDeployToolkit.Contoso') {
     New-Item -ItemType Directory -Path (Join-Path $proj $sub) -Force | Out-Null
 }
 Set-Content -LiteralPath (Join-Path $proj 'Invoke-AppDeployToolkit.ps1') '# stub'
+# The launcher Intune runs, the bundled PSADT module and an org extension module must ship (DOC-05;
+# D16: Optimize does no further trimming).
+Set-Content -LiteralPath (Join-Path $proj 'Invoke-AppDeployToolkit.exe') 'MZ'
+Set-Content -LiteralPath (Join-Path $proj 'PSAppDeployToolkit\PSAppDeployToolkit.psd1') "@{ ModuleVersion = '4.2.0' }"
+Set-Content -LiteralPath (Join-Path $proj 'PSAppDeployToolkit.Contoso\PSAppDeployToolkit.Contoso.psd1') "@{ RootModule = 'PSAppDeployToolkit.Contoso.psm1' }"
+Set-Content -LiteralPath (Join-Path $proj 'PSAppDeployToolkit.Contoso\PSAppDeployToolkit.Contoso.psm1') '# org extension'
 Set-Content -LiteralPath (Join-Path $proj 'Files\installer.exe') 'x'
 Set-Content -LiteralPath (Join-Path $proj 'Intune\Publications.json') '{"secret":"tenant"}'
 Set-Content -LiteralPath (Join-Path $proj 'README.md') '# readme'
@@ -102,6 +113,10 @@ $badGone = @($gone | Where-Object { Test-Path -LiteralPath (Join-Path $proj $_) 
 $badKept = @($kept | Where-Object { -not (Test-Path -LiteralPath (Join-Path $proj $_)) })
 if ($badGone.Count -eq 0) { Ok 'strips Sandbox/Documentation/Intune/Docs/Examples + root .md/.wsb + doc script' } else { Bad "did not remove: $($badGone -join ', ')" }
 if ($badKept.Count -eq 0) { Ok 'keeps the payload (Invoke-AppDeployToolkit.ps1, Files\, RequirementScript.ps1)' } else { Bad "wrongly removed: $($badKept -join ', ')" }
+$shipping = @('Invoke-AppDeployToolkit.exe', 'PSAppDeployToolkit\PSAppDeployToolkit.psd1',
+    'PSAppDeployToolkit.Contoso\PSAppDeployToolkit.Contoso.psd1', 'PSAppDeployToolkit.Contoso\PSAppDeployToolkit.Contoso.psm1')
+$badShip = @($shipping | Where-Object { -not (Test-Path -LiteralPath (Join-Path $proj $_)) })
+if ($badShip.Count -eq 0) { Ok 'keeps the launcher, the bundled PSAppDeployToolkit module and the org extension module (DOC-05)' } else { Bad "wrongly removed: $($badShip -join ', ')" }
 [System.IO.Directory]::Delete($proj, $true)
 
 # c2: a 'Intune' folder that cannot be stripped is FATAL (never ship tenant/app ids).
@@ -119,6 +134,36 @@ $threw = $null
 if ($script:threw -and $script:threw -match 'Intune' -and $script:threw -match 'Publications') { Ok 'throws, refusing to package with an un-strippable Intune\ folder' }
 else { Bad "did not fail correctly on a locked Intune\ folder (msg: $($script:threw))" }
 [System.IO.Directory]::Delete($proj2, $true)
+
+# -- (d) Staging end to end: Export's copy filter, then Optimize on the copy (DOC-05) ----------------
+Write-Host '[d] the launcher, the bundled PSADT module and an org extension module survive Staging' -ForegroundColor Cyan
+$src = New-TempDir
+foreach ($sub in 'Files', 'SupportFiles', 'Sandbox\Logs', 'Intune', 'PSAppDeployToolkit\lib', 'PSAppDeployToolkit.Contoso') {
+    New-Item -ItemType Directory -Path (Join-Path $src $sub) -Force | Out-Null
+}
+Set-Content -LiteralPath (Join-Path $src 'Invoke-AppDeployToolkit.ps1') '# stub'
+Set-Content -LiteralPath (Join-Path $src 'Invoke-AppDeployToolkit.exe') 'MZ'
+Set-Content -LiteralPath (Join-Path $src 'PSAppDeployToolkit\PSAppDeployToolkit.psd1') "@{ ModuleVersion = '4.1.8' }"
+Set-Content -LiteralPath (Join-Path $src 'PSAppDeployToolkit\lib\PSADT.dll') 'x'
+Set-Content -LiteralPath (Join-Path $src 'PSAppDeployToolkit.Contoso\PSAppDeployToolkit.Contoso.psd1') "@{ RootModule = 'PSAppDeployToolkit.Contoso.psm1' }"
+Set-Content -LiteralPath (Join-Path $src 'PSAppDeployToolkit.Contoso\PSAppDeployToolkit.Contoso.psm1') '# org extension'
+Set-Content -LiteralPath (Join-Path $src 'Intune\Publications.json') '{"secret":"tenant"}'
+$stg = New-TempDir
+# Mirrors Export-Win32ToolkitIntuneWin's staging copy: every top-level item except the non-shipping folders.
+$excludeFolders = Get-Win32ToolkitNonShippingFolders
+Get-ChildItem -LiteralPath $src -Force |
+    Where-Object { -not ($_.PSIsContainer -and $_.Name -in $excludeFolders) } |
+    ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $stg $_.Name) -Recurse -Force }
+Optimize-Win32ToolkitProject -ProjectPath $stg 6>$null 3>$null
+$mustShip = @('Invoke-AppDeployToolkit.ps1', 'Invoke-AppDeployToolkit.exe', 'PSAppDeployToolkit\PSAppDeployToolkit.psd1',
+    'PSAppDeployToolkit\lib\PSADT.dll', 'PSAppDeployToolkit.Contoso\PSAppDeployToolkit.Contoso.psd1', 'PSAppDeployToolkit.Contoso\PSAppDeployToolkit.Contoso.psm1')
+$lost = @($mustShip | Where-Object { -not (Test-Path -LiteralPath (Join-Path $stg $_)) })
+if ($lost.Count -eq 0) { Ok 'Staging keeps Invoke-AppDeployToolkit.exe, PSAppDeployToolkit\PSAppDeployToolkit.psd1 and PSAppDeployToolkit.Contoso\PSAppDeployToolkit.Contoso.psd1' }
+else { Bad "missing from Staging: $($lost -join ', ')" }
+$leaked = @('Sandbox', 'Intune' | Where-Object { Test-Path -LiteralPath (Join-Path $stg $_) })
+if ($leaked.Count -eq 0) { Ok 'Staging has no Sandbox\ or Intune\ folder' } else { Bad "non-shipping folders in Staging: $($leaked -join ', ')" }
+[System.IO.Directory]::Delete($src, $true)
+[System.IO.Directory]::Delete($stg, $true)
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'ALL PASS' -ForegroundColor Green; exit 0 }

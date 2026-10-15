@@ -13,6 +13,11 @@
       * env-gated LIVE suites (e.g. HyperV.integration.ps1, guarded by
         `-not $env:W32T_LIVE_HYPERV`) are SKIPPED unless their gate variable is set.
         The gate is detected by reading each file, so no suite name is hard-coded.
+      * a suite that cannot run on this machine (e.g. it needs a real PSAppDeployToolkit and
+        none is installed) exits 3 and is reported as SKIP - never as PASS. With
+        $env:W32T_REQUIRE_PSADT set, such suites fail (exit 1) instead of skipping (CI).
+
+    Suite exit codes: 0 = PASS, 3 = SKIP, anything else = FAIL.
 
     Run:  pwsh -File Tests\Run-All.ps1
 #>
@@ -54,8 +59,9 @@ foreach ($suite in $suites) {
     Write-Host ("RUN   {0}" -f $suite.Name) -ForegroundColor Cyan
     & $pwsh -NoProfile -File $suite.FullName
     $code = $LASTEXITCODE
-    $status = if ($code -eq 0) { 'PASS' } else { 'FAIL' }
-    $color  = if ($code -eq 0) { 'Green' } else { 'Red' }
+    # 3 = the suite skipped itself (e.g. no PSAppDeployToolkit installed): SKIP, never PASS.
+    $status = switch ($code) { 0 { 'PASS' } 3 { 'SKIP' } default { 'FAIL' } }
+    $color  = switch ($status) { 'PASS' { 'Green' } 'SKIP' { 'DarkGray' } default { 'Red' } }
     Write-Host ("{0}  {1}  (exit {2})" -f $status, $suite.Name, $code) -ForegroundColor $color
     Write-Host ''
     $results += [pscustomobject]@{ Name = $suite.Name; Status = $status; ExitCode = $code }
