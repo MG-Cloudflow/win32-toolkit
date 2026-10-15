@@ -12,8 +12,23 @@ function Show-Win32ToolkitBrowse {
         Write-SpectreHost "[yellow]No projects yet.[/] Use [blue]Package an app[/] to create one."
     }
     else {
+        # PSADT column (ORG-14): the bundled toolkit version, derived on demand from the project folder.
+        # '(legacy)' = deploy script from win32-toolkit 1.1.6 or older (still packageable);
+        # '(unsupported)' = shape/version pair this win32-toolkit version cannot generate or package.
+        $psadtLabel = {
+            param($ProjectPath)
+            try {
+                $pv = Get-Win32ToolkitProjectPsadtVersion -ProjectPath $ProjectPath
+                $label = [string]$pv.VersionText
+                if ($pv.IsLegacy) { $label += ' (legacy)' }
+                if (-not $pv.IsSupported) { $label += ' (unsupported)' }
+                $label
+            }
+            catch { 'unknown' }
+        }
         $projects | Sort-Object Template, Name |
-            Select-Object @{ n = 'Template'; e = { $_.Template } }, @{ n = 'Application'; e = { $_.Name } } |
+            Select-Object @{ n = 'Template'; e = { $_.Template } }, @{ n = 'Application'; e = { $_.Name } },
+                @{ n = 'PSADT'; e = { & $psadtLabel $_.Path } } |
             Format-SpectreTable -Border Rounded -Color Grey -Title "$($projects.Count) project(s) under $(Get-SpectreEscapedText -Text $BasePath)"
     }
     Read-SpectrePause -Message 'Press any key to return to the menu' -AnyKey | Out-Null

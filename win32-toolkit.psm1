@@ -6,6 +6,15 @@
 $script:OrgTemplate           = $null
 $script:TemplateSchemaVersion = '4.0'
 
+# Supported PSAppDeployToolkit range (impact analysis §13 D1/D3, L3): Min inclusive, MaxExclusive exclusive.
+# Widen MaxExclusive only after the template-contract suite and the golden-drift test pass on the new minor
+# (a new minor normally needs a new deploy-script shape - L5). Never narrow it (D3). Keep Display in sync.
+$script:PsadtSupportedRange = [pscustomobject]@{
+    Min          = [version]'4.1.0'
+    MaxExclusive = [version]'4.3.0'
+    Display      = '4.1.x and 4.2.x'
+}
+
 # Ensure downloads (winget icons, IntuneWinAppUtil.exe, GitHub/PSGallery, Graph/Azure)
 # negotiate a modern TLS version — add TLS 1.2 (and 1.3 where the OS supports it)
 # without disturbing any protocols the host already enabled.

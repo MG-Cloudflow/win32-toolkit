@@ -11,7 +11,9 @@
           fallback yielded null and NO requirement script was written at all.
       [3] FALSE ABORT. Create-PSADTProject's post-update guard tested whether PSADT was INSTALLED, not whether
           it was LOADED. PSADT is imported later in that same function, so in a fresh session nothing is loaded
-          and accepting the update killed a perfectly good run.
+          and accepting the update killed a perfectly good run. (Now the guarded import of the PSADT version
+          policy: Get-Module -All for loaded copies, Import-Module by the selected path without -Force, no
+          Update-Module.)
       [4] HARMFUL ADVICE. The download-failure warning told the user to drop an installer into Files\ and
           re-run — but a re-run recreates the project folder, deleting exactly what they put there.
       [5] SILENT INSTALLER GUESS. Get-InstallerFileInfo takes the first file BY NAME with no content
@@ -154,12 +156,20 @@ if ($yi.InformationUrl -eq 'https://acme.example') { Ok 'InformationUrl read fro
 if ($yi.PackageIdentifier -eq 'Acme.App') { Ok 'PackageIdentifier is exposed (Publish reads it for the winget id)' } else { Bad "PackageIdentifier = '$($yi.PackageIdentifier)'" }
 
 # ══ [3]+[4] source-level guards (behaviour proven in P1_SelfRelaunch / P1_DroppedFlags) ════════════
-Write-Host '[3] Create-PSADTProject: the post-update guard keys off a LOADED module, not an installed one' -ForegroundColor Cyan
+Write-Host '[3] Create-PSADTProject: the import guard keys off a LOADED module, not an installed one' -ForegroundColor Cyan
 $cpText = Get-Content -LiteralPath (Join-Path $repo 'Private\Create-PSADTProject.ps1') -Raw
-# the abort must be gated on a bare Get-Module (loaded), and must re-read the module after the update
-if ($cpText -match '\$loaded\s*=\s*Get-Module\s+-Name\s+PSAppDeployToolkit(?!\s+-ListAvailable)') {
-    Ok 'the abort is gated on a bare Get-Module (loaded), not -ListAvailable (installed)'
+# Guarded-import shape (PSADT version policy): the abort is gated on the LOADED copies - Get-Module -All,
+# which also sees a copy imported into win32-toolkit's own scope - never on -ListAvailable (installed).
+if ($cpText -match '\$loaded\s*=\s*@\(\s*Get-Module\s+-Name\s+PSAppDeployToolkit\s+-All\b') {
+    Ok 'the abort is gated on Get-Module -All (loaded, any scope), not -ListAvailable (installed)'
 } else { Bad 'the loaded-vs-installed guard is missing' }
+# ...then the SELECTED copy is imported by path, never by name and never with -Force (#2371)...
+$importLines = @(($cpText -split "\r?\n") | Where-Object { $_ -match '^\s*[^#]*\bImport-Module\b' } | ForEach-Object { ($_ -replace '#.*$', '').Trim() })
+if ($importLines.Count -eq 1 -and $importLines[0] -match '^Import-Module -Name \$sel\.Module\.Path\b' -and $importLines[0] -notmatch '-Force') {
+    Ok 'the only Import-Module is "Import-Module -Name $sel.Module.Path" without -Force'
+} else { Bad "Import-Module lines: $($importLines -join ' | ')" }
+# ...and an update is an in-range side-by-side install, never Update-Module.
+if ($cpText -notmatch 'Update-Module') { Ok 'no Update-Module anywhere in the helper' } else { Bad 'Update-Module is still present' }
 
 Write-Host '[4] Invoke-Win32Toolkit: the download-failure advice no longer says "drop into Files\ and re-run"' -ForegroundColor Cyan
 $ivText = Get-Content -LiteralPath (Join-Path $repo 'Public\Invoke-Win32Toolkit.ps1') -Raw

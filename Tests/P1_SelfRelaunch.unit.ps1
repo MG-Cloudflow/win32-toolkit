@@ -14,12 +14,21 @@
     "relaunch" started something meaningless and then killed the user's session, silently losing whatever
     the user actually asked for.
 
-    The fix (option b): the helper cannot know the caller's command line, so it no longer pretends. It
-    performs the update, then returns $false with a clear "start a new session and re-run" message. No
-    process is spawned, and the user's session is not exited.
+    The fix (option b): the helper cannot know the caller's command line, so it no longer pretends. When a
+    PSADT version other than the one this run needs is already loaded, it returns $false with a clear
+    "start a new session and re-run" message. No process is spawned, and the user's session is not exited.
 
-    This test drives the code path that fires AFTER a PSADT update. The update itself, the module lookups
-    and Start-Process are all shadowed — nothing is installed and nothing is launched.
+    Since the PSADT version policy (impact analysis D1/L4, DOC-07) the update itself is different too:
+    only a STABLE, IN-RANGE version is offered and it is installed side by side with
+    Install-Module -RequiredVersion (never an in-place upgrade, which could leave the supported range),
+    and a copy already loaded in the session suppresses the offer entirely. This test drives both
+    paths in child sessions:
+      [A] an older PSADT copy is already loaded -> no offer, no install, no import, no relaunch,
+          $false + "new PowerShell session ... re-run".
+      [B] a fresh session accepts the offer -> Install-Module -RequiredVersion, re-selection, import by
+          path without -Force, scaffold, $true - and still no relaunch.
+    The module lookups, the gallery, Start-Process and New-ADTTemplate are all shadowed — nothing is
+    installed and nothing is launched.
 
     The call is made in a CHILD pwsh: if the function still called `exit`, it would terminate that child
     before it could record completion, which is exactly how we detect it (an `exit` inside this very test
@@ -66,25 +75,40 @@ $psCmdPathRefs = $ast.FindAll({
 if ($psCmdPathRefs.Count -eq 0) { Ok '$PSCommandPath (the dot-sourced private file — not an entry point) is no longer used as a relaunch target' }
 else { Bad '$PSCommandPath is still referenced' }
 
-# ...and the PSADT update itself must be preserved — we only changed what happens AFTER it.
-$updates = $ast.FindAll({
-    param($n)
-    $n -is [System.Management.Automation.Language.CommandAst] -and
-    $n.GetCommandName() -eq 'Update-Module'
-}, $true)
-if ($updates.Count -ge 1) { Ok 'the PSAppDeployToolkit update itself is still performed' }
-else { Bad 'Update-Module is gone — the update was supposed to be preserved' }
+# The version policy: an update is an in-range side-by-side install, never Update-Module.
+function CommandsNamed([string]$Name) {
+    $ast.FindAll({
+        param($n)
+        $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq $Name
+    }, $true)
+}
+function HasParam($cmd, [string]$Param) {
+    @($cmd.CommandElements | Where-Object {
+        $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq $Param
+    }).Count -gt 0
+}
+if (@(CommandsNamed 'Update-Module').Count -eq 0) { Ok 'no Update-Module call (an in-place upgrade can leave the supported range)' }
+else { Bad 'Update-Module is still invoked' }
+$installs = @(CommandsNamed 'Install-Module')
+if ($installs.Count -ge 1 -and @($installs | Where-Object { -not (HasParam $_ 'RequiredVersion') }).Count -eq 0) {
+    Ok "every Install-Module call pins -RequiredVersion ($($installs.Count) call(s), AST-verified)"
+} else { Bad 'an Install-Module call without -RequiredVersion remains' }
+$imports = @(CommandsNamed 'Import-Module')
+if ($imports.Count -eq 1 -and -not (HasParam $imports[0] 'Force') -and $imports[0].Extent.Text -match '\$sel\.Module\.Path') {
+    Ok 'PSADT is imported once, by the selected PATH, without -Force (re-import throws on PSADT 4.2)'
+} else { Bad "Import-Module calls: $(($imports | ForEach-Object { $_.Extent.Text }) -join ' | ')" }
 
-# ══ Part 2 — actually drive the post-update path, in a child session ══════════════════════════════
-Write-Host '[P1] driving the post-update path for real (module cmdlets + Start-Process shadowed)' -ForegroundColor Cyan
-
+# ══ Part 2 — actually drive the policy, in child sessions ════════════════════════════════════════
 $harness = Join-Path $work 'harness.ps1'
 @'
-param([string]$Repo, [string]$Out)
+param([string]$Repo, [string]$Out, [string]$Scenario)
 
 $ErrorActionPreference = 'Stop'
 $script:MsgFile = Join-Path $Out 'messages.txt'
+$script:CallFile = Join-Path $Out 'calls.txt'
 New-Item -ItemType File -Path $script:MsgFile -Force | Out-Null
+New-Item -ItemType File -Path $script:CallFile -Force | Out-Null
+function Rec([string]$Line) { Add-Content -LiteralPath $script:CallFile -Value $Line }
 
 # ── shadows: nothing reaches PSGallery, the disk we do not own, or a new process ──────────────────
 function Write-Host {
@@ -97,24 +121,44 @@ function Write-Warning {
     Add-Content -LiteralPath $script:MsgFile -Value ('WARN: ' + $Message)
 }
 
-# installed 4.0.0, gallery has 4.1.0  -> the "update available" branch
-function Get-Module {
-    param($Name, [switch]$ListAvailable)
-    [pscustomobject]@{ Name = 'PSAppDeployToolkit'; Version = [version]'4.0.0' }
+function FakeModule([string]$Version) {
+    [pscustomobject]@{
+        Name        = 'PSAppDeployToolkit'
+        Version     = [version]$Version
+        Path        = "C:\fake\PSAppDeployToolkit\$Version\PSAppDeployToolkit.psd1"
+        ModuleBase  = "C:\fake\PSAppDeployToolkit\$Version"
+        PrivateData = @{ PSData = @{} }
+    }
 }
-function Find-Module {
-    param($Name, $Repository, $ErrorAction)
-    [pscustomobject]@{ Name = 'PSAppDeployToolkit'; Version = '4.1.0' }
-}
-function Update-Module {
-    param($Name, [switch]$Force)
-    Set-Content -LiteralPath (Join-Path $Out 'update.json') -Value ('{"updated":"' + $Name + '"}')
-}
-function Install-Module { param($Name, $Scope, [switch]$Force, [switch]$AllowClobber) }
-function Import-Module  { param($Name, [switch]$Force) }
+# [A] 4.2.1 + 4.1.8 installed, 4.1.8 LOADED.  [B] 4.1.8 installed, nothing loaded, gallery has 4.2.1.
+$script:installed = if ($Scenario -eq 'A') { @((FakeModule '4.2.1'), (FakeModule '4.1.8')) } else { @(FakeModule '4.1.8') }
+$script:loaded    = if ($Scenario -eq 'A') { @(FakeModule '4.1.8') } else { @() }
 
-# the user says "yes, update"
-function Read-Host { param($Prompt) 'y' }
+function Get-Module {
+    param($Name, [switch]$ListAvailable, [switch]$All)
+    if ($ListAvailable) { return $script:installed }
+    return $script:loaded
+}
+function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }
+function Find-Module {
+    param($Name, $Repository, [switch]$AllVersions, [switch]$AllowPrerelease, $ErrorAction)
+    Rec "FIND AllVersions=$($AllVersions.IsPresent) AllowPrerelease=$($AllowPrerelease.IsPresent)"
+    [pscustomobject]@{ Name = 'PSAppDeployToolkit'; Version = '4.3.0' }
+    [pscustomobject]@{ Name = 'PSAppDeployToolkit'; Version = '4.2.1' }
+}
+function Update-Module { param($Name, [switch]$Force) Rec "UPDATE $Name" }
+function Install-Module {
+    param($Name, $RequiredVersion, $Scope, [switch]$Force, [switch]$AllowClobber, $ErrorAction)
+    Rec "INSTALL RequiredVersion=$RequiredVersion Scope=$Scope"
+    $script:installed = @(FakeModule $RequiredVersion) + $script:installed
+}
+function Import-Module {
+    param($Name, [switch]$Force, $ErrorAction)
+    Rec "IMPORT Name=$Name Force=$($Force.IsPresent)"
+}
+
+# the user says "yes, install the update"
+function Read-Host { param($Prompt) Rec "PROMPT $Prompt"; 'y' }
 
 # THE BUG: these two are what the broken relaunch used. If either fires, we record it.
 function Start-Process {
@@ -124,13 +168,22 @@ function Start-Process {
 }
 function Get-Process { param($Id) [pscustomobject]@{ Path = 'C:\fake\pwsh.exe' } }
 
-# scaffolding must NOT happen on this path (the loaded assembly is the OLD one)
+# The scaffold: a minimal project bundling the version the run selected (4.2.1 in [B]).
 function New-ADTTemplate {
-    param($Destination, $Name)
-    Set-Content -LiteralPath (Join-Path $Out 'template.json') -Value '{"scaffolded":true}'
+    param($Destination, $Name, [switch]$PassThru, [switch]$ZeroConfig)
+    Rec "NTT ZeroConfig=$($ZeroConfig.IsPresent) PassThru=$($PassThru.IsPresent)"
+    $p = Join-Path $Destination $Name
+    New-Item -ItemType Directory -Path (Join-Path $p 'PSAppDeployToolkit') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $p 'Invoke-AppDeployToolkit.ps1') -Value '# fake'
+    Set-Content -LiteralPath (Join-Path $p 'Invoke-AppDeployToolkit.exe') -Value 'MZ'
+    Set-Content -LiteralPath (Join-Path $p 'PSAppDeployToolkit\PSAppDeployToolkit.psd1') -Value "@{ ModuleVersion = '4.2.1' }"
 }
 
+$script:PsadtSupportedRange = [pscustomobject]@{ Min = [version]'4.1.0'; MaxExclusive = [version]'4.3.0'; Display = '4.1.x and 4.2.x' }
+. (Join-Path $Repo 'Private\Test-Win32ToolkitPsadtVersionSupported.ps1')
+. (Join-Path $Repo 'Private\Select-Win32ToolkitPsadtModule.ps1')
 . (Join-Path $Repo 'Private\Create-PSADTProject.ps1')
+Remove-Item Env:W32T_PSADT_VERSION -ErrorAction SilentlyContinue
 
 $result = Create-PSADTProject -ProjectName 'App_x64_1.0' -ProjectPath (Join-Path $Out 'Projects')
 
@@ -139,55 +192,60 @@ $result = Create-PSADTProject -ProjectName 'App_x64_1.0' -ProjectPath (Join-Path
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Out 'done.json')
 '@ | Set-Content -LiteralPath $harness -Encoding UTF8
 
-$out = Join-Path $work 'out'
-New-Item -ItemType Directory -Path $out -Force | Out-Null
-
-& (Get-Process -Id $PID).Path -NoProfile -File $harness -Repo $repo -Out $out *> (Join-Path $work 'child.log')
-
-$doneFile  = Join-Path $out 'done.json'
-$startFile = Join-Path $out 'start.json'
-$updFile   = Join-Path $out 'update.json'
-$tmplFile  = Join-Path $out 'template.json'
-$msgFile   = Join-Path $out 'messages.txt'
-
-# 1. the function must hand control back — it must NOT exit the user's session
-if (Test-Path -LiteralPath $doneFile) {
-    Ok 'the function RETURNED — it did not `exit` the host session'
-    $done = Get-Content -LiteralPath $doneFile -Raw | ConvertFrom-Json
-    if ($done.result -eq $false) { Ok 'it returns $false, so the caller aborts instead of scaffolding against a stale assembly' }
-    else { Bad "expected `$false, got $($done.result)" }
+# Runs one scenario in a child pwsh and returns what it recorded.
+function Invoke-Scenario([string]$Name) {
+    $out = Join-Path $work "out$Name"
+    New-Item -ItemType Directory -Path $out -Force | Out-Null
+    & (Get-Process -Id $PID).Path -NoProfile -File $harness -Repo $repo -Out $out -Scenario $Name *> (Join-Path $work "child$Name.log")
+    $done = Join-Path $out 'done.json'
+    [pscustomobject]@{
+        Done    = if (Test-Path -LiteralPath $done) { Get-Content -LiteralPath $done -Raw | ConvertFrom-Json } else { $null }
+        Started = if (Test-Path -LiteralPath (Join-Path $out 'start.json')) { Get-Content -LiteralPath (Join-Path $out 'start.json') -Raw | ConvertFrom-Json } else { $null }
+        Calls   = @(Get-Content -LiteralPath (Join-Path $out 'calls.txt') -ErrorAction SilentlyContinue)
+        Msgs    = if (Test-Path -LiteralPath (Join-Path $out 'messages.txt')) { Get-Content -LiteralPath (Join-Path $out 'messages.txt') -Raw } else { '' }
+    }
 }
-else {
-    Bad 'the function never returned — it still terminates the session with `exit`'
-}
-
-# 2. no bogus process — this is the actual bug
-if (Test-Path -LiteralPath $startFile) {
-    $started = Get-Content -LiteralPath $startFile -Raw | ConvertFrom-Json
-    $cmdline = @($started.ArgumentList) -join ' '
-    Bad "a process was still launched: $($started.FilePath) $cmdline"
-    # and characterise WHY it was wrong, so a future 'option (a)' cannot pass by accident
-    if ($cmdline -match 'Create-PSADTProject\.ps1') { Bad 'it targets the private helper file, not a runnable entry point' }
-    if ($cmdline -match '-ProjectName|-ProjectPath')  { Bad "it passes the HELPER's parameters, not the user's command" }
-}
-else {
-    Ok 'no process is launched at all (the old code launched pwsh -File <private helper> -ProjectName ...)'
+function Assert-NoRelaunch($r) {
+    if ($r.Done) { Ok 'the function RETURNED — it did not `exit` the host session' }
+    else { Bad 'the function never returned — it still terminates the session with `exit`' }
+    if ($r.Started) {
+        $cmdline = @($r.Started.ArgumentList) -join ' '
+        Bad "a process was still launched: $($r.Started.FilePath) $cmdline"
+        # and characterise WHY it was wrong, so a future 'option (a)' cannot pass by accident
+        if ($cmdline -match 'Create-PSADTProject\.ps1') { Bad 'it targets the private helper file, not a runnable entry point' }
+        if ($cmdline -match '-ProjectName|-ProjectPath')  { Bad "it passes the HELPER's parameters, not the user's command" }
+    }
+    else { Ok 'no process is launched at all (the old code launched pwsh -File <private helper> -ProjectName ...)' }
 }
 
-# 3. the update itself still happened
-if (Test-Path -LiteralPath $updFile) { Ok 'PSAppDeployToolkit was still actually updated' }
-else { Bad 'the update did not run — only the post-update behaviour was supposed to change' }
+Write-Host '[A] an older PSADT copy is already loaded in this session' -ForegroundColor Cyan
+$a = Invoke-Scenario 'A'
+Assert-NoRelaunch $a
+if ($a.Done -and $a.Done.result -eq $false) { Ok 'it returns $false, so the caller aborts instead of scaffolding against the loaded copy' }
+elseif ($a.Done) { Bad "expected `$false, got $($a.Done.result)" }
+if (@($a.Calls | Where-Object { $_ -like 'FIND*' -or $_ -like 'INSTALL*' -or $_ -like 'UPDATE*' -or $_ -like 'PROMPT*' }).Count -eq 0) { Ok 'no gallery query, no install, no prompt while a copy is loaded' }
+else { Bad "unexpected calls: $($a.Calls -join ' | ')" }
+if (@($a.Calls | Where-Object { $_ -like 'IMPORT*' -or $_ -like 'NTT*' }).Count -eq 0) { Ok 'nothing is imported and nothing is scaffolded' }
+else { Bad "unexpected calls: $($a.Calls -join ' | ')" }
+if ($a.Msgs -match 'is loaded in this session - start a new PowerShell session to check for updates') { Ok 'the update check explains why it was skipped' } else { Bad 'no "loaded in this session" note' }
+if ($a.Msgs -match '(?i)new\s+powershell\s+session')          { Ok 'the user is told a NEW session is required' }      else { Bad 'no "new session" instruction' }
+if ($a.Msgs -match '(?im)^WARN:.*4\.1\.8 is already loaded.*needs 4\.2\.1') { Ok 'the warning names the loaded and the needed version' } else { Bad 'no warning naming both versions' }
+if ($a.Msgs -match '(?i)re-?run')                              { Ok 'the user is told to re-run their command' }        else { Bad 'no "re-run" instruction' }
+if ($a.Msgs -match '(?i)no project was created')               { Ok 'it says plainly that no project was created' }      else { Bad 'does not say the work was not done' }
 
-# 4. no scaffolding with the stale in-process assembly
-if (-not (Test-Path -LiteralPath $tmplFile)) { Ok 'no project is scaffolded after the update (the old assembly is still loaded)' }
-else { Bad 'New-ADTTemplate ran anyway, against the stale assembly' }
-
-# 5. the user is told, in plain words, what to do
-$msgs = if (Test-Path -LiteralPath $msgFile) { Get-Content -LiteralPath $msgFile -Raw } else { '' }
-if ($msgs -match '(?i)re-?run')                                 { Ok 'the user is told to re-run their command' }        else { Bad 'no "re-run" instruction' }
-if ($msgs -match '(?i)new\s+powershell\s+session|new\s+session'){ Ok 'the user is told a NEW session is required' }      else { Bad 'no "new session" instruction' }
-if ($msgs -match '(?im)^WARN:.*updated to 4\.1\.0')             { Ok 'the update is surfaced as a warning, not buried' }  else { Bad 'no warning naming the new version' }
-if ($msgs -match '(?i)no project was created')                  { Ok 'it says plainly that no project was created' }      else { Bad 'does not say the work was not done' }
+Write-Host '[B] a fresh session accepts the in-range update offer' -ForegroundColor Cyan
+$b = Invoke-Scenario 'B'
+Assert-NoRelaunch $b
+if ($b.Done -and $b.Done.result -eq $true) { Ok 'the project is created in the same session ($true)' }
+elseif ($b.Done) { Bad "expected `$true, got $($b.Done.result) / $($b.Msgs)" }
+$ins = @($b.Calls | Where-Object { $_ -like 'INSTALL*' })
+if ($ins.Count -eq 1 -and $ins[0] -eq 'INSTALL RequiredVersion=4.2.1 Scope=CurrentUser') { Ok 'the offered 4.2.1 (newest in range; 4.3.0 ignored) is installed side by side with -RequiredVersion' }
+else { Bad "installs: $($ins -join ' | ')" }
+if (@($b.Calls | Where-Object { $_ -like 'UPDATE*' }).Count -eq 0) { Ok 'Update-Module is never called' } else { Bad 'Update-Module was called' }
+$imp = @($b.Calls | Where-Object { $_ -like 'IMPORT*' })
+if ($imp.Count -eq 1 -and $imp[0] -match '\\4\.2\.1\\PSAppDeployToolkit\.psd1 Force=False$') { Ok 'the newly installed copy is imported by path, without -Force' }
+else { Bad "imports: $($imp -join ' | ')" }
+if (@($b.Calls | Where-Object { $_ -eq 'NTT ZeroConfig=True PassThru=True' }).Count -eq 1) { Ok 'scaffolded once, with -ZeroConfig -PassThru (4.2)' } else { Bad "calls: $($b.Calls -join ' | ')" }
 
 Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 

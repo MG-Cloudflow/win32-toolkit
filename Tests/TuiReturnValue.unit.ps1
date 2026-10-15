@@ -40,7 +40,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 # ── FAITHFUL PwshSpectreConsole 2.6.3 shadows: renderers RETURN text, Out-SpectreHost passes through ─
 function Write-SpectreRule      { param([Parameter(ValueFromRemainingArguments)]$a) '[rendered:rule]' }
 function Format-SpectrePanel    { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ Renderable = 'panel' } }
-function Format-SpectreTable    { param([Parameter(ValueFromPipeline)]$InputObject, [Parameter(ValueFromRemainingArguments)]$a) end { [pscustomobject]@{ Renderable = 'table' } } }
+$script:tableRows = [System.Collections.Generic.List[object]]::new()   # rows handed to tables (asserted in [5])
+function Format-SpectreTable    { param([Parameter(ValueFromPipeline)]$InputObject, [Parameter(ValueFromRemainingArguments)]$a) process { $script:tableRows.Add($InputObject) } end { [pscustomobject]@{ Renderable = 'table' } } }
 function Out-SpectreHost        { param([Parameter(ValueFromPipeline)]$Data) process { "[rendered:$Data]" } }
 function Write-SpectreHost      { param([Parameter(ValueFromRemainingArguments)]$a) }
 function Get-SpectreEscapedText { param($Text) $Text }
@@ -54,7 +55,10 @@ function Show-Win32ToolkitTestVM { '[rendered:rule]' }
 function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }
 function Test-Win32ToolkitPrerequisites {
     param([Parameter(ValueFromRemainingArguments)]$a)
-    @([pscustomobject]@{ Name = 'PowerShell 7.2+'; Ok = $true; Detail = '7.6'; Fixable = $false; Purpose = 'core' })
+    # Rows with AND without the Warn property (older shadows/rows lack it; the health screen must cope).
+    @([pscustomobject]@{ Name = 'PowerShell 7.2+'; Ok = $true; Detail = '7.6'; Fixable = $false; Purpose = 'core' }
+      [pscustomobject]@{ Name = 'PSAppDeployToolkit (4.1.x and 4.2.x)'; Ok = $true; Detail = 'v4.2.0-rc2 (prerelease - testing only)'; Fixable = $true; Purpose = 'packaging'; Warn = $true }
+      [pscustomobject]@{ Name = 'winget'; Ok = $false; Detail = 'not on PATH'; Fixable = $false; Purpose = 'packaging from winget'; Warn = $false })
 }
 
 # Registry simulation with the real resolution order (-Set persists; -BasePath override wins; then
@@ -121,6 +125,14 @@ if ([regex]::Matches($src, 'Get-Win32ToolkitBasePath\s+-NonInteractive').Count -
 $settingsSrc = Get-Content -Raw (Join-Path $repo 'Private\Show-Win32ToolkitSettings.ps1')
 if ($settingsSrc -notmatch 'Show-Win32ToolkitTestVM\s*\|\s*Out-Null') { Ok 'test-VM subtree is no longer Out-Null-ed (its panels render again)' } else { Bad 'test-VM subtree is still Out-Null-ed (invisible panels)' }
 
+# ══ [5] health screen: a Warn row renders a yellow '!', rows without Warn render as before ═════════
+Write-Host '[5] Show-Win32ToolkitHealth renders OK / ! (Warn) / X per row' -ForegroundColor Cyan
+$script:tableRows.Clear()
+$null = @(Show-Win32ToolkitHealth)
+$state = @{}; foreach ($row in $script:tableRows) { $state[$row.Component] = $row.' ' }
+if ($state['PowerShell 7.2+'] -eq '[green]OK[/]') { Ok 'Ok row without a Warn property -> [green]OK[/]' } else { Bad "row without Warn rendered '$($state['PowerShell 7.2+'])'" }
+if ($state['PSAppDeployToolkit (4.1.x and 4.2.x)'] -eq '[yellow]![/]') { Ok 'Ok row with Warn -> [yellow]![/]' } else { Bad "Warn row rendered '$($state['PSAppDeployToolkit (4.1.x and 4.2.x)'])'" }
+if ($state['winget'] -eq '[red]X[/]') { Ok 'failed row -> [red]X[/]' } else { Bad "failed row rendered '$($state['winget'])'" }
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All TuiReturnValue tests passed.' -ForegroundColor Green; exit 0 }
 else { Write-Host "$fail TuiReturnValue test(s) FAILED." -ForegroundColor Red; exit 1 }

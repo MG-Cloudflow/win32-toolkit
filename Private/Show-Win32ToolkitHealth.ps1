@@ -14,7 +14,9 @@ function Show-Win32ToolkitHealth {
     Write-SpectreRule -Title 'System check' -Color Grey | Out-SpectreHost
     $rows = foreach ($c in $checks) {
         [pscustomobject]@{
-            ' '          = if ($c.Ok) { '[green]OK[/]' } else { '[red]X[/]' }
+            # Warn = usable, but worth a look (e.g. a prerelease PSAppDeployToolkit); rows without the
+            # property render as before.
+            ' '          = if ($c.Ok -and $c.Warn) { '[yellow]![/]' } elseif ($c.Ok) { '[green]OK[/]' } else { '[red]X[/]' }
             'Component'  = $c.Name
             # Wrap so a long status (e.g. the Hyper-V "not elevated ..." message) wraps WITHIN this
             # column instead of forcing the table wide and mid-word-wrapping the label columns.

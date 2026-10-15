@@ -9,15 +9,16 @@ function Test-Win32ToolkitPrerequisites {
     .PARAMETER BasePath
         Optional explicit base folder; otherwise the registry-stored value is checked.
     .OUTPUTS
-        PSCustomObject[] with: Name, Ok (bool), Detail, Fixable (bool), Purpose.
+        PSCustomObject[] with: Name, Ok (bool), Detail, Fixable (bool), Purpose, Warn (bool - usable but
+        worth a look, e.g. a prerelease PSAppDeployToolkit or an ignored unsupported version).
     #>
     [CmdletBinding()]
     [OutputType([System.Object[]])]
     param([string]$BasePath)
 
     $results = [System.Collections.Generic.List[object]]::new()
-    function Add-Check($Name, $Ok, $Detail, $Fixable, $Purpose) {
-        $results.Add([pscustomobject]@{ Name = $Name; Ok = [bool]$Ok; Detail = "$Detail"; Fixable = [bool]$Fixable; Purpose = $Purpose })
+    function Add-Check($Name, $Ok, $Detail, $Fixable, $Purpose, $Warn = $false) {
+        $results.Add([pscustomobject]@{ Name = $Name; Ok = [bool]$Ok; Detail = "$Detail"; Fixable = [bool]$Fixable; Purpose = $Purpose; Warn = [bool]$Warn })
     }
 
     # PowerShell 7.2+
@@ -36,10 +37,24 @@ function Test-Win32ToolkitPrerequisites {
     $winget = [bool](Get-Command winget -ErrorAction SilentlyContinue)
     Add-Check 'winget' $winget ($(if ($winget) { 'available' } else { 'not on PATH' })) $false 'packaging from winget'
 
-    # PSAppDeployToolkit v4
-    $psadt   = Get-Module -ListAvailable PSAppDeployToolkit | Sort-Object Version -Descending | Select-Object -First 1
-    $psadtOk = $psadt -and $psadt.Version.Major -ge 4
-    Add-Check 'PSAppDeployToolkit v4' $psadtOk ($(if ($psadt) { "v$($psadt.Version)" } else { 'not installed' })) $true 'packaging'
+    # PSAppDeployToolkit - the SUPPORTED range, via the same selector new projects use (SCF-05/06):
+    # a prerelease shows its label, and a newer unsupported install is named instead of hidden.
+    $psadtName = "PSAppDeployToolkit ($($script:PsadtSupportedRange.Display))"
+    try {
+        $sel     = Select-Win32ToolkitPsadtModule
+        $psadtOk = $sel.Status -eq 'Selected'
+        $psadtWarn = $false
+        if ($psadtOk) {
+            $psadtDetail = "v$($sel.VersionText)"
+            if ($sel.IsPrerelease) { $psadtDetail += ' (prerelease - testing only)'; $psadtWarn = $true }
+            if (-not $sel.NewestInstalledInRange) { $psadtDetail += "; $($sel.NewestInstalledText) installed but unsupported"; $psadtWarn = $true }
+        }
+        else { $psadtDetail = $sel.Reason }
+        Add-Check $psadtName $psadtOk $psadtDetail $true 'packaging' $psadtWarn
+    }
+    catch {
+        Add-Check $psadtName $false "could not check: $($_.Exception.Message)" $true 'packaging'
+    }
 
     # Windows Sandbox feature
     $sandbox = Test-Path (Join-Path $env:WinDir 'System32\WindowsSandbox.exe')
