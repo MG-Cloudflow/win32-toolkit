@@ -12,7 +12,12 @@ function Get-Win32ToolkitRequirementRule {
 
         Presence uses EXACT/LITERAL, version-agnostic signals only, so it never matches unrelated
         products and never misses due to wildcard characters in the name:
-          1. the install tattoo key (Test-Path -LiteralPath; the primary signal for EXE apps),
+          1. the install tattoo key (Test-Path -LiteralPath; the primary signal for EXE apps), in the
+             native 64-bit view AND in the 32-bit view (HKLM:\SOFTWARE\WOW6432Node\...). Packages that
+             win32-toolkit 1.1.6 or older published ran 'powershell.exe -File' from the 32-bit Intune
+             Management Extension, so their tattoo landed under WOW6432Node; checking that copy keeps
+             devices installed by such a package "already installed" after the app is republished with
+             the Invoke-AppDeployToolkit.exe launcher (which writes the native 64-bit view),
           2. the MSI UpgradeCode (version-stable) via WindowsInstaller RelatedProducts — read from the
              MSI in Files\ so MSI Zero-Config apps (empty App.Name, no tattoo) are covered,
           3. any captured MSI product code (Test-Path -LiteralPath), and
@@ -38,8 +43,10 @@ function Get-Win32ToolkitRequirementRule {
     .PARAMETER RunAsAccount
         Execution context for the requirement script on the device: 'system' (default) or 'user'.
     .PARAMETER RunAs32Bit
-        Run the requirement script in a 32-bit process on 64-bit clients. Default: 64-bit (matches the
-        install tattoo, which is written to the native 64-bit hive).
+        Run the requirement script in a 32-bit process on 64-bit clients. Default: 64-bit, which sees both
+        tattoo views: the native 64-bit one written by a package launched through Invoke-AppDeployToolkit.exe,
+        and the explicit WOW6432Node path of the legacy 32-bit installs. A 32-bit process is redirected to
+        WOW6432Node for HKLM:\SOFTWARE and would miss the native 64-bit tattoo, so leave this off.
     .OUTPUTS
         [hashtable] the requirement rule, or $null if no reliable presence signal is available.
     #>
@@ -64,9 +71,13 @@ function Get-Win32ToolkitRequirementRule {
     # DisplayName is the tattoo name (populated even for MSI Zero-Config, where Name is empty); fall back
     # to Name for projects generated before DisplayName existed.
     $appName = if ($app) { if ($app.PSObject.Properties['DisplayName'] -and $app.DisplayName) { $app.DisplayName } else { $app.Name } } else { $null }
-    $tattooKey = $null
+    $tattooKey   = $null
+    $tattooKey32 = $null
     if ($app -and $app.ScriptAuthor -and $app.Vendor -and $appName) {
-        $tattooKey = "HKLM:\SOFTWARE\$($app.ScriptAuthor)\$($app.Vendor)\$appName"
+        $tattooKey   = "HKLM:\SOFTWARE\$($app.ScriptAuthor)\$($app.Vendor)\$appName"
+        # The same key in the 32-bit registry view: where the tattoo of a package launched by the old
+        # 32-bit 'powershell.exe -File' command line (win32-toolkit 1.1.6 and older) landed.
+        $tattooKey32 = "HKLM:\SOFTWARE\WOW6432Node\$($app.ScriptAuthor)\$($app.Vendor)\$appName"
     }
 
     $productCodes = @()
@@ -117,6 +128,9 @@ function Get-Win32ToolkitRequirementRule {
     if ($tattooKey) {
         # -LiteralPath so a name with [ ] * ? (e.g. "App [x64]") is matched literally, not as a wildcard.
         $lines.Add("if (-not `$found -and (Test-Path -LiteralPath '$(ConvertTo-PSSingleQuoted $tattooKey)')) { `$found = `$true }")
+        # Transition (D5): a device installed by a 32-bit legacy package has its tattoo only under
+        # WOW6432Node. The script runs 64-bit (runAs32Bit = $false), so this explicit path is the 32-bit view.
+        $lines.Add("if (-not `$found -and (Test-Path -LiteralPath '$(ConvertTo-PSSingleQuoted $tattooKey32)')) { `$found = `$true }")
     }
     if ($upgradeCode) {
         # MSI UpgradeCode is stable across versions; RelatedProducts lists installed products sharing it.

@@ -31,6 +31,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitPngBytes.ps1')   # normalizes the tile icon
 . (Join-Path $repo 'Private\Get-Win32ToolkitLargeIconBytes.ps1')   # the app-tile icon (largeIcon) Publish now attaches
 . (Join-Path $repo 'Private\Assert-Win32ToolkitTenant.ps1')        # Publish verifies the tenant before writing
+. (Join-Path $repo 'Private\Get-Win32ToolkitIntuneCommandLine.ps1') # the install/uninstall command lines Publish sends
 . (Join-Path $repo 'Public\Publish-Win32ToolkitIntuneApp.ps1')
 
 # ── shadows ──────────────────────────────────────────────────────────────────────────────────────

@@ -1,5 +1,7 @@
 <#
-    Publish app-body shape — arm64 architecture (G12) and the MSIX min-OS floor (G8).
+    Publish app-body shape — arm64 architecture (G12), the MSIX min-OS floor (G8), and the Intune
+    command lines / return codes (PKG-01: launched via Invoke-AppDeployToolkit.exe, never a bare
+    32-bit powershell.exe).
 
     THE BUG (G12): the body sent 'applicableArchitectures' = $arch, and $arch can be 'arm64'
     (New-Win32ToolkitManualApp's ValidateSet and the '_arm64_' project-folder parse both produce it).
@@ -125,6 +127,23 @@ try {
     Write-Host '[5] A non-MSIX keeps the configured floor (no unintended raise)' -ForegroundColor Cyan
     $bi = Get-Body (New-Proj -Name 'Msi' -Arch 'x64' -InstallerType 'msi' -MinRelease '1607')
     if ($bi.minimumSupportedWindowsRelease -eq '1607') { Ok 'msi + 1607 -> unchanged' } else { Bad "msi minOS = [$($bi.minimumSupportedWindowsRelease)]" }
+
+    Write-Host '[6] PKG-01/PKG-02: the app is launched via Invoke-AppDeployToolkit.exe (the helper''s command lines)' -ForegroundColor Cyan
+    # The 32-bit Intune Management Extension resolved the old bare 'powershell.exe' to SysWOW64: PSADT 4.2
+    # exits 60008 there and PSADT 4.1 tattooed WOW6432Node. The body must carry exactly the helper's lines.
+    $cl = Get-Win32ToolkitIntuneCommandLine
+    $be = Get-Body (New-Proj -Name 'Exe' -Arch 'x64' -InstallerType 'exe')
+    if ($be.installCommandLine -ceq $cl.Install) { Ok "installCommandLine = '$($be.installCommandLine)'" } else { Bad "installCommandLine = '$($be.installCommandLine)'" }
+    if ($be.uninstallCommandLine -ceq $cl.Uninstall) { Ok "uninstallCommandLine = '$($be.uninstallCommandLine)'" } else { Bad "uninstallCommandLine = '$($be.uninstallCommandLine)'" }
+    if ("$($be.installCommandLine)" -notmatch '^\s*powershell' -and "$($be.uninstallCommandLine)" -notmatch '^\s*powershell') { Ok 'neither command line starts with powershell.exe' } else { Bad 'a command line still starts with powershell' }
+    if ("$($be.installCommandLine) $($be.uninstallCommandLine)" -notmatch '-DeployMode|AllowWowProcess|Sysnative') { Ok 'no -DeployMode / AllowWowProcess / Sysnative (D4, D6)' } else { Bad 'forbidden token in a command line' }
+    if ($be.setupFilePath -ceq 'Invoke-AppDeployToolkit.ps1' -and $be.fileName -ceq 'Invoke-AppDeployToolkit.ps1') { Ok 'setupFilePath / fileName stay Invoke-AppDeployToolkit.ps1' } else { Bad "setupFilePath='$($be.setupFilePath)' fileName='$($be.fileName)'" }
+    if ($be.installExperience.runAsAccount -eq 'system') { Ok 'still runs as SYSTEM' } else { Bad "runAsAccount = '$($be.installExperience.runAsAccount)'" }
+
+    Write-Host '[7] returnCodes are exactly 0/1707 success, 3010 soft, 1641 hard, 1618 retry (1602 stays unmapped, D13)' -ForegroundColor Cyan
+    $rc = @($be.returnCodes | ForEach-Object { "$($_.returnCode)=$($_.type)" } | Sort-Object)
+    $expected = @('0=success', '1618=retry', '1641=hardReboot', '1707=success', '3010=softReboot') | Sort-Object
+    if (($rc -join ',') -ceq ($expected -join ',')) { Ok "returnCodes: $($rc -join ', ')" } else { Bad "returnCodes: $($rc -join ', ')" }
 }
 finally {
     Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue

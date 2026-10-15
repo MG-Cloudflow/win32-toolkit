@@ -197,20 +197,25 @@ function Export-Win32ToolkitDocumentation {
 
     $null = $sb.AppendLine('## Overview')
     if ($description) { $null = $sb.AppendLine($description) }
-    else { $null = $sb.AppendLine("$displayName packaged for silent deployment via Microsoft Intune.") }
+    else { $null = $sb.AppendLine("$displayName packaged for deployment via Microsoft Intune.") }
     if ($infoUrl) { $null = $sb.AppendLine(); $null = $sb.AppendLine("More information: <$infoUrl>") }
     $null = $sb.AppendLine()
 
+    # The command lines are exactly what Publish sends to Intune (one helper, so the two never drift).
+    # The interaction sentence is deliberately version-neutral: whether a user sees dialogs depends on the
+    # org template's welcome/progress settings and on whether the app is running, and the exact rules
+    # differ between PSADT 4.1 and 4.2 (it is no longer claimed to be silent).
+    $intuneCommandLine = Get-Win32ToolkitIntuneCommandLine
     $null = $sb.AppendLine('## Deployment')
     $null = $sb.AppendLine("- **Installer type:** $installType")
-    $null = $sb.AppendLine('- Runs **silently, as SYSTEM** (no user interaction required).')
+    $null = $sb.AppendLine(('- Runs **as SYSTEM** via `{0}` (64-bit PowerShell). Whether the signed-in user sees dialogs (close the app, defer, progress) depends on the organisation template and on whether the app is running at install time.' -f $intuneCommandLine.Launcher))
     $null = $sb.AppendLine('- **Install command:**')
     $null = $sb.AppendLine('  ```')
-    $null = $sb.AppendLine('  powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Install')
+    $null = $sb.AppendLine("  $($intuneCommandLine.Install)")
     $null = $sb.AppendLine('  ```')
     $null = $sb.AppendLine('- **Uninstall command:**')
     $null = $sb.AppendLine('  ```')
-    $null = $sb.AppendLine('  powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Uninstall')
+    $null = $sb.AppendLine("  $($intuneCommandLine.Uninstall)")
     $null = $sb.AppendLine('  ```')
     $null = $sb.AppendLine("- **Detection:** $detectionText")
     $minReleaseText = if ($docMinRelease -eq '1607') { 'Windows 10 1607 (build 14393) or later' } else { "Windows release $docMinRelease or later" }

@@ -22,6 +22,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 # Real readers — safe, read only files we create.
 . (Join-Path $repo 'Private\Get-Win32ToolkitAppConfig.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitPublication.ps1')
+# The real command-line source: the doc must print exactly what Publish sends to Intune.
+. (Join-Path $repo 'Private\Get-Win32ToolkitIntuneCommandLine.ps1')
 
 # ── A raw sandbox host path we must NEVER see echoed into the doc ──────────────────
 $rawSandboxPath = 'C:\Users\WDAGUtilityAccount\AppData\Local\FakeApp\fake.exe'
@@ -112,10 +114,20 @@ $md = Get-Content -LiteralPath $outPath -Raw
 
 if ($md -match '# Widget Pro 3\.2\.1') { Ok 'title has DisplayName + Version' } else { Bad 'title missing' }
 
-$installLine = 'powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Install'
-if ($md.Contains($installLine)) { Ok 'exact install command line present' } else { Bad 'install command line missing/wrong' }
-$uninstallLine = 'powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Uninstall'
-if ($md.Contains($uninstallLine)) { Ok 'exact uninstall command line present' } else { Bad 'uninstall command line missing/wrong' }
+# Expected lines come from the SAME helper Publish uses (TST-06/DOC-06: the doc printed a command line
+# Intune never ran once the launcher changed).
+$cl = Get-Win32ToolkitIntuneCommandLine
+$mdLines = @($md -split "\r?\n")
+if ($mdLines -ccontains "  $($cl.Install)") { Ok "exact install command line present ($($cl.Install))" } else { Bad 'install command line missing/wrong' }
+if ($mdLines -ccontains "  $($cl.Uninstall)") { Ok "exact uninstall command line present ($($cl.Uninstall))" } else { Bad 'uninstall command line missing/wrong' }
+if ($md -notmatch 'powershell\.exe') { Ok 'no powershell.exe command line (the 32-bit IME launch, PKG-01)' } else { Bad 'powershell.exe still documented' }
+
+# Interaction wording: true on PSADT 4.1 and 4.2 (no more "silently ... no user interaction required").
+$runsLine = '- Runs **as SYSTEM** via `Invoke-AppDeployToolkit.exe` (64-bit PowerShell). Whether the signed-in user sees dialogs (close the app, defer, progress) depends on the organisation template and on whether the app is running at install time.'
+if ($mdLines -ccontains $runsLine) { Ok 'interaction line: as SYSTEM via the launcher; dialogs depend on the template and running apps' } else { Bad 'interaction line missing/wrong' }
+if ($md -notmatch 'silently, as SYSTEM' -and $md -notmatch 'no user interaction required') { Ok 'the "silent, no user interaction" claim is gone' } else { Bad 'still claims a silent install' }
+$runsBytes = [System.Text.Encoding]::UTF8.GetBytes((@($mdLines | Where-Object { $_ -match 'Runs \*\*as SYSTEM' }) -join ''))
+if (@($runsBytes | Where-Object { $_ -gt 127 }).Count -eq 0) { Ok 'interaction line is ASCII' } else { Bad 'interaction line has non-ASCII characters' }
 
 if ($md -match 'version marker in the registry \(HKLM\\SOFTWARE\\Contoso IT\\Vendorly\\Widget Pro\\Version = 3\.2\.1\)') {
     Ok 'plain-English registry-version detection sentence'
@@ -170,7 +182,11 @@ if (-not $threw) {
     $mdBare = Get-Content -LiteralPath $outBare -Raw
     if ($mdBare -match 'No automated tests recorded yet') { Ok 'no-tests fallback line' } else { Bad 'no-tests fallback missing' }
     if ($mdBare -match 'not captured' -or $mdBare -match 'were not captured') { Ok 'no-capture fallback line' } else { Bad 'no-capture fallback missing' }
+    # No description -> the fallback Overview sentence must not claim a silent install either (DOC-06).
+    if (@($mdBare -split "\r?\n") -ccontains 'Application packaged for deployment via Microsoft Intune.') { Ok 'no-description fallback is version-neutral' } else { Bad 'no-description fallback sentence missing/wrong' }
+    if ($mdBare -notmatch '(?i)\bsilent') { Ok 'no "silent" wording anywhere in the fallback doc' } else { Bad 'the fallback doc still says silent' }
 }
+if ($md -notmatch '(?i)\bsilent') { Ok 'no "silent" wording anywhere in the default doc' } else { Bad 'the default doc still says silent' }
 
 # ══ Manifest ══════════════════════════════════════════════════════════════════════
 Write-Host '[5] Manifest export' -ForegroundColor Cyan

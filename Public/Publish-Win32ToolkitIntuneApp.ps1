@@ -19,6 +19,24 @@ function Publish-Win32ToolkitIntuneApp {
 
     Requires the Microsoft.Graph.Authentication module (installed automatically on prompt).
 
+    Command lines (from Get-Win32ToolkitIntuneCommandLine, the single source; the app runs as SYSTEM):
+
+        Install   : Invoke-AppDeployToolkit.exe -DeploymentType Install
+        Uninstall : Invoke-AppDeployToolkit.exe -DeploymentType Uninstall
+
+    The package is started through PSADT's launcher, not through 'powershell.exe -File'. The Intune
+    Management Extension is a 32-bit process, so a bare 'powershell.exe' resolves to the 32-bit
+    (SysWOW64) Windows PowerShell on 64-bit devices: PSADT 4.2 then refuses to run (exit 60008), and
+    PSADT 4.1 runs 32-bit and writes the install tattoo under HKLM\SOFTWARE\WOW6432Node, where the
+    64-bit tattoo detection rule never finds it. Invoke-AppDeployToolkit.exe is AnyCPU and always starts
+    the 64-bit Windows PowerShell. No -DeployMode is passed: PSADT chooses the mode itself.
+
+    Apps published by win32-toolkit 1.1.6 or older keep their old 'powershell.exe -File' command line:
+    this command always creates a NEW app and never edits an existing one. Republish those apps (and
+    retire the old ones), or edit their install and uninstall command lines in the Intune portal to the
+    two lines above. The update requirement (-AsUpdate) also accepts the WOW6432Node tattoo those
+    32-bit installs left behind.
+
     With -AsUpdate the same .intunewin is published as a SECOND app of the same version whose
     requirement rule (a PowerShell presence check, built by Get-Win32ToolkitRequirementRule) makes it
     applicable only to devices that already have the app — the classic Intune "install app + update
@@ -248,6 +266,11 @@ function Publish-Win32ToolkitIntuneApp {
         # ── Step 1: Create app shell ──────────────────────────────────────────────
         Write-Verbose 'Creating app in Intune...'
 
+        # Command lines come from ONE helper (also used by Export-Win32ToolkitDocumentation): PSADT's AnyCPU
+        # launcher, so the 32-bit Intune Management Extension can never start a 32-bit PowerShell (PSADT 4.2
+        # exits 60008 there; PSADT 4.1 writes its tattoo to WOW6432Node). The setup file stays the .ps1.
+        $intuneCommandLine = Get-Win32ToolkitIntuneCommandLine
+
         $appBody = @{
             '@odata.type'                      = '#microsoft.graph.win32LobApp'
             'displayName'                      = $displayName
@@ -258,10 +281,10 @@ function Publish-Win32ToolkitIntuneApp {
             'privacyInformationUrl'            = $privacyUrl
             'notes'                            = (@('win32-toolkit'; if ($AsUpdate) { 'update' }; if ($wingetId) { $wingetId }) | Where-Object { $_ }) -join '; '
             'isFeatured'                       = $false
-            'fileName'                         = 'Invoke-AppDeployToolkit.ps1'
-            'setupFilePath'                    = 'Invoke-AppDeployToolkit.ps1'
-            'installCommandLine'               = 'powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Install'
-            'uninstallCommandLine'             = 'powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Uninstall'
+            'fileName'                         = $intuneCommandLine.Script
+            'setupFilePath'                    = $intuneCommandLine.Script
+            'installCommandLine'               = $intuneCommandLine.Install
+            'uninstallCommandLine'             = $intuneCommandLine.Uninstall
             $archField                         = $arch
             'minimumSupportedWindowsRelease'   = $minWinRelease
             'msiInformation'                   = $null
