@@ -19,8 +19,9 @@ function Apply-OrgTemplate {
         What is guaranteed:
           * The inputs are all checked before anything is written: the template text (D9,
             W32T.OrgTemplateInvalid), the deploy-script shape (W32T.UnsupportedTemplateShape), the
-            strings.psd1 anchors (W32T.OrgTemplateDrift), the org-ui block anchors and the extension
-            module (Assert-Win32ToolkitOrgExtensionModule, W32T.OrgExtensionInvalid).
+            strings.psd1 anchors (W32T.OrgTemplateDrift), the org-ui block anchors, the extension
+            module (Assert-Win32ToolkitOrgExtensionModule, W32T.OrgExtensionInvalid) and the computed
+            config.psd1 / strings.psd1 text (one hashtable, no parse error; W32T.OrgTemplateInvalid).
           * The deploy script is written first; its writer (host + 5.1 parse) restores it and throws
             W32T.GeneratedScriptInvalid on failure, so config.psd1, strings.psd1 and AppConfig.json are then
             untouched too. They are written next.
@@ -49,8 +50,10 @@ function Apply-OrgTemplate {
         # Private\Set-Win32ToolkitTextBlock.ps1, dot-sourced by the loader.
 
         # Escape single quotes so a free-text template value (balloon/progress messages) stays a valid
-        # single-quoted literal in the generated strings.psd1. [string]$null -> ''.
-        function Esc { param([string]$s) $s -replace "'", "''" }
+        # single-quoted literal in the generated strings.psd1: EVERY PowerShell single-quote character is
+        # doubled (ConvertTo-PSSingleQuoted: the apostrophe and the typographic U+2018/U+2019/U+201A/U+201B,
+        # which also end a '...' literal under 5.1 and 7). [string]$null -> ''.
+        function Esc { param([string]$s) ConvertTo-PSSingleQuoted $s }
 
         # Defensive template read: $Default for a missing (older-schema) property or a $null value.
         function Get-OrgUiField { param($Object, [string]$Name, $Default) if ($Object -and $Object.PSObject.Properties[$Name] -and $null -ne $Object.$Name) { $Object.$Name } else { $Default } }
@@ -158,6 +161,27 @@ function Apply-OrgTemplate {
             else { $appCfg.App | Add-Member -NotePropertyName ScriptAuthor -NotePropertyValue $author -Force }
         }
         else { $appCfg | Add-Member -NotePropertyName App -NotePropertyValue ([pscustomobject]@{ ScriptAuthor = $author }) -Force }
+
+        #-- psd1 gate: BEFORE any write (defence in depth) --
+        # PSADT loads config.psd1 and strings.psd1 as data files on the device: text that does not parse to
+        # ONE hashtable fails every deployment. Template text is escaped above; this refuses anything that
+        # still slipped through (W32T.OrgTemplateInvalid), before a single file is written.
+        foreach ($psd1 in @([pscustomobject]@{ Path = $configPath; Text = $cfgText }, [pscustomobject]@{ Path = $strPath; Text = $str })) {
+            if ($null -eq $psd1.Text) { continue }
+            $psd1Errors = $null
+            $psd1Ast = [System.Management.Automation.Language.Parser]::ParseInput($psd1.Text, [ref]$null, [ref]$psd1Errors)
+            $statements = @($psd1Ast.EndBlock.Statements)
+            $isTable = $statements.Count -eq 1 -and $statements[0] -is [System.Management.Automation.Language.PipelineAst] -and
+                @($statements[0].PipelineElements).Count -eq 1 -and
+                $statements[0].PipelineElements[0] -is [System.Management.Automation.Language.CommandExpressionAst] -and
+                $statements[0].PipelineElements[0].Expression -is [System.Management.Automation.Language.HashtableAst]
+            if (@($psd1Errors).Count -gt 0 -or -not $isTable) {
+                $why = if (@($psd1Errors).Count -gt 0) { "parse error: $($psd1Errors[0].Message.TrimEnd('.'))" } else { 'it is not a single hashtable' }
+                throw [System.Management.Automation.ErrorRecord]::new(
+                    [System.InvalidOperationException]::new("Org template '$($Template.TemplateName)' would make $($psd1.Path) invalid PowerShell data ($why), so every deployment would fail. Check the template's text fields. Nothing was changed."),
+                    'W32T.OrgTemplateInvalid', [System.Management.Automation.ErrorCategory]::InvalidData, $psd1.Path)
+            }
+        }
 
         #── write (everything above succeeded) ─────────────────────────────
         # The deploy script goes FIRST: its writer is the only step that validates its output (host + 5.1

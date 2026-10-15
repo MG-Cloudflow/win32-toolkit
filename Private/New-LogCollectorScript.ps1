@@ -11,7 +11,10 @@ function New-LogCollectorScript {
 
         The collector gathers *.log/*.zip from the PSADT log locations (admin default
         %WinDir%\Logs\Software, non-admin %ProgramData%\Logs\Software, plus any custom LogPath read
-        from the packaged Config\config.psd1) and MSI*.log dropped in the TEMP folders.
+        from the packaged Config\config.psd1) and MSI*.log dropped in the TEMP folders. A custom LogPath
+        is expanded the way PSADT allows (TST-07): ${env:Name}, $env:Name and PSADT's $envName aliases,
+        all resolved with [Environment]::GetEnvironmentVariable inside the sandbox; a path with an unknown
+        variable is skipped rather than searched half-expanded.
 
         The Sandbox\ folder is stripped from the Staging copy during packaging, so these logs never
         ship inside the .intunewin.
@@ -48,14 +51,42 @@ $sources = [System.Collections.Generic.List[string]]::new()
 $sources.Add((Join-Path $env:WinDir 'Logs\Software'))
 $sources.Add((Join-Path $env:ProgramData 'Logs\Software'))
 
+# Expands the variables a PSADT LogPath may use: ${env:Name}, $env:Name and PSADT's $envName aliases
+# (the environment variable without the 'env' prefix; $envProgramFilesX86 / $envCommonProgramFilesX86
+# map to the '(x86)' names). Returns $null when any variable is unknown or empty, so a half-expanded
+# path is never searched.
+function Resolve-W32tLogPath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    $sb = New-Object System.Text.StringBuilder
+    $last = 0
+    foreach ($m in [regex]::Matches($Path, '\$\{env:(\w+)\}|\$env:(\w+)|\$env(\w+)', 'IgnoreCase')) {
+        [void]$sb.Append($Path.Substring($last, $m.Index - $last))
+        if ($m.Groups[1].Success) { $name = $m.Groups[1].Value }
+        elseif ($m.Groups[2].Success) { $name = $m.Groups[2].Value }
+        else {
+            $name = $m.Groups[3].Value
+            if ($name -eq 'ProgramFilesX86') { $name = 'ProgramFiles(x86)' }
+            elseif ($name -eq 'CommonProgramFilesX86') { $name = 'CommonProgramFiles(x86)' }
+        }
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if ([string]::IsNullOrEmpty($value)) { return $null }
+        [void]$sb.Append($value)
+        $last = $m.Index + $m.Length
+    }
+    [void]$sb.Append($Path.Substring($last))
+    $resolved = $sb.ToString()
+    if ($resolved.Contains('$')) { return $null }
+    return $resolved
+}
+
 # Honor a custom LogPath from the packaged config.psd1, if present.
 try {
     $cfg = Import-PowerShellDataFile 'C:\PSADT\Config\config.psd1'
     foreach ($section in @($cfg.Toolkit, $cfg.MSI)) {
         if ($section -and $section.LogPath) {
-            $lp = [string]$section.LogPath
-            $lp = $lp.Replace('$envWinDir', $env:WinDir).Replace('$envProgramData', $env:ProgramData).Replace('$envSystemDrive', $env:SystemDrive)
-            $sources.Add($lp)
+            $lp = Resolve-W32tLogPath -Path ([string]$section.LogPath)
+            if ($lp) { $sources.Add($lp) }
         }
     }
 } catch { }

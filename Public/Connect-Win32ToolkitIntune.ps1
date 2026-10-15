@@ -58,7 +58,8 @@ function Connect-Win32ToolkitIntune {
     try {
         $templateName = $Template
         if (-not $TenantId -and $Template) {
-            $tpl = Get-OrgTemplate -TemplateName $Template -BasePath (Get-Win32ToolkitBasePath -BasePath $BasePath -NonInteractive)
+            # Only TenantId is read here, so a template whose dialog text needs fixing must not block sign-in.
+            $tpl = Get-OrgTemplate -TemplateName $Template -BasePath (Get-Win32ToolkitBasePath -BasePath $BasePath -NonInteractive) -SkipTextValidation
             if (-not $tpl) { throw "Org template '$Template' not found." }
             if ($tpl.PSObject.Properties['TenantId'] -and $tpl.TenantId) {
                 $TenantId = [string]$tpl.TenantId

@@ -32,13 +32,11 @@ function Get-AppIconFromWinget {
 
         Write-Verbose "Downloading app icon from WinGet: $iconUrl"
 
-        # Determine save paths
-        $assetsPath    = Join-Path $ProjectPath 'Assets'
-        $psdtAssetsPath = Join-Path $ProjectPath 'PSAppDeployToolkit\Assets'
-
-        foreach ($folder in @($assetsPath, $psdtAssetsPath)) {
-            if (-not (Test-Path $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
-        }
+        # Save path: the project's Assets\ only. The sparse config points Assets.Logo there explicitly
+        # (New-Win32ToolkitSparseConfig), so nothing is mirrored into the bundled PSAppDeployToolkit\ module
+        # (on PSADT 4.2 that would only add a stray folder to the module; SCF-11 / ORG-13).
+        $assetsPath = Join-Path $ProjectPath 'Assets'
+        if (-not (Test-Path $assetsPath)) { New-Item -ItemType Directory -Path $assetsPath -Force | Out-Null }
 
         $maxBytes = 5MB
 
@@ -90,10 +88,6 @@ function Get-AppIconFromWinget {
             $icoDest = Join-Path $assetsPath 'AppIcon.ico'
             [System.IO.File]::WriteAllBytes($icoDest, $bytes)
         }
-
-        # Also copy to PSAppDeployToolkit\Assets so the toolkit's own default is replaced
-        $psdtIconDest = Join-Path $psdtAssetsPath 'AppIcon.png'
-        Copy-Item -Path $iconDest -Destination $psdtIconDest -Force
 
         # Record provenance so the capture-time icon reconcile (finalize) keeps this winget icon over the
         # one extracted from the install run (the winget-primary precedence decision).

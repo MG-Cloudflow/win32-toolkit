@@ -84,15 +84,21 @@ if (Test-Path -LiteralPath $t.Png) {
     $written = [System.IO.File]::ReadAllBytes($t.Png)
     if ($written.Length -eq $realPng.Length -and $written[0] -eq 0x89) { Ok 'the exact PNG bytes were written' } else { Bad 'written bytes do not match the PNG body' }
 }
+# SCF-11 / ORG-13: no mirror into the bundled module (PSADT 4.2 layout: it has no Assets\ folder).
+if (-not (Test-Path -LiteralPath (Join-Path $t.Project 'PSAppDeployToolkit'))) { Ok 'no PSAppDeployToolkit\Assets folder created (no mirror)' } else { Bad 'a PSAppDeployToolkit\ folder was created in the project' }
 
 # ── (b2) https + real ICO magic bytes: also writes AppIcon.ico ─────────────────────────────────────
 Write-Host '[b2] https + ICO magic bytes -> AppIcon.ico written alongside AppIcon.png' -ForegroundColor Cyan
 Reset-Iwr
 $script:iwrBody = $realIco
 $t = New-Proj -IconUrl 'https://example.com/whatever.png'   # URL ext lies (.png) but bytes are ICO
+# PSADT 4.1.8 layout: the bundled module has an Assets\ folder - it must stay untouched.
+New-Item -ItemType Directory -Path (Join-Path $t.Project 'PSAppDeployToolkit\Assets') -Force | Out-Null
 $r = Get-AppIconFromWinget -ProjectPath $t.Project -FilesPath $t.Files 3>$null 6>$null
 if ($r -eq $true)                  { Ok 'returns $true for a valid ICO over HTTPS' } else { Bad "valid ICO returned $r" }
 if (Test-Path -LiteralPath $t.Ico) { Ok 'AppIcon.ico written from the detected type (not the URL extension)' } else { Bad 'no AppIcon.ico for genuine ICO bytes' }
+$mirror = @(Get-ChildItem -LiteralPath (Join-Path $t.Project 'PSAppDeployToolkit\Assets') -Force -ErrorAction SilentlyContinue)
+if ($mirror.Count -eq 0) { Ok 'nothing written under PSAppDeployToolkit\Assets (no mirror)' } else { Bad "mirror written: $($mirror.Name -join ', ')" }
 
 # ── (c) https + non-image body: refused, no icon written over the default ─────────────────────────
 Write-Host '[c] https + non-image body (<html>) -> $false, default icon preserved' -ForegroundColor Cyan

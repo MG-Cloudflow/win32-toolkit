@@ -2,8 +2,22 @@ function Get-OrgTemplate {
     [CmdletBinding()]
     param(
         [string]$TemplateName = '',
-        [string]$BasePath
+        [string]$BasePath,
+        # Skip the D9 text check (Assert-Win32ToolkitOrgTemplateText) on a stored template. Only for
+        # callers that read nothing PSADT expands (Connect-Win32ToolkitIntune reads TenantId); every
+        # packaging path keeps the check.
+        [switch]$SkipTextValidation
     )
+
+    # A stored template is re-validated on every load: it may predate the D9 rules or have been
+    # hand-edited, and text PSADT cannot expand fails every deployment built from it.
+    $validateText = -not $SkipTextValidation
+    function Assert-LoadedTemplate {
+        param([PSCustomObject]$Tpl)
+        if (-not $validateText -or -not $Tpl) { return }
+        # Throws W32T.OrgTemplateInvalid; the default -Context is "template '<TemplateName>'".
+        Assert-Win32ToolkitOrgTemplateText -Template $Tpl
+    }
 
     if ([string]::IsNullOrWhiteSpace($BasePath)) { $BasePath = Get-Win32ToolkitBasePath }
     $templateFolder = (Get-Win32ToolkitPaths -BasePath $BasePath).Templates
@@ -17,6 +31,7 @@ function Get-OrgTemplate {
         if (Test-Path $specificPath) {
             $t = Get-Content -Path $specificPath -Raw -Encoding UTF8 | ConvertFrom-Json
             $t = Update-OrgTemplateIfNeeded -Template $t -FilePath $specificPath
+            Assert-LoadedTemplate $t
             Write-Host "✓ Loaded org template: $($t.TemplateName)" -ForegroundColor Green
             return $t
         } else {
@@ -36,6 +51,7 @@ function Get-OrgTemplate {
     if ($templates.Count -eq 1) {
         $t = Get-Content -Path $templates[0].FullName -Raw -Encoding UTF8 | ConvertFrom-Json
         $t = Update-OrgTemplateIfNeeded -Template $t -FilePath $templates[0].FullName
+        Assert-LoadedTemplate $t
         Write-Host "✓ Loaded org template: $($t.TemplateName)" -ForegroundColor Green
         return $t
     }
@@ -81,6 +97,7 @@ function Get-OrgTemplate {
 
     $t = Get-Content -Path $templates[$parsed - 1].FullName -Raw -Encoding UTF8 | ConvertFrom-Json
     $t = Update-OrgTemplateIfNeeded -Template $t -FilePath $templates[$parsed - 1].FullName
+    Assert-LoadedTemplate $t
     Write-Host "✓ Loaded org template: $($t.TemplateName)" -ForegroundColor Green
     return $t
 }

@@ -13,8 +13,8 @@ function Import-Win32ToolkitCapturedIcon {
         one is kept. A 'template' org-logo fallback (B7) is NOT authoritative: a real captured icon is
         better than the org default, so it overrides 'template'. Otherwise (no winget IconUrl, a manual app
         with no -IconPath, or only the org-logo fallback) the captured icon is promoted: validated as a real
-        image, written to Assets\AppIcon.png (and the PSAppDeployToolkit\Assets mirror so PSADT's own dialogs
-        use it too), and the marker is set to 'captured'.
+        image, written to Assets\AppIcon.png (the sparse config points PSADT's dialogs there explicitly, so
+        nothing is mirrored into the bundled module), and the marker is set to 'captured'.
 
         Returns $true when the captured icon was promoted, $false otherwise (nothing captured, precedence
         kept the existing icon, or the captured file was not a valid image).
@@ -52,13 +52,6 @@ function Import-Win32ToolkitCapturedIcon {
     $assets = Join-Path $ProjectPath 'Assets'
     if (-not (Test-Path -LiteralPath $assets)) { New-Item -ItemType Directory -Path $assets -Force | Out-Null }
     [System.IO.File]::WriteAllBytes((Join-Path $assets 'AppIcon.png'), $png)
-
-    # Mirror into the toolkit's own Assets so PSADT's on-device dialogs use the real icon too.
-    $psadtAssets = Join-Path $ProjectPath 'PSAppDeployToolkit\Assets'
-    if (Test-Path -LiteralPath $psadtAssets) {
-        try { [System.IO.File]::WriteAllBytes((Join-Path $psadtAssets 'AppIcon.png'), $png) }
-        catch { Write-Verbose "Could not mirror the icon into PSAppDeployToolkit\Assets: $($_.Exception.Message)" }
-    }
 
     Set-Win32ToolkitIconSource -ProjectPath $ProjectPath -Source 'captured'
     Write-Host '✓ Applied the icon captured from the install run to Assets\AppIcon.png' -ForegroundColor Green

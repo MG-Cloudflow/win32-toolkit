@@ -8,9 +8,11 @@ function Add-Win32ToolkitTemplateAssets {
         them into the project so PSADT dialogs and the Intune tile carry the org's branding instead of
         the PSADT default. Runs from Apply-OrgTemplate.
 
-        The PSADT config defaults already point Logo/LogoDark at '..\Assets\AppIcon.png' and Banner at
-        '..\Assets\Banner.Classic.png', so simply dropping the files in Assets\ brands every dialog with
-        NO config change (light + dark both use AppIcon.png; Classic uses the banner).
+        The sparse config sets Assets.Logo / Assets.Banner explicitly to '..\Assets\AppIcon.png' and
+        '..\Assets\Banner.Classic.png' (New-Win32ToolkitSparseConfig - needed on PSADT 4.2, whose module
+        defaults are embedded Base64 images), so dropping the files in the project's Assets\ brands every
+        dialog on 4.1 and 4.2 (Classic uses the banner). Nothing is copied into the bundled
+        PSAppDeployToolkit\ module folder.
 
         AppIcon.png (B7 — also the Intune tile via Publish's Get-Win32ToolkitLargeIconBytes) is applied
         as a precedence-respecting BASE: only when nothing better has been stamped. Every app-specific
@@ -53,11 +55,10 @@ function Add-Win32ToolkitTemplateAssets {
     $assetsSrc = Join-Path $assetFolder 'Assets'
     if (-not (Test-Path -LiteralPath $assetsSrc)) { return }
 
-    $projAssets  = Join-Path $ProjectPath 'Assets'
-    $psadtAssets = Join-Path $ProjectPath 'PSAppDeployToolkit\Assets'
+    $projAssets = Join-Path $ProjectPath 'Assets'
     if (-not (Test-Path -LiteralPath $projAssets)) { New-Item -ItemType Directory -Path $projAssets -Force | Out-Null }
 
-    # Copies validated PNG bytes to project Assets AND the PSADT mirror so on-device dialogs use it too.
+    # Copies validated PNG bytes to the project's Assets\ (the sparse config points the dialogs there).
     function Copy-BrandingPng {
         param([string]$SrcFile, [string]$DestName)
         if (-not (Test-Path -LiteralPath $SrcFile)) { return $false }
@@ -67,10 +68,6 @@ function Add-Win32ToolkitTemplateAssets {
         $png = ConvertTo-Win32ToolkitPngBytes -Bytes $raw
         if (-not $png) { Write-Warning "Template asset '$([System.IO.Path]::GetFileName($SrcFile))' is not a valid image — skipped."; return $false }
         [System.IO.File]::WriteAllBytes((Join-Path $projAssets $DestName), $png)
-        if (Test-Path -LiteralPath $psadtAssets) {
-            try { [System.IO.File]::WriteAllBytes((Join-Path $psadtAssets $DestName), $png) }
-            catch { Write-Verbose "Could not mirror '$DestName' into PSAppDeployToolkit\Assets: $($_.Exception.Message)" }
-        }
         return $true
     }
 

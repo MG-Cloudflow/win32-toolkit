@@ -146,10 +146,14 @@ $p3 = New-TempProject
 try {
     [System.IO.File]::WriteAllBytes((Join-Path $p3 'Assets\AppIcon.png'), $pngA)  # PSADT default stand-in
     [System.IO.File]::WriteAllBytes((Join-Path $p3 'Sandbox\Logs\AppIcon_Captured.png'), $pngB)
+    # PSADT 4.1.8 layout: the bundled module has an Assets\ folder - the promotion must not write into it.
+    New-Item -ItemType Directory -Path (Join-Path $p3 'PSAppDeployToolkit\Assets') -Force | Out-Null
     $r = Import-Win32ToolkitCapturedIcon -ProjectPath $p3 6>$null
     $after = [System.IO.File]::ReadAllBytes((Join-Path $p3 'Assets\AppIcon.png'))
     if ($r -eq $true -and (BytesEqual $after $pngB) -and (Get-Win32ToolkitIconSource -ProjectPath $p3) -eq 'captured') { Ok 'no marker -> captured promoted + marker set' }
     else { Bad "captured promotion failed (returned $r)" }
+    $mirror = @(Get-ChildItem -LiteralPath (Join-Path $p3 'PSAppDeployToolkit\Assets') -Force -ErrorAction SilentlyContinue)
+    if ($mirror.Count -eq 0) { Ok 'nothing written under PSAppDeployToolkit\Assets (no mirror; SCF-11 / ORG-13)' } else { Bad "mirror written: $($mirror.Name -join ', ')" }
 }
 finally { Remove-Item $p3 -Recurse -Force -ErrorAction SilentlyContinue }
 

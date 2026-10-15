@@ -12,9 +12,17 @@ function New-Win32ToolkitSparseConfig {
         the default file, which drifted silently whenever PSADT reordered or renamed config text (see
         knowledge-base TODO "org template → data", F1).
 
-        Two hard rules of the superimpose that shape this emitter:
-          * An empty / whitespace value is IGNORED by PSADT (it cannot blank a default). So we OMIT any
-            key the template doesn't set, rather than emit an empty string.
+        Rules of the superimpose that shape this emitter:
+          * An empty / whitespace value is IGNORED for every key whose module default is not $null (it
+            cannot blank such a default; 4.2:psm1:1528-1531). So we OMIT any key the template doesn't
+            set, rather than emit an empty string.
+          * A key the sparse file omits keeps the MODULE default - and on PSADT 4.2 the module defaults
+            for Assets.Logo / Assets.Banner are embedded Base64 images, which are never resolved against
+            the project. So Assets is ALWAYS emitted, as the first section, with explicit project paths
+            ('..\Assets\AppIcon.png', '..\Assets\Banner.Classic.png'; relative to Config\). That gives
+            the project's (winget / manual / captured / org) icon and banner on 4.1 and 4.2 alike
+            (ORG-03 / TST-05). Never Base64 (4.1.8 throws for it), and no LogoDark / TaskbarIcon: nothing
+            produces AppIconDark.png, and 4.1.8 throws for a missing explicit file.
           * The signature/tamper check applies only to the MODULE's default file, never the caller's —
             an unsigned sparse project config is legal.
 
@@ -35,17 +43,27 @@ function New-Win32ToolkitSparseConfig {
         [PSCustomObject]$Template
     )
 
-    # psd1 single-quoted literal, single quotes doubled. $env* tokens inside (e.g. LogPath) are
-    # preserved verbatim — PSADT expands them itself at runtime, so a literal is exactly right.
-    function Format-Psd1String { param([string]$s) "'" + ($s -replace "'", "''") + "'" }
+    # psd1 single-quoted literal. EVERY PowerShell single-quote character is doubled (ConvertTo-PSSingleQuoted:
+    # the apostrophe and the typographic U+2018/U+2019/U+201A/U+201B, which also end a '...' literal under 5.1
+    # and 7), so e.g. a French CompanyName with a typographic apostrophe cannot break config.psd1 and fail
+    # every deployment. $env* tokens inside (e.g. LogPath) are preserved verbatim - PSADT expands them
+    # itself at runtime, so a literal is exactly right.
+    function Format-Psd1String { param([string]$s) "'" + (ConvertTo-PSSingleQuoted $s) + "'" }
 
     # Defensive field read — returns $null for a missing property on an older-schema template.
     function Get-Field { param([PSCustomObject]$o, [string]$name)
         if ($o -and $o.PSObject.Properties[$name]) { $o.$name } else { $null }
     }
 
+    $assets  = [ordered]@{}
     $toolkit = [ordered]@{}
     $ui      = [ordered]@{}
+
+    #── Assets (always — see the description) ───────────────────────────
+    # Constant project-relative paths: the files are written by the scaffold, Get-AppIconFromWinget,
+    # New-Win32ToolkitManualApp -IconPath, Add-Win32ToolkitTemplateAssets or the captured-icon promotion.
+    $assets['Logo']   = Format-Psd1String '..\Assets\AppIcon.png'
+    $assets['Banner'] = Format-Psd1String '..\Assets\Banner.Classic.png'
 
     #── Toolkit ─────────────────────────────────────────────────────────
     $company = Get-Field $Template 'CompanyName'
@@ -93,6 +111,9 @@ function New-Win32ToolkitSparseConfig {
     [void]$sb.Append('# Do not hand-edit — regenerated whenever the org template is applied.').Append($nl)
     [void]$sb.Append('@{').Append($nl)
 
+    [void]$sb.Append('    Assets = @{').Append($nl)
+    foreach ($k in $assets.Keys) { [void]$sb.Append("        $k = $($assets[$k])").Append($nl) }
+    [void]$sb.Append('    }').Append($nl)
     if ($toolkit.Count -gt 0) {
         [void]$sb.Append('    Toolkit = @{').Append($nl)
         foreach ($k in $toolkit.Keys) { [void]$sb.Append("        $k = $($toolkit[$k])").Append($nl) }

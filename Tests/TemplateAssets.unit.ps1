@@ -1,6 +1,8 @@
 # TemplateAssets.unit.ps1 — B1/B7: org branding assets (logo + Classic banner) with icon precedence.
 # Guards: logo becomes the base tile/dialog icon ONLY when nothing better is stamped; manual/winget/
-# captured win; banner always copied; PSADT mirror; PNG validation; CustomAssets opt-in gate.
+# captured win; banner always copied; nothing mirrored into the bundled PSAppDeployToolkit\ module
+# (SCF-11 / ORG-13: the sparse config points Assets.Logo/Banner at the project); PNG validation;
+# CustomAssets opt-in gate.
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
@@ -27,6 +29,7 @@ function New-Fixture {
     $proj = Join-Path $root 'proj'
     $assetsSrc = Join-Path $root 'Templates\Contoso\Assets'
     New-Item -ItemType Directory -Path (Join-Path $proj 'Assets') -Force | Out-Null
+    # A PSADT 4.1.8 bundled module ships an Assets\ folder; it must stay untouched (no mirror).
     New-Item -ItemType Directory -Path (Join-Path $proj 'PSAppDeployToolkit\Assets') -Force | Out-Null
     New-Item -ItemType Directory -Path $assetsSrc -Force | Out-Null
     if ($WithLogo)   { [System.IO.File]::WriteAllBytes((Join-Path $assetsSrc 'AppIcon.png'), $PNG) }
@@ -36,13 +39,23 @@ function New-Fixture {
 }
 function Tmpl { param([bool]$Custom=$true) [pscustomobject]@{ TemplateName='Contoso'; CustomAssets=$Custom } }
 
-Write-Host "`n[1] Nothing stamped -> org logo becomes the base (source='template'), banner copied, PSADT mirror" -ForegroundColor Cyan
+Write-Host "`n[1] Nothing stamped -> org logo becomes the base (source='template'), banner copied, NO PSADT mirror" -ForegroundColor Cyan
 $fx = New-Fixture
 Add-Win32ToolkitTemplateAssets -ProjectPath $fx.Proj -Template (Tmpl) -WarningAction SilentlyContinue
 if (Test-Path (Join-Path $fx.Proj 'Assets\AppIcon.png')) { Ok 'AppIcon.png written to project Assets' } else { Bad 'AppIcon.png missing' }
 if ((Get-Win32ToolkitIconSource -ProjectPath $fx.Proj) -eq 'template') { Ok "source stamped 'template'" } else { Bad "source=[$(Get-Win32ToolkitIconSource -ProjectPath $fx.Proj)]" }
-if (Test-Path (Join-Path $fx.Proj 'PSAppDeployToolkit\Assets\AppIcon.png')) { Ok 'logo mirrored into PSAppDeployToolkit\Assets' } else { Bad 'PSADT mirror missing' }
+# SCF-11 / ORG-13: the sparse config points Assets.Logo/Banner at the project, so the bundled module is
+# never written to (on PSADT 4.2 a mirror would only add a stray folder to the module).
+$mirrored = @(Get-ChildItem -LiteralPath (Join-Path $fx.Proj 'PSAppDeployToolkit\Assets') -Force -ErrorAction SilentlyContinue)
+if ($mirrored.Count -eq 0) { Ok 'nothing written under PSAppDeployToolkit\Assets (no mirror)' } else { Bad "mirror written: $($mirrored.Name -join ', ')" }
 if (Test-Path (Join-Path $fx.Proj 'Assets\Banner.Classic.png')) { Ok 'Classic banner copied' } else { Bad 'banner missing' }
+
+Write-Host "`n[1b] PSADT 4.2 layout (bundled module has no Assets\) -> no Assets folder is created inside the module" -ForegroundColor Cyan
+$fx1b = New-Fixture
+Remove-Item -LiteralPath (Join-Path $fx1b.Proj 'PSAppDeployToolkit\Assets') -Recurse -Force
+Add-Win32ToolkitTemplateAssets -ProjectPath $fx1b.Proj -Template (Tmpl) -WarningAction SilentlyContinue
+if (-not (Test-Path -LiteralPath (Join-Path $fx1b.Proj 'PSAppDeployToolkit\Assets'))) { Ok 'no PSAppDeployToolkit\Assets folder created' } else { Bad 'stray PSAppDeployToolkit\Assets folder created' }
+if (Test-Path (Join-Path $fx1b.Proj 'Assets\AppIcon.png')) { Ok 'logo still applied to the project Assets' } else { Bad 'logo missing' }
 
 Write-Host "`n[2] A winget/manual icon already stamped -> org logo SKIPPED (precedence)" -ForegroundColor Cyan
 foreach ($src in @('winget','manual','captured')) {

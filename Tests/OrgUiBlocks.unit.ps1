@@ -12,6 +12,9 @@
         Test-Win32ToolkitPS51Syntax) -> W32T.GeneratedScriptInvalid; a psm1-only extension module ->
         W32T.OrgExtensionInvalid; legacy 1.1.6 / unpatched script -> W32T.UnsupportedTemplateShape -
         deploy script, config.psd1, strings.psd1 and AppConfig.json byte-identical.
+      * typographic single quotes (U+2018/U+2019/U+201A/U+201B) in balloon / progress text round-trip
+        through strings.psd1 (host + 5.1 parse); a config.psd1 / strings.psd1 text that is not one
+        hashtable -> W32T.OrgTemplateInvalid before any write.
 
     Shadowed: Add-Win32ToolkitTemplateAssets, New-Win32ToolkitSparseConfig, Get-Win32ToolkitTemplateAssetFolder,
     Assert-Win32ToolkitOrgTemplateText (WP-D contract: a minimal D9 check), Test-Win32ToolkitPsadtVersionSupported (WP-A).
@@ -44,13 +47,14 @@ function Test-Win32ToolkitPsadtVersionSupported {
 foreach ($f in 'Get-Win32ToolkitDeployScriptShape', 'Set-Win32ToolkitPhaseBlock', 'Remove-Win32ToolkitPhaseBlock',
     'Remove-Win32ToolkitPhaseDefaultUi', 'Get-Win32ToolkitDeployScriptBlock', 'Write-Win32ToolkitDeployScript',
     'Test-Win32ToolkitPS51Syntax', 'Set-PSADTDataDrivenScript', 'Set-Win32ToolkitTextBlock', 'Apply-OrgTemplate',
-    'Add-Win32ToolkitOrgHooks', 'Assert-Win32ToolkitOrgExtensionModule', 'Get-Win32ToolkitAppConfig', 'Set-Win32ToolkitAppConfig') {
+    'Add-Win32ToolkitOrgHooks', 'Assert-Win32ToolkitOrgExtensionModule', 'Get-Win32ToolkitAppConfig', 'Set-Win32ToolkitAppConfig',
+    'ConvertTo-PSSingleQuoted') {
     . (Join-Path $repo "Private\$f.ps1")
 }
 
 # -- shadows ---------------------------------------------------------------------------------------
 function Add-Win32ToolkitTemplateAssets { param($ProjectPath, $Template) }
-function New-Win32ToolkitSparseConfig { param($Template) "@{`r`n    Toolkit = @{`r`n        CompanyName = '$(([string]$Template.CompanyName) -replace "'", "''")'`r`n    }`r`n}`r`n" }
+function New-Win32ToolkitSparseConfig { param($Template) "@{`r`n    Toolkit = @{`r`n        CompanyName = '$(ConvertTo-PSSingleQuoted ([string]$Template.CompanyName))'`r`n    }`r`n}`r`n" }
 $script:ASSET = $null
 function Get-Win32ToolkitTemplateAssetFolder { param([string]$TemplateName, [string]$BasePath) $script:ASSET }
 # WP-D contract (spec 2.12) - minimal D9 rule for this suite: no '$' expansion in dialog text.
@@ -358,6 +362,40 @@ foreach ($c in @(@{ N = 'legacy-1.1.6-org'; G = 'legacy-1.1.6-org' }, @{ N = 'le
         Ok "$($c.N) -> W32T.UnsupportedTemplateShape (C-1 wording, GeneratorVersion hint)"
     } else { Bad "$($c.N) -> fqid='$($r.Fqid)' $($r.Message)" }
     if (((Get-ProjectHash $p) -join ',') -eq ($h -join ',') -and -not (Test-Path (Join-Path $p 'SupportFiles\OrgHooks'))) { Ok "$($c.N): deploy script, config.psd1, strings.psd1, AppConfig.json byte-identical; no hooks copied" } else { Bad "$($c.N): a file was changed" }
+}
+
+# -- [6] typographic single quotes in strings.psd1 text; the psd1 gate (security-02) ------------------
+Write-Host '[6] typographic single quotes round-trip through strings.psd1; a psd1 that would not parse is refused' -ForegroundColor Cyan
+# U+2018/U+2019/U+201A/U+201B end a '...' literal under 5.1 and 7 just like the apostrophe; escaping only
+# ' broke strings.psd1 (every deployment failed). Source stays ASCII: [char] builds them.
+$balloon = 'C' + [char]0x2019 + 'est fait'
+$progress = 'Installation de l' + [char]0x2019 + 'app ' + [char]0x2018 + 'x' + [char]0x201A + [char]0x201B + " 'y'"
+foreach ($g in 'psadt-4.1.8', 'psadt-4.2.0-zeroconfig') {
+    $p = New-Project $g "typo-$g"
+    $r = Invoke-Apply $p (New-Template @{ CompanyName = 'L' + [char]0x2019 + 'Atelier IT'
+            BalloonComplete = [pscustomobject]@{ Install = $balloon; Repair = 'Repaired.'; Uninstall = 'Removed.' }
+            ProgressMessage = [pscustomobject]@{ Install = $progress; Repair = 'Repairing.'; Uninstall = 'Removing.' } })
+    $sp = Join-Path $p 'Strings\strings.psd1'
+    $se = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($sp, [ref]$null, [ref]$se)
+    $s51 = @(Test-Win32ToolkitPS51Syntax -Path $sp)
+    if ($r.Result -eq $true -and @($se).Count -eq 0 -and $s51.Count -eq 0) { Ok "$g : applied; strings.psd1 parses with 0 errors (host + Windows PowerShell 5.1)" } else { Bad "$g : result=$($r.Result) $($r.Fqid) $($r.Message) host=$(@($se).Count) 5.1=[$($s51 -join '; ')]" }
+    $data = Import-PowerShellDataFile -LiteralPath $sp
+    if ($data.BalloonTip.Complete.Install -ceq $balloon -and $data.ProgressPrompt.Message.Install -ceq $progress) { Ok "$g : BalloonComplete.Install and ProgressMessage.Install round-trip exactly" } else { Bad "$g : balloon=[$($data.BalloonTip.Complete.Install)] progress=[$($data.ProgressPrompt.Message.Install)]" }
+}
+
+# The gate itself: a config.psd1 / strings.psd1 text that does not parse to ONE hashtable is refused
+# before the first write (shadowed sparse-config generator returns broken text).
+foreach ($c in @(@{ N = 'unterminated hashtable'; T = "@{`r`n    Toolkit = @{ CompanyName = 'x' }`r`n" }, @{ N = 'not a hashtable'; T = "'just a string'`r`n" })) {
+    $p = New-Project 'psadt-4.2.0-zeroconfig' ('psd1gate-' + ($c.N -replace '\W', ''))
+    $h = Get-ProjectHash $p
+    $script:BrokenPsd1 = $c.T
+    function New-Win32ToolkitSparseConfig { param($Template) $script:BrokenPsd1 }
+    try { $r = Invoke-Apply $p (New-Template) }
+    finally { function New-Win32ToolkitSparseConfig { param($Template) "@{`r`n    Toolkit = @{`r`n        CompanyName = '$(ConvertTo-PSSingleQuoted ([string]$Template.CompanyName))'`r`n    }`r`n}`r`n" } }
+    if ($r.Fqid -eq 'W32T.OrgTemplateInvalid' -and $r.Message -match 'config\.psd1 invalid PowerShell data' -and ((Get-ProjectHash $p) -join ',') -eq ($h -join ',')) {
+        Ok "config.psd1 $($c.N) -> W32T.OrgTemplateInvalid; deploy script, config.psd1, strings.psd1, AppConfig.json byte-identical"
+    } else { Bad "$($c.N): fqid='$($r.Fqid)' $($r.Message)" }
 }
 
 Remove-Item -LiteralPath $TMP -Recurse -Force -ErrorAction SilentlyContinue
