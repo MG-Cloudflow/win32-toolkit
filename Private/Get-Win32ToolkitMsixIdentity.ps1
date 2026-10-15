@@ -4,7 +4,7 @@ function Get-Win32ToolkitMsixIdentity {
         Reads the package identity (Name/Publisher/Version) from an .msix/.appx package OR a
         .msixbundle/.appxbundle — detected from the file's CONTENT, never its extension.
     .DESCRIPTION
-        Host-side (PS 7.2+). Opens the package as a ZIP and reads whichever identity manifest it
+        Host-side (PS 7.4+). Opens the package as a ZIP and reads whichever identity manifest it
         actually carries:
           * plain package -> ROOT AppxManifest.xml       (<Package><Identity .../>)
           * bundle        -> AppxMetadata/AppxBundleManifest.xml  (<Bundle><Identity .../>)

@@ -10,7 +10,7 @@ function Show-Win32Toolkit {
     exactly what is missing and how to fix it.
 
     Built on PwshSpectreConsole — offered for one-time install on first launch if absent. Requires
-    PowerShell 7.2+ and an interactive console.
+    PowerShell 7.4+ and an interactive console.
 .PARAMETER BasePath
     Optional base folder override for this session. If omitted, the registry-saved value is used, or
     first-run setup prompts for it.
@@ -20,9 +20,9 @@ function Show-Win32Toolkit {
     [CmdletBinding()]
     param([string]$BasePath)
 
-    # ── Guards: PS7.2+ and an interactive console ─────────────────────────────
-    if ($PSVersionTable.PSVersion -lt [version]'7.2') {
-        Write-Warning 'Show-Win32Toolkit requires PowerShell 7.2 or later.'
+    # ── Guards: PS7.4+ and an interactive console ─────────────────────────────
+    if ($PSVersionTable.PSVersion -lt [version]'7.4') {
+        Write-Warning 'Show-Win32Toolkit requires PowerShell 7.4 or later.'
         return
     }
     if ([System.Console]::IsInputRedirected -or [System.Console]::IsOutputRedirected) {

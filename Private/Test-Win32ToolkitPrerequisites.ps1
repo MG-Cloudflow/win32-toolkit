@@ -21,9 +21,9 @@ function Test-Win32ToolkitPrerequisites {
         $results.Add([pscustomobject]@{ Name = $Name; Ok = [bool]$Ok; Detail = "$Detail"; Fixable = [bool]$Fixable; Purpose = $Purpose; Warn = [bool]$Warn })
     }
 
-    # PowerShell 7.2+
-    $psOk = $PSVersionTable.PSVersion -ge [version]'7.2'
-    Add-Check 'PowerShell 7.2+' $psOk $PSVersionTable.PSVersion $false 'core'
+    # PowerShell 7.4+ (PSAppDeployToolkit 4.2 needs .NET 8 on the host)
+    $psOk = $PSVersionTable.PSVersion -ge [version]'7.4'
+    Add-Check 'PowerShell 7.4+' $psOk $PSVersionTable.PSVersion $false 'core'
 
     # Rich UI component
     $spectre = Get-Module -ListAvailable PwshSpectreConsole | Sort-Object Version -Descending | Select-Object -First 1

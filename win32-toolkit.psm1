@@ -1,4 +1,4 @@
-#Requires -Version 7.2
+#Requires -Version 7.4
 
 # Module-scope state variables.
 # In a .psm1, $script: is module scope — persists for the module lifetime,

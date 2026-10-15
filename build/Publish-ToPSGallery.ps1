@@ -1,4 +1,4 @@
-#Requires -Version 7.2
+#Requires -Version 7.4
 <#
 .SYNOPSIS
     Stage the win32-toolkit module payload and publish it to the PowerShell Gallery.

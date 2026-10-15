@@ -56,7 +56,7 @@ function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }
 function Test-Win32ToolkitPrerequisites {
     param([Parameter(ValueFromRemainingArguments)]$a)
     # Rows with AND without the Warn property (older shadows/rows lack it; the health screen must cope).
-    @([pscustomobject]@{ Name = 'PowerShell 7.2+'; Ok = $true; Detail = '7.6'; Fixable = $false; Purpose = 'core' }
+    @([pscustomobject]@{ Name = 'PowerShell 7.4+'; Ok = $true; Detail = '7.6'; Fixable = $false; Purpose = 'core' }
       [pscustomobject]@{ Name = 'PSAppDeployToolkit (4.1.x and 4.2.x)'; Ok = $true; Detail = 'v4.2.0-rc2 (prerelease - testing only)'; Fixable = $true; Purpose = 'packaging'; Warn = $true }
       [pscustomobject]@{ Name = 'winget'; Ok = $false; Detail = 'not on PATH'; Fixable = $false; Purpose = 'packaging from winget'; Warn = $false })
 }
@@ -130,7 +130,7 @@ Write-Host '[5] Show-Win32ToolkitHealth renders OK / ! (Warn) / X per row' -Fore
 $script:tableRows.Clear()
 $null = @(Show-Win32ToolkitHealth)
 $state = @{}; foreach ($row in $script:tableRows) { $state[$row.Component] = $row.' ' }
-if ($state['PowerShell 7.2+'] -eq '[green]OK[/]') { Ok 'Ok row without a Warn property -> [green]OK[/]' } else { Bad "row without Warn rendered '$($state['PowerShell 7.2+'])'" }
+if ($state['PowerShell 7.4+'] -eq '[green]OK[/]') { Ok 'Ok row without a Warn property -> [green]OK[/]' } else { Bad "row without Warn rendered '$($state['PowerShell 7.4+'])'" }
 if ($state['PSAppDeployToolkit (4.1.x and 4.2.x)'] -eq '[yellow]![/]') { Ok 'Ok row with Warn -> [yellow]![/]' } else { Bad "Warn row rendered '$($state['PSAppDeployToolkit (4.1.x and 4.2.x)'])'" }
 if ($state['winget'] -eq '[red]X[/]') { Ok 'failed row -> [red]X[/]' } else { Bad "failed row rendered '$($state['winget'])'" }
 Write-Host ''
