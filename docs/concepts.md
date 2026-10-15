@@ -35,7 +35,7 @@ Each step in one honest sentence:
 | 2 | Template load | Loads your org template, or walks you through creating one if none exists. |
 | 3 | App resolution | Resolves the package interactively from a search, or directly by winget ID. |
 | 4 | Architecture selection | Picks x64/x86/arm64 from a menu, or from the parameter if you passed one. |
-| 5 | PSADT project creation | Scaffolds a fresh PSAppDeployToolkit v4 project under `Projects\`. |
+| 5 | PSADT project creation | Scaffolds a fresh PSAppDeployToolkit project under `Projects\` with a supported PSADT version (4.1.x or 4.2.x; see [configuration](configuration.md#psappdeploytoolkit-version-preferredpsadtversion)). |
 | 6 | Download | Runs `winget download` into the project's `Files\` folder, manifest included. |
 | 7 | File rename | Normalises the installer filename to `AppName_arch_version.ext`. |
 | 8 | PSADT configuration | Detects MSI / EXE / MSIX and writes the matching install logic into `Invoke-AppDeployToolkit.ps1`. |
@@ -51,6 +51,12 @@ The guest is always disposable: Windows Sandbox throws its state away on close, 
 backend reverts the VM to a clean checkpoint, so every capture and test starts from a machine
 that has never seen the app.
 
+The pipeline **fails closed**. If the project cannot be created, if its deploy script is not a
+PSAppDeployToolkit template layout this version knows (the error starts with
+`Unsupported PSADT template shape:`), or if the installer configuration or the org template cannot be
+applied, the command stops with an error before anything is captured, tested, packaged or published.
+It never ships a deploy script it could not generate correctly.
+
 ### Two guest backends, one contract
 
 Captures and tests run in one of two disposable guests. Which one is a per-machine choice stored
@@ -63,8 +69,8 @@ in the same registry key as BasePath (`HKCU:\Software\CloudFlow\win32-toolkit`, 
 | **Hyper-V VM** | A dedicated test VM (created once with [New-Win32ToolkitTestVM](reference/New-Win32ToolkitTestVM.md)) that reverts to a clean checkpoint before every run. | Faster repeated runs and richer test scenarios; falls back to Sandbox automatically when the VM is not ready. |
 
 Both backends run the *same* capture script and the same test scenarios, and both can run
-**unattended** (silent, back-to-back, no GUI or countdown) either per call or as a saved
-default. The outputs (the capture JSON, logs, test results) are identical either way, so
+**unattended** (back-to-back, no countdown or pause; on Hyper-V as an Intune-parity run) either
+per call or as a saved default. The outputs (the capture JSON, logs, test results) are identical either way, so
 everything downstream of the capture is backend-agnostic.
 
 ## The folder layout
@@ -116,13 +122,15 @@ What each item inside `Projects\<Template>\<AppName_arch_version>\` is for:
 
 | Item | Purpose |
 |---|---|
-| `Invoke-AppDeployToolkit.ps1` | The PSADT v4 deployment script: install, uninstall, and repair logic, pre-configured for your installer type. This is what runs on the device. |
+| `Invoke-AppDeployToolkit.ps1` | The PSADT v4 deployment script: install, uninstall, and repair logic, pre-configured for your installer type. This is what runs on the device. Everything the toolkit adds sits in blocks marked `## win32-toolkit:<Phase>:<Slot> (begin)` / `(end)`, which are regenerated; never edit inside them. |
+| `Invoke-AppDeployToolkit.exe` | PSADT's launcher. Intune starts every install and uninstall through it (see [Publishing](publishing.md#what-gets-created)). |
+| `PSAppDeployToolkit\` | The PSAppDeployToolkit module the project was built with (4.1.x or 4.2.x). It ships inside the package, so each project keeps its own version. |
 | `Files\` | The downloaded installer (renamed to `AppName_arch_version.ext`) plus the winget manifest YAML the toolkit used to configure it. |
-| `Assets\AppIcon.png` | The app's tile icon (see sourcing rules below). Feeds PSADT's on-device dialogs and is uploaded to Intune as the app tile at publish time. |
-| `Config\config.psd1` | PSADT configuration: company name, accent colour, log path, and other branding from your org template. |
+| `Assets\AppIcon.png` | The app's tile icon (see sourcing rules below). `Config\config.psd1` points PSADT's on-device dialogs at it, and it is uploaded to Intune as the app tile at publish time. |
+| `Config\config.psd1` | PSADT configuration: company name, accent colour, log path, and other branding from your org template, plus the paths of the dialog logo and banner. |
 | `Strings\strings.psd1` | PSADT localisation strings: the progress and balloon messages from your org template. |
 | `SupportFiles\RequirementScript.ps1` | A ready-to-paste Intune Win32 requirement script generated from the capture (see next section). |
-| `SupportFiles\AppConfig.json` | Data-driven install/uninstall values the deploy script reads, instead of hard-coding them into generated code. |
+| `SupportFiles\AppConfig.json` | Data-driven values the deploy script reads instead of hard-coding them into generated code: app identity, install and uninstall settings, processes to close, and the org template's dialog policy. |
 | `Documentation\` | The install-capture output: `InstallationChanges_<timestamp>.json` and its log. This is the raw material the generators work from. |
 | `Sandbox\` | Test artifacts: `.wsb` configs, the countdown script, `Logs\`, and `OldVersion\` baselines for update tests. **Never ships**: stripped from the staging copy before packaging. |
 | `<ProjectName>_TargetedDocumentation.wsb` | The Windows Sandbox config for the capture run. Double-click it to re-run the documentation session by hand. |
@@ -187,6 +195,13 @@ The toolkit deliberately leaves the PSADT `AppName` empty for an MSI, which keep
 and the uninstall itself. `Installer.SilentArgs` is written empty and **no `Uninstall` section is
 created at all**: Zero-Config already knows what to do, so there is nothing for the capture to
 contribute.
+
+Zero-Config is a block of code in PSADT's own deploy-script template that runs only when `AppName`
+is empty and an MSI is in `Files\`. PSAppDeployToolkit 4.1.x has it in its default template; for
+4.2 the toolkit always scaffolds the template with `New-ADTTemplate -ZeroConfig`, which adds it (the
+block stays inert for EXE and MSIX apps). PSADT 4.1's Zero-Config also applies any `.msp` patch in
+`Files\`; 4.2's no longer does, so on 4.2 the toolkit adds a small install block that applies them
+the same way.
 
 ### `.exe`: the only type that needs switches
 
@@ -261,12 +276,13 @@ falls back to capture-based rules.
     described above, an MSIX writes none of it. So a package with no tattoo can end up with **no
     detection rule at all**, which Intune treats as "never installed" and re-runs forever.
 
-    The toolkit warns about this at publish time, but it is only a warning: **the app is created
-    anyway**, and by the time you see it the upload is already under way. You would then have to add a
-    detection rule by hand in the Intune portal, or re-package.
+    So the publish **refuses** such an app: it stops with a `W32T.NoDetectionRule` error before you
+    sign in and before anything uploads. Fix the project (an org template that sets an app-script
+    author gives it the tattoo) and publish again. Only for an app that really cannot be detected this
+    way, `-AllowNoDetectionRule` creates it without a rule, and you add one by hand in the Intune
+    portal before assigning it.
 
-    In practice: always package MSIX with an org template that sets an app-script author, and treat
-    "no detection rules found" as something to fix *before* you publish, not after.
+    In practice: always package MSIX with an org template that sets an app-script author.
 
 ## How detection & uninstall are generated
 
@@ -300,7 +316,7 @@ Matching is deliberately strict: exact name equality, never a partial or first-w
 
 | Installer type | Uninstall strategy |
 |---|---|
-| **MSI** | PSADT's **Zero-Config MSI**: `AppName` is left empty, PSADT reads the product name and product code straight from the MSI database and uninstalls via `msiexec`. No generated code needed. |
+| **MSI** | PSADT's **Zero-Config MSI** block in the deploy script (4.1.x default template; 4.2 scaffolded with `-ZeroConfig`): `AppName` is left empty, PSADT reads the product name and product code straight from the MSI database and uninstalls via `msiexec`. No generated uninstall code needed. |
 | **EXE** | The capture's new Uninstall key supplies the `UninstallString` / `QuietUninstallString`, and the toolkit writes matching uninstall logic into `Invoke-AppDeployToolkit.ps1`. This is the case that genuinely needs the capture. |
 | **MSIX / APPX** | Uninstall is **identity-driven**: the package identity is read from the package manifest at configure time and removed via the Appx cmdlets, written before any capture runs. |
 
@@ -311,6 +327,16 @@ and the **services** the app registered are recorded in the documentation for tr
 Because the guest starts clean every time, the diff contains only what *this* installer did, no
 noise from previously installed software. That is why the capture runs in a disposable guest and
 not on your admin workstation.
+
+The capture also records the exit code of the PSADT install and of the dependency step. If either
+failed (for example 60001, an error in the deploy script), or an EXE or MSI install changed nothing,
+**nothing** is generated from that capture: the toolkit warns with the exit code, leaves the existing
+uninstall settings untouched, and you re-run the capture after fixing the cause. Generating the
+requirement script and uninstall logic from a broken install would ship a package that only looks
+finished. The failed capture file stays in the project's `Documentation\` folder, though, and a
+project without an install tattoo gets its detection rule from the newest capture at publish time,
+so re-run the capture successfully (or remove the failed `InstallationChanges_*.json`) before
+publishing.
 
 <!-- SCREENSHOT: Windows Sandbox window during a capture run, showing the targeted documentation script logging its pre/post snapshots -->
 

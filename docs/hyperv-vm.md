@@ -9,7 +9,7 @@ to a warm checkpoint instead of cold-booting a fresh Sandbox.
 | | Windows Sandbox | Hyper-V test VM |
 |---|---|---|
 | Start of each run | Cold boot of a fresh sandbox, every time | **Revert to a memory-state ("Standard") checkpoint**. The VM resumes on an already running, logged-in desktop in seconds |
-| Test context | Sandbox's built-in user | **Every phase runs as SYSTEM**, the same context Intune uses on real devices, so install/uninstall behavior matches deployment |
+| Test context | Sandbox's built-in user | **Every phase runs as SYSTEM**, the account Intune uses on real devices. Unattended runs also start the package exactly as Intune does (the published command line from a 32-bit parent), so install/uninstall behavior matches deployment (see [Testing](testing.md#watched-vs-unattended)) |
 | Base image | Always the pristine Sandbox image | A **fully patched** Windows 11 you prepared once (no Windows Update noise during test runs) |
 | Extras | None | Optional deps checkpoint that skips repeated dependency installs (see [Configuration](configuration.md)) |
 
@@ -126,7 +126,7 @@ typo is never stored).
 | `HyperVVMName` | VM name (default `win32tk-golden`) |
 | `HyperVCheckpoint` | Warm checkpoint name (default `clean-base`) |
 | `HyperVProcessorCount` / `HyperVMemoryStartupBytes` | Last chosen hardware, reused as defaults by the next provision |
-| `HyperVTestMode` | `Unattended` makes Hyper-V test runs non-interactive by default |
+| `HyperVTestMode` | `Unattended` makes Hyper-V test runs non-interactive (Intune-parity) by default |
 | `HyperVDepsCheckpoint` | `On` freezes a `clean-base+deps-*` checkpoint after a successful dependency install so later runs of that project skip it. See [Configuration](configuration.md) |
 
 All keys live in the toolkit's registry config; see [Configuration](configuration.md) for the full list.

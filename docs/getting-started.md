@@ -15,7 +15,7 @@ You need two things before the first run:
 
 | Prerequisite | How to get it |
 |---|---|
-| **PowerShell 7.2 or later** | In a normal command prompt, run: `winget install Microsoft.PowerShell` |
+| **PowerShell 7.4 or later** | In a normal command prompt, run: `winget install Microsoft.PowerShell` |
 | **Windows Sandbox** | Windows 10/11 **Pro, Enterprise, or Education** only. Enable it (elevated PowerShell), then **reboot**. |
 
 To enable Windows Sandbox, open PowerShell **as administrator** and run:
@@ -27,7 +27,7 @@ Enable-WindowsOptionalFeature -Online -FeatureName 'Containers-DisposableClientV
 Then **restart the PC**. The feature does not work until after a reboot.
 
 Don't worry about getting everything perfect: early in the first launch the TUI shows a **system
-check** table that names each prerequisite (PowerShell version, winget, PSAppDeployToolkit v4,
+check** table that names each prerequisite (PowerShell version, winget, PSAppDeployToolkit,
 Windows Sandbox, base folder, and the publish/packaging tools), marks what is missing, and tells
 you what it is needed for. Most missing pieces don't block you: the toolkit offers to install
 them the first time a feature needs them (PSADT and the Graph module install themselves on first
@@ -36,8 +36,17 @@ come *before* that screen: the one-time PwshSpectreConsole install and the base-
 
 <!-- SCREENSHOT: The TUI health/system-check table showing OK and missing rows -->
 
-Everything else (PSAppDeployToolkit v4, `IntuneWinAppUtil.exe`, the Graph module for publishing)
-is installed or downloaded on demand, and you will simply be asked to confirm.
+Everything else (PSAppDeployToolkit, `IntuneWinAppUtil.exe`, the Graph module for publishing)
+is installed or downloaded on demand.
+
+**Which PSAppDeployToolkit?** win32-toolkit supports **PSAppDeployToolkit 4.1.x and 4.2.x**, side by
+side. The first time you build a project with no supported version installed, it installs the newest
+**stable** 4.1.x/4.2.x release for your user account. Later runs use the newest supported version you
+have installed (a command run without `-Force` also offers a newer stable one inside that range, y/n;
+the menu skips that offer). A version outside the range is never selected, installed or offered. A
+**prerelease** is only used if you installed it yourself, and
+the system check marks it with a yellow `!` (fine for testing, not for production packages). To pin a
+version for new projects, see [PreferredPsadtVersion](configuration.md#psappdeploytoolkit-version-preferredpsadtversion).
 
 ## 1. Launch the menu
 

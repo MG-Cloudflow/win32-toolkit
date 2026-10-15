@@ -21,7 +21,7 @@ Tests run in one of two guest environments:
 | Setup needed | None (Windows feature) | One-time VM build (see [Hyper-V test VM](hyperv-vm.md)) |
 | Guest lifetime | Disposable: a fresh guest cold-boots for every run | Persistent VM, reverted to a warm checkpoint per run (faster) |
 | Concurrency | One sandbox at a time (the toolkit waits up to 90 s for a previous one to close) | No single-instance limit from Sandbox |
-| Unattended runs execute as | The sandbox's built-in admin user | **SYSTEM**, the same context Intune uses |
+| Unattended runs execute as | The sandbox's built-in admin user, `-DeployMode Silent` | **SYSTEM**, with the published Intune command line from a 32-bit parent (Intune parity) |
 
 To make Hyper-V the default backend, set the `TestBackend` config value (stored in the toolkit's
 per-user registry key):
@@ -37,16 +37,28 @@ same backend choice.
 
 ## Watched vs unattended
 
-Both backends run **watched** (interactive) by default: PSADT shows its normal GUI, and you get a
-verification window (a 2-minute countdown dialog in the Sandbox, or a host-side pause on Hyper-V) to
-click around in the freshly installed app before the test continues. In the Sandbox the guest window
-stays open afterwards for manual inspection.
+Both backends run **watched** (interactive) by default: you get a verification window (a 2-minute
+countdown dialog in the Sandbox, or a host-side pause on Hyper-V) to click around in the freshly
+installed app before the test continues. In the Sandbox the guest window stays open afterwards for
+manual inspection. Which PSADT dialogs you see differs per backend:
 
-Pass `-Unattended` for silent, back-to-back automation:
+- **Sandbox** runs the package in PSADT's **Auto** mode, like Intune does. On PSADT 4.2 the dialogs
+  appear only when one of the app's processes-to-close is running; otherwise the run is silent. On
+  4.1 an app with an empty processes-to-close list still shows them. (See
+  [when dialogs appear](org-templates.md#when-dialogs-appear).)
+- **Hyper-V** watched runs force `-DeployMode Interactive`, so the dialogs always show.
 
-- PSADT runs in `-DeployMode Silent`: no GUI, no countdown, no pauses.
-- Under Sandbox, the guest **shuts itself down** after collecting logs, so a chained run (for example
-  `-RunTest InstallUninstall, Update`) proceeds without anyone closing windows.
+Pass `-Unattended` for back-to-back automation:
+
+- No countdown, no pauses.
+- **Sandbox**: PSADT runs with `-DeployMode Silent`, and the guest **shuts itself down** after
+  collecting logs, so a chained run (for example `-RunTest InstallUninstall, Update`) proceeds without
+  anyone closing windows.
+- **Hyper-V**: the install, the uninstall and the update run as an **Intune-parity** phase: the exact
+  published command line (`Invoke-AppDeployToolkit.exe -DeploymentType Install` or `Uninstall`, no
+  deploy mode) started from a 32-bit `cmd.exe`, as SYSTEM, in the package folder, the way the Intune
+  Management Extension starts it. Its exit code is checked against Intune's success codes (0, 1707,
+  3010, 1641).
 
 To make unattended the default per backend, set the `SandboxTestMode` and/or `HyperVTestMode` config
 value to `Unattended` in the same registry key. An explicit `-Unattended` switch always overrides the
@@ -54,11 +66,30 @@ config. On a **non-interactive host** (CI pipeline, redirected stdin), the toolk
 Unattended and prints a loud warning. Interactive mode would block forever on prompts nobody can see.
 
 > **Context caveat.** A Sandbox-unattended run executes as the sandbox's interactive admin user, while a
-> HyperV-unattended run executes as **SYSTEM, the same context Intune's install uses on a real device**.
-> The two verdicts are therefore *not equivalent evidence*: an app that behaves differently under SYSTEM
-> (per-user shortcuts, HKCU writes, user profile paths) can pass in the Sandbox and still fail via
-> Intune. The recorded outcome includes the backend and mode so you can tell them apart later. For the
-> closest-to-Intune signal, use the Hyper-V backend unattended.
+> HyperV-unattended run executes as **SYSTEM, with the same launcher, bitness and command line Intune
+> uses on a real device**. The two verdicts are therefore *not equivalent evidence*: an app that behaves
+> differently under SYSTEM (per-user shortcuts, HKCU writes, user profile paths) can pass in the Sandbox
+> and still fail via Intune. The recorded outcome includes the backend and mode so you can tell them
+> apart later. For the closest-to-Intune signal, use the Hyper-V backend unattended. (It does not force
+> a signed-in desktop. If a user is signed in to the VM, PSADT's Auto mode can still show a dialog, for
+> example for a PSADT 4.1 app with an empty processes-to-close list, and the run then waits until the
+> runner's 25-minute timeout, recorded as exit code 1460.)
+
+### One package, one process
+
+Every PSADT package in a test (each `project:` dependency, an Update baseline project, and the app
+itself) runs in its **own** Windows PowerShell process: PSAppDeployToolkit 4.2 refuses to load a second
+copy of itself into one process, and 4.1 and 4.2 packages cannot share one. The app, the baseline and
+the update are started by the guest runner `Sandbox\Invoke-PsadtPackage.ps1`, which records the exact
+exit code of each run in `Sandbox\Logs\PsadtExitCodes.log`, for example:
+
+```text
+[2026-10-16 10:12:03] app Install parent=x86-cmd exit=0 result=Success
+```
+
+`parent=x86-cmd` marks an Intune-parity run, `parent=x64-direct` a direct run. The host prints these
+lines after each test, and the Sandbox countdown banner reports the real install result (green on
+success, red with the exit code on failure) instead of always claiming success.
 
 ## The InstallUninstall scenario
 
@@ -72,18 +103,20 @@ What happens inside the guest, in order:
 
 1. **Dependencies install first**: any winget or `project:` dependencies the project declares are
    staged into `Sandbox\Dependencies\` and installed silently before the app, the same order Intune
-   uses on a real device.
-2. **Install**. The project's `Invoke-AppDeployToolkit.ps1` runs (GUI in watched mode, silent in
-   unattended).
+   uses on a real device. The dependency step stops at the first failing dependency and reports its
+   exit code.
+2. **Install**. The project's package runs in its own process (see
+   [Watched vs unattended](#watched-vs-unattended) for the mode).
 3. **Assert: installed**. The guest checks that the app is *detected* using the same signal Intune's
    detection rule uses: the **install tattoo** (the registry key the package writes on success). If the
    install "succeeded" but the tattoo is missing, the test fails, exactly as Intune would report a
-   failed install.
+   failed install. For an MSI it also checks that Windows Installer registered the MSI's product code.
 4. **Countdown / verification window** (watched mode only): a 2-minute WinForms countdown with a Skip
    button (Sandbox), or the PSADT GUI plus a host pause (Hyper-V). Use it to launch the app and check it
    actually works.
-5. **Uninstall**: `Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall`.
-6. **Assert: uninstalled**. The detection signal must now be *gone*.
+5. **Uninstall**: the same package with `-DeploymentType Uninstall`, again in its own process.
+6. **Assert: uninstalled**. The detection signal (and, for an MSI, the product code) must now be
+   *gone*.
 7. **Log collection**. PSADT and MSI logs are copied back to the project's `Sandbox\Logs\` folder for
    troubleshooting, whatever the outcome.
 
@@ -108,7 +141,7 @@ Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.5
 | Baseline source | How | Best for |
 |---|---|---|
 | **winget** (default) | The toolkit reads the package ID from the project's YAML, lists older winget versions, and downloads one to `Sandbox\OldVersion\`, picked interactively, or via `-VersionsBack` / `-SpecificVersion`. Silent install switches come from the downloaded manifest; when none are published, installer-type defaults apply (NSIS `/S` · Inno `/VERYSILENT /NORESTART /SP-` · WiX/Burn `/quiet /norestart` · MSI `/qn /norestart`), and only for an **unknown/typeless installer**, where `/S` is a guess, a warning tells you to watch the run. | winget-sourced apps |
-| **A local packaged project** | `-BaselineProject 'Contoso\Git_x64_2.52.0'` (a friendly `<Template>\<Name>` reference under `Projects\`) or `-BaselineProjectPath` (full path). The baseline package is mapped **read-only** into the guest at `C:\PSADTOld` (its raw `Projects\` copy is never modified) and installed via *its own* PSADT script. | Manual (non-winget) apps, which have no winget version history. Also for proving the **tattoo-overwrite** path: the old package writes its tattoo, and the new one must replace it |
+| **A local packaged project** | `-BaselineProject 'Contoso\Git_x64_2.52.0'` (a friendly `<Template>\<Name>` reference under `Projects\`) or `-BaselineProjectPath` (full path). The baseline package is mapped **read-only** into the guest at `C:\PSADTOld` (its raw `Projects\` copy is never modified) and installed via *its own* PSADT script, in its own process, so the baseline and the update may use different PSADT versions. | Manual (non-winget) apps, which have no winget version history. Also for proving the **tattoo-overwrite** path: the old package writes its tattoo, and the new one must replace it |
 
 ### What the run does
 

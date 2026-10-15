@@ -44,7 +44,7 @@ reference.
 | Reference | Meaning | Installed in the test run? |
 |---|---|---|
 | `winget:Microsoft.VCRedist.2015+.x64` | a winget package | ✅ downloaded and installed in the guest |
-| `project:Contoso\VCRedist_x64_14.38` | a project you already packaged | ✅ installed via its own PSADT |
+| `project:Contoso\VCRedist_x64_14.38` | a project you already packaged | ✅ installed via its own PSADT, in its own process |
 | `intune:<app id>` | an app already published in Intune (pick it from the TUI) | ❌ no local package to install |
 
 `-DependencyType` defaults to `autoInstall` (install it first). `detect` **only detects** it, and if it is
@@ -57,6 +57,16 @@ the guest** (under the project's `Sandbox\Dependencies\` folder) and **installed
 same order the Intune Management Extension uses on a real device. An `intune:` dependency cannot be staged
 (the toolkit has no package for it); it is warned about and skipped in the guest, but the Intune
 relationship is still created at publish time.
+
+Each `project:` dependency runs its PSADT package in a **separate** Windows PowerShell process, as does
+your app: PSAppDeployToolkit 4.2 refuses to load a second copy of itself into one process, and a
+dependency built with PSADT 4.1 and an app built with 4.2 (or the other way round) could not share one.
+The dependency step stops at the **first** dependency that fails (any exit code other than 0, 1707,
+3010 or 1641) and reports its exit code. In a documentation capture, a failed dependency means no
+requirement script, uninstall or processes-to-close data is generated from that run: the toolkit warns
+and you re-run the capture once the dependency installs. A project without an install tattoo gets its
+detection rule from the newest capture at publish time, so re-run the capture successfully (or remove
+the failed `InstallationChanges_*.json` from `Documentation\`) before publishing.
 
 Within a single pipeline run, the staging is **reused instead of re-downloaded**: the toolkit keeps a
 hash-validated record of what it staged, and as long as the declared set is unchanged, the staging is

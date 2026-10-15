@@ -44,24 +44,58 @@ project's `AppConfig.json` (winget manifest as fallback). Shell defaults:
 
 | Property | Value |
 |---|---|
-| Install command line | `powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Install` |
-| Uninstall command line | same, with `-DeploymentType Uninstall` |
+| Install command line | `Invoke-AppDeployToolkit.exe -DeploymentType Install` |
+| Uninstall command line | `Invoke-AppDeployToolkit.exe -DeploymentType Uninstall` |
 | Install behavior | **System** context, restart suppressed, 60-minute max run time |
 | Return codes | 0 and 1707 success · 3010 soft reboot · 1641 hard reboot · 1618 retry |
 | Minimum OS | Windows 10 1607 |
 
-Everything above can be adjusted in the Intune portal after upload.
+Everything above can be adjusted in the Intune portal after upload. The org template can change the
+restart behavior, the maximum run time and the minimum OS for every app it publishes (see
+[Org templates](org-templates.md#intune-publish-defaults)).
+
+**Why `Invoke-AppDeployToolkit.exe`.** The Intune Management Extension is a 32-bit process, so a bare
+`powershell.exe` in the command line starts the **32-bit** Windows PowerShell on a 64-bit device.
+PSAppDeployToolkit 4.2 refuses to run there and exits **60008** before anything installs; 4.1 runs,
+but writes the install tattoo to the 32-bit registry view (`HKLM\SOFTWARE\WOW6432Node\...`), where
+the 64-bit detection rule never finds it. PSADT's own launcher, `Invoke-AppDeployToolkit.exe`, is in
+every package (PSADT's project template ships it next to `Invoke-AppDeployToolkit.ps1`) and always
+starts the **64-bit** Windows PowerShell. No `-DeployMode` is passed, so PSADT picks the mode itself
+(Auto): dialogs appear only when the user has to close one of the app's processes, otherwise the
+deployment runs silently (on PSADT 4.1 an app with an empty processes-to-close list still shows them;
+see [When dialogs appear](org-templates.md#when-dialogs-appear)). Never add `-DeployMode Interactive`
+to the command line: with nobody signed in, PSADT then exits 1602.
+
+**Codes Intune reports as failed.** Any exit code not in the return-code list is a failure in Intune.
+The ones you will meet from a win32-toolkit package:
+
+| Exit code | Meaning |
+|---|---|
+| 60001 | An error inside the deploy script (for example the installer failed, or an org hook threw). The PSADT log on the device names it. |
+| 60008 | PSADT could not start its session: a 32-bit launch of a PSADT 4.2 package (the old command line, see below), or a config value PSADT refuses (see the [text rules](org-templates.md#text-rules)). |
+| 1602 | The user deferred the installation (org template deferral), or a forced interactive mode found nobody signed in. Deliberately not mapped, so Intune reports it as failed. |
+
+With PSAppDeployToolkit 4.2 the generated deploy script also sets `ExitWithMsiCodes`, so any restart
+request is returned as 3010 (soft reboot); 4.1 ignores that setting.
 
 **Detection rule:** one rule is created, by priority:
 
 1. **Install tattoo (preferred):** the generated deploy script writes
-   `HKLM\SOFTWARE\<Author>\<Vendor>\<App>\Version` at install time, so the rule checks that
-   registry value **equals the packaged version**, so Intune confirms both presence *and* version.
+   `HKLM\SOFTWARE\<Author>\<Vendor>\<App>\Version` at install time (64-bit registry view), so the
+   rule checks that registry value **equals the packaged version**, so Intune confirms both presence
+   *and* version.
 2. **Capture fallback:** projects without a tattoo fall back to the **newest**
    `InstallationChanges_*.json` sandbox capture: a registry key (Uninstall keys preferred) or a
    machine-wide file path (`Program Files` locations ranked first; per-user profile paths are
-   never used, since Intune detects as SYSTEM).
-3. **None:** the app is still created, with a warning. Add a detection rule in the portal.
+   never used, since Intune detects as SYSTEM). The newest capture is used even when its install
+   failed, so after a failed capture re-run it successfully (or remove the failed file from the
+   project's `Documentation\` folder) before publishing.
+3. **None:** the publish **stops** with a `W32T.NoDetectionRule` error before you are asked to sign
+   in and before anything uploads: an app Intune cannot detect reports a failure on every device, or
+   reinstalls forever. Re-create the project with an org template (for the tattoo) or run the install
+   capture, then publish again. For an app nothing can describe (a per-user install, some MSIX
+   packages), pass `-AllowNoDetectionRule` to create it without a rule, then add one in the portal
+   before you assign it.
 
 **App icon:** `Assets\AppIcon.png` (from winget, a manual `-IconPath`, or captured during the
 install run) is normalized to a genuine PNG and attached as the app tile icon (`largeIcon`).
@@ -92,6 +126,43 @@ apply to every device.
 **Re-publish behavior:** every publish creates a **new** app. Intune has no overwrite. To retire
 an old version, delete it or configure supersedence in the portal.
 
+The update app's requirement rule checks the install tattoo in **both** registry views (the native
+64-bit key and `HKLM\SOFTWARE\WOW6432Node\...`), so devices installed by a package published before
+this version (see below) still count as "already installed".
+
+## Apps published before this version
+
+win32-toolkit 1.1.6 and older published every app with the command line
+`powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Install`
+(and `Uninstall`). Under the 32-bit Intune Management Extension that starts a 32-bit PowerShell: a
+PSAppDeployToolkit 4.2 package exits 60008 on every 64-bit device, and a 4.1 package writes its
+install tattoo to `HKLM\SOFTWARE\WOW6432Node\<Author>\<Vendor>\<App>`, where the detection rule does
+not look, so Intune reports "not detected" after a successful install. Publishing never edits an app
+that is already in Intune, so those apps keep the old command line until you act.
+
+**Recommended: rebuild, then republish.** Re-create the project with this version
+([Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md), or
+[New-Win32ToolkitManualApp](reference/New-Win32ToolkitManualApp.md) for a manual app: copy your
+Install code out of `Invoke-AppDeployToolkit.ps1` first, because re-creating a project deletes its
+folder), then publish it and retire the old app. Only a rebuilt project gets the new uninstall that
+also removes the legacy `WOW6432Node` tattoo written by the old 32-bit launch.
+
+**Stopgap: republish the existing project, or edit the command lines in the Intune portal.** Set the
+install and uninstall command lines to `Invoke-AppDeployToolkit.exe -DeploymentType Install` and
+`Invoke-AppDeployToolkit.exe -DeploymentType Uninstall` (the exe already ships in every `.intunewin`),
+or package and publish the existing project again. This fixes install and detection (Required
+assignments heal on their own), **not** the uninstall cleanup: the existing project's deploy script
+is packaged unchanged (it shows as `legacy` in **Browse projects**, and packaging prints one warning
+about it).
+
+!!! warning "Stopgap caveat: the stale WOW6432Node key"
+
+    After an uninstall by an existing (not rebuilt) project, the stale
+    `HKLM\SOFTWARE\WOW6432Node\<Author>\<Vendor>\<App>` key remains on devices the old 32-bit launch
+    installed. The update requirement checks both registry views, so it still matches there, and an
+    **Update** app for that title can reinstall it on devices where it was removed. Use the stopgap
+    only for titles without an Update app, or remove the key with a remediation script.
+
 ## Dependencies at publish time
 
 Dependencies declared on the project (see [Dependencies](dependencies.md)) are resolved to real
@@ -116,3 +187,6 @@ the app id and a portal deep-link.
 | **403 when attaching a dependency** (app itself uploaded fine) | Your Intune RBAC role lacks the **Relate** permission on Mobile apps. A correct Graph scope is not enough. Ask an Intune admin to add Relate to your role, then re-attach in the portal. |
 | **"Need admin approval" at sign-in** | The `DeviceManagementApps.ReadWrite.All` scope needs tenant admin consent, see [Authentication](#authentication). |
 | **Timeout waiting for storage URI or commit** | Large packages take longer to server-side validate. Raise the wait: `-TimeoutSeconds` on the publisher, or `-PublishTimeoutSeconds 900` on `Export-Win32ToolkitIntuneWin` (default 300 s). |
+| **An older app fails with 60008 everywhere, or installs but is "not detected"** | It still has the `powershell.exe -File` command line of win32-toolkit 1.1.6 or older. See [Apps published before this version](#apps-published-before-this-version). |
+| **`W32T.NoDetectionRule`** | No install tattoo and no usable install capture. See the detection rule list in [What gets created](#what-gets-created). |
+| **`W32T.PackageNotReady`** while packaging | The deploy script failed the packaging check (every problem and its fix is listed in the message). See [Packaging](packaging.md#the-package-check). |

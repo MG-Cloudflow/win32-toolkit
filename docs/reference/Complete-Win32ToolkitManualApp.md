@@ -7,7 +7,8 @@ Finalises a scaffolded project: sandbox capture → uninstall automation → tes
 
 ```
 Complete-Win32ToolkitManualApp [-ProjectPath] <String> [[-RunTest] <String[]>] [-PackageIntune]
- [-PublishIntune] [-PublishUpdate] [-ProgressAction <ActionPreference>] [<CommonParameters>]
+ [-PublishIntune] [-PublishUpdate] [-AllowLegacyScript] [-ProgressAction <ActionPreference>]
+ [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -21,6 +22,12 @@ Intune.
 
 Works on any win32-toolkit project (manual or winget), so it can also re-finalise a project after
 hand edits.
+Before anything runs the deploy script is checked: it must carry the AppConfig loader and
+use a template layout this version supports (projects from older win32-toolkit versions pass with a
+warning).
+A project whose layout is not supported must be re-created - copy any hand-written Install
+code out of Invoke-AppDeployToolkit.ps1 first, because re-creating a project deletes its folder - or
+finalised unchanged with -AllowLegacyScript.
 
 ## EXAMPLES
 
@@ -94,7 +101,25 @@ Accept wildcard characters: False
 ```
 
 ### -PublishUpdate
-Also publish the update app (2nd app, same version, requirement-gated to installed devices).
+Also publish the UPDATE app (a second, requirement-gated Intune app of the same version).
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -AllowLegacyScript
+Finalise a deploy script that win32-toolkit never patched (no AppConfig loader) or whose template
+layout this version does not support; the package is built as-is.
+Projects patched by older
+win32-toolkit versions do not need it.
 
 ```yaml
 Type: SwitchParameter

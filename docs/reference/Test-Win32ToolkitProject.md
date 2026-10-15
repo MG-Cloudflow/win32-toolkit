@@ -18,10 +18,24 @@ Windows Sandbox (default) or the local Hyper-V test VM (see New-Win32ToolkitTest
 If no
 ProjectPath is supplied, an interactive menu lists all PSADT projects found under BasePath.
 
-Tests run WATCHED by default (PSADT shows its GUI and a countdown/pause gives you a
-verification window) or UNATTENDED via -Unattended / the SandboxTestMode & HyperVTestMode
-config values (silent, back-to-back, no operator needed - under Sandbox the guest shuts
-itself down afterwards so chained runs proceed).
+Tests run WATCHED by default (a countdown/pause gives you a verification window) or
+UNATTENDED via -Unattended / the SandboxTestMode & HyperVTestMode config values (back-to-back,
+no operator needed: under Sandbox PSADT runs -DeployMode Silent and the guest shuts itself down
+afterwards so chained runs proceed; under Hyper-V the install, uninstall and update run as the
+Intune-parity phase).
+Watched runs use PSADT's Auto mode: on PSADT 4.2 the dialogs appear only
+when one of the app's listed processes is running (otherwise the run is silent); on 4.1.x Auto
+shows PSADT's dialogs.
+(The watched Hyper-V GUI phases force -DeployMode Interactive.)
+
+Process isolation: every PSADT package runs in its OWN Windows PowerShell process (PSADT 4.2
+refuses a second copy of its module in one process, and 4.1 and 4.2 cannot share one).
+Each
+declared 'project:' dependency is started by Sandbox\InstallDependencies.ps1, which stops at the
+first failing dependency and exits with its exit code.
+The app, an Update baseline project and the
+update run through the guest runner Sandbox\Invoke-PsadtPackage.ps1, which appends the exact exit
+code of each of its runs to Sandbox\Logs\PsadtExitCodes.log; those codes are printed after the run.
 
 The function is scenario-driven: new test types can be added as additional switch cases
 without changing the overall structure.
@@ -57,7 +71,7 @@ Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.5
 
 ### EXAMPLE 6
 ```
-# Silent, no operator needed - ideal for automation
+# Unattended Intune-parity run (published command line, 32-bit parent, SYSTEM), no operator needed - ideal for automation
 Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario InstallUninstall -Backend HyperV -Unattended
 ```
 
@@ -247,15 +261,19 @@ Accept wildcard characters: False
 ```
 
 ### -Unattended
-Run SILENT and back-to-back on either backend: no PSADT GUI, no countdown/pause, and under
-Sandbox the guest shuts itself down afterwards so chained runs proceed unaided.
+Run back-to-back on either backend with no countdown or pause; under Sandbox the guest shuts
+itself down afterwards so chained runs proceed unaided.
 The default is
 watched/interactive.
 Overrides the SandboxTestMode / HyperVTestMode config values; on a
 non-interactive host Unattended is auto-selected with a warning.
 Note the context difference:
-Sandbox-unattended runs as the sandbox admin user, HyperV-unattended runs as SYSTEM (the same
-context Intune uses) - their results are not equivalent evidence.
+Sandbox-unattended runs the package -DeployMode Silent as the sandbox admin user, while
+HyperV-unattended runs an INTUNE-PARITY phase for install, uninstall and update: the exact
+published command line (Invoke-AppDeployToolkit.exe -DeploymentType Install|Uninstall, no
+-DeployMode) from a 32-bit cmd.exe parent, as SYSTEM, in the package folder - the way the Intune
+Management Extension launches it - with the exit code checked (0, 1707, 3010, 1641 = success).
+Their results are not equivalent evidence.
 
 ```yaml
 Type: SwitchParameter

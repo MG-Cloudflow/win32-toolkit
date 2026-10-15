@@ -8,7 +8,7 @@ install/uninstall/update paths, packages the `.intunewin`, and publishes it to I
 dependencies, icon, and requirement rules included.
 
 Built for Intune admins and packagers. The primary experience is a guided, menu-driven console UI
-(`Show-Win32Toolkit`); every step is also scriptable through 14 PowerShell commands.
+(`Show-Win32Toolkit`); every step is also scriptable through 16 PowerShell commands.
 
 ```mermaid
 flowchart LR
@@ -24,14 +24,21 @@ flowchart LR
 | Requirement | Notes |
 |---|---|
 | Windows 10/11 (Pro, Enterprise, or Education for Sandbox) | Windows Sandbox is not available on Home |
-| PowerShell 7.2+ | `winget install Microsoft.PowerShell` |
+| PowerShell 7.4+ | `winget install Microsoft.PowerShell` (PSAppDeployToolkit 4.2 needs 7.4 on the packaging host) |
 | winget | For the winget packaging flow (manual apps work without it) |
 | Windows Sandbox **or** Hyper-V | Sandbox: `Enable-WindowsOptionalFeature -Online -FeatureName 'Containers-DisposableClientVM'` + reboot. Hyper-V backend: see [the Hyper-V test VM](docs/hyperv-vm.md) |
 | Internet access | winget downloads, PSADT, tool downloads |
 | Admin rights | Enabling features; the Hyper-V backend needs an elevated session |
 
-Installed automatically on first use: PSAppDeployToolkit v4, PwshSpectreConsole (the UI),
-Microsoft.Graph.Authentication (publishing), IntuneWinAppUtil.exe (packaging).
+Installed automatically on first use: PSAppDeployToolkit (the newest stable **4.1.x or 4.2.x**;
+other versions are never selected or offered), PwshSpectreConsole (the UI),
+Microsoft.Graph.Authentication (publishing), IntuneWinAppUtil.exe (packaging). A PSAppDeployToolkit
+prerelease is only used if you install it yourself; to choose the version for new projects, see
+[configuration](docs/configuration.md#psappdeploytoolkit-version-preferredpsadtversion).
+
+Packages are started on the device through PSADT's `Invoke-AppDeployToolkit.exe` launcher. Apps
+published by win32-toolkit 1.1.6 or older still use the old command line: see
+[apps published before this version](docs/publishing.md#apps-published-before-this-version).
 
 ## Install
 
@@ -114,6 +121,13 @@ packaged for multiple customers side by side. Details: [concepts](docs/concepts.
 | [Export-Win32ToolkitDocumentation](docs/reference/Export-Win32ToolkitDocumentation.md) | Customer-facing one-pager for a packaged app |
 | [Set-Win32ToolkitAppDependency](docs/reference/Set-Win32ToolkitAppDependency.md) | Declare app dependencies ([guide](docs/dependencies.md)) |
 | [Sync-Win32ToolkitAppDependency](docs/reference/Sync-Win32ToolkitAppDependency.md) | Re-attach dependencies on already-published apps |
+
+**Intune connection** ([guide](docs/intune-connection.md))
+
+| Command | What it does |
+|---|---|
+| [Connect-Win32ToolkitIntune](docs/reference/Connect-Win32ToolkitIntune.md) | Sign in and show which tenant you are connected to |
+| [Disconnect-Win32ToolkitIntune](docs/reference/Disconnect-Win32ToolkitIntune.md) | Sign out of the toolkit's Graph session |
 
 **Hyper-V test VM** (optional faster backend, [guide](docs/hyperv-vm.md))
 

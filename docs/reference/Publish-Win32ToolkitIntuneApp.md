@@ -7,8 +7,8 @@ Uploads a packaged Win32 app (.intunewin) to Microsoft Intune via the Graph API.
 
 ```
 Publish-Win32ToolkitIntuneApp [-IntuneWinPath] <String> [-ProjectPath] <String> [-AsUpdate]
- [[-UpdateNameSuffix] <String>] [[-TimeoutSeconds] <Int32>] [-ProgressAction <ActionPreference>] [-WhatIf]
- [-Confirm] [<CommonParameters>]
+ [[-UpdateNameSuffix] <String>] [[-TimeoutSeconds] <Int32>] [-AllowNoDetectionRule]
+ [-ProgressAction <ActionPreference>] [-WhatIf] [-Confirm] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -18,10 +18,14 @@ then executes the full Win32 Lob App upload sequence:
 1.
 Reads app metadata (name, publisher, version, description, URL) from AppConfig.json (winget YAML fallback).
 2.
-Extracts encryption metadata from the .intunewin archive (metadata.xml).
-3.
 Builds a detection rule (install-tattoo version rule preferred; else from the NEWEST
-   InstallationChanges_*.json capture in Documentation\\).
+   InstallationChanges_*.json capture in Documentation\\) BEFORE signing in to Graph.
+No rule at
+   all stops the publish with a W32T.NoDetectionRule error unless -AllowNoDetectionRule is given.
+   A project that bundles a prerelease PSAppDeployToolkit (e.g.
+4.2.0-rc2) only gets a warning.
+3.
+Extracts encryption metadata from the .intunewin archive (metadata.xml).
 4.
 Creates the app shell in Intune.
 5.
@@ -36,6 +40,29 @@ Commits the file and waits for confirmation.
 Links the content version to the app.
 
 Requires the Microsoft.Graph.Authentication module (installed automatically on prompt).
+
+Command lines (from Get-Win32ToolkitIntuneCommandLine, the single source; the app runs as SYSTEM):
+
+    Install   : Invoke-AppDeployToolkit.exe -DeploymentType Install
+    Uninstall : Invoke-AppDeployToolkit.exe -DeploymentType Uninstall
+
+The package is started through PSADT's launcher, not through 'powershell.exe -File'.
+The Intune
+Management Extension is a 32-bit process, so a bare 'powershell.exe' resolves to the 32-bit
+(SysWOW64) Windows PowerShell on 64-bit devices: PSADT 4.2 then refuses to run (exit 60008), and
+PSADT 4.1 runs 32-bit and writes the install tattoo under HKLM\SOFTWARE\WOW6432Node, where the
+64-bit tattoo detection rule never finds it.
+Invoke-AppDeployToolkit.exe is AnyCPU and always starts
+the 64-bit Windows PowerShell.
+No -DeployMode is passed: PSADT chooses the mode itself.
+
+Apps published by win32-toolkit 1.1.6 or older keep their old 'powershell.exe -File' command line:
+this command always creates a NEW app and never edits an existing one.
+Republish those apps (and
+retire the old ones), or edit their install and uninstall command lines in the Intune portal to the
+two lines above.
+The update requirement (-AsUpdate) also accepts the WOW6432Node tattoo those
+32-bit installs left behind.
 
 With -AsUpdate the same .intunewin is published as a SECOND app of the same version whose
 requirement rule (a PowerShell presence check, built by Get-Win32ToolkitRequirementRule) makes it
@@ -58,6 +85,12 @@ Publish-Win32ToolkitIntuneApp `
 ```
 # Publish the update app (2nd app, requirement-gated to devices that already have it)
 Publish-Win32ToolkitIntuneApp -IntuneWinPath $win -ProjectPath $proj -AsUpdate
+```
+
+### EXAMPLE 3
+```
+# A per-user app with no detectable footprint: publish it, then add a detection rule in the portal
+Publish-Win32ToolkitIntuneApp -IntuneWinPath $win -ProjectPath $proj -AllowNoDetectionRule
 ```
 
 ## PARAMETERS
@@ -151,6 +184,27 @@ Aliases:
 Required: False
 Position: 4
 Default value: 300
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -AllowNoDetectionRule
+Publish even when no detection rule can be built (no install tattoo and no usable install capture).
+The app is created with an empty detection-rule list and you must add a rule in the Intune portal
+before assigning it - Intune cannot tell whether such an app installed.
+Meant for apps a capture
+cannot describe (per-user installs, some MSIX packages).
+Without it the publish stops before any
+Graph call with a W32T.NoDetectionRule error.
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
 Accept pipeline input: False
 Accept wildcard characters: False
 ```

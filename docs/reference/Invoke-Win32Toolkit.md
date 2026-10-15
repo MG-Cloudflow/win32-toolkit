@@ -18,6 +18,11 @@ Searches Winget for an application, downloads it, creates a PSADT V4 project,
 configures the installer, generates Intune requirement scripts, and launches
 a Windows Sandbox session for targeted installation documentation.
 
+Fails closed: when the PSADT project cannot be created, when its deploy script uses a template
+layout this version does not support ("Unsupported PSADT template shape: ..."), or when the
+configuration or the org template cannot be applied, the command stops with a terminating error
+and the project is NOT documented, tested, packaged or published.
+
 ## EXAMPLES
 
 ### EXAMPLE 1
@@ -130,6 +135,11 @@ Accept wildcard characters: False
 ### -Force
 Skip the PSGallery update prompt and the project overwrite prompt.
 Useful for unattended / automated runs.
+PSAppDeployToolkit is only ever selected and installed inside the supported range (4.1.x and 4.2.x).
+With -Force an installed supported version is used without querying the gallery; without it, only
+newer STABLE versions inside that range are offered.
+When no supported version is installed, the
+newest stable supported version is installed (with or without -Force).
 
 ```yaml
 Type: SwitchParameter

@@ -19,13 +19,13 @@ The only question is whether the toolkit can install your app **silently and una
 
 | Mode | When it applies | What you do |
 |---|---|---|
-| **Easy** | An **MSI** (installed via PSADT Zero-Config), an **MSIX/APPX** (installed via `Add-AppxPackage`/provisioning), or an **EXE where you know the silent switches** (`-SilentArgs`) | Nothing to author. The install is data-driven and the flow can run end to end |
-| **Advanced** | An **EXE with no known silent switches**, or you pass `-Advanced` explicitly | You author the Install region of the deploy script yourself, then finalise with [Complete-Win32ToolkitManualApp](reference/Complete-Win32ToolkitManualApp.md) |
+| **Easy** | An **MSI** (installed by PSADT's Zero-Config block in the deploy script), an **MSIX/APPX** (installed via `Add-AppxPackage`/provisioning), or an **EXE where you know the silent switches** (`-SilentArgs`) | Nothing to author. The install is data-driven and the flow can run end to end |
+| **Advanced** | An **EXE with no known silent switches**, or you pass `-Advanced` explicitly | You write the install code in the deploy script yourself (see below), then finalise with [Complete-Win32ToolkitManualApp](reference/Complete-Win32ToolkitManualApp.md) |
 
 The **uninstall stays automated in both modes**, never from anything you write. Where it comes from
-depends on the installer: an **MSI** is removed by PSADT Zero-Config from the MSI itself, an
-**MSIX/APPX** by its package identity, and an **EXE** from what the install capture observed. Only the
-EXE case needs the capture to have worked.
+depends on the installer: an **MSI** is removed by PSADT's Zero-Config block from the MSI itself (see
+[the MSI notes](concepts.md#msi-zero-config)), an **MSIX/APPX** by its package identity, and an
+**EXE** from what the install capture observed. Only the EXE case needs the capture to have worked.
 
 "Easy" means there is no install *script* for you to write. For an **MSIX/APPX** there is still one
 prerequisite outside the toolkit: the package must be **signed and the certificate trusted on your
@@ -73,11 +73,11 @@ projects (see [concepts.md](concepts.md)).
 To package an EXE with no silent switches (or anything the data-driven install can't handle):
 
 ```powershell
-# 1. Scaffold: the Install region is left for you
+# 1. Scaffold: the install code is left for you
 New-Win32ToolkitManualApp -Name 'Legacy CAD' -Version '12.0' -Architecture x64 `
     -SourcePath 'C:\src\LegacyCAD\' -Advanced -TemplateName 'Contoso'
 
-# 2. Edit the Install region (Pre-Install / Install / Post-Install) in:
+# 2. Write your install code in the Install phase of:
 #    <BasePath>\Projects\Contoso\Legacy_CAD_x64_12.0\Invoke-AppDeployToolkit.ps1
 
 # 3. Finalise: capture → uninstall logic → test → package
@@ -85,14 +85,31 @@ Complete-Win32ToolkitManualApp -ProjectPath 'C:\Win32Apps\Projects\Contoso\Legac
     -RunTest InstallUninstall -PackageIntune
 ```
 
-Two things to know about the script you edit:
+Where to write it: in the Install phase, **between** the block that starts with
+`## win32-toolkit:Install:manual-install (begin)` and the `## win32-toolkit:Install:install-done (begin)`
+block below it. On PSADT 4.2 that is inside the `## MARK: Install` section
+(`New-Variable -Name Install -Force -Value { ... }`); on PSADT 4.1 inside `Install-ADTDeployment`. The
+scaffold message prints the same instructions.
+
+Things to know about the script you edit:
 
 - It runs on target devices under **Windows PowerShell 5.1**, so avoid PowerShell 7-only syntax.
-- Only touch the **Install** region. The Uninstall region is filled in automatically during finalise,
-  from the changes the capture observed.
+- **Never edit inside a `## win32-toolkit:` block.** Those blocks are regenerated; your code goes
+  between them.
+- To fail the install, `throw`; never `return`. The `install-done` block after your code marks the
+  install as complete; only then is the detection tattoo written, so a failed install is never
+  detected as installed.
+- Never assign PSADT's own variable names (`$Culture`, `$envTemp`, ...): they are read-only on PSADT
+  4.2 and the deployment fails.
+- Only write the **install**. The uninstall is generated automatically during finalise, from the
+  changes the capture observed.
 
 `Complete-Win32ToolkitManualApp` also works on **any** existing project (manual or winget), so you can
-re-finalise a project after hand edits at any time.
+re-finalise a project after hand edits at any time. Before anything runs it checks the deploy script
+(see [the package check](packaging.md#the-package-check)): a project made by win32-toolkit 1.1.6 or
+older passes with one warning. A project whose template layout this version does not support must be
+re-created: copy your install code out of `Invoke-AppDeployToolkit.ps1` first, because re-creating a
+project deletes its folder. Or finalise it unchanged with `-AllowLegacyScript`.
 
 ## It rejoins the same pipeline
 

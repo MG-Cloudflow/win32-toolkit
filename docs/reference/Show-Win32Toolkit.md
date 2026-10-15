@@ -19,7 +19,7 @@ exactly what is missing and how to fix it.
 
 Built on PwshSpectreConsole - offered for one-time install on first launch if absent.
 Requires
-PowerShell 7.2+ and an interactive console.
+PowerShell 7.4+ and an interactive console.
 
 ## EXAMPLES
 

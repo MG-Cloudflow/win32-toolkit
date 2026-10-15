@@ -7,8 +7,8 @@ Packages a PSADT project into a .intunewin file for Intune deployment.
 
 ```
 Export-Win32ToolkitIntuneWin [[-ProjectPath] <String>] [[-BasePath] <String>] [-PublishIntune] [-PublishUpdate]
- [-NoPublishPrompt] [[-PublishTimeoutSeconds] <Int32>] [-ProgressAction <ActionPreference>] [-WhatIf]
- [-Confirm] [<CommonParameters>]
+ [-NoPublishPrompt] [[-PublishTimeoutSeconds] <Int32>] [-AllowLegacyScript]
+ [-ProgressAction <ActionPreference>] [-WhatIf] [-Confirm] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -22,6 +22,16 @@ Works with the win32-toolkit template-grouped folder layout:
 Steps performed:
 1.
 Resolves the target project (interactive picker if ProjectPath is omitted).
+   Then refuses to package a deploy script win32-toolkit cannot vouch for
+   (Assert-Win32ToolkitPackageReady -Stage Export), before anything is downloaded or copied: the
+   script must exist and parse (also under Windows PowerShell 5.1, which Intune uses), carry the
+   AppConfig loader written by win32-toolkit, use a supported PSAppDeployToolkit template layout
+   and version that matches the bundled module, and Invoke-AppDeployToolkit.exe (the launcher
+   Intune starts) must sit next to it.
+Every problem is listed in one W32T.PackageNotReady error.
+   A missing install tattoo, a project patched by win32-toolkit 1.1.6 or older, or a bundled
+   prerelease PSAppDeployToolkit (e.g.
+4.2.0-rc2) only warns.
 2.
 Locates or auto-downloads IntuneWinAppUtil.exe into the module's Tools\ folder
    (Authenticode-verified as Microsoft-signed before use).
@@ -74,6 +84,12 @@ Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0'
 Export-Win32ToolkitIntuneWin -ProjectPath $proj -PublishIntune -PublishTimeoutSeconds 900
 ```
 
+### EXAMPLE 7
+```
+# A hand-maintained deploy script that win32-toolkit never patched
+Export-Win32ToolkitIntuneWin -ProjectPath $proj -NoPublishPrompt -AllowLegacyScript
+```
+
 ## PARAMETERS
 
 ### -ProjectPath
@@ -121,6 +137,10 @@ After packaging, upload the .intunewin file directly to Microsoft Intune via Gra
 Requires the Microsoft.Graph.Authentication module.
 You will be prompted to authenticate
 interactively on the first run.
+A project with no detection rule (no install tattoo and no install
+capture) is not published: the W32T.NoDetectionRule error is passed through unchanged.
+To publish
+such an app anyway, call Publish-Win32ToolkitIntuneApp -AllowNoDetectionRule on the package.
 
 ```yaml
 Type: SwitchParameter
@@ -180,6 +200,27 @@ Aliases:
 Required: False
 Position: 3
 Default value: 0
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -AllowLegacyScript
+Package a deploy script that win32-toolkit never patched (no AppConfig loader), or whose PSADT
+template layout or bundled module version this win32-toolkit version does not support, as-is: those
+findings become warnings instead of stopping the export.
+Projects patched by older win32-toolkit
+versions do not need it.
+A script that does not parse, or a missing Invoke-AppDeployToolkit.exe,
+still stops the export.
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
 Accept pipeline input: False
 Accept wildcard characters: False
 ```

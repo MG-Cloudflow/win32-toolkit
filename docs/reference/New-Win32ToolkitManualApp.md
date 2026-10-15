@@ -23,14 +23,24 @@ Input is hybrid: pass what you can as parameters; you are prompted for any missi
 (Name, Version, Architecture, SourcePath).
 
 Two modes:
-- Easy  - provide -SilentArgs, or an MSI (Zero-Config), or an MSIX/APPX package (installed via
-          Add-AppxPackage/provisioning, uninstalled by package identity): the install runs
-          data-driven.
-Add -Continue (or -RunTest/-PackageIntune/-PublishIntune) to finalise.
-- Hard  - pass -Advanced (or an EXE with no -SilentArgs): the Install region of
-          Invoke-AppDeployToolkit.ps1 is left for you to author.
-The uninstall stays automated.
-          Finish later with Complete-Win32ToolkitManualApp.
+- Easy  - provide -SilentArgs, or an MSI (installed by PSADT's Zero-Config block: the PSADT 4.1.x
+          default template, or the PSADT 4.2 template scaffolded with New-ADTTemplate -ZeroConfig),
+          or an MSIX/APPX package (installed via Add-AppxPackage/provisioning, uninstalled by package
+          identity): the install runs data-driven.
+Add -Continue (or -RunTest/-PackageIntune/
+          -PublishIntune) to finalise.
+- Hard  - pass -Advanced (or an EXE with no -SilentArgs): in Invoke-AppDeployToolkit.ps1 write your
+          install code between the '## win32-toolkit:Install:manual-install' block and the
+          'install-done' block (under '## MARK: Install' on PSADT 4.2, inside Install-ADTDeployment on
+          PSADT 4.1).
+Fail with 'throw', never 'return'; never assign PSADT variable names.
+The
+          uninstall stays automated.
+Finish later with Complete-Win32ToolkitManualApp.
+
+Fails closed: when the project cannot be created, its deploy script uses a template layout this
+version does not support, or the org template cannot be applied, the command stops with a
+terminating error.
 
 ## EXAMPLES
 
