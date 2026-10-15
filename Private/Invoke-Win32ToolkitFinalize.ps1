@@ -14,6 +14,11 @@ function Invoke-Win32ToolkitFinalize {
              and processes-to-close from it.
           3. Optional -RunTest scenarios, then -PackageIntune / -PublishIntune.
 
+        Pre-flight (D15): before anything runs, Assert-Win32ToolkitPackageReady -Stage Finalize must pass:
+        the deploy script exists, parses, carries the AppConfig loader and uses a supported template
+        shape (projects patched by older win32-toolkit versions pass with a warning). A failure throws
+        W32T.PackageNotReady and nothing is documented, tested, packaged or published.
+
         See knowledge-base/designs/manual-app-packaging.md.
     .PARAMETER ProjectPath
         Full path to the scaffolded PSADT project.
@@ -21,6 +26,9 @@ function Invoke-Win32ToolkitFinalize {
         Project (folder) name — used for the sandbox documentation config.
     .PARAMETER AppInfo
         App metadata object (passed through to New-TargetedDocumentation).
+    .PARAMETER AllowLegacyScript
+        Finalise a deploy script that win32-toolkit never patched (no AppConfig loader) or whose template
+        layout this version does not support; the package is built as-is (passed on to the export).
     #>
     [CmdletBinding()]
     param(
@@ -50,8 +58,15 @@ function Invoke-Win32ToolkitFinalize {
         [switch]$PublishIntune,
 
         # Also publish the update app (2nd app, same version, requirement-gated to installed devices).
-        [switch]$PublishUpdate
+        [switch]$PublishUpdate,
+
+        # D15 override: package a deploy script without the AppConfig loader / with an unsupported layout as-is.
+        [switch]$AllowLegacyScript
     )
+
+    # Pre-flight (D15): never document, test, package or publish a deploy script win32-toolkit cannot
+    # vouch for. Throws W32T.PackageNotReady (all problems listed); warnings are written by the Assert.
+    $null = Assert-Win32ToolkitPackageReady -ProjectPath $ProjectPath -Stage Finalize -AllowLegacyScript:$AllowLegacyScript
 
     $filesPath = Join-Path $ProjectPath 'Files'
 
@@ -127,6 +142,6 @@ function Invoke-Win32ToolkitFinalize {
 
     # 3. Optional package / publish (-PublishIntune / -PublishUpdate imply packaging).
     if ($PackageIntune -or $PublishIntune -or $PublishUpdate) {
-        Export-Win32ToolkitIntuneWin -ProjectPath $ProjectPath -PublishIntune:$PublishIntune -PublishUpdate:$PublishUpdate
+        Export-Win32ToolkitIntuneWin -ProjectPath $ProjectPath -PublishIntune:$PublishIntune -PublishUpdate:$PublishUpdate -AllowLegacyScript:$AllowLegacyScript
     }
 }

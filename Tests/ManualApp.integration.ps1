@@ -39,7 +39,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 $BASE = Join-Path ([System.IO.Path]::GetTempPath()) ('w32ma_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 function Get-Win32ToolkitBasePath { param($BasePath, [switch]$Reconfigure) $BASE }
 function Get-OrgTemplate { param($BasePath, $TemplateName) [pscustomobject]@{ TemplateName = 'Contoso'; AppScriptAuthor = 'IT' } }
-function Apply-OrgTemplate { param($ProjectPath, $Template) $true }
+$script:applyResult = $true
+function Apply-OrgTemplate { param($ProjectPath, $Template) $script:applyResult }
 
 # A real PSADT scaffold is a network/module dependency — fake the folder shape it produces.
 function Create-PSADTProject {
@@ -131,6 +132,15 @@ $deps = @(Get-Win32ToolkitDependencies -ProjectPath $p5)
 if ($deps.Count -eq 1 -and $deps[0].Ref -eq 'Microsoft.VCRedist.2015+.x64' -and $deps[0].Source -eq 'winget') {
     Ok 'a custom app can depend on the VC++ redistributable (declared into AppConfig)'
 } else { Bad ($deps | Out-String) }
+
+Write-Host '[7] an org template that cannot be applied stops the run (fail closed)' -ForegroundColor Cyan
+$script:applyResult = $false; $script:finalized = $false
+$msi3 = New-Src 'noapply.msi'
+$threw = $null
+try { $null = New-Win32ToolkitManualApp -Name 'No Apply' -Version '1.0' -Architecture x64 -SourcePath $msi3 -TemplateName 'Contoso' -Force -Continue 6>$null 3>$null }
+catch { $threw = $_.FullyQualifiedErrorId }
+$script:applyResult = $true
+if ($threw -eq 'W32T.PipelineAborted' -and -not $script:finalized) { Ok 'Apply-OrgTemplate $false -> W32T.PipelineAborted; the finalize tail never ran' } else { Bad "threw='$threw' finalized=$script:finalized" }
 
 Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue
 

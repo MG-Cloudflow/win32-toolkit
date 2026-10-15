@@ -11,12 +11,20 @@ function New-Win32ToolkitManualApp {
     (Name, Version, Architecture, SourcePath).
 
     Two modes:
-    - Easy  — provide -SilentArgs, or an MSI (Zero-Config), or an MSIX/APPX package (installed via
-              Add-AppxPackage/provisioning, uninstalled by package identity): the install runs
-              data-driven. Add -Continue (or -RunTest/-PackageIntune/-PublishIntune) to finalise.
-    - Hard  — pass -Advanced (or an EXE with no -SilentArgs): the Install region of
-              Invoke-AppDeployToolkit.ps1 is left for you to author. The uninstall stays automated.
-              Finish later with Complete-Win32ToolkitManualApp.
+    - Easy  — provide -SilentArgs, or an MSI (installed by PSADT's Zero-Config block: the PSADT 4.1.x
+              default template, or the PSADT 4.2 template scaffolded with New-ADTTemplate -ZeroConfig),
+              or an MSIX/APPX package (installed via Add-AppxPackage/provisioning, uninstalled by package
+              identity): the install runs data-driven. Add -Continue (or -RunTest/-PackageIntune/
+              -PublishIntune) to finalise.
+    - Hard  — pass -Advanced (or an EXE with no -SilentArgs): in Invoke-AppDeployToolkit.ps1 write your
+              install code between the '## win32-toolkit:Install:manual-install' block and the
+              'install-done' block (under '## MARK: Install' on PSADT 4.2, inside Install-ADTDeployment on
+              PSADT 4.1). Fail with 'throw', never 'return'; never assign PSADT variable names. The
+              uninstall stays automated. Finish later with Complete-Win32ToolkitManualApp.
+
+    Fails closed: when the project cannot be created, its deploy script uses a template layout this
+    version does not support, or the org template cannot be applied, the command stops with a
+    terminating error.
 
    
 .PARAMETER Name
@@ -151,7 +159,9 @@ function New-Win32ToolkitManualApp {
         Write-Host "Project name   : $projectName" -ForegroundColor Cyan
 
         if (-not (Create-PSADTProject -ProjectName $projectName -ProjectPath $projectsDir -Force:$Force)) {
-            throw 'Failed to create PSADT project.'
+            throw [System.Management.Automation.ErrorRecord]::new(
+                [System.InvalidOperationException]::new("Failed to create the PSADT project '$projectName' (see the warnings above)."),
+                'W32T.ProjectCreationFailed', [System.Management.Automation.ErrorCategory]::InvalidResult, $projectName)
         }
         $projectFullPath = Join-Path $projectsDir $projectName
         $filesPath       = Join-Path $projectFullPath 'Files'
@@ -225,6 +235,7 @@ function New-Win32ToolkitManualApp {
         # ── Patch deploy script. Hard app = manual install region; uninstall always automated.
         #    Only an EXE without silent args is hard (nothing to run automatically) — MSI uses
         #    Zero-Config and msix/appx install via Add-AppxPackage/provisioning, no switches needed.
+        #    Critical generator problems throw W32T.* (propagated); $false = written and valid, with warnings.
         $manual = [bool]$Advanced -or ($fileInfo.Type -eq 'exe' -and [string]::IsNullOrWhiteSpace($SilentArgs))
         $patched = Set-PSADTDataDrivenScript -ScriptPath (Join-Path $projectFullPath 'Invoke-AppDeployToolkit.ps1') -ManualInstall:$manual
         if ($patched) {
@@ -237,7 +248,11 @@ function New-Win32ToolkitManualApp {
         # ── Org template + optional icon ──────────────────────────────────────────
         if ($script:OrgTemplate) {
             Write-Verbose 'Applying org template...'
-            Apply-OrgTemplate -ProjectPath $projectFullPath -Template $script:OrgTemplate | Out-Null
+            if (-not (Apply-OrgTemplate -ProjectPath $projectFullPath -Template $script:OrgTemplate)) {
+                throw [System.Management.Automation.ErrorRecord]::new(
+                    [System.InvalidOperationException]::new('The org template could not be applied - the project was NOT finalised, tested, packaged or published (see the warnings above).'),
+                    'W32T.PipelineAborted', [System.Management.Automation.ErrorCategory]::InvalidResult, $projectFullPath)
+            }
         }
         if ($IconPath -and (Test-Path -LiteralPath $IconPath)) {
             $assets = Join-Path $projectFullPath 'Assets'
@@ -256,9 +271,11 @@ function New-Win32ToolkitManualApp {
         if ($manual) {
             Write-Host ''
             Write-Host 'HARD APP — next steps:' -ForegroundColor Yellow
-            Write-Host "  1. Edit the Install region in:" -ForegroundColor White
+            Write-Host "  1. In Invoke-AppDeployToolkit.ps1 write your install code between the" -ForegroundColor White
+            Write-Host "     '## win32-toolkit:Install:manual-install' block and the 'install-done' block" -ForegroundColor White
+            Write-Host "     (under '## MARK: Install' on PSADT 4.2, inside Install-ADTDeployment on 4.1):" -ForegroundColor White
             Write-Host "     $projectFullPath\Invoke-AppDeployToolkit.ps1" -ForegroundColor Gray
-            Write-Host '     (write your Pre-Install / Install / Post-Install logic).' -ForegroundColor Gray
+            Write-Host "     Fail with 'throw', never 'return'; never assign PSADT variable names." -ForegroundColor Gray
             Write-Host '  2. Then finalise (auto uninstall + test + package + upload):' -ForegroundColor White
             Write-Host "     Complete-Win32ToolkitManualApp -ProjectPath '$projectFullPath' -RunTest InstallUninstall" -ForegroundColor Cyan
             return [pscustomobject]@{ ProjectPath = $projectFullPath; ProjectName = $projectName; Mode = 'Advanced' }
@@ -278,6 +295,8 @@ function New-Win32ToolkitManualApp {
         return [pscustomobject]@{ ProjectPath = $projectFullPath; ProjectName = $projectName; Mode = 'Easy' }
     }
     catch {
+        # Fail-closed errors (W32T.*) reach the caller as terminating errors; the TUI shows them.
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
         Write-Error "New-Win32ToolkitManualApp failed: $($_.Exception.Message)"
     }
     finally {

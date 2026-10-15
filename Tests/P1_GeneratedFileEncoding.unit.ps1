@@ -21,8 +21,9 @@
               It now matches the FULL DisplayName exactly (and the MSI product code), like
               Get-Win32ToolkitRequirementRule already did.
 
-    Nothing here touches the network, the registry, or a real PSADT install: the PSADT project is a
-    hand-rolled fixture, and the generated requirement script is executed against an in-memory
+    Nothing here touches the network, the registry, or a real PSADT install: the deploy script is a copy
+    of the PSADT 4.1.8 / 4.2.0 Zero-Config goldens (Tests\Fixtures) with a non-ASCII operator comment,
+    patched by the generator and then org-templated, and the generated requirement script is executed against an in-memory
     Add/Remove-Programs fixture with Get-ItemProperty shadowed.
 
     Run:  pwsh -File Tests\P1_GeneratedFileEncoding.unit.ps1
@@ -44,10 +45,31 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\New-Win32ToolkitSparseConfig.ps1') # sparse config.psd1 generator (F1) — Apply-OrgTemplate dep
 . (Join-Path $repo 'Private\Test-Win32ToolkitPS51Syntax.ps1')  # 5.1 hook syntax check (A1) — Add-Win32ToolkitOrgHooks dep
 . (Join-Path $repo 'Private\Add-Win32ToolkitOrgHooks.ps1')     # org hooks + extension module (A1/A3) — Apply-OrgTemplate dep
+. (Join-Path $repo 'Private\Assert-Win32ToolkitOrgExtensionModule.ps1') # D11 / ORG-08 gate - Apply-OrgTemplate + Add-Win32ToolkitOrgHooks dep
 . (Join-Path $repo 'Private\Apply-OrgTemplate.ps1')
 . (Join-Path $repo 'Private\New-CountdownScript.ps1')
 . (Join-Path $repo 'Private\New-LogCollectorScript.ps1')
 . (Join-Path $repo 'Private\New-IntuneRequirementScript.ps1')
+# The shape-aware generator (spec 2.5-2.8) and the AppConfig writers Apply-OrgTemplate now uses.
+foreach ($f in 'Get-Win32ToolkitDeployScriptShape', 'Set-Win32ToolkitPhaseBlock', 'Remove-Win32ToolkitPhaseBlock',
+    'Remove-Win32ToolkitPhaseDefaultUi', 'Get-Win32ToolkitDeployScriptBlock', 'Write-Win32ToolkitDeployScript',
+    'Get-Win32ToolkitAppConfig', 'Set-Win32ToolkitAppConfig') {
+    . (Join-Path $repo "Private\$f.ps1")
+}
+
+# C-5: the supported range (normally set by win32-toolkit.psm1) + shadows for other work packages' contracts.
+$script:PsadtSupportedRange = [pscustomobject]@{ Min = [version]'4.1.0'; MaxExclusive = [version]'4.3.0'; Display = '4.1.x and 4.2.x' }
+function Test-Win32ToolkitPsadtVersionSupported {
+    param([Parameter(Position = 0)][object]$Version)
+    if ($null -eq $Version) { return $false }
+    $v = $null
+    if ($Version -is [version]) { $v = $Version } elseif (-not [version]::TryParse((([string]$Version) -split '-', 2)[0], [ref]$v)) { return $false }
+    return ($v -ge $script:PsadtSupportedRange.Min -and $v -lt $script:PsadtSupportedRange.MaxExclusive)
+}
+# WP-D's D9 validator (spec 2.12): a no-op here (the templates below are valid); records the call.
+function Assert-Win32ToolkitOrgTemplateText { param($Template, [string]$Context) $script:TextChecked = "$Context/$($Template.TemplateName)" }
+# Real asset copier: the templates below set no CustomAssets, so it returns before touching anything.
+. (Join-Path $repo 'Private\Add-Win32ToolkitTemplateAssets.ps1')
 
 # ── helpers ──────────────────────────────────────────────────────────────────────────────────────
 # Read the RAW BYTES — never trust the -Encoding parameter that was passed to the writer.
@@ -84,12 +106,17 @@ $NONASCII_COMPANY = 'Café Nagüi Ünïcøde ehf.'
 $NONASCII_AUTHOR  = 'Nagüi — Café IT'
 $NONASCII_APP     = 'Café Nagüi Player'
 
-# ── PSADT-shaped fixture project (no PSAppDeployToolkit dependency) ──────────────────────────────
-function New-FixtureProject([string]$Author = 'PSAppDeployToolkit') {
+# An operator's hand-written comment with non-ASCII text, inserted into the Install phase of the golden
+# copy: proves the deploy-script writer keeps operator bytes intact (UTF-8 with BOM, no mojibake).
+$NONASCII_OPERATOR = "    # Operator note: $NONASCII_APP - prüfen Sie die Lizenz"
+
+# ── PSADT project fixture: a real PSADT deploy-script golden (no PSAppDeployToolkit dependency) ──
+function New-FixtureProject([string]$Golden = 'psadt-4.1.8') {
     $p = Join-Path ([System.IO.Path]::GetTempPath()) ('w32enc_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-    New-Item -ItemType Directory -Path (Join-Path $p 'Config')  -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $p 'Strings') -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $p 'Files')   -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $p 'Config')       -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $p 'Strings')      -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $p 'Files')        -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $p 'SupportFiles') -Force | Out-Null
 
     $cfg = @'
 @{
@@ -129,69 +156,18 @@ function New-FixtureProject([string]$Author = 'PSAppDeployToolkit') {
     }
 }
 '@
-    $deploy = @"
-[CmdletBinding()]
-param()
-
-`$adtSession = @{
-    AppVendor = ''
-    AppName = ''
-    AppVersion = ''
-    AppArch = ''
-    AppScriptDate = '2026-01-01'
-    AppScriptAuthor = '$($Author -replace "'", "''")'
-    AppProcessesToClose = @()
-}
-
-function Install-ADTDeployment
-{
-    ## Show Welcome Message, close processes if specified.
-    `$saiwParams = @{
-        AllowDefer = `$true
-    }
-    if (`$adtSession.AppProcessesToClose.Count -gt 0)
-    {
-        `$saiwParams.Add('CloseProcesses', `$adtSession.AppProcessesToClose)
-    }
-    Show-ADTInstallationWelcome @saiwParams
-
-    ## Show Progress Message (with the default message).
-    Show-ADTInstallationProgress
-
-    ## <Perform Installation tasks here>
-
-    ## <Perform Post-Installation tasks here>
-
-    ## Display a message at the end of the install.
-    if (!`$adtSession.UseDefaultMsi)
-    {
-        Show-ADTInstallationPrompt -Message 'Complete.' -ButtonRightText 'OK' -NoWait
-    }
-}
-
-function Uninstall-ADTDeployment
-{
-    ## If there are processes to close, show Welcome Message before uninstalling.
-    if (`$adtSession.AppProcessesToClose.Count -gt 0)
-    {
-        Show-ADTInstallationWelcome -CloseProcesses `$adtSession.AppProcessesToClose
-    }
-
-    ## Show Progress Message (with the default message).
-    Show-ADTInstallationProgress
-
-    ## <Perform Uninstallation tasks here>
-
-    ## <Perform Post-Uninstallation tasks here>
-}
-"@
+    # The deploy script is a copy of a real PSADT golden (4.1.8 or 4.2.0 Zero-Config), CRLF + BOM like a
+    # scaffold, with one non-ASCII operator comment in the Install phase.
+    $deploy = ([System.IO.File]::ReadAllText((Join-Path $repo "Tests\Fixtures\$Golden\Invoke-AppDeployToolkit.ps1"), [System.Text.Encoding]::UTF8)) -replace "`r`n", "`n"
+    $zc = $deploy.IndexOf("    ## Handle Zero-Config MSI")   # first occurrence = the Install phase on both templates
+    $deploy = $deploy.Substring(0, $zc) + $NONASCII_OPERATOR + "`n" + $deploy.Substring($zc)
     $bom = New-Object System.Text.UTF8Encoding($true)
     foreach ($f in @(
-        @{ P = (Join-Path $p 'Config\config.psd1');           T = $cfg },
-        @{ P = (Join-Path $p 'Strings\strings.psd1');         T = $str },
-        @{ P = (Join-Path $p 'Invoke-AppDeployToolkit.ps1');  T = $deploy })) {
+        @{ P = (Join-Path $p 'Config\config.psd1');   T = $cfg },
+        @{ P = (Join-Path $p 'Strings\strings.psd1'); T = $str })) {
         [System.IO.File]::WriteAllText($f.P, (($f.T -replace "`r?`n", "`r`n") + "`r`n"), $bom)
     }
+    [System.IO.File]::WriteAllText((Join-Path $p 'Invoke-AppDeployToolkit.ps1'), ($deploy -replace "`n", "`r`n"), $bom)
     return $p
 }
 
@@ -240,63 +216,77 @@ Write-Host '[A] Every file destined for Windows PowerShell 5.1 is written UTF-8 
 
 $generated = @{}   # label -> path, collected for the parse/5.1-safety sweep below
 
-# 1. Set-PSADTDataDrivenScript -> Invoke-AppDeployToolkit.ps1 (non-ASCII author must survive)
-$pA = New-FixtureProject -Author $NONASCII_AUTHOR
-$depA = Join-Path $pA 'Invoke-AppDeployToolkit.ps1'
-$null = Set-PSADTDataDrivenScript -ScriptPath $depA -WarningAction SilentlyContinue
-$generated['Set-PSADTDataDrivenScript: Invoke-AppDeployToolkit.ps1'] = $depA
-if (Test-Bom $depA) { Ok 'Set-PSADTDataDrivenScript writes Invoke-AppDeployToolkit.ps1 with a BOM' }
-else { Bad 'Set-PSADTDataDrivenScript wrote a BOM-LESS Invoke-AppDeployToolkit.ps1' }
-if (Test-Utf8Contains $depA $NONASCII_AUTHOR) { Ok "non-ASCII AppScriptAuthor round-trips byte-correctly ('$NONASCII_AUTHOR')" }
-else { Bad 'non-ASCII AppScriptAuthor did not survive the data-driven patch' }
+foreach ($golden in 'psadt-4.1.8', 'psadt-4.2.0-zeroconfig') {
+    Write-Host "  -- deploy script from the $golden golden --" -ForegroundColor DarkCyan
 
-# …and the loader it emits must tell 5.1 how to decode the (deliberately BOM-less) AppConfig.json.
-$depAText = Get-Content -LiteralPath $depA -Raw
-if ($depAText -match 'AppConfig\.json"\s+-Raw\s+-Encoding\s+UTF8') { Ok 'generated AppConfig.json loader reads with -Encoding UTF8 (5.1 would use ANSI otherwise)' }
-else { Bad 'generated AppConfig.json loader still uses Get-Content with no -Encoding' }
+    # 1. Set-PSADTDataDrivenScript -> Invoke-AppDeployToolkit.ps1 (the non-ASCII operator comment must survive)
+    $pA = New-FixtureProject -Golden $golden
+    $depA = Join-Path $pA 'Invoke-AppDeployToolkit.ps1'
+    $null = Set-PSADTDataDrivenScript -ScriptPath $depA -WarningAction SilentlyContinue
+    $generated["Set-PSADTDataDrivenScript ($golden): Invoke-AppDeployToolkit.ps1"] = $depA
+    if (Test-Bom $depA) { Ok "Set-PSADTDataDrivenScript writes Invoke-AppDeployToolkit.ps1 with a BOM ($golden)" }
+    else { Bad "Set-PSADTDataDrivenScript wrote a BOM-LESS Invoke-AppDeployToolkit.ps1 ($golden)" }
+    if (Test-Utf8Contains $depA $NONASCII_OPERATOR) { Ok "non-ASCII operator text round-trips byte-correctly through the generator ($golden)" }
+    else { Bad "non-ASCII operator text did not survive the data-driven patch ($golden)" }
+    $ps51 = @(Test-Win32ToolkitPS51Syntax -Path $depA)
+    if ($ps51.Count -eq 0) { Ok "the patched script parses under real Windows PowerShell 5.1 ($golden)" } else { Bad "5.1 parse errors ($golden): $($ps51 -join '; ')" }
 
-# 2-4. Apply-OrgTemplate -> config.psd1, strings.psd1, Invoke-AppDeployToolkit.ps1
-$pB = New-FixtureProject
-$tmpl = [pscustomobject]@{
-    TemplateName           = 'EncTest'
-    CompanyName            = $NONASCII_COMPANY
-    AppScriptAuthor        = $NONASCII_AUTHOR
-    DialogStyle            = 'Fluent'
-    FluentAccentColor      = ''
-    LogPath                = 'C:\Windows\Logs\Software'
-    BalloonComplete        = [pscustomobject]@{ Install = "Installé"; Repair = 'Repair complete.'; Uninstall = 'Uninstallation complete.' }
-    ProgressMessage        = [pscustomobject]@{ Install = "Installation en cours…"; Repair = 'Repairing…'; Uninstall = 'Removing…' }
-    ProgressMessageDetail  = [pscustomobject]@{ Install = "Veuillez patienter"; Repair = 'Please wait'; Uninstall = 'Please wait' }
-    WelcomeDialog          = [pscustomobject]@{ Enabled = $false }
-    UninstallWelcomeDialog = [pscustomobject]@{ Enabled = $false }
-    ProgressDialog         = [pscustomobject]@{ Enabled = $true; StatusMessage = ''; StatusMessageDetail = '' }
-    CompletionPrompt       = [pscustomobject]@{ Enabled = $false }
+    # …and the loader it emits must tell 5.1 how to decode the (deliberately BOM-less) AppConfig.json.
+    $depAText = Get-Content -LiteralPath $depA -Raw
+    if ($depAText -match 'AppConfig\.json"\s+-Raw\s+-Encoding\s+UTF8') { Ok 'generated AppConfig.json loader reads with -Encoding UTF8 (5.1 would use ANSI otherwise)' }
+    else { Bad 'generated AppConfig.json loader still uses Get-Content with no -Encoding' }
+
+    # 2-4. Set-PSADTDataDrivenScript, THEN Apply-OrgTemplate -> config.psd1, strings.psd1, deploy script, AppConfig.json
+    $pB = New-FixtureProject -Golden $golden
+    $depB = Join-Path $pB 'Invoke-AppDeployToolkit.ps1'
+    $null = Set-PSADTDataDrivenScript -ScriptPath $depB -WarningAction SilentlyContinue
+    $tmpl = [pscustomobject]@{
+        TemplateName           = 'EncTest'
+        CompanyName            = $NONASCII_COMPANY
+        AppScriptAuthor        = $NONASCII_AUTHOR
+        DialogStyle            = 'Fluent'
+        FluentAccentColor      = ''
+        LogPath                = 'C:\Windows\Logs\Software'
+        BalloonComplete        = [pscustomobject]@{ Install = "Installé"; Repair = 'Repair complete.'; Uninstall = 'Uninstallation complete.' }
+        ProgressMessage        = [pscustomobject]@{ Install = "Installation en cours…"; Repair = 'Repairing…'; Uninstall = 'Removing…' }
+        ProgressMessageDetail  = [pscustomobject]@{ Install = "Veuillez patienter"; Repair = 'Please wait'; Uninstall = 'Please wait' }
+        WelcomeDialog          = [pscustomobject]@{ Enabled = $false }
+        UninstallWelcomeDialog = [pscustomobject]@{ Enabled = $false }
+        ProgressDialog         = [pscustomobject]@{ Enabled = $true; StatusMessage = ''; StatusMessageDetail = '' }
+        CompletionPrompt       = [pscustomobject]@{ Enabled = $false }
+    }
+    $applied = Apply-OrgTemplate -ProjectPath $pB -Template $tmpl -WarningAction SilentlyContinue 6>$null
+    if ($applied -eq $true) { Ok "Apply-OrgTemplate applied the template to the generated script ($golden)" } else { Bad "Apply-OrgTemplate returned '$applied' ($golden)" }
+    $cfgB = Join-Path $pB 'Config\config.psd1'
+    $strB = Join-Path $pB 'Strings\strings.psd1'
+    $acB  = Join-Path $pB 'SupportFiles\AppConfig.json'
+    $generated["Apply-OrgTemplate ($golden): Invoke-AppDeployToolkit.ps1"] = $depB
+
+    if (Test-Bom $cfgB) { Ok 'Apply-OrgTemplate writes config.psd1 with a BOM' }   else { Bad 'config.psd1 written BOM-LESS' }
+    if (Test-Bom $strB) { Ok 'Apply-OrgTemplate writes strings.psd1 with a BOM' }  else { Bad 'strings.psd1 written BOM-LESS' }
+    if (Test-Bom $depB) { Ok 'Apply-OrgTemplate keeps Invoke-AppDeployToolkit.ps1 UTF-8 with a BOM' } else { Bad 'org-templated deploy script written BOM-LESS' }
+
+    if (Test-Utf8Contains $cfgB $NONASCII_COMPANY) { Ok "non-ASCII CompanyName round-trips byte-correctly ('$NONASCII_COMPANY')" }
+    else { Bad 'non-ASCII CompanyName mangled in config.psd1' }
+    if (Test-Utf8Contains $strB 'Installation en cours…') { Ok 'non-ASCII dialog strings round-trip byte-correctly' }
+    else { Bad 'non-ASCII strings mangled in strings.psd1' }
+    # The author is DATA now: AppConfig.json App.ScriptAuthor (BOM-less UTF-8), never a literal in the script.
+    if (-not (Test-Bom $acB) -and (Test-Utf8Contains $acB $NONASCII_AUTHOR) -and
+        (Get-Content -LiteralPath $acB -Raw -Encoding UTF8 | ConvertFrom-Json).App.ScriptAuthor -ceq $NONASCII_AUTHOR) {
+        Ok "non-ASCII AppScriptAuthor round-trips byte-correctly as DATA in AppConfig.json (BOM-less UTF-8)"
+    } else { Bad 'non-ASCII AppScriptAuthor missing or mangled in AppConfig.json' }
+    if (-not (Test-Utf8Contains $depB $NONASCII_AUTHOR)) { Ok 'the deploy script does NOT contain the author literal' } else { Bad 'the author literal was spliced into the deploy script' }
+    if (Test-Utf8Contains $depB $NONASCII_OPERATOR) { Ok 'the non-ASCII operator text survives Apply-OrgTemplate byte-correctly' } else { Bad 'operator text mangled by Apply-OrgTemplate' }
+
+    # The BOM must not break the .psd1 consumers (PSADT / Import-PowerShellDataFile tolerate it).
+    try {
+        $cfgData = Import-PowerShellDataFile -LiteralPath $cfgB
+        $strData = Import-PowerShellDataFile -LiteralPath $strB
+        if ($cfgData.Toolkit.CompanyName -eq $NONASCII_COMPANY -and $strData.ProgressPrompt.Message.Install -eq 'Installation en cours…') {
+            Ok 'BOM-prefixed .psd1 files still Import-PowerShellDataFile with values intact'
+        } else { Bad "psd1 values did not round-trip: [$($cfgData.Toolkit.CompanyName)]" }
+    } catch { Bad "BOM broke Import-PowerShellDataFile: $($_.Exception.Message)" }
 }
-$null = Apply-OrgTemplate -ProjectPath $pB -Template $tmpl -WarningAction SilentlyContinue 6>$null
-$cfgB = Join-Path $pB 'Config\config.psd1'
-$strB = Join-Path $pB 'Strings\strings.psd1'
-$depB = Join-Path $pB 'Invoke-AppDeployToolkit.ps1'
-$generated['Apply-OrgTemplate: Invoke-AppDeployToolkit.ps1'] = $depB
-
-if (Test-Bom $cfgB) { Ok 'Apply-OrgTemplate writes config.psd1 with a BOM' }   else { Bad 'config.psd1 written BOM-LESS' }
-if (Test-Bom $strB) { Ok 'Apply-OrgTemplate writes strings.psd1 with a BOM' }  else { Bad 'strings.psd1 written BOM-LESS' }
-if (Test-Bom $depB) { Ok 'Apply-OrgTemplate writes Invoke-AppDeployToolkit.ps1 with a BOM' } else { Bad 'org-templated deploy script written BOM-LESS' }
-
-if (Test-Utf8Contains $cfgB $NONASCII_COMPANY) { Ok "non-ASCII CompanyName round-trips byte-correctly ('$NONASCII_COMPANY')" }
-else { Bad 'non-ASCII CompanyName mangled in config.psd1' }
-if (Test-Utf8Contains $strB 'Installation en cours…') { Ok 'non-ASCII dialog strings round-trip byte-correctly' }
-else { Bad 'non-ASCII strings mangled in strings.psd1' }
-if (Test-Utf8Contains $depB $NONASCII_AUTHOR) { Ok 'non-ASCII AppScriptAuthor round-trips byte-correctly (org template)' }
-else { Bad 'non-ASCII AppScriptAuthor mangled in the deploy script' }
-
-# The BOM must not break the .psd1 consumers (PSADT / Import-PowerShellDataFile tolerate it).
-try {
-    $cfgData = Import-PowerShellDataFile -LiteralPath $cfgB
-    $strData = Import-PowerShellDataFile -LiteralPath $strB
-    if ($cfgData.Toolkit.CompanyName -eq $NONASCII_COMPANY -and $strData.ProgressPrompt.Message.Install -eq 'Installation en cours…') {
-        Ok 'BOM-prefixed .psd1 files still Import-PowerShellDataFile with values intact'
-    } else { Bad "psd1 values did not round-trip: [$($cfgData.Toolkit.CompanyName)]" }
-} catch { Bad "BOM broke Import-PowerShellDataFile: $($_.Exception.Message)" }
 
 # 5. New-CountdownScript -> Sandbox\Countdown.ps1
 $pC = New-FixtureProject

@@ -63,8 +63,10 @@ $BASE = Join-Path ([System.IO.Path]::GetTempPath()) ('w32ot_' + [guid]::NewGuid(
 function Get-Win32ToolkitBasePath { param($BasePath, [switch]$Reconfigure) $BASE }
 function Get-OrgTemplate { param($BasePath, $TemplateName) [pscustomobject]@{ TemplateName = 'Contoso'; AppScriptAuthor = 'IT' } }
 function Apply-OrgTemplate { param($ProjectPath, $Template) $true }
+$script:createFails = $false
 function Create-PSADTProject {
     param($ProjectName, $ProjectPath, $Force)
+    if ($script:createFails) { return $false }
     $full = Join-Path $ProjectPath $ProjectName
     New-Item -ItemType Directory -Path $full -Force | Out-Null
     foreach ($d in 'Files', 'SupportFiles') { New-Item -ItemType Directory -Path (Join-Path $full $d) -Force | Out-Null }
@@ -93,6 +95,16 @@ $script:OrgTemplate = $SENTINEL
 try { $null = New-Win32ToolkitManualApp -Name 'Boom' -Version '1.0' -Architecture x64 -SourcePath (Join-Path $BASE 'does-not-exist.msi') -TemplateName 'Contoso' -Force 6>$null 3>$null 2>$null } catch { }
 if ($null -eq $script:OrgTemplate) { Ok 'after a failed command $script:OrgTemplate is $null too' }
 else { Bad "stale template survived a failed run: $($script:OrgTemplate | Out-String)" }
+
+Write-Host '[4] BEHAVIOUR: a fail-closed (W32T.*) terminating error also clears $script:OrgTemplate' -ForegroundColor Cyan
+$script:OrgTemplate = $SENTINEL
+$script:createFails = $true
+$fqid = $null
+try { $null = New-Win32ToolkitManualApp -Name 'Fails' -Version '1.0' -Architecture x64 -SourcePath (New-Src 'fails.msi') -TemplateName 'Contoso' -Force 6>$null 3>$null }
+catch { $fqid = $_.FullyQualifiedErrorId }
+$script:createFails = $false
+if ($fqid -eq 'W32T.ProjectCreationFailed' -and $null -eq $script:OrgTemplate) { Ok 'W32T.ProjectCreationFailed propagates and $script:OrgTemplate is $null' }
+else { Bad "fqid='$fqid' template=$($script:OrgTemplate | Out-String)" }
 
 Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue
 

@@ -7,7 +7,13 @@ function Configure-PSADTForInstaller {
         DATA via ConvertTo-Json, never interpolated into generated code) and patches
         Invoke-AppDeployToolkit.ps1 with fixed, value-free routines that read that data at runtime
         (see Set-PSADTDataDrivenScript). MSI installers keep an empty App.Name so PSADT Zero-Config
-        MSI still applies. Org-template branding is applied afterwards, unchanged.
+        MSI still applies. The org template is applied afterwards (Apply-OrgTemplate).
+
+        Fail closed: critical generator / org-template problems (an unsupported PSADT template shape,
+        a missing block anchor, a deploy script that would not parse, invalid org-template text, ...)
+        throw a W32T.* error that propagates to the caller. Any other failure, or an org template that
+        could not be applied, returns $false; the caller must not document, test, package or publish
+        the project then.
 
         See knowledge-base/designs/data-driven-generation.md.
     .PARAMETER ProjectPath
@@ -125,22 +131,28 @@ function Configure-PSADTForInstaller {
         }
 
         # ---- Patch the deploy script to be data-driven (fixed, value-free) ----
+        # Critical problems THROW (W32T.*, re-thrown below); $false = written and valid, with warnings.
         if (Set-PSADTDataDrivenScript -ScriptPath $scriptPath) {
             Write-Verbose 'Deploy script patched to data-driven'
         } else {
-            Write-Warning 'Data-driven patching of the deploy script did not complete cleanly'
+            Write-Warning 'Data-driven patching of the deploy script completed with warnings (see above) - the script was written and is valid.'
         }
 
-        # ---- Org template branding and dialog settings (unchanged) ----
+        # ---- Org template branding and dialog settings ----
         if ($script:OrgTemplate) {
             Write-Verbose 'Applying org template...'
-            Apply-OrgTemplate -ProjectPath $ProjectPath -Template $script:OrgTemplate | Out-Null
+            if (-not (Apply-OrgTemplate -ProjectPath $ProjectPath -Template $script:OrgTemplate)) {
+                Write-Warning 'The org template could not be applied (see the warning above) - the project is NOT configured.'
+                return $false
+            }
         }
 
         Write-Host '✓ PSADT project configured (data-driven)!' -ForegroundColor Green
         return $true
     }
     catch {
+        # Fail-closed errors (unsupported template shape, anchors, invalid script/template) propagate.
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
         Write-Warning "Failed to configure PSADT: $($_.Exception.Message)"
         return $false
     }

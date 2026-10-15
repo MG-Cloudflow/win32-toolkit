@@ -37,7 +37,19 @@ function Invoke-Win32ToolkitHyperVRun {
 }
 function Wait-ForDocumentationAndProcess { param($ProjectPath, $InstallerType, $ExpectedJsonPath) $script:log += 'wait'; return $true }
 function Get-InstallerFileInfo { param($FilesPath) [pscustomobject]@{ Type = 'exe' } }
-function Export-Win32ToolkitIntuneWin { param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate) }
+function Export-Win32ToolkitIntuneWin { param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript) $script:exportAllowLegacy = [bool]$AllowLegacyScript }
+# Finalize pre-flight (WP-C contract, spec 2.11): passes unless the case says otherwise.
+$script:assertFails = $false
+function Assert-Win32ToolkitPackageReady {
+    param($ProjectPath, $Stage, [switch]$AllowLegacyScript)
+    $script:log += "assert:$Stage"
+    $script:assertAllowLegacy = [bool]$AllowLegacyScript
+    if ($script:assertFails) {
+        throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new('not ready'), 'W32T.PackageNotReady',
+            [System.Management.Automation.ErrorCategory]::InvalidData, $ProjectPath)
+    }
+    [pscustomobject]@{ Ready = $true; Shape = 'Psadt41'; VersionText = '4.1.8'; Warnings = @() }
+}
 
 # --- Sandbox --------------------------------------------------------------------------------------
 Write-Host '[1] Backend=Sandbox: no Hyper-V run; generator gets -Backend Sandbox; waiter runs' -ForegroundColor Cyan
@@ -45,14 +57,14 @@ $script:backend = 'Sandbox'; $script:log = @()
 Invoke-Win32ToolkitFinalize -ProjectPath 'C:\proj' -ProjectName 'P' 3>$null
 if ($script:genBackend -eq 'Sandbox') { Ok 'New-TargetedDocumentation -Backend Sandbox' } else { Bad "genBackend=$script:genBackend" }
 if ('hv:run' -notin $script:log) { Ok 'Invoke-Win32ToolkitHyperVRun NOT called for Sandbox' } else { Bad 'HyperV run called on Sandbox' }
-if (($script:log -join '>') -eq 'gen:Sandbox>wait') { Ok 'order: generate -> wait' } else { Bad "log=$($script:log -join '>')" }
+if (($script:log -join '>') -eq 'assert:Finalize>gen:Sandbox>wait') { Ok 'order: pre-flight -> generate -> wait' } else { Bad "log=$($script:log -join '>')" }
 
 # --- HyperV ---------------------------------------------------------------------------------------
 Write-Host '[2] Backend=HyperV: runs the capture in the VM, then the same waiter' -ForegroundColor Cyan
 $script:backend = 'HyperV'; $script:log = @(); $script:hvReturn = $true
 Invoke-Win32ToolkitFinalize -ProjectPath 'C:\proj' -ProjectName 'P' 3>$null
 if ($script:genBackend -eq 'HyperV') { Ok 'New-TargetedDocumentation -Backend HyperV' } else { Bad "genBackend=$script:genBackend" }
-if (($script:log -join '>') -eq 'gen:HyperV>hv:run>wait') { Ok 'order: generate -> hyperv run -> wait' } else { Bad "log=$($script:log -join '>')" }
+if (($script:log -join '>') -eq 'assert:Finalize>gen:HyperV>hv:run>wait') { Ok 'order: pre-flight -> generate -> hyperv run -> wait' } else { Bad "log=$($script:log -join '>')" }
 if ($script:hvPhase -and $script:hvPhase[0].Command -like '*TargetedDocumentationScript.ps1*') { Ok 'phase runs the generated doc script' } else { Bad "phase=$($script:hvPhase | Out-String)" }
 if ($script:hvOutput -contains 'Documentation\InstallationChanges_*.json' -and $script:hvOutput -contains 'Sandbox\Logs\*') { Ok 'copies capture + logs back' } else { Bad "output=$($script:hvOutput -join ',')" }
 
@@ -61,6 +73,14 @@ Write-Host '[3] Backend=HyperV but the VM run fails: skip processing (no 30-min 
 $script:backend = 'HyperV'; $script:log = @(); $script:hvReturn = $false
 Invoke-Win32ToolkitFinalize -ProjectPath 'C:\proj' -ProjectName 'P' 3>$null
 if ('wait' -notin $script:log) { Ok 'waiter skipped when the Hyper-V capture fails' } else { Bad 'waiter ran despite failed capture' }
+
+# --- pre-flight fails -----------------------------------------------------------------------------
+Write-Host '[4] the Finalize pre-flight (Assert-Win32ToolkitPackageReady) fails: nothing is documented' -ForegroundColor Cyan
+$script:backend = 'Sandbox'; $script:log = @(); $script:assertFails = $true
+$threw = $null
+try { Invoke-Win32ToolkitFinalize -ProjectPath 'C:\proj' -ProjectName 'P' 3>$null } catch { $threw = $_.FullyQualifiedErrorId }
+$script:assertFails = $false
+if ($threw -eq 'W32T.PackageNotReady' -and ($script:log -join '>') -eq 'assert:Finalize') { Ok 'W32T.PackageNotReady propagates before any documentation run' } else { Bad "threw='$threw' log=$($script:log -join '>')" }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All DocumentationDispatch tests passed.' -ForegroundColor Green; exit 0 }

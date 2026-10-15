@@ -1,36 +1,52 @@
 function Set-PSADTDataDrivenScript {
     <#
     .SYNOPSIS
-        Rewrites a scaffolded PSADT v4 Invoke-AppDeployToolkit.ps1 to be data-driven.
+        Rewrites a scaffolded PSADT deploy script (Invoke-AppDeployToolkit.ps1) to be data-driven.
     .DESCRIPTION
-        Applies a fixed set of patches that contain NO app-specific values, so untrusted
-        winget/registry values never enter a code position. The patched script reads all
-        app-specific settings from SupportFiles\AppConfig.json at runtime (as data):
+        Shape-aware, fail-closed generator for the PSADT 4.1.x template and the PSADT 4.2 template
+        scaffolded with New-ADTTemplate -ZeroConfig (Get-Win32ToolkitDeployScriptShape). Every code line
+        it adds comes from the block catalog (Get-Win32ToolkitDeployScriptBlock) and contains NO
+        app-specific value, so untrusted winget/registry/template values never enter a code position: the
+        script reads them at runtime from SupportFiles\AppConfig.json (as data).
 
-          1. A loader (`$appConfig = ... ConvertFrom-Json`) is inserted before the session hashtable.
-          2. AppVendor/AppName/AppVersion/AppArch/AppScriptDate/AppProcessesToClose are pointed at
-             $appConfig instead of literal values.
-          3. A generic install routine is placed at the '## <Perform Installation tasks here>' marker:
-             msix/appx via Add-AppxProvisionedPackage (SYSTEM) / Add-AppxPackage (interactive sandbox),
-             everything else non-MSI via Start-ADTProcess with the configured SilentArgs.
-          4. A generic uninstall routine is placed at the '## <Perform Uninstallation tasks here>'
-             marker: msi product codes, exe uninstallers, and msix identity-based removal
-             (Remove-AppxProvisionedPackage + Remove-AppxPackage -AllUsers, exact Name match).
-          5. An install "tattoo" is placed at the Post-Install/Post-Uninstall markers: it writes
-             HKLM:\SOFTWARE\<AppScriptAuthor>\<AppVendor>\<App.DisplayName>\Version at install and
-             removes it at uninstall, so the Intune detection rule can confirm install state + correct
-             version. Driven from $appConfig (App.DisplayName is populated even for MSI Zero-Config,
-             where App.Name is empty), so it works for both EXE and MSI.
+          1. $adtSession hashtable: AppVendor/AppName/AppVersion/AppArch/AppProcessesToClose/
+             AppScriptAuthor/AppScriptDate point at $appConfig; ExitWithMsiCodes = $true is added.
+          2. Session:loader block (above $adtSession): loads AppConfig.json and initialises the tattoo gate.
+          3. Install: the data-driven install routine (msix/appx via provisioning, everything else non-MSI
+             via Start-ADTProcess with the configured SilentArgs) - or, with -ManualInstall, the
+             manual-install note marking where the operator writes the install - then 'install-done'.
+             MSI installers are installed by PSADT's own Zero-Config block (the 4.1.x default template;
+             4.2 New-ADTTemplate -ZeroConfig; App.Name stays empty); on 4.2 the toolkit adds an 'msp'
+             block because 4.2's Zero-Config block no longer applies .msp patches (4.1.8 did).
+          4. Uninstall: the data-driven uninstall routine (msi product codes, exe uninstallers, msix
+             identity-based removal).
+          5. Post-Install / Post-Uninstall: the install "tattoo" (HKLM:\SOFTWARE\<Author>\<Vendor>\<Name>
+             \Version) that the Intune detection rule keys on; Post-Install writes it only when the Install
+             phase reached its end; Post-Uninstall also removes a legacy WOW6432Node copy.
 
-        MSI installers keep PSADT Zero-Config (empty App.Name); the tattoo uses App.DisplayName so it
-        still records the MSI. The function is idempotent — a script that already contains the loader is
-        left unchanged.
+        Each block sits between '## win32-toolkit:<Phase>:<Slot>' sentinels (Set-Win32ToolkitPhaseBlock),
+        so a re-run re-renders every block in place - byte-identical when nothing changed - and never
+        touches code outside the blocks.
 
-        See knowledge-base/designs/data-driven-generation.md.
+        Fail closed: a missing file, an unknown or unsupported template shape (incl. the PSADT 4.2 default
+        template without Zero-Config), a DeployAppScriptVersion outside the supported range, missing PSADT
+        4.1 markers, a missing session anchor or a script that would not parse throws a W32T.* error and
+        leaves the file untouched. Only a missing AppScriptDate anchor is non-critical: the script is
+        written and $false is returned with a warning.
+
+        A script patched by win32-toolkit 1.1.6 or older (Support 'Legacy') is returned unchanged ($true).
+
+        See knowledge-base/designs/data-driven-generation.md and psadt-4.2-implementation-spec.md.
     .PARAMETER ScriptPath
-        Full path to the project's Invoke-AppDeployToolkit.ps1.
+        Path to the project's Invoke-AppDeployToolkit.ps1 (a relative path resolves against the PowerShell
+        location).
+    .PARAMETER ManualInstall
+        Hard apps: place the manual-install note instead of the data-driven install routine. The
+        uninstall and the tattoo stay automated.
+    .OUTPUTS
+        [bool] $true = patched cleanly or already patched; $false = written and valid, with warnings.
     .EXAMPLE
-        Set-PSADTDataDrivenScript -ScriptPath 'C:\...\Projects\Git_x64_2.53.0\Invoke-AppDeployToolkit.ps1'
+        Set-PSADTDataDrivenScript -ScriptPath 'C:\...\Projects\Contoso\Git_x64_2.53.0\Invoke-AppDeployToolkit.ps1'
     #>
     [CmdletBinding()]
     [OutputType([bool])]
@@ -44,241 +60,157 @@ function Set-PSADTDataDrivenScript {
         [switch]$ManualInstall
     )
 
-    if (-not (Test-Path -LiteralPath $ScriptPath)) {
-        Write-Warning "PSADT script not found: $ScriptPath"
-        return $false
+    $display = $script:PsadtSupportedRange.Display
+
+    # C-1 fail-closed error for this script (stable 'Unsupported PSADT template shape: ' wording).
+    $shapeError = {
+        param($Shape, [string]$Hint)
+        $v = if ($Shape -and $Shape.DeployAppScriptVersion) { $Shape.DeployAppScriptVersion } else { 'none' }
+        $s = if ($Shape) { $Shape.Shape } else { 'Unknown' }
+        [System.Management.Automation.ErrorRecord]::new(
+            [System.InvalidOperationException]::new("Unsupported PSADT template shape: $ScriptPath; shape $s; DeployAppScriptVersion $v; supported: $display. $Hint Nothing was changed."),
+            'W32T.UnsupportedTemplateShape', [System.Management.Automation.ErrorCategory]::InvalidData, $ScriptPath)
     }
 
-    $content = Get-Content -LiteralPath $ScriptPath -Raw
+    # Resolve once against the PowerShell location: the .NET file APIs below would resolve a relative
+    # path against the process directory, which Set-Location does not move.
+    try { $ScriptPath = $PSCmdlet.GetUnresolvedProviderPathFromPSPath($ScriptPath) }
+    catch { Write-Verbose "ScriptPath not resolved ($($_.Exception.Message)); used as given: $ScriptPath" }
+    if (-not (Test-Path -LiteralPath $ScriptPath -PathType Leaf)) {
+        throw (& $shapeError $null 'The deploy script was not found.')
+    }
 
-    # Idempotent: already patched?
-    if ($content -match [regex]::Escape('$appConfig =')) { return $true }
+    # ---- 1. read (keep the original bytes for the writer's restore) ----
+    $originalBytes = [System.IO.File]::ReadAllBytes($ScriptPath)
+    $content = [System.IO.File]::ReadAllText($ScriptPath, [System.Text.Encoding]::UTF8)
+    $shape = Get-Win32ToolkitDeployScriptShape -Content $content -IncludeLayout
 
-    # ---- Fixed replacement blocks (single-quoted here-strings: every $ is literal) ----
+    # Patched by win32-toolkit <= 1.1.6: packaged as-is, never re-validated or modified.
+    if ($shape.Support -eq 'Legacy') {
+        Write-Verbose "Deploy script was generated by an older win32-toolkit (GeneratorVersion 0) - left unchanged: $ScriptPath"
+        return $true
+    }
 
-    $loader = @'
-# Data-driven deployment values (win32-toolkit): read app-specific settings as DATA.
-$appConfig = if (Test-Path -LiteralPath "$PSScriptRoot\SupportFiles\AppConfig.json") {
-    # -Encoding UTF8: AppConfig.json is BOM-less UTF-8 and this runs under Windows PowerShell 5.1 on the
-    # device, whose Get-Content default decodes a BOM-less file as ANSI (non-ASCII vendor/app names would
-    # mojibake). 5.1's -Encoding UTF8 reader handles both BOM and BOM-less input.
-    Get-Content -LiteralPath "$PSScriptRoot\SupportFiles\AppConfig.json" -Raw -Encoding UTF8 | ConvertFrom-Json
-} else {
-    [pscustomobject]@{ App = [pscustomobject]@{}; Installer = $null; Uninstall = $null; ProcessesToClose = @() }
-}
-
-$adtSession = @{
-'@
-
-    $installSnippet = @'
-## Data-driven install (values from SupportFiles\AppConfig.json).
-    if ($appConfig.Installer -and $appConfig.Installer.Type -in @('msix', 'appx')) {
-        $installerPath = Join-Path $adtSession.DirFiles $appConfig.Installer.FileName
-        if (Test-Path -LiteralPath $installerPath) {
-            Write-ADTLogEntry -Message "Installing AppX/MSIX package from: $installerPath" -Severity 1
-            # SYSTEM (Intune): provision for all users. Interactive (sandbox tests): register for the
-            # current user - a provisioned-only package would be invisible to the logged-on operator.
-            if ([Security.Principal.WindowsIdentity]::GetCurrent().IsSystem) {
-                # -Regions 'all' is REQUIRED, not cosmetic. Per the DISM reference: "When a list of
-                # regions is not specified, the package will be provisioned only if it is pinned to
-                # start layout." Without it, provisioning silently no-ops for most packages: the
-                # command succeeds, the tattoo is written, Intune reports Installed, and no user ever
-                # gets the app.
-                #
-                # There is deliberately NO Add-AppxPackage fallback here. It would run AS SYSTEM and
-                # register the package into SYSTEM's own profile, where no real user can ever see it -
-                # and since it wouldn't throw, the tattoo would still be written and Intune would
-                # report Installed for an app nobody has. A provisioning failure must fail the
-                # deployment loudly. -ErrorAction Stop is what makes that happen: these Appx cmdlets
-                # emit NON-TERMINATING errors by default, so without it a failure would just be logged
-                # and the script would sail on to write the tattoo.
-                try { Add-AppxProvisionedPackage -Online -PackagePath $installerPath -SkipLicense -Regions 'all' -ErrorAction Stop | Out-Null }
-                catch {
-                    Write-ADTLogEntry -Message "Provisioning failed: $($_.Exception.Message)" -Severity 3
-                    throw
-                }
-            } else {
-                Add-AppxPackage -Path $installerPath -ErrorAction Stop
+    # ---- 2. policy gate ----
+    $markerProblem = $shape.Shape -eq 'Psadt41' -and $null -eq $shape.GeneratorVersion -and @($shape.MarkerIssues).Count -gt 0
+    if ($shape.Support -ne 'Supported' -or $markerProblem) {
+        $mm = $null; $parsed = $null
+        if ($shape.DeployAppScriptVersion -and [version]::TryParse(($shape.DeployAppScriptVersion -split '-', 2)[0], [ref]$parsed)) { $mm = '{0}.{1}' -f $parsed.Major, $parsed.Minor }
+        $versionOk = $shape.IsSupportedVersion -and (($shape.Shape -eq 'Psadt41' -and $mm -eq '4.1') -or ($shape.Shape -eq 'Psadt42ZeroConfig' -and $mm -eq '4.2'))
+        $hint = switch ($true) {
+            ($shape.Shape -eq 'Psadt42Default') {
+                $h = 'Scaffolded from the PSADT 4.2 default template without Zero-Config - re-create the project with this win32-toolkit version (it scaffolds 4.2 with New-ADTTemplate -ZeroConfig).'
+                if ($ManualInstall) { $h += ' Copy your Install code out of Invoke-AppDeployToolkit.ps1 first: re-creating the project deletes its folder. Or finalise it unchanged with Complete-Win32ToolkitManualApp -AllowLegacyScript.' }
+                $h; break
             }
-        } else {
-            Write-ADTLogEntry -Message "Installer file not found: $installerPath" -Severity 3
-            throw "Installer file not found: $installerPath"
-        }
-    }
-    elseif ($appConfig.Installer -and $appConfig.Installer.Type -ne 'msi') {
-        $installerPath = Join-Path $adtSession.DirFiles $appConfig.Installer.FileName
-        if (Test-Path -LiteralPath $installerPath) {
-            Write-ADTLogEntry -Message "Installing $($appConfig.App.Name) from: $installerPath" -Severity 1
-            $spInstall = @{ FilePath = $installerPath; PassThru = $true }
-            if ($appConfig.Installer.SilentArgs) { $spInstall['ArgumentList'] = $appConfig.Installer.SilentArgs }
-            Start-ADTProcess @spInstall
-        } else {
-            Write-ADTLogEntry -Message "Installer file not found: $installerPath" -Severity 3
-            throw "Installer file not found: $installerPath"
-        }
-    }
-'@
-
-    $uninstallSnippet = @'
-## Data-driven uninstall (values from SupportFiles\AppConfig.json).
-    if ($appConfig.Uninstall) {
-        $uninstallSuccess = $false
-        # Codes that mean "the app is gone" — checked identically by both loops below so they cannot
-        # drift. 0 = removed. 1605 = "this product is not installed": the goal state already holds
-        # (a user removed it by hand), which is a no-op success, matching how the msix branch treats an
-        # already-absent package. 1641/3010 = removed AND a reboot was initiated/is required. Treating
-        # 1641 or 1605 as failure would make the uninstall throw on a successful removal.
-        $w32tUninstallOk = @(0, 1605, 1641, 3010)
-        foreach ($pc in @($appConfig.Uninstall.ProductCodes)) {
-            if (-not $pc -or $uninstallSuccess) { continue }
-            $r = Start-ADTMsiProcess -Action Uninstall -ProductCode $pc -PassThru
-            if ($r -and $r.ExitCode -in $w32tUninstallOk) { $uninstallSuccess = $true }
-        }
-        foreach ($u in @($appConfig.Uninstall.Uninstallers)) {
-            if (-not $u -or $uninstallSuccess) { continue }
-            $r = $null
-            switch ($u.Type) {
-                'msi' { $r = Start-ADTMsiProcess -Action Uninstall -ProductCode $u.ProductCode -PassThru }
-                'exe' {
-                    $spUninstall = @{ FilePath = $u.Path; PassThru = $true }
-                    if ($u.Args) { $spUninstall['ArgumentList'] = $u.Args }
-                    $r = Start-ADTProcess @spUninstall
-                }
-                'msix' {
-                    # Identity-driven removal (exact Name match; Remove-AppxPackage has no exit code,
-                    # so success = the package is gone for ALL users afterwards; $r stays $null).
-                    if ($u.PackageName) {
-                        foreach ($prov in @(Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $u.PackageName })) {
-                            try { Remove-AppxProvisionedPackage -Online -PackageName $prov.PackageName | Out-Null }
-                            catch { Write-ADTLogEntry -Message "Deprovisioning failed: $($_.Exception.Message)" -Severity 2 }
-                        }
-                        foreach ($pkg in @(Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $u.PackageName })) {
-                            try { Remove-AppxPackage -Package $pkg.PackageFullName -AllUsers -ErrorAction Stop }
-                            catch { Write-ADTLogEntry -Message "Remove-AppxPackage failed: $($_.Exception.Message)" -Severity 2 }
-                        }
-                        if (@(Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $u.PackageName }).Count -eq 0) {
-                            $uninstallSuccess = $true
-                        }
-                    }
-                }
+            ($shape.Shape -eq 'Unknown') {
+                "Not a template layout this win32-toolkit version knows (newer PSADT?) - use a supported PSADT (see the health check). Detail: $($shape.Reason)."; break
             }
-            if ($r -and $r.ExitCode -in $w32tUninstallOk) { $uninstallSuccess = $true }
-        }
-        # Fail loudly when nothing actually uninstalled. $uninstallSuccess used to be computed and then
-        # never read: every uninstaller could fail and the script still returned 0, so Intune recorded a
-        # successful uninstall and the post-uninstall tattoo removal then made the app UNDETECTED - the
-        # app stays on the device and Intune believes it is gone. Only raise this when there was
-        # something to do (an empty Uninstall section is a separate, configure-time problem).
-        if (-not $uninstallSuccess -and (@($appConfig.Uninstall.ProductCodes).Count + @($appConfig.Uninstall.Uninstallers).Count) -gt 0) {
-            throw 'Uninstall failed: no uninstaller reported success (see the entries above for the cause).'
-        }
-        foreach ($folder in @($appConfig.Uninstall.CleanupPaths)) {
-            if (-not $folder) { continue }
-            if (Test-Path -LiteralPath $folder) {
-                try { Remove-ADTFolder -Path $folder }
-                catch { Write-ADTLogEntry -Message "Cleanup failed for ${folder}: $($_.Exception.Message)" -Severity 2 }
+            (-not $versionOk) {
+                "The script's DeployAppScriptVersion is outside the supported range or does not match its layout."; break
             }
+            ($shape.Support -ne 'Supported') {
+                "The deploy script contains an AppConfig loader that win32-toolkit did not write - re-create the project with this win32-toolkit version."; break
+            }
+            default { "PSADT 4.1 template markers missing or duplicated: $(@($shape.MarkerIssues) -join ', ')." }
+        }
+        throw (& $shapeError $shape $hint)
+    }
+
+    $nl = if ($content.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $warnings = [System.Collections.Generic.List[string]]::new()
+
+    # ---- 3. session edits, inside the $adtSession hashtable extent only ----
+    $tokens = $null; $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($content, [ref]$tokens, [ref]$errors)
+    $sessionAsg = @($ast.EndBlock.Statements | Where-Object {
+            $_ -is [System.Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -eq '$adtSession' -and
+            $_.Right -is [System.Management.Automation.Language.CommandExpressionAst] -and
+            $_.Right.Expression -is [System.Management.Automation.Language.HashtableAst]
+        })
+    if ($sessionAsg.Count -ne 1) { throw (& $shapeError $shape 'The $adtSession = @{ } session anchor is missing or not unique.') }
+    $htAst = $sessionAsg[0].Right.Expression
+    $htStart = $htAst.Extent.StartOffset; $htEnd = $htAst.Extent.EndOffset
+    $ht = $content.Substring($htStart, $htEnd - $htStart)
+
+    # Line-anchored, ordinal anchors; each exactly once; skipped when already data-driven.
+    $edits = [ordered]@{
+        'AppVendor'           = @("AppVendor = ''", 'AppVendor = $appConfig.App.Vendor')
+        'AppName'             = @("AppName = ''", 'AppName = $appConfig.App.Name')
+        'AppVersion'          = @("AppVersion = ''", 'AppVersion = $appConfig.App.Version')
+        'AppArch'             = @("AppArch = ''", 'AppArch = $appConfig.App.Arch')
+        'AppProcessesToClose' = @('AppProcessesToClose = @()', 'AppProcessesToClose = @($appConfig.ProcessesToClose | Where-Object { $_ })')
+        'AppScriptAuthor'     = @("AppScriptAuthor = '<author name>'", 'AppScriptAuthor = $appConfig.App.ScriptAuthor')
+    }
+    foreach ($label in $edits.Keys) {
+        $from = $edits[$label][0]; $to = $edits[$label][1]
+        $fromHits = [regex]::Matches($ht, '(?m)^[ \t]*(' + [regex]::Escape($from) + ')')
+        $toHits   = [regex]::Matches($ht, '(?m)^[ \t]*(' + [regex]::Escape($to) + ')')
+        if ($fromHits.Count -eq 1 -and $toHits.Count -eq 0) {
+            $g = $fromHits[0].Groups[1]
+            $ht = $ht.Substring(0, $g.Index) + $to + $ht.Substring($g.Index + $g.Length)
+        }
+        elseif (-not ($fromHits.Count -eq 0 -and $toHits.Count -eq 1)) {
+            throw (& $shapeError $shape "The session anchor '$from' is missing or not unique in the `$adtSession hashtable.")
         }
     }
-'@
-
-    # Install "tattoo": write HKLM:\SOFTWARE\<Author>\<Vendor>\<Name>\Version at install and remove it at
-    # uninstall. The Intune detection rule keys off this value (installed AND correct version). Values come
-    # from $appConfig (App.DisplayName is always populated — including MSI Zero-Config, where App.Name is
-    # empty), so the key is byte-identical to what Get-Win32DetectionRules computes and every empty-segment
-    # case is guarded out. Works for both EXE and MSI (no UseDefaultMsi exclusion).
-    $postInstallTattoo = @'
-## <Perform Post-Installation tasks here>
-
-    ## win32-toolkit install tattoo - records install state + version for the Intune detection rule.
-    $w32tName = if ($appConfig.App.DisplayName) { $appConfig.App.DisplayName } else { $appConfig.App.Name }
-    if ($w32tName -and $appConfig.App.Vendor -and $appConfig.App.Version -and $appConfig.App.ScriptAuthor) {
-        Set-ADTRegistryKey -Key "HKLM:\SOFTWARE\$($appConfig.App.ScriptAuthor)\$($appConfig.App.Vendor)\$w32tName" -Name 'Version' -Value "$($appConfig.App.Version)" -Type 'String'
+    # AppScriptDate: the only non-critical anchor (its default value is the scaffold date).
+    $dateTo = 'AppScriptDate = $appConfig.App.ScriptDate'
+    $dateHits = [regex]::Matches($ht, "(?m)^[ \t]*(AppScriptDate = '\d{4}-\d{2}-\d{2}')")
+    $dateDone = [regex]::Matches($ht, '(?m)^[ \t]*(' + [regex]::Escape($dateTo) + ')')
+    if ($dateHits.Count -eq 1 -and $dateDone.Count -eq 0) {
+        $g = $dateHits[0].Groups[1]
+        $ht = $ht.Substring(0, $g.Index) + $dateTo + $ht.Substring($g.Index + $g.Length)
     }
-'@
-
-    $postUninstallTattoo = @'
-## <Perform Post-Uninstallation tasks here>
-
-    ## win32-toolkit install tattoo - remove the key written during install.
-    $w32tName = if ($appConfig.App.DisplayName) { $appConfig.App.DisplayName } else { $appConfig.App.Name }
-    if ($w32tName -and $appConfig.App.Vendor -and $appConfig.App.ScriptAuthor) {
-        Remove-ADTRegistryKey -Key "HKLM:\SOFTWARE\$($appConfig.App.ScriptAuthor)\$($appConfig.App.Vendor)\$w32tName" -Recurse
+    elseif (-not ($dateHits.Count -eq 0 -and $dateDone.Count -eq 1)) {
+        $warnings.Add("Data-driven patch anchor not found: AppScriptDate - the deploy script keeps its scaffolded AppScriptDate.")
     }
-'@
-
-    # ---- Verify every anchor BEFORE patching (PSADT template drift protection) ----
-    # A missed String.Replace is a silent no-op: the project would LOOK configured but isn't.
-    # CRITICAL anchors abort without writing (a half-patched script whose snippets reference an
-    # undefined $appConfig, or that installs nothing, must never ship). Non-critical misses still
-    # write but warn + return $false so callers surface "did not complete cleanly".
-    # NOTE: verification only runs on first patch — the idempotency early-return above means a
-    # previously patched script is not re-validated on re-runs.
-    $anchors = @(
-        @{ Anchor = '$adtSession = @{';                          Label = 'session loader';           Critical = $true }
-        @{ Anchor = '## <Perform Installation tasks here>';      Label = 'Install marker';           Critical = $true }
-        @{ Anchor = "AppVendor = ''";                            Label = 'AppVendor';                Critical = $false }
-        @{ Anchor = "AppName = ''";                              Label = 'AppName';                  Critical = $false }
-        @{ Anchor = "AppVersion = ''";                           Label = 'AppVersion';               Critical = $false }
-        @{ Anchor = "AppArch = ''";                              Label = 'AppArch';                  Critical = $false }
-        @{ Anchor = 'AppProcessesToClose = @()';                 Label = 'AppProcessesToClose';      Critical = $false }
-        @{ Anchor = '## <Perform Uninstallation tasks here>';    Label = 'Uninstall marker';         Critical = $false }
-        @{ Anchor = '## <Perform Post-Installation tasks here>'; Label = 'Post-Install marker (tattoo)';   Critical = $false }
-        @{ Anchor = '## <Perform Post-Uninstallation tasks here>'; Label = 'Post-Uninstall marker (tattoo)'; Critical = $false }
-    )
-    $missed = @($anchors | Where-Object { -not $content.Contains($_.Anchor) })
-    $dateMatch = [regex]::Match($content, "AppScriptDate = '\d{4}-\d{2}-\d{2}'")
-    if (-not $dateMatch.Success) {
-        $missed += @{ Anchor = "AppScriptDate = '<date>'"; Label = 'AppScriptDate'; Critical = $false }
+    # D13: MSI exit codes pass through (4.1.8 ignores the unknown key, 4.2 binds the switch).
+    $hasExitKey = @($htAst.KeyValuePairs | Where-Object {
+            $k = $_.Item1; $kn = if ($k -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $k.Value } else { $k.Extent.Text }
+            $kn -eq 'ExitWithMsiCodes'
+        }).Count -gt 0
+    if (-not $hasExitKey) {
+        $verLine = [regex]::Matches($ht, "(?m)^(?<ind>[ \t]*)DeployAppScriptVersion = '[^'\r\n]*'[^\r\n]*")
+        if ($verLine.Count -ne 1) { throw (& $shapeError $shape "The session anchor DeployAppScriptVersion = '<version>' is missing or not unique in the `$adtSession hashtable.") }
+        $m = $verLine[0]
+        $insert = $nl + $m.Groups['ind'].Value + 'ExitWithMsiCodes = $true'
+        $ht = $ht.Substring(0, $m.Index + $m.Length) + $insert + $ht.Substring($m.Index + $m.Length)
     }
-    foreach ($m in $missed) {
-        Write-Warning "Data-driven patch anchor not found: $($m.Label) — the installed PSADT template may have drifted from what this module expects."
-    }
-    if (@($missed | Where-Object { $_.Critical }).Count -gt 0) {
-        Write-Warning "Critical anchor(s) missing — leaving $ScriptPath UNCHANGED. Update the module for this PSADT version, or pin the PSADT template version."
-        return $false
-    }
+    $content = $content.Substring(0, $htStart) + $ht + $content.Substring($htEnd)
 
-    # ---- Apply patches with ordinal String.Replace (no regex/$-token pitfalls) ----
-    $content = $content.Replace('$adtSession = @{', $loader)
-    $content = $content.Replace("AppVendor = ''",  'AppVendor = $appConfig.App.Vendor')
-    $content = $content.Replace("AppName = ''",    'AppName = $appConfig.App.Name')
-    $content = $content.Replace("AppVersion = ''", 'AppVersion = $appConfig.App.Version')
-    $content = $content.Replace("AppArch = ''",    'AppArch = $appConfig.App.Arch')
-    $content = $content.Replace('AppProcessesToClose = @()', 'AppProcessesToClose = @($appConfig.ProcessesToClose | Where-Object { $_ })')
-
-    # AppScriptDate default varies per scaffold — extract the literal, then ordinal-replace it.
-    if ($dateMatch.Success) {
-        $content = $content.Replace($dateMatch.Value, 'AppScriptDate = $appConfig.App.ScriptDate')
-    }
-
+    # ---- 4./5. loader + generator blocks (catalog text only) ----
+    $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Session' -Slot 'loader' -Code (Get-Win32ToolkitDeployScriptBlock -Name Loader)
     if ($ManualInstall) {
-        # Hard app — leave the Install region markers for the operator to author.
-        $content = $content.Replace(
-            '## <Perform Installation tasks here>',
-            "## <Perform Installation tasks here>`r`n    ## MANUAL APP: write your Pre-Install / Install / Post-Install logic in these regions.`r`n    ## The uninstall is auto-generated from the sandbox capture — no action needed there.")
+        $content = Remove-Win32ToolkitPhaseBlock -Content $content -Phase 'Install' -Slot 'install'
+        $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Install' -Slot 'manual-install' -Code (Get-Win32ToolkitDeployScriptBlock -Name ManualInstall)
     }
     else {
-        $content = $content.Replace('## <Perform Installation tasks here>', $installSnippet)
+        $content = Remove-Win32ToolkitPhaseBlock -Content $content -Phase 'Install' -Slot 'manual-install'
+        $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Install' -Slot 'install' -Code (Get-Win32ToolkitDeployScriptBlock -Name Install)
     }
-    $content = $content.Replace('## <Perform Uninstallation tasks here>', $uninstallSnippet)
-
-    # Install tattoo (both install modes, incl. manual/hard apps) — value-free, safe to splice.
-    $content = $content.Replace('## <Perform Post-Installation tasks here>',   $postInstallTattoo)
-    $content = $content.Replace('## <Perform Post-Uninstallation tasks here>', $postUninstallTattoo)
-
-    # UTF-8 WITH BOM: this script runs under Windows PowerShell 5.1 on the device (Intune's
-    # powershell.exe), which decodes a BOM-less file as ANSI — non-ASCII branding/vendor/app names would
-    # mojibake silently. PS7's Set-Content -Encoding UTF8 writes NO BOM, so write the bytes ourselves.
-    [System.IO.File]::WriteAllText($ScriptPath, $content, (New-Object System.Text.UTF8Encoding($true)))
-
-    # Sanity: confirm the result still parses.
-    $errs = $null
-    [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$null, [ref]$errs) | Out-Null
-    if ($errs -and $errs.Count) {
-        Write-Warning "Data-driven patch produced parse errors in $ScriptPath : $($errs[0].Message)"
-        return $false
+    if ($shape.Shape -eq 'Psadt42ZeroConfig') {
+        $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Install' -Slot 'msp' -Code (Get-Win32ToolkitDeployScriptBlock -Name Msp)
     }
-    # Non-critical anchor misses: the file was written, but signal "not cleanly configured".
-    return ($missed.Count -eq 0)
+    else {
+        $content = Remove-Win32ToolkitPhaseBlock -Content $content -Phase 'Install' -Slot 'msp'
+    }
+    $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Install' -Slot 'install-done' -Code (Get-Win32ToolkitDeployScriptBlock -Name InstallDone)
+    $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Uninstall' -Slot 'uninstall' -Code (Get-Win32ToolkitDeployScriptBlock -Name Uninstall)
+    $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Post-Install' -Slot 'tattoo' -Code (Get-Win32ToolkitDeployScriptBlock -Name TattooInstall)
+    $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Post-Uninstall' -Slot 'tattoo' -Code (Get-Win32ToolkitDeployScriptBlock -Name TattooUninstall)
+
+    # The result must still be the same template layout, now generated by this version.
+    $after = Get-Win32ToolkitDeployScriptShape -Content $content
+    if ($after.Shape -ne $shape.Shape -or $after.GeneratorVersion -ne 2) {
+        throw [System.Management.Automation.ErrorRecord]::new(
+            [System.InvalidOperationException]::new("The patched deploy script no longer matches its template layout (was $($shape.Shape), now $($after.Shape); $($after.Reason)). $ScriptPath was not changed."),
+            'W32T.GeneratedScriptInvalid', [System.Management.Automation.ErrorCategory]::InvalidResult, $ScriptPath)
+    }
+
+    # ---- 6. write (UTF-8 with BOM; host + 5.1 parse; original bytes restored on failure) ----
+    Write-Win32ToolkitDeployScript -Path $ScriptPath -Content $content -OriginalBytes $originalBytes
+
+    foreach ($w in $warnings) { Write-Warning $w }
+    return ($warnings.Count -eq 0)
 }

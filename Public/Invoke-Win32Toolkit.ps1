@@ -6,6 +6,11 @@ function Invoke-Win32Toolkit {
     Searches Winget for an application, downloads it, creates a PSADT V4 project,
     configures the installer, generates Intune requirement scripts, and launches
     a Windows Sandbox session for targeted installation documentation.
+
+    Fails closed: when the PSADT project cannot be created, when its deploy script uses a template
+    layout this version does not support ("Unsupported PSADT template shape: ..."), or when the
+    configuration or the org template cannot be applied, the command stops with a terminating error
+    and the project is NOT documented, tested, packaged or published.
 .PARAMETER SearchTerm
     Term to search for in the Winget repository.
 .PARAMETER Id
@@ -21,6 +26,10 @@ function Invoke-Win32Toolkit {
 .PARAMETER Force
     Skip the PSGallery update prompt and the project overwrite prompt.
     Useful for unattended / automated runs.
+    PSAppDeployToolkit is only ever selected and installed inside the supported range (4.1.x and 4.2.x).
+    With -Force an installed supported version is used without querying the gallery; without it, only
+    newer STABLE versions inside that range are offered. When no supported version is installed, the
+    newest stable supported version is installed (with or without -Force).
 .PARAMETER BasePath
     Base folder for all output (Templates, Projects, Staging, IntuneWin). If omitted, the value
     saved in the registry (HKCU:\Software\CloudFlow\win32-toolkit) is used; on first run you are
@@ -271,19 +280,20 @@ function Invoke-Win32Toolkit {
 
                 # Configure PSADT based on downloaded installer type
                 Write-Verbose 'Configuring PSADT for installer type...'
+                # Critical generator problems throw W32T.* (propagated by the catch below); $false means
+                # the project is not configured - never document, test, package or publish it then.
                 $psadtConfigured = Configure-PSADTForInstaller -ProjectPath $projectFullPath -AppInfo $selectedApp -Architecture $selectedArch
+                if (-not $psadtConfigured) {
+                    throw [System.Management.Automation.ErrorRecord]::new(
+                        [System.InvalidOperationException]::new('PSADT configuration failed - the project was NOT documented, tested, packaged or published (see the warnings above).'),
+                        'W32T.PipelineAborted', [System.Management.Automation.ErrorCategory]::InvalidResult, $projectFullPath)
+                }
 
                 # Download and apply the app-specific icon from WinGet YAML
                 Write-Verbose 'Downloading app icon from WinGet...'
                 Get-AppIconFromWinget -ProjectPath $projectFullPath -FilesPath $downloadPath | Out-Null
 
-                if ($psadtConfigured) {
-                    Write-Host "`n✓ SUCCESS: Project created, app downloaded, and PSADT configured!" -ForegroundColor Green
-                }
-                else {
-                    Write-Host "`n✓ SUCCESS: Project created and app downloaded!" -ForegroundColor Green
-                    Write-Warning 'PSADT configuration had issues - please review manually'
-                }
+                Write-Host "`n✓ SUCCESS: Project created, app downloaded, and PSADT configured!" -ForegroundColor Green
 
                 Write-Host "Project location: $projectFullPath" -ForegroundColor Cyan
                 Write-Host "Downloaded files:  $downloadPath"   -ForegroundColor Cyan
@@ -346,10 +356,14 @@ function Invoke-Win32Toolkit {
             }
         }
         else {
-            Write-Error 'Failed to create PSADT project'
+            throw [System.Management.Automation.ErrorRecord]::new(
+                [System.InvalidOperationException]::new("Failed to create the PSADT project '$projectName' (see the warnings above) - nothing was downloaded, documented, tested, packaged or published."),
+                'W32T.ProjectCreationFailed', [System.Management.Automation.ErrorCategory]::InvalidResult, $projectName)
         }
     }
     catch {
+        # Fail-closed errors (W32T.*) reach the caller as terminating errors; the TUI shows them.
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
         Write-Error "Script execution failed: $($_.Exception.Message)"
     }
     finally {

@@ -1,8 +1,9 @@
 function Show-Win32ToolkitAdvancedFinish {
     <#
     .SYNOPSIS
-        Advanced (hard) manual-app two-step: after scaffolding, let the operator edit the Install
-        region, then finalize via Complete-Win32ToolkitManualApp. See knowledge-base/designs/tui.md.
+        Advanced (hard) manual-app two-step: after scaffolding, let the operator write the install code
+        (between the manual-install and install-done blocks), then finalize via
+        Complete-Win32ToolkitManualApp. See knowledge-base/designs/tui.md.
     #>
     [CmdletBinding()]
     param(
@@ -18,8 +19,10 @@ function Show-Win32ToolkitAdvancedFinish {
         Clear-Host
         Format-SpectrePanel -Header 'Advanced app — your turn' -Border Rounded -Color Yellow -Data (
             "Project scaffolded at:`n[blue]$(Get-SpectreEscapedText -Text $ProjectPath)[/]`n`n" +
-            "Edit the Install region in Invoke-AppDeployToolkit.ps1 (add your Pre-Install / Install / " +
-            "Post-Install logic), then choose [green]Finish setup[/].`n" +
+            "In Invoke-AppDeployToolkit.ps1 write your install code between the " +
+            "'## win32-toolkit:Install:manual-install' block and the 'install-done' block (under " +
+            "'## MARK: Install' on PSADT 4.2, inside Install-ADTDeployment on 4.1). Fail with 'throw', never " +
+            "'return'; never assign PSADT variable names. Then choose [green]Finish setup[/].`n" +
             "The uninstall is captured automatically — you don't need to write it.")
 
         $sel = Read-SpectreSelection -Message 'Advanced app' -Choices @(

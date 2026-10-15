@@ -2,3 +2,8 @@
 # regenerates it and fails on any difference, so line endings must never vary by platform.
 # build/Update-Docs.ps1 writes LF; this keeps checkouts from converting them back to CRLF.
 docs/reference/*.md text eol=lf
+
+# Test fixtures: fixture bytes are stored as-is. The PSADT goldens and the legacy-1.1.6 fixtures are
+# UTF-8 with BOM and CRLF, exactly as New-ADTTemplate / win32-toolkit 1.1.6 wrote them; core.autocrlf
+# must not re-normalise them. Tests copy them to %TEMP% and normalise line endings themselves.
+Tests/Fixtures/** -text
