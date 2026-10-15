@@ -1,12 +1,14 @@
 function Invoke-Win32ToolkitGuestPhase {
     <#
     .SYNOPSIS
-        Runs a non-interactive test/capture phase in the guest as SYSTEM — the same context Intune uses.
+        Runs one test/capture phase in the guest as SYSTEM (the account Intune deploys under) and returns its exit code.
     .DESCRIPTION
-        Delegates to Invoke-Win32ToolkitGuestScheduledTask with RunAs 'System', so the silent/automation
-        path installs exactly like a real Intune Win32 deployment (NT AUTHORITY\SYSTEM, session 0). This
-        surfaces SYSTEM-context bugs (HKCU/profile assumptions, mapped drives, "current user" logic) that
-        a test run as an admin USER would mask.
+        Delegates to Invoke-Win32ToolkitGuestScheduledTask with RunAs 'System'. Every Hyper-V phase goes
+        through here: the unattended phases and the watched GUI phases (PSADT shows its dialogs in the
+        logged-on session). Running as NT AUTHORITY\SYSTEM surfaces SYSTEM-context bugs (HKCU/profile
+        assumptions, mapped drives, "current user" logic) that a test run as an admin USER would mask.
+        The account alone is not full Intune parity: launcher and bitness parity come from the guest
+        runner's -IntuneParity phases (Sandbox\Invoke-PsadtPackage.ps1), which unattended runs use.
     .PARAMETER Session
         An open PowerShell Direct PSSession.
     .PARAMETER Command

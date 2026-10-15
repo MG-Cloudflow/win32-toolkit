@@ -7,10 +7,20 @@ function Test-Win32ToolkitProject {
     Windows Sandbox (default) or the local Hyper-V test VM (see New-Win32ToolkitTestVM). If no
     ProjectPath is supplied, an interactive menu lists all PSADT projects found under BasePath.
 
-    Tests run WATCHED by default (PSADT shows its GUI and a countdown/pause gives you a
-    verification window) or UNATTENDED via -Unattended / the SandboxTestMode & HyperVTestMode
-    config values (silent, back-to-back, no operator needed — under Sandbox the guest shuts
-    itself down afterwards so chained runs proceed).
+    Tests run WATCHED by default (a countdown/pause gives you a verification window) or
+    UNATTENDED via -Unattended / the SandboxTestMode & HyperVTestMode config values (back-to-back,
+    no operator needed: under Sandbox PSADT runs -DeployMode Silent and the guest shuts itself down
+    afterwards so chained runs proceed; under Hyper-V the install, uninstall and update run as the
+    Intune-parity phase). Watched runs use PSADT's Auto mode: on PSADT 4.2 the dialogs appear only
+    when one of the app's listed processes is running (otherwise the run is silent); on 4.1.x Auto
+    shows PSADT's dialogs. (The watched Hyper-V GUI phases force -DeployMode Interactive.)
+
+    Process isolation: every PSADT package runs in its OWN Windows PowerShell process (PSADT 4.2
+    refuses a second copy of its module in one process, and 4.1 and 4.2 cannot share one). Each
+    declared 'project:' dependency is started by Sandbox\InstallDependencies.ps1, which stops at the
+    first failing dependency and exits with its exit code. The app, an Update baseline project and the
+    update run through the guest runner Sandbox\Invoke-PsadtPackage.ps1, which appends the exact exit
+    code of each of its runs to Sandbox\Logs\PsadtExitCodes.log; those codes are printed after the run.
 
     The function is scenario-driven: new test types can be added as additional switch cases
     without changing the overall structure.
@@ -55,12 +65,16 @@ function Test-Win32ToolkitProject {
     config value — Sandbox unless HyperV is configured AND ready; an unready HyperV falls back to
     Sandbox with a warning).
 .PARAMETER Unattended
-    Run SILENT and back-to-back on either backend: no PSADT GUI, no countdown/pause, and under
-    Sandbox the guest shuts itself down afterwards so chained runs proceed unaided. The default is
+    Run back-to-back on either backend with no countdown or pause; under Sandbox the guest shuts
+    itself down afterwards so chained runs proceed unaided. The default is
     watched/interactive. Overrides the SandboxTestMode / HyperVTestMode config values; on a
     non-interactive host Unattended is auto-selected with a warning. Note the context difference:
-    Sandbox-unattended runs as the sandbox admin user, HyperV-unattended runs as SYSTEM (the same
-    context Intune uses) — their results are not equivalent evidence.
+    Sandbox-unattended runs the package -DeployMode Silent as the sandbox admin user, while
+    HyperV-unattended runs an INTUNE-PARITY phase for install, uninstall and update: the exact
+    published command line (Invoke-AppDeployToolkit.exe -DeploymentType Install|Uninstall, no
+    -DeployMode) from a 32-bit cmd.exe parent, as SYSTEM, in the package folder - the way the Intune
+    Management Extension launches it - with the exit code checked (0, 1707, 3010, 1641 = success).
+    Their results are not equivalent evidence.
 .EXAMPLE
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario Update -VersionsBack 1 -SkipRequirementCheck
 .EXAMPLE
@@ -74,7 +88,7 @@ function Test-Win32ToolkitProject {
 .EXAMPLE
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario InstallUninstall
 .EXAMPLE
-    # Silent, no operator needed — ideal for automation
+    # Unattended Intune-parity run (published command line, 32-bit parent, SYSTEM), no operator needed — ideal for automation
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario InstallUninstall -Backend HyperV -Unattended
 .EXAMPLE
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario Update -SpecificVersion '2.47.0'
@@ -125,12 +139,14 @@ function Test-Win32ToolkitProject {
         [ValidateSet('Sandbox', 'HyperV')]
         [string]$Backend,
 
-        # Run SILENT and back-to-back on EITHER backend (no GUI, no countdown/pause, and under Sandbox the
-        # guest shuts itself down afterwards so chained runs proceed) — ideal for automation. The default
-        # is INTERACTIVE: PSADT shows its GUI with a human verification window. Overrides the
-        # HyperVTestMode / SandboxTestMode config defaults; a non-interactive host auto-selects Unattended
-        # with a warning (see Get-Win32ToolkitTestMode). NOTE: Sandbox-unattended runs as the WDAG admin
-        # user while HyperV-unattended runs as SYSTEM (Intune parity) — not equivalent evidence.
+        # Run back-to-back on EITHER backend (no countdown/pause, and under Sandbox the guest shuts itself
+        # down afterwards so chained runs proceed) — ideal for automation. The default
+        # is WATCHED: a human verification window (PSADT Auto mode in Sandbox, forced Interactive in the
+        # Hyper-V GUI phases). Overrides the HyperVTestMode / SandboxTestMode config defaults; a
+        # non-interactive host auto-selects Unattended with a warning (see Get-Win32ToolkitTestMode).
+        # NOTE: Sandbox-unattended runs -DeployMode Silent as the WDAG admin user, while HyperV-unattended
+        # runs the Intune-parity phases (published command line, 32-bit parent, SYSTEM) — not equivalent
+        # evidence.
         [Parameter(Mandatory = $false)]
         [switch]$Unattended
     )
@@ -249,11 +265,38 @@ function Test-Win32ToolkitProject {
             }
         }
 
+        # One PSADT package = one process: every package (baseline project, the app) runs through the guest
+        # runner Sandbox\Invoke-PsadtPackage.ps1 instead of being dot-called inside the LogonCommand / phase
+        # process — PSADT 4.2 refuses a second copy of its module in a process (60008), and 4.1/4.2 cannot
+        # share one. Written BEFORE any scenario builds a command. The runner appends each run's exact exit
+        # code to Sandbox\Logs\PsadtExitCodes.log; clear it so the printed codes (and the watched countdown's
+        # verdict) belong to THIS run only.
+        $null = New-Win32ToolkitPackageRunnerScript -ProjectPath $ProjectPath
+        $exitCodeLog = Join-Path $ProjectPath 'Sandbox\Logs\PsadtExitCodes.log'
+        if (Test-Path -LiteralPath $exitCodeLog) { Remove-Item -LiteralPath $exitCodeLog -Force -ErrorAction SilentlyContinue }
+        # PSADT / Intune success codes (0, 1707 success; 3010 soft, 1641 hard reboot) for the runner phases.
+        $psadtSuccessCodes = @(0, 1707, 3010, 1641)
+        # Prints the runner's exit-code lines after a run (when the log came back / was written).
+        $showExitCodes = {
+            if (Test-Path -LiteralPath $exitCodeLog) {
+                $codeLines = @(Get-Content -LiteralPath $exitCodeLog -ErrorAction SilentlyContinue | Where-Object { $_ })
+                if ($codeLines.Count -gt 0) {
+                    Write-Host 'PSADT exit codes (Sandbox\Logs\PsadtExitCodes.log):' -ForegroundColor Cyan
+                    foreach ($codeLine in $codeLines) {
+                        $codeColor = if ($codeLine -match 'result=(Success|SoftReboot|HardReboot)\b') { 'Green' } else { 'Red' }
+                        Write-Host "  $codeLine" -ForegroundColor $codeColor
+                    }
+                }
+            }
+        }
+
         # Stage declared dependencies (winget installers / packaged projects) into Sandbox\Dependencies\ so
         # the guest installs them BEFORE the app — the same order Intune uses on a real device. Returns 0
         # (and generates nothing) when the project declares none, so behaviour is unchanged for those.
+        # The phase command ends in 'exit $LASTEXITCODE' so the dependency script's exact code (not the
+        # -Command 0/1 collapse) reaches the Hyper-V provider.
         $depCount   = Initialize-Win32ToolkitDependencyStaging -ProjectPath $ProjectPath
-        $depCommand = "& 'C:\PSADT\Sandbox\InstallDependencies.ps1'"
+        $depCommand = '& ''C:\PSADT\Sandbox\InstallDependencies.ps1''; exit $LASTEXITCODE'
         if ($depCount -gt 0) {
             Write-Host "Dependencies     : $depCount (installed in the guest before the app)" -ForegroundColor Cyan
         }
@@ -276,34 +319,43 @@ function Test-Win32ToolkitProject {
                     $null = New-LogCollectorScript -ProjectPath $ProjectPath
 
                     # Interactive (default) shows the PSADT GUI in the VM console for hands-on testing;
-                    # -Unattended (or HyperVTestMode=Unattended, or a non-interactive host) runs silent +
-                    # back-to-back for automation. One resolver for both backends (Get-Win32ToolkitTestMode).
+                    # -Unattended (or HyperVTestMode=Unattended, or a non-interactive host) runs the
+                    # Intune-parity phases back-to-back (published command line from a 32-bit cmd.exe
+                    # parent, as SYSTEM, no -DeployMode). One resolver for both backends (Get-Win32ToolkitTestMode).
                     $interactive = (Get-Win32ToolkitTestMode -Backend HyperV -Unattended:$Unattended) -eq 'Interactive'
 
                     # Dependencies go in FIRST (silently), exactly as Intune installs them on a device.
                     $phases = @()
                     if ($depCount -gt 0) { $phases += @{ Label = 'Install dependencies'; Command = $depCommand; DepPhase = $true } }
 
+                    # Every package run goes through the guest runner (own process) and ends in
+                    # 'exit $LASTEXITCODE' (single-quoted: literal for the guest), so the provider sees the
+                    # EXACT PSADT exit code and judges it against SuccessExitCodes.
                     if ($interactive) {
+                        # GUI phases force -DeployMode Interactive so the operator always sees PSADT's dialogs.
                         $phases += @(
-                            @{ Label = 'Install (GUI)';                   Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Interactive"; Interactive = $true }
+                            @{ Label = 'Install (GUI)';                   Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -DeploymentType Install -DeployMode Interactive -Label app; exit $LASTEXITCODE'; Interactive = $true; SuccessExitCodes = $psadtSuccessCodes }
                             @{ Label = 'Assert: installed';               Command = "$assertCmd -Phase PostInstall"; IgnoreExit = $true }
                             @{ Label = 'Test the app in the VM window';   Pause = $true }
-                            @{ Label = 'Uninstall (GUI)';                 Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeploymentType Uninstall -DeployMode Interactive"; Interactive = $true }
+                            @{ Label = 'Uninstall (GUI)';                 Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -DeploymentType Uninstall -DeployMode Interactive -Label app; exit $LASTEXITCODE'; Interactive = $true; SuccessExitCodes = $psadtSuccessCodes }
                             @{ Label = 'Assert: uninstalled';             Command = "$assertCmd -Phase PostUninstall"; IgnoreExit = $true }
                             @{ Label = 'CollectLogs';                     Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
                         )
                         Write-Host 'Running an INTERACTIVE Install → test → Uninstall in the Hyper-V VM (watch the vmconnect window)...' -ForegroundColor Cyan
                     }
                     else {
+                        # INTUNE PARITY: the exact published command line (Get-Win32ToolkitIntuneCommandLine,
+                        # via Sandbox\IntuneCommandLine.json) from a 32-bit cmd.exe parent, as SYSTEM, in the
+                        # package folder, with no -DeployMode — the way the IME launches it. Replaces the old
+                        # 64-bit '.ps1 -DeployMode Silent' runs (spec Q7).
                         $phases += @(
-                            @{ Label = 'Install';             Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Silent" }
-                            @{ Label = 'Assert: installed';   Command = "$assertCmd -Phase PostInstall"; IgnoreExit = $true }
-                            @{ Label = 'Uninstall';           Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeploymentType Uninstall -DeployMode Silent" }
-                            @{ Label = 'Assert: uninstalled'; Command = "$assertCmd -Phase PostUninstall"; IgnoreExit = $true }
-                            @{ Label = 'CollectLogs';         Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
+                            @{ Label = 'Install (Intune parity)';   Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label app; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes }
+                            @{ Label = 'Assert: installed';         Command = "$assertCmd -Phase PostInstall"; IgnoreExit = $true }
+                            @{ Label = 'Uninstall (Intune parity)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Uninstall -Label app; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes }
+                            @{ Label = 'Assert: uninstalled';       Command = "$assertCmd -Phase PostUninstall"; IgnoreExit = $true }
+                            @{ Label = 'CollectLogs';               Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
                         )
-                        Write-Host 'Running a SILENT Install → Uninstall in the Hyper-V VM over PowerShell Direct...' -ForegroundColor Cyan
+                        Write-Host 'Running an UNATTENDED Install → Uninstall in the Hyper-V VM with the Intune command line (32-bit parent, SYSTEM)...' -ForegroundColor Cyan
                     }
                     $ran = Invoke-Win32ToolkitHyperVRun -ProjectPath $ProjectPath -Phase $phases -Output @('Sandbox\Logs\*')
                     if ($ran) {
@@ -311,6 +363,7 @@ function Test-Win32ToolkitProject {
                     } else {
                         Write-Warning 'Hyper-V install/uninstall run did not complete cleanly — see the warnings above.'
                     }
+                    & $showExitCodes
                     # Read the install/uninstall assertions the guest wrote (only if the log came back — no 30-min
                     # hang if the run died before writing it), report a verdict, and record it for the docs.
                     $iuVerdict = $null
@@ -347,14 +400,17 @@ function Test-Win32ToolkitProject {
 
                 # Dependencies install FIRST (static, XML-safe path — no untrusted value is spliced here;
                 # the untrusted installer args live in Sandbox\Dependencies\dependencies.json as DATA).
+                # The app's install and uninstall each run in their OWN process via the guest runner (a
+                # 'project:' dependency would otherwise already have loaded PSADT into this process).
                 $depPrefixXml = if ($depCount -gt 0) { 'C:\PSADT\Sandbox\InstallDependencies.ps1; ' } else { '' }
                 if ($sbInteractive) {
-                    $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}C:\PSADT\Invoke-AppDeployToolkit.ps1; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostInstall; C:\PSADT\Sandbox\Countdown.ps1; C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostUninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1 } }&quot;"
+                    # Watched: PSADT's Auto mode (no -DeployMode), as before.
+                    $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1 -DeploymentType Install -Label app; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostInstall; C:\PSADT\Sandbox\Countdown.ps1; C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1 -DeploymentType Uninstall -Label app; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostUninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1 } }&quot;"
                 }
                 else {
                     # No -NoExit, no countdown, Silent deploys; 5 s before Stop-Computer lets the VSMB
                     # mapped-folder write-back flush the collected logs.
-                    $logonCommandXml = "powershell.exe -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeployMode Silent; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostInstall; C:\PSADT\Invoke-AppDeployToolkit.ps1 -DeploymentType Uninstall -DeployMode Silent; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostUninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1; Start-Sleep -Seconds 5; Stop-Computer -Force } }&quot;"
+                    $logonCommandXml = "powershell.exe -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1 -DeploymentType Install -DeployMode Silent -Label app; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostInstall; C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1 -DeploymentType Uninstall -DeployMode Silent -Label app; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostUninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1; Start-Sleep -Seconds 5; Stop-Computer -Force } }&quot;"
                 }
                 $sandboxConfigContent = New-Win32ToolkitSandboxConfig `
                     -Mount @{ HostPath = $ProjectPath; GuestPath = 'C:\PSADT'; ReadOnly = $false } `
@@ -395,6 +451,7 @@ function Test-Win32ToolkitProject {
                 $iuVerdict = if ($launched) {
                     Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend Sandbox -TimeoutMinutes 10 -LogFileName 'InstallAssertions.log' -Label 'INSTALL/UNINSTALL TEST'
                 } else { $null }
+                & $showExitCodes
                 Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'InstallUninstall' -Backend 'Sandbox' `
                     -Mode $(if ($sbInteractive) { 'Interactive' } else { 'Unattended' }) -Verdict $iuVerdict -LogFileName 'InstallAssertions.log'
                 return $iuVerdict
@@ -551,9 +608,11 @@ function Test-Win32ToolkitProject {
                 # identical under Sandbox mapped folders and the Hyper-V copy-in, so the same command
                 # string drives both. Vendor baseline: exe/msi via Start-Process, msix/appx via
                 # Add-AppxPackage (untrusted values escaped + argv-safe). Toolkit-package baseline: run its
-                # Invoke-AppDeployToolkit.ps1 from C:\PSADTOld — a fixed guest path, no untrusted splice.
+                # Invoke-AppDeployToolkit.ps1 from C:\PSADTOld through the guest runner, so the baseline's
+                # PSADT loads in its OWN process (the update then loads the new package's PSADT in another
+                # one) — fixed guest paths, no untrusted splice.
                 $installCmd = if ($useBaselineProject) {
-                    "& 'C:\PSADTOld\Invoke-AppDeployToolkit.ps1' -DeployMode Silent"
+                    "& 'C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1' -Path 'C:\PSADTOld\Invoke-AppDeployToolkit.ps1' -DeployMode Silent -Label baseline"
                 } else {
                     Get-Win32ToolkitBaselineInstallCommand `
                         -InstallerSandboxPath "C:\PSADT\Sandbox\OldVersion\$($oldInstaller.InstallerName)" `
@@ -574,22 +633,32 @@ function Test-Win32ToolkitProject {
                     $phases = @()
                     if ($depCount -gt 0) { $phases += @{ Label = 'Install dependencies'; Command = $depCommand; DepPhase = $true } }
 
+                    # A toolkit-package baseline goes through the runner: end the phase with its exact exit
+                    # code (single-quoted 'exit $LASTEXITCODE', literal for the guest). A vendor baseline
+                    # command is unchanged.
+                    $baselinePhase = @{ Label = "Install baseline v$targetVersion"; Command = $installCmd }
+                    if ($useBaselineProject) {
+                        $baselinePhase['Command']          = $installCmd + '; exit $LASTEXITCODE'
+                        $baselinePhase['SuccessExitCodes'] = $psadtSuccessCodes
+                    }
                     $phases += @(
                         @{ Label = 'Assert: PreBaseline';              Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline" }
-                        @{ Label = "Install baseline v$targetVersion"; Command = $installCmd }
+                        $baselinePhase
                         @{ Label = 'Assert: PreUpdate';                Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate" }
                     )
-                    # DeployMode must be EXPLICIT: every Hyper-V phase runs as SYSTEM in session 0, where
-                    # PSADT's interactive default does not apply (the Sandbox .wsb gets away with it because
-                    # its LogonCommand runs on a real desktop). Interactive=$true is also what makes the
-                    # provider ensure a desktop and open vmconnect — without it the operator would be told
-                    # to watch a VM window that never opens.
+                    # Every Hyper-V phase runs as SYSTEM in session 0. With a user logged on, PSADT's Auto
+                    # mode still resolves normally there (session 0 alone does not force Silent), so the
+                    # mode is forced explicitly ONLY for the interactive GUI phase (so the operator always
+                    # sees the dialogs). Interactive=$true is also what makes the provider ensure a desktop
+                    # and open vmconnect — without it the operator would be told to watch a VM window that
+                    # never opens. The unattended update is an INTUNE-PARITY run: the published command
+                    # line from a 32-bit parent with no -DeployMode, exactly as the IME launches it.
                     if ($interactive) {
                         $phases += @{ Label = 'Verify the OLD install in the VM window'; Pause = $true; Interactive = $true }
-                        $phases += @{ Label = 'Update (PSADT GUI)'; Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Interactive"; Interactive = $true }
+                        $phases += @{ Label = 'Update (PSADT GUI)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -DeploymentType Install -DeployMode Interactive -Label update; exit $LASTEXITCODE'; Interactive = $true; SuccessExitCodes = $psadtSuccessCodes }
                     }
                     else {
-                        $phases += @{ Label = 'Update (PSADT)'; Command = "& 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Silent" }
+                        $phases += @{ Label = 'Update (Intune parity)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label update; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes }
                     }
                     $phases += @(
                         @{ Label = 'Assert: PostUpdate'; Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate" }
@@ -603,6 +672,7 @@ function Test-Win32ToolkitProject {
                     if (-not (Invoke-Win32ToolkitHyperVRun @hvArgs)) {
                         Write-Warning 'The Hyper-V update run did not complete cleanly — see the warnings above.'
                     }
+                    & $showExitCodes
 
                     # The Hyper-V run is SYNCHRONOUS: UpdateAssertions.log already came back with
                     # Sandbox\Logs, so the waiter's first poll succeeds. If the copy-out silently failed
@@ -634,14 +704,16 @@ function Test-Win32ToolkitProject {
                 # LogonCommand is static, XML-safe text. The builder XML-encodes the host paths.
                 # Dependencies install FIRST — before the PreBaseline snapshot, so the dependency's own ARP
                 # entry belongs to the baseline instead of looking like something the app under test added.
+                # The update itself runs through the guest runner in its OWN process (a baseline project
+                # or a 'project:' dependency would otherwise already have loaded PSADT into this one).
                 $depPrefixXml = if ($depCount -gt 0) { "&amp; 'C:\PSADT\Sandbox\InstallDependencies.ps1'; " } else { '' }
                 if ($sbInteractive) {
-                    $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}&amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline; $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1'; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1' } }&quot;"
+                    $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}&amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline; $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1' -DeploymentType Install -Label update; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1' } }&quot;"
                 }
                 else {
                     # Unattended: no -NoExit, no countdown, the PSADT update runs Silent, and the guest
                     # shuts down after log collection (5 s VSMB flush) so a chained run's guard clears.
-                    $logonCommandXml = "powershell.exe -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}&amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline; $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Invoke-AppDeployToolkit.ps1' -DeployMode Silent; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1'; Start-Sleep -Seconds 5; Stop-Computer -Force } }&quot;"
+                    $logonCommandXml = "powershell.exe -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}&amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline; $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1' -DeploymentType Install -DeployMode Silent -Label update; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1'; Start-Sleep -Seconds 5; Stop-Computer -Force } }&quot;"
                 }
                 $sandboxConfigContent = New-Win32ToolkitSandboxConfig -Mount $mounts -LogonCommandXml $logonCommandXml
                 Set-Content -Path $sandboxConfigFile -Value $sandboxConfigContent -Encoding UTF8
@@ -691,6 +763,7 @@ function Test-Win32ToolkitProject {
                 # The verdict is RETURNED ($true pass / $false fail / $null inconclusive) so callers
                 # (finalize pipeline, TUI, automation) can gate on a failed update test.
                 $updVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath
+                & $showExitCodes
                 Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'Sandbox' `
                     -Mode $(if ($sbInteractive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict
                 return $updVerdict

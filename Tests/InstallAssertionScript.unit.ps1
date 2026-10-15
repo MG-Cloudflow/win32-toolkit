@@ -31,6 +31,12 @@ function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
 . (Join-Path $repo 'Private\New-InstallAssertionScript.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitAppConfig.ps1')
+. (Join-Path $repo 'Private\Test-Win32ToolkitProductCode.ps1')
+# The MSI ProductCode is read host-side from Files\<msi> (WindowsInstaller COM) - shadowed: no real MSI.
+$script:msiCode  = '{6F2C1A3B-4D5E-4F60-8A9B-0C1D2E3F4A5B}'
+$script:msiReads = @()
+function Get-Win32ToolkitMsiProperty { param([string]$Path, [string]$Property) $script:msiReads += "$(Split-Path -Leaf $Path)|$Property"; $script:msiCode }
 
 # ── Distinctive fake app metadata. These literals must NEVER appear in the generated script text. ────
 $fakeAuthor  = 'CloudFlowProbe'
@@ -193,8 +199,90 @@ $lines2 = if (Test-Path -LiteralPath $log2) { Get-Content -LiteralPath $log2 } e
 if (Test-LogHas $lines2 'ASSERT InstallDetected-PostInstall = SKIP*') { Ok 'nothing checkable -> SKIP with a reason note' }
 else { Bad "expected SKIP; log:`n    $($lines2 -join "`n    ")" }
 
+# ══ 5. MSI: Windows Installer's own record (SWP-02) ═══════════════════════════════════════════════
+Write-Host '[5] MSI project: ProductCode as DATA + MsiProductInstalled/MsiProductRemoved assertions' -ForegroundColor Cyan
+$projM = New-TempDir
+New-Item -ItemType Directory -Path (Join-Path $projM 'SupportFiles'), (Join-Path $projM 'Files') -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $projM 'Files\w.msi') -Value 'not a real msi'
+Set-Content -LiteralPath (Join-Path $projM 'Files\other.msi') -Value 'not a real msi'
+[System.IO.File]::WriteAllText((Join-Path $projM 'SupportFiles\AppConfig.json'), ($appConfig | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+$script:msiReads = @()
+$genM = New-InstallAssertionScript -ProjectPath $projM
+$dataM = Join-Path $projM 'Sandbox\InstallAssertionData.json'
+if (Test-Path -LiteralPath $dataM) { Ok 'Sandbox\InstallAssertionData.json written for an MSI project' } else { Bad 'no MSI data file' }
+if ($script:msiReads -contains 'w.msi|ProductCode') { Ok 'ProductCode read from the configured installer (Installer.FileName = w.msi)' } else { Bad "reads: $($script:msiReads -join ',')" }
+$dm = Get-Content -LiteralPath $dataM -Raw | ConvertFrom-Json
+if ($dm.MsiProductCode -eq $script:msiCode) { Ok 'data = { MsiProductCode: <validated GUID> }' } else { Bad "data: $($dm | ConvertTo-Json -Compress)" }
+$bm = [System.IO.File]::ReadAllBytes($dataM)
+if (-not ($bm[0] -eq 0xEF -and $bm[1] -eq 0xBB)) { Ok 'data JSON is BOM-less' } else { Bad 'data JSON has a BOM' }
+$genMText = Get-Content -LiteralPath $genM -Raw
+if (-not $genMText.Contains($script:msiCode)) { Ok 'the ProductCode is NOT spliced into the script (read at runtime)' } else { Bad 'ProductCode spliced into the script' }
+if ($genMText -ceq $genText) { Ok 'the generated script is identical for MSI and non-MSI projects (value-free)' } else { Bad 'script text depends on the project' }
+foreach ($nm in 'MsiProductInstalled-PostInstall', 'MsiProductRemoved-PostUninstall') {
+    if (([regex]::Matches($genMText, [regex]::Escape("ASSERT $nm ="))).Count -eq 2 -and ([regex]::Matches($genMText, 'ASSERT ' + [regex]::Escape($nm) + ' =')).Count -eq 2) { Ok "assertion name '$nm' is unique (PASS + FAIL branch only)" } else { Bad "name $nm" }
+}
+
+# The guest probes the MSI Uninstall key (either view) with Get-ItemProperty -LiteralPath - the in-memory
+# registry shadow above answers it. SetFakeReg replaces that store (the same global the earlier sections use).
+function SetFakeReg([hashtable]$Keys) { Set-Variable -Name fakeReg -Scope Global -Value $Keys }
+$guestM = New-TempDir
+New-Item -ItemType Directory -Path (Join-Path $guestM 'SupportFiles'), (Join-Path $guestM 'Sandbox\Logs') -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $projM 'SupportFiles\AppConfig.json') -Destination (Join-Path $guestM 'SupportFiles\AppConfig.json') -Force
+Copy-Item -LiteralPath $dataM -Destination (Join-Path $guestM 'Sandbox\InstallAssertionData.json') -Force
+$copyM = Join-Path $guestM 'Sandbox\InstallAssertions.copy.ps1'
+Set-Content -LiteralPath $copyM -Value ($genMText.Replace('C:\PSADT', $guestM)) -Encoding UTF8
+$logM = Join-Path $guestM 'Sandbox\Logs\InstallAssertions.log'
+function Read-M { if (Test-Path -LiteralPath $logM) { Get-Content -LiteralPath $logM } else { @() } }
+function Clear-M { if (Test-Path -LiteralPath $logM) { Remove-Item -LiteralPath $logM -Force } }
+$k64 = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\' + $script:msiCode
+$k32 = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\' + $script:msiCode
+
+Clear-M; SetFakeReg @{ $tattooKey = @{ Version = $fakeVersion }; $k64 = @{ DisplayName = 'x' } }
+& $copyM -Phase PostInstall
+$lm = Read-M
+if ((Test-LogHas $lm 'ASSERT MsiProductInstalled-PostInstall = PASS') -and (Test-LogHas $lm 'ASSERT InstallDetected-PostInstall = PASS')) { Ok 'PostInstall: ProductCode registered (64-bit view) -> MsiProductInstalled PASS (tattoo assert still runs)' } else { Bad "log:`n    $($lm -join "`n    ")" }
+Clear-M; SetFakeReg @{ $tattooKey = @{ Version = $fakeVersion }; $k32 = @{ DisplayName = 'x' } }
+& $copyM -Phase PostInstall
+if (Test-LogHas (Read-M) 'ASSERT MsiProductInstalled-PostInstall = PASS') { Ok 'PostInstall: registered in the WOW6432Node view also counts' } else { Bad "log: $((Read-M) -join ' / ')" }
+Clear-M; SetFakeReg @{ $tattooKey = @{ Version = $fakeVersion } }
+& $copyM -Phase PostInstall
+$lm = Read-M
+if (Test-LogHas $lm 'ASSERT MsiProductInstalled-PostInstall = FAIL*') { Ok 'PostInstall: tattoo written but the MSI never registered -> FAIL (a false tattoo is caught)' } else { Bad "log:`n    $($lm -join "`n    ")" }
+Clear-M; SetFakeReg @{}
+& $copyM -Phase PostUninstall
+$lm = Read-M
+if ((Test-LogHas $lm 'ASSERT MsiProductRemoved-PostUninstall = PASS') -and (Test-LogHas $lm 'RESULT COMPLETE')) { Ok 'PostUninstall: ProductCode gone -> MsiProductRemoved PASS, RESULT COMPLETE still last' } else { Bad "log:`n    $($lm -join "`n    ")" }
+if ($lm[-1] -like '*RESULT COMPLETE') { Ok 'RESULT COMPLETE stays the final line' } else { Bad "last line: $($lm[-1])" }
+Clear-M; SetFakeReg @{ $k32 = @{ DisplayName = 'x' } }
+& $copyM -Phase PostUninstall
+if (Test-LogHas (Read-M) 'ASSERT MsiProductRemoved-PostUninstall = FAIL*') { Ok 'PostUninstall: still registered (either view) -> FAIL' } else { Bad "log: $((Read-M) -join ' / ')" }
+
+# Tampered / non-GUID data in the guest -> the MSI assertion is skipped, never spliced into a path.
+[System.IO.File]::WriteAllText((Join-Path $guestM 'Sandbox\InstallAssertionData.json'), '{"MsiProductCode":"x\\..\\..\\Run"}', (New-Object System.Text.UTF8Encoding($false)))
+Clear-M; SetFakeReg @{ $tattooKey = @{ Version = $fakeVersion } }
+& $copyM -Phase PostInstall
+$lm = Read-M
+if (-not (Test-LogHas $lm 'ASSERT MsiProductInstalled-PostInstall*') -and ($lm -match 'not a GUID')) { Ok 'non-GUID data in the guest -> MSI assertion skipped (no FAIL, no path built from it)' } else { Bad "log:`n    $($lm -join "`n    ")" }
+
+# Host side: invalid ProductCode -> no data file; a non-MSI project removes a stale one.
+$script:msiCode = 'not-a-guid'
+$null = New-InstallAssertionScript -ProjectPath $projM
+if (-not (Test-Path -LiteralPath $dataM)) { Ok 'an unreadable / invalid ProductCode writes no data file (no MSI assertion)' } else { Bad 'invalid ProductCode written' }
+$script:msiCode = '{6F2C1A3B-4D5E-4F60-8A9B-0C1D2E3F4A5B}'
+$null = New-InstallAssertionScript -ProjectPath $projM
+$exeCfg = [ordered]@{}; foreach ($ck in $appConfig.Keys) { $exeCfg[$ck] = $appConfig[$ck] }; $exeCfg['Installer'] = [ordered]@{ Type = 'exe'; FileName = 'setup.exe'; SilentArgs = '/S' }
+[System.IO.File]::WriteAllText((Join-Path $projM 'SupportFiles\AppConfig.json'), ($exeCfg | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+$script:msiReads = @()
+$null = New-InstallAssertionScript -ProjectPath $projM
+if (-not (Test-Path -LiteralPath $dataM) -and $script:msiReads.Count -eq 0) { Ok 'non-MSI project: stale data file removed, no MSI read' } else { Bad "data present=$(Test-Path -LiteralPath $dataM) reads=$($script:msiReads -join ',')" }
+$mCfg = [ordered]@{}; foreach ($ck in $appConfig.Keys) { $mCfg[$ck] = $appConfig[$ck] }; $mCfg['Installer'] = [ordered]@{ Type = 'msi'; FileName = 'missing.msi'; SilentArgs = '/qn' }
+[System.IO.File]::WriteAllText((Join-Path $projM 'SupportFiles\AppConfig.json'), ($mCfg | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+$script:msiReads = @()
+$null = New-InstallAssertionScript -ProjectPath $projM
+if ((Test-Path -LiteralPath $dataM) -and $script:msiReads.Count -eq 1 -and $script:msiReads[0] -like '*.msi|ProductCode') { Ok 'FileName not found -> falls back to the MSI in Files\' } else { Bad "reads=$($script:msiReads -join ',')" }
+
 # cleanup
-Remove-Item -LiteralPath $proj, $proj2, $guestRoot, $guestRoot2 -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $proj, $proj2, $guestRoot, $guestRoot2, $projM, $guestM -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All InstallAssertionScript tests passed.' -ForegroundColor Green; exit 0 }

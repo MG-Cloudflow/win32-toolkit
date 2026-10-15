@@ -9,6 +9,7 @@
       B. winget app + "winget download"          -> no BaselineProjectPath (unchanged default)
       C. manual (non-winget) app + a candidate   -> auto local baseline, BaselineProjectPath set
       D. manual app + NO candidate               -> aborts (Test-Win32ToolkitProject is never called)
+      E. Hyper-V run mode                        -> the unattended choice says Intune parity, never Silent
 
     Every Spectre / helper call is shadowed; nothing renders, nothing runs a test.
 
@@ -40,6 +41,7 @@ function Read-SpectreConfirm { param($Message, $DefaultAnswer) $true }   # yes: 
 $script:keys = New-Object System.Collections.Queue
 function Read-SpectreSelection {
     param($Message, $Choices, $ChoiceLabelProperty, $Color, [switch]$EnableSearch, $PageSize)
+    if ($Message -eq 'Hyper-V run mode') { $script:hvModeChoices = @($Choices) }
     if ($ChoiceLabelProperty) {
         $want = if ($script:keys.Count) { $script:keys.Dequeue() } else { $null }
         $m = @($Choices | Where-Object { $_.Key -eq $want })
@@ -110,6 +112,19 @@ $script:projects = @($under)      # only the project under test; nothing to use 
 $script:wingetId = $null
 DriveUpdate @('test', 'Sandbox', 'Update', 'back')
 if ($script:called -eq 0) { Ok 'no baseline available -> the update test is not run (clean abort, no mid-run hard-error)' } else { Bad "Test-Win32ToolkitProject ran anyway ($script:called)" }
+
+# ══ E. Hyper-V run mode wording (F-04) ════════════════════════════════════════════════════════════
+# Hyper-V unattended is the Intune-parity run (published command line, 32-bit parent, SYSTEM), not a
+# '-DeployMode Silent' run: the TUI must not call it silent, and labels must carry no Spectre markup.
+Write-Host '[E] Hyper-V run mode: the unattended choice says Intune parity, not Silent' -ForegroundColor Cyan
+$script:projects = @($under, $cand)
+$script:wingetId = 'Publisher.App'
+$script:hvModeChoices = @()
+DriveUpdate @('test', 'HyperV', 'InstallUninstall', 'unattended', 'back')
+$ua = @($script:hvModeChoices | Where-Object { $_.Key -eq 'unattended' })
+if ($ua.Count -eq 1 -and $ua[0].Label -match 'Intune parity' -and $ua[0].Label -notmatch '(?i)silent|no GUI') { Ok "unattended label: '$($ua[0].Label)'" } else { Bad "unattended label: '$($ua.Label)'" }
+if ($script:hvModeChoices.Count -eq 2 -and -not @($script:hvModeChoices | Where-Object { $_.Label -match '[\[\]]' }).Count) { Ok 'no Spectre markup brackets in the Hyper-V run mode labels' } else { Bad "labels: $($script:hvModeChoices.Label -join ' | ')" }
+if ($script:called -eq 1 -and $script:splat['Unattended'] -eq $true) { Ok 'choosing it passes -Unattended' } else { Bad "called=$script:called unattended=$($script:splat['Unattended'])" }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All UpdateBaselinePickerTUI tests passed.' -ForegroundColor Green; exit 0 }

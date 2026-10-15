@@ -66,8 +66,38 @@ function Wait-ForDocumentationAndProcess {
             return $false
         }
         
+        # ── Refuse a capture of a FAILED or EMPTY install BEFORE anything is derived from it (TST-03) ──
+        # Detection, requirement and uninstall data generated from a broken install would ship a package
+        # that "works" in the pipeline and fails on devices. Nothing below runs in these cases, so
+        # AppConfig.Uninstall (and every other writer's section) stays untouched. Captures written by an
+        # older toolkit lack the exit-code fields and are judged on the diff only. Packaging itself is not
+        # blocked here (Finalize warns; the export/publish gates stop a no-op package).
+        $successCodes = @(0, 1707, 3010, 1641)
+        $info = $parsed.InstallationInfo
+        foreach ($field in 'PsadtExitCode', 'DependencyExitCode') {
+            if ($info -and $info.PSObject.Properties[$field] -and $null -ne $info.$field) {
+                $code = $info.$field
+                if ($successCodes -notcontains $code) {
+                    $what = if ($field -eq 'PsadtExitCode') { 'The PSADT install in the capture run' } else { 'The declared dependencies in the capture run' }
+                    $hint = switch ($code) { 60001 { ' (60001 = PSADT script error)' } 60008 { ' (60008 = PSADT session/launch failure)' } default { '' } }
+                    Write-Warning "$what failed with exit code $code$hint - no requirement, uninstall or processes-to-close data was generated from it. Check $(Split-Path $jsonFile -Leaf), the PSADT log under Sandbox\Logs, then re-run the capture."
+                    return $false
+                }
+            }
+        }
+        if ($InstallerType -notin @('msix', 'appx')) {
+            $diffCount = 0
+            foreach ($section in 'NewFiles', 'NewRegistryKeys', 'NewServices', 'NewPrograms') {
+                if ($parsed.PSObject.Properties[$section]) { $diffCount += @($parsed.$section | Where-Object { $null -ne $_ }).Count }
+            }
+            if ($diffCount -eq 0) {
+                Write-Warning "The capture recorded NO changes (no new files, registry keys, services or programs) - the install did nothing in the guest, so no requirement, uninstall or processes-to-close data was generated. Check $(Split-Path $jsonFile -Leaf) and the PSADT log under Sandbox\Logs."
+                return $false
+            }
+        }
+
         Write-Host "`nProcessing documentation results..." -ForegroundColor Yellow
-        
+
         # Generate requirement script
         Write-Verbose "Generating Intune requirement script..."
         $reqSuccess = New-IntuneRequirementScript -ProjectPath $ProjectPath -JsonFilePath $jsonFile
@@ -92,7 +122,7 @@ function Wait-ForDocumentationAndProcess {
                 }
             }
             'msi' {
-                Write-Host "✓ MSI installer detected - PSADT Zero-Config uninstall handles removal" -ForegroundColor Green
+                Write-Host "✓ MSI installer - PSADT's Zero-Config block in the deploy script uninstalls it (4.1.8 default template; 4.2 scaffolded with -ZeroConfig)" -ForegroundColor Green
             }
             { $_ -in @('msix', 'appx') } {
                 if (Update-PSADTMsixUninstallLogic -ProjectPath $ProjectPath) {

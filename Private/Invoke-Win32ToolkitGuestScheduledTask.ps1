@@ -1,22 +1,22 @@
 function Invoke-Win32ToolkitGuestScheduledTask {
     <#
     .SYNOPSIS
-        Runs a command in the guest via a one-shot scheduled task, as SYSTEM or as an interactive user,
-        and returns its exit code.
+        Runs a command in the guest via a one-shot scheduled task as SYSTEM and returns its exit code.
     .DESCRIPTION
-        Shared execution primitive for the Hyper-V backend. Running through a scheduled task lets us pick
-        the security context:
-          - RunAs 'System'  -> NT AUTHORITY\SYSTEM (ServiceAccount, session 0, non-interactive). This is
-            the SAME context Intune deploys Win32 apps under, so silent/automation runs match production.
-          - RunAs '<user>'  -> the logged-on user (Interactive), RunLevel Highest, so a GUI renders on the
-            console (for hands-on PSADT testing). SYSTEM cannot show a GUI (session-0 isolation).
+        Shared execution primitive for the Hyper-V backend. The task runs as NT AUTHORITY\SYSTEM
+        (ServiceAccount, session 0, RunLevel Highest) - the ACCOUNT Intune deploys Win32 apps under. It is
+        NOT full Intune parity: the task starts a 64-bit powershell.exe with -Command, while the Intune
+        Management Extension launches the published command line from a 32-bit process. Bitness and
+        launcher parity come from the Intune-parity phases (Sandbox\Invoke-PsadtPackage.ps1 -IntuneParity).
+        PSADT itself shows its dialogs in the logged-on user's session when a phase asks for them.
         Untrusted values are passed as scriptblock ARGUMENTS, never spliced into code. HOST-ONLY.
     .PARAMETER Session
         An open PowerShell Direct PSSession.
     .PARAMETER Command
         A 5.1-safe PowerShell command string to run in the guest.
     .PARAMETER RunAs
-        'System' (default) or a SAM username to run the task as.
+        'System' (the only context; kept as a parameter so callers and the remoting argument list are
+        unchanged).
     .PARAMETER Label
         Short label for progress output.
     .PARAMETER TimeoutMinutes
@@ -29,13 +29,12 @@ function Invoke-Win32ToolkitGuestScheduledTask {
     param(
         [Parameter(Mandatory)] $Session,
         [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string]$Command,
-        [string]$RunAs = 'System',
+        [ValidateSet('System')] [string]$RunAs = 'System',
         [string]$Label = 'phase',
         [ValidateRange(1, 240)] [int]$TimeoutMinutes = 30
     )
 
-    $ctx = if ($RunAs -eq 'System') { 'SYSTEM' } else { "$RunAs (interactive)" }
-    Write-Verbose "  [guest:$ctx] $Label"
+    Write-Verbose "  [guest:SYSTEM] $Label"
 
     $result = Invoke-Command -Session $Session -ScriptBlock {
         param($cmd, $runAs, $timeoutMin)
@@ -44,11 +43,10 @@ function Invoke-Win32ToolkitGuestScheduledTask {
 
         # -WindowStyle Hidden so the raw powershell.exe console never shows — only PSADT's own GUI does.
         $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"$cmd`""
-        $principal = if ($runAs -eq 'System') {
-            New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-        } else {
-            New-ScheduledTaskPrincipal -UserId $runAs -LogonType Interactive -RunLevel Highest
-        }
+        # SYSTEM is the only context (validated on the host; the argument stays in the list). Refuse anything
+        # else in the guest too rather than run a phase in an unexpected context.
+        if ($runAs -ne 'System') { throw "Unsupported RunAs '$runAs': guest phases run as SYSTEM only." }
+        $principal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
         Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Force | Out-Null
 
         # Snapshot the task info BEFORE starting. Task State is AMBIGUOUS: 'Ready' means both

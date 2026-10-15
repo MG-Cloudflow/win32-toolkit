@@ -84,7 +84,7 @@ function Show-Win32ToolkitProjectActions {
                         $pauseWhat = if ($sc.Key -eq 'Update') { 'verify the OLD install, then update' } else { 'test the app, then uninstall' }
                         $mode = Read-SpectreSelection -Message 'Hyper-V run mode' -Choices @(
                             [pscustomobject]@{ Key = 'interactive'; Label = "Interactive — watch the PSADT GUI in the VM console, $pauseWhat" }
-                            [pscustomobject]@{ Key = 'unattended';  Label = 'Silent — run every phase back-to-back (no GUI, no pause)' }
+                            [pscustomobject]@{ Key = 'unattended';  Label = 'Unattended — Intune parity: the published command line from a 32-bit parent, as SYSTEM (no pause)' }
                         ) -ChoiceLabelProperty 'Label' -Color Blue
                         if ($mode.Key -eq 'unattended') { $testSplat['Unattended'] = $true }
                     }

@@ -101,6 +101,143 @@ $null = Set-Win32ToolkitAppDependency -ProjectPath $p3 -DependsOn 'intune:8d0a1f
 $n = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p3 -WarningAction SilentlyContinue
 if ($n -eq 0) { Ok 'intune-only dep is not stageable (warned)' } else { Bad "n=$n" }
 
+Write-Host '[6] the guest script runs each packaged dependency in its OWN Windows PowerShell process' -ForegroundColor Cyan
+# (source checks on the generated, value-free script; [7] executes it)
+$g6 = $guest
+if ($g6 -match "Start-Process -FilePath \`$ps -ArgumentList @\('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', \('""' \+ \`$d\.Path \+ '""'\), '-DeploymentType', 'Install', '-DeployMode', 'Silent'\) -WorkingDirectory \(Split-Path -Parent \`$d\.Path\) -Wait -PassThru") { Ok 'psadt dependency = Start-Process powershell.exe -File "<quoted path>" -DeploymentType Install -DeployMode Silent, cwd = its folder' } else { Bad 'Start-Process child launch not found' }
+if ($g6 -match [regex]::Escape("Join-Path `$env:WinDir 'System32\WindowsPowerShell\v1.0\powershell.exe'")) { Ok 'child = the System32 Windows PowerShell (full path)' } else { Bad 'powershell.exe path not absolute' }
+if ($g6 -notmatch '& \$d\.Path') { Ok 'no in-process "& $d.Path" call left' } else { Bad 'dependency still dot-called in-process' }
+if ($g6 -match '\$okCodes = @\(0, 1707, 3010, 1641\)' -and $g6 -match '\$okCodes -notcontains \$rc') { Ok 'success = 0, 1707, 3010, 1641' } else { Bad 'success codes wrong' }
+
+Write-Host '[7] two project: dependencies -> two psadt entries, EXECUTED under 5.1: separate processes, exact codes' -ForegroundColor Cyan
+# A Projects root WITH A SPACE, so the quoted -File path is exercised for real.
+$spRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('w32ds sp_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+$spProjects = Join-Path $spRoot 'Projects'
+$p7 = Join-Path $spProjects 'Contoso\App_x64_1.0'
+New-Item -ItemType Directory -Path (Join-Path $p7 'SupportFiles') -Force | Out-Null
+foreach ($dn in 'DepOne_x64_1.0', 'DepTwo_x64_2.0') {
+    $dp = Join-Path $spProjects "Contoso\$dn"
+    New-Item -ItemType Directory -Path $dp -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $dp 'Invoke-AppDeployToolkit.ps1') -Value '# psadt'
+}
+$projectsRoot = $spProjects   # the [3] Get-Win32ToolkitPaths double resolves Projects from this at call time
+$null = Set-Win32ToolkitAppDependency -ProjectPath $p7 -DependsOn 'project:Contoso\DepOne_x64_1.0'
+$null = Set-Win32ToolkitAppDependency -ProjectPath $p7 -DependsOn 'project:Contoso\DepTwo_x64_2.0'
+$n7 = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p7 6>$null
+$man7 = Join-Path $p7 'Sandbox\Dependencies\dependencies.json'
+$e7 = @(Get-Content -LiteralPath $man7 -Raw | ConvertFrom-Json)
+if ($n7 -eq 2 -and $e7.Count -eq 2 -and @($e7 | Where-Object { $_.Type -eq 'psadt' }).Count -eq 2 -and $e7[0].Name -eq 'Contoso\DepOne_x64_1.0' -and $e7[1].Name -eq 'Contoso\DepTwo_x64_2.0') { Ok 'dependencies.json holds the two psadt entries, in declared order' } else { Bad ($e7 | Out-String) }
+
+$ps51 = Join-Path $env:WinDir 'System32\WindowsPowerShell\v1.0\powershell.exe'
+if (-not (Test-Path -LiteralPath $ps51)) { Write-Host '  SKIP: Windows PowerShell 5.1 not present for the execution check' -ForegroundColor DarkYellow }
+else {
+    $stubText = @'
+param([string]$DeploymentType = '', [string]$DeployMode = '')
+(($PID, $DeploymentType, $DeployMode, (Get-Location).Path) -join '|') | Add-Content -LiteralPath (Join-Path $PSScriptRoot 'rec.txt') -Encoding UTF8
+exit __CODE__
+'@
+    $stage = @{}
+    foreach ($dn in 'DepOne_x64_1.0', 'DepTwo_x64_2.0') { $stage[$dn] = Join-Path $p7 "Sandbox\Dependencies\$dn" }
+    function SetStub([string]$Dir, [int]$Code) {
+        [System.IO.File]::WriteAllText((Join-Path $Dir 'Invoke-AppDeployToolkit.ps1'), $stubText.Replace('__CODE__', [string]$Code), (New-Object System.Text.UTF8Encoding($true)))
+        Remove-Item -LiteralPath (Join-Path $Dir 'rec.txt') -Force -ErrorAction SilentlyContinue
+    }
+    function Get-StubRec([string]$Dir) { $f = Join-Path $Dir 'rec.txt'; if (Test-Path -LiteralPath $f) { @(Get-Content -LiteralPath $f | Where-Object { $_ }) } else { @() } }
+    # TEST-ONLY: the manifest DATA points at the staged host copies, and the script copy's single
+    # '$manifest = ...' line points at that manifest. Nothing else in the generated script is touched.
+    $tmpMan = Join-Path $p7 'Sandbox\test-dependencies.json'
+    $data = @($e7 | ForEach-Object { $_.Path = $_.Path.Replace('C:\PSADT', $p7); $_ })
+    [System.IO.File]::WriteAllText($tmpMan, (ConvertTo-Json -InputObject $data -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+    $genText = [System.IO.File]::ReadAllText((Join-Path $p7 'Sandbox\InstallDependencies.ps1'))
+    $manLine = [regex]::Match($genText, "(?m)^\`$manifest = 'C:\\PSADT\\[^']*'\r?$")
+    $copyText = $genText.Substring(0, $manLine.Index) + "`$manifest = '" + $tmpMan.Replace("'", "''") + "'" + $genText.Substring($manLine.Index + $manLine.Value.TrimEnd("`r").Length)
+    $diffLines = @(Compare-Object ($genText -split "`r?`n") ($copyText -split "`r?`n"))
+    if ($manLine.Success -and $diffLines.Count -eq 2) { Ok 'test copy differs from the generated script ONLY in the $manifest line' } else { Bad "manifest line edit: success=$($manLine.Success) diff=$($diffLines.Count)" }
+    $copyPath = Join-Path $p7 'Sandbox\InstallDependencies.test.ps1'
+    [System.IO.File]::WriteAllText($copyPath, $copyText, (New-Object System.Text.UTF8Encoding($true)))
+    function Invoke-Guest {
+        $o = Join-Path $spRoot 'guest.out.txt'
+        $gp = Start-Process -FilePath $ps51 -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $copyPath + '"')) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o
+        [pscustomobject]@{ Pid = $gp.Id; Exit = $gp.ExitCode }
+    }
+
+    SetStub $stage['DepOne_x64_1.0'] 0
+    SetStub $stage['DepTwo_x64_2.0'] 3010
+    $g = Invoke-Guest
+    $r1 = @(Get-StubRec $stage['DepOne_x64_1.0']); $r2 = @(Get-StubRec $stage['DepTwo_x64_2.0'])
+    if ($g.Exit -eq 0) { Ok 'stubs exit 0 / 3010 -> guest exits 0' } else { Bad "guest exit=$($g.Exit)" }
+    if ($r1.Count -eq 1 -and $r2.Count -eq 1) {
+        $f1 = $r1[0] -split '\|'; $f2 = $r2[0] -split '\|'
+        if ($f1[0] -ne $f2[0]) { Ok "two DISTINCT dependency PIDs ($($f1[0]), $($f2[0]))" } else { Bad "same PID $($f1[0]) - not isolated" }
+        if ($f1[0] -ne "$($g.Pid)" -and $f2[0] -ne "$($g.Pid)") { Ok "neither ran in the guest script's process (PID $($g.Pid))" } else { Bad "a dependency ran in the guest process ($($g.Pid))" }
+        if ($f1[1] -eq 'Install' -and $f1[2] -eq 'Silent' -and $f2[1] -eq 'Install' -and $f2[2] -eq 'Silent') { Ok 'each child got -DeploymentType Install -DeployMode Silent' } else { Bad "args: $($r1[0]) / $($r2[0])" }
+        if ($f1[3].TrimEnd('\') -eq $stage['DepOne_x64_1.0'] -and $f2[3].TrimEnd('\') -eq $stage['DepTwo_x64_2.0']) { Ok 'working directory = each dependency''s own folder (path with a space)' } else { Bad "cwd: $($f1[3]) / $($f2[3])" }
+    } else { Bad "stub records: one=$($r1.Count) two=$($r2.Count)" }
+
+    SetStub $stage['DepOne_x64_1.0'] 0
+    SetStub $stage['DepTwo_x64_2.0'] 60008
+    $g = Invoke-Guest
+    $r1 = @(Get-StubRec $stage['DepOne_x64_1.0']); $r2 = @(Get-StubRec $stage['DepTwo_x64_2.0'])
+    if ($g.Exit -eq 60008) { Ok 'second dependency exits 60008 -> guest exits 60008 (exact code propagated)' } else { Bad "guest exit=$($g.Exit)" }
+    if ($r1.Count -eq 1 -and $r2.Count -eq 1) { Ok 'the first dependency ran before the failing second one' } else { Bad "records one=$($r1.Count) two=$($r2.Count)" }
+
+    SetStub $stage['DepOne_x64_1.0'] 1603
+    SetStub $stage['DepTwo_x64_2.0'] 0
+    $g = Invoke-Guest
+    if ($g.Exit -eq 1603 -and @(Get-StubRec $stage['DepTwo_x64_2.0']).Count -eq 0) { Ok 'a failing first dependency stops the chain with its code (1603); the second never runs' } else { Bad "guest exit=$($g.Exit)" }
+}
+Remove-Item -LiteralPath $spRoot -Recurse -Force -ErrorAction SilentlyContinue
+
+Write-Host '[8] staging reuse is tied to the generator template (an old build''s guest script is never reused)' -ForegroundColor Cyan
+# The host-side marker cache is enabled ONLY from here on (earlier sections ran with no cache root).
+$cache8 = Join-Path ([System.IO.Path]::GetTempPath()) ('w32ds_cache_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $cache8 -Force | Out-Null
+function Get-Win32ToolkitPipelineCacheRoot { $cache8 }
+$p8 = New-Proj
+$s8 = Join-Path $p8 'Sandbox\InstallDependencies.ps1'
+$null = Set-Win32ToolkitAppDependency -ProjectPath $p8 -DependsOn "winget:$VC"
+$script:downloaded = @()
+$n8 = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p8 6>$null
+$current8 = [System.IO.File]::ReadAllBytes($s8)
+$marks8 = @(Get-ChildItem -LiteralPath (Join-Path $cache8 'staging') -Filter '*.json' -File -ErrorAction SilentlyContinue)
+if ($n8 -eq 1 -and $script:downloaded.Count -eq 1 -and $marks8.Count -eq 1) { Ok 'first call stages (one download) and records a host-side marker' } else { Bad "n=$n8 downloads=$($script:downloaded.Count) markers=$($marks8.Count)" }
+
+$n8 = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p8 6>$null
+if ($n8 -eq 1 -and $script:downloaded.Count -eq 1) { Ok 'unchanged staging + current template -> reused (no second download)' } else { Bad "n=$n8 downloads=$($script:downloaded.Count)" }
+
+# What an OLDER build leaves behind: the same staged payload, but its own guest script (packaged
+# dependencies dot-called in-process, only 0/3010 accepted), and a marker that is CONSISTENT with that
+# tree (the old build hashed its own script). Every pre-existing reuse check passes on this state.
+$oldGuest = @'
+# InstallDependencies.ps1 as written by an older win32-toolkit build
+$ErrorActionPreference = 'Stop'
+$deps = Get-Content -LiteralPath 'C:\PSADT\Sandbox\Dependencies\dependencies.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+foreach ($d in @($deps)) {
+    $rc = 0
+    if ($d.Type -eq 'psadt') { & $d.Path -DeploymentType Install -DeployMode Silent; $rc = $LASTEXITCODE }
+    if (@(0, 3010) -notcontains $rc) { exit $rc }
+}
+exit 0
+'@
+[System.IO.File]::WriteAllText($s8, $oldGuest, (New-Object System.Text.UTF8Encoding($true)))
+$oldSha = (Get-FileHash -LiteralPath $s8 -Algorithm SHA256).Hash
+$mark8 = Get-Content -LiteralPath $marks8[0].FullName -Raw | ConvertFrom-Json
+$entry8 = @($mark8.Files | Where-Object { $_.Path -eq 'Sandbox\InstallDependencies.ps1' })
+if ($entry8.Count -eq 1) { $entry8[0].Sha256 = $oldSha } else { Bad "marker has $($entry8.Count) script entries" }
+$mark8.StagedAt = (Get-Date).ToString('o')
+[System.IO.File]::WriteAllText($marks8[0].FullName, (ConvertTo-Json -InputObject $mark8 -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+
+$n8 = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p8 6>$null
+$after8 = [System.IO.File]::ReadAllBytes($s8)
+if ($n8 -eq 1 -and $script:downloaded.Count -eq 2) { Ok 'old build''s staging (consistent marker, same declared set, < 6 h) -> restaged, not reused' } else { Bad "n=$n8 downloads=$($script:downloaded.Count) (stale staging reused)" }
+if ([System.Linq.Enumerable]::SequenceEqual([byte[]]$after8, [byte[]]$current8)) { Ok 'the guest script is the current template again (BOM, byte-identical to a fresh staging)' } else { Bad 'guest script is not the current template' }
+$t8 = [System.IO.File]::ReadAllText($s8)
+if ($t8 -notmatch '& \$d\.Path' -and $t8 -match '\$okCodes = @\(0, 1707, 3010, 1641\)') { Ok 'no in-process "& $d.Path" call; success = 0, 1707, 3010, 1641' } else { Bad 'old guest script survived' }
+
+$n8 = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p8 6>$null
+if ($n8 -eq 1 -and $script:downloaded.Count -eq 2) { Ok 'the restaged tree is reused again by the next call' } else { Bad "n=$n8 downloads=$($script:downloaded.Count)" }
+Remove-Item -LiteralPath $cache8 -Recurse -Force -ErrorAction SilentlyContinue
+
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All DependencyStaging tests passed.' -ForegroundColor Green; exit 0 }
 else { Write-Host "$fail DependencyStaging test(s) FAILED." -ForegroundColor Red; exit 1 }

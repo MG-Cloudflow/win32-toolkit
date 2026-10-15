@@ -45,6 +45,9 @@ Set-Content -LiteralPath (Join-Path $proj 'Invoke-AppDeployToolkit.ps1') -Value 
 $script:baseNull = $false   # simulate an unconfigured BasePath (NonInteractive -> $null)
 function Get-Win32ToolkitBasePath { param($BasePath, [switch]$Reconfigure, [switch]$NonInteractive, $Set) if ($script:baseNull) { $null } else { $script:base } }
 function Initialize-Win32ToolkitDependencyStaging { param($ProjectPath) 0 }
+# The guest package runner is generated before every scenario (PackageRunner.unit.ps1 covers it). Defined
+# through the function: drive, like a plain test double (the ShouldProcess lint rule targets product code).
+${function:New-Win32ToolkitPackageRunnerScript} = { param($ProjectPath) Join-Path $ProjectPath 'Sandbox\Invoke-PsadtPackage.ps1' }
 function Get-Win32ToolkitTestBackend { param($Backend) 'HyperV' }
 function Get-Win32ToolkitConfigValue { param($Name, $Default) 'Interactive' }
 function New-LogCollectorScript { param($ProjectPath) 'fake' }

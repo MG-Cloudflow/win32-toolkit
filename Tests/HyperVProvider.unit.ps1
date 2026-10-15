@@ -58,14 +58,14 @@ function Start-VM { param($Name, $ErrorAction) $script:seq += 'start' }
 function Wait-Win32ToolkitVMReady { param($VMName, $Credential, [switch]$SkipPrep, [switch]$ReturnSession)
     if ($ReturnSession) { $script:seq += 'session'; 'SESS' } else { $script:seq += 'wait'; $true }
 }
-$cred = [pscredential]::new('w32admin', (ConvertTo-SecureString 'p' -AsPlainText -Force))
+$cred = [pscredential]::new('w32admin', (New-Object System.Security.SecureString))
 $s = New-Win32ToolkitHyperVSession -VMName vm -Credential $cred
 if ($s -eq 'SESS' -and (($script:seq -join '>') -eq 'restore>get-vm>session')) { Ok 'warm revert then ONE connection (no throwaway probe; Start-VM skipped when Running)' } else { Bad "seq=$($script:seq -join '>') s=$s" }
 Remove-Item Function:\Restore-VMCheckpoint, Function:\Get-VM, Function:\Start-VM, Function:\Wait-Win32ToolkitVMReady
 
 Write-Host '[4] Invoke-Win32ToolkitHyperVRun orchestration order + always-revert' -ForegroundColor Cyan
 function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }
-function Get-Win32ToolkitGuestCredential { [pscredential]::new('w32admin', (ConvertTo-SecureString 'p' -AsPlainText -Force)) }
+function Get-Win32ToolkitGuestCredential { [pscredential]::new('w32admin', (New-Object System.Security.SecureString)) }
 $script:log = @()
 function New-Win32ToolkitHyperVSession    { param($VMName, $Credential, $CheckpointName, [switch]$SkipRevert, [switch]$EnsureDesktop) $script:log += 'session'; 'SESS' }
 function Copy-Win32ToolkitProjectToGuest  { param($Session, $ProjectPath, $GuestPath) $script:log += "copyin:$GuestPath" }
@@ -100,7 +100,7 @@ Remove-Item Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGue
 Write-Host '[6] Invoke-Win32ToolkitHyperVRun routes interactive / pause / silent phases + opens vmconnect' -ForegroundColor Cyan
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitHyperVRun.ps1')
 function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }
-function Get-Win32ToolkitGuestCredential { [pscredential]::new('.\w32admin', (ConvertTo-SecureString 'p' -AsPlainText -Force)) }
+function Get-Win32ToolkitGuestCredential { [pscredential]::new('.\w32admin', (New-Object System.Security.SecureString)) }
 $script:log2 = @()
 function New-Win32ToolkitHyperVSession     { param($VMName, $Credential, $CheckpointName, [switch]$SkipRevert, [switch]$EnsureDesktop) $script:ensureDesktop = $EnsureDesktop.IsPresent; 'SESS' }
 function Copy-Win32ToolkitProjectToGuest   { param($Session, $ProjectPath, $GuestPath) }
@@ -121,7 +121,39 @@ Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase $iphases 6>$null | Ou
 if ($script:vmconnect) { Ok 'vmconnect opened for the interactive run' } else { Bad 'vmconnect not opened' }
 if ($script:ensureDesktop) { Ok 'interactive run requests -EnsureDesktop (login-screen safety net)' } else { Bad 'EnsureDesktop not requested for interactive run' }
 if (($script:log2 -join ' > ') -eq 'phase:Install (GUI) > pause > phase:Uninstall (GUI) > phase:CollectLogs') { Ok 'every phase runs via the SYSTEM Phase; pause blocks on the host' } else { Bad "log: $($script:log2 -join ' > ')" }
+Write-Host '[7] Invoke-Win32ToolkitHyperVRun warns only for an exit code outside a phase''s SuccessExitCodes' -ForegroundColor Cyan
+# Reuses the [6] doubles; only the phase runner changes: its Command carries the exit code to return.
+${function:Invoke-Win32ToolkitGuestPhase} = { param($Session, $Command, $Label) $script:log2 += "phase:$Label@$Session"; [int]$Command }
+$ok7 = @(0, 1707, 3010, 1641)
+$warn7 = @()
+$script:log2 = @()
+$null = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(
+    @{ Label = 'parity-3010';  Command = '3010';  SuccessExitCodes = $ok7 }
+    @{ Label = 'parity-1641';  Command = '1641';  SuccessExitCodes = $ok7 }
+    @{ Label = 'parity-60008'; Command = '60008'; SuccessExitCodes = $ok7 }
+    @{ Label = 'plain-3010';   Command = '3010' }
+    @{ Label = 'ignored-5';    Command = '5'; IgnoreExit = $true }
+) -WarningVariable warn7 3>$null 6>$null
+$w7 = @($warn7 | ForEach-Object { "$_" })
+if ($script:log2.Count -eq 5) { Ok 'all five phases ran' } else { Bad "log: $($script:log2 -join ' > ')" }
+if (-not ($w7 -match 'parity-3010') -and -not ($w7 -match 'parity-1641')) { Ok '3010 / 1641 inside SuccessExitCodes -> no warning' } else { Bad "warnings: $($w7 -join ' | ')" }
+if ($w7 -match "'parity-60008' exited with code 60008") { Ok '60008 outside SuccessExitCodes -> warned with the exact code' } else { Bad "warnings: $($w7 -join ' | ')" }
+if ($w7 -match "'plain-3010' exited with code 3010") { Ok 'no SuccessExitCodes -> only 0 is success (as before)' } else { Bad "warnings: $($w7 -join ' | ')" }
+if (-not ($w7 -match 'ignored-5')) { Ok 'IgnoreExit still silences the warning' } else { Bad "warnings: $($w7 -join ' | ')" }
 Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Read-Host, Function:\Start-Process, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential
+
+Write-Host '[8] the scheduled-task primitive is SYSTEM-only (dead Interactive principal removed, GAP1-01)' -ForegroundColor Cyan
+$stSrc = Get-Content -LiteralPath (Join-Path $repo 'Private\Invoke-Win32ToolkitGuestScheduledTask.ps1') -Raw
+if ($stSrc -notmatch 'LogonType Interactive' -and $stSrc -notmatch 'SAM username') { Ok 'no Interactive principal / SAM-user RunAs left' } else { Bad 'Interactive principal text still present' }
+if ($stSrc -match [regex]::Escape("New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -LogonType ServiceAccount -RunLevel Highest")) { Ok 'the only principal: NT AUTHORITY\SYSTEM, ServiceAccount, Highest' } else { Bad 'SYSTEM principal missing' }
+$rp = (Get-Command Invoke-Win32ToolkitGuestScheduledTask).Parameters['RunAs']
+$vs = @($rp.Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] })
+if ($vs.Count -eq 1 -and (@($vs[0].ValidValues) -join ',') -eq 'System') { Ok '-RunAs kept as [ValidateSet(''System'')] (caller unchanged)' } else { Bad "RunAs attributes: $(@($rp.Attributes | ForEach-Object { $_.GetType().Name }) -join ',')" }
+if ($stSrc -match '-ArgumentList \$Command, \$RunAs, \$TimeoutMinutes') { Ok 'remoting -ArgumentList $Command, $RunAs, $TimeoutMinutes unchanged ([1] reads ArgumentList[1])' } else { Bad 'argument list changed' }
+if ($stSrc -match 'NOT full Intune parity') { Ok 'the "same context as Intune" claim is corrected (SYSTEM yes; bitness/launcher no)' } else { Bad 'parity claim not corrected' }
+$threw = $false
+try { $null = Invoke-Win32ToolkitGuestScheduledTask -Session 'S' -Command 'x' -RunAs 'w32admin' } catch { $threw = $true }
+if ($threw) { Ok 'a user RunAs is rejected at binding (no interactive-user principal any more)' } else { Bad 'RunAs w32admin accepted' }
 
 if ($fail -eq 0) {
     Write-Host "`nAll HyperVProvider tests passed." -ForegroundColor Green

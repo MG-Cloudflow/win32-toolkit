@@ -65,7 +65,7 @@ function New-Win32ToolkitHyperVSession {
     if ($EnsureDesktop) {
         Wait-Win32ToolkitVMReady -VMName $VMName -Credential $Credential -SkipPrep | Out-Null
         if (-not (Confirm-Win32ToolkitGuestDesktop -VMName $VMName -Credential $Credential)) {
-            Write-Warning 'Could not reach an interactive desktop even after a recovery reboot. Is guest AutoLogon configured (Set-Win32ToolkitGuestAutoLogon)? The PSADT GUI may not render — use -Unattended / Silent, or re-checkpoint a logged-in desktop.'
+            Write-Warning 'Could not reach an interactive desktop even after a recovery reboot. Is guest AutoLogon configured (Set-Win32ToolkitGuestAutoLogon)? The PSADT GUI may not render — use -Unattended (the Intune-parity run needs no operator GUI), or re-checkpoint a logged-in desktop.'
         }
     }
 

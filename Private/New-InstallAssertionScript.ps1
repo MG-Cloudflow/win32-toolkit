@@ -16,6 +16,11 @@ function New-InstallAssertionScript {
           -Phase PostUninstall  after the PSADT uninstall: asserts the same signal is GONE (tattoo key
                                 removed / ARP entry absent), then emits 'RESULT COMPLETE'.
 
+        MSI projects additionally assert Windows Installer's own record: the host reads the MSI's
+        ProductCode (validated GUID) into Sandbox\InstallAssertionData.json (DATA), and the guest checks
+        the Uninstall\<ProductCode> key in either registry view ('MsiProductInstalled-PostInstall' /
+        'MsiProductRemoved-PostUninstall') - a tattoo alone can be written by a run whose MSI step never ran.
+
         Results are appended as 'ASSERT <name> = PASS|FAIL|SKIP' lines to
         C:\PSADT\Sandbox\Logs\InstallAssertions.log (the mapped project folder, so the host sees them
         live), in the shared assertion-log format ('=== Phase: <X> ===', timestamped lines,
@@ -154,6 +159,45 @@ else {
     Write-AssertLine ('ASSERT {0} = SKIP (AppConfig.json has no tattoo fields and no DisplayName - nothing to detect against)' -f $assertName)
 }
 
+# ── MSI: Windows Installer's own record (DATA from Sandbox\InstallAssertionData.json, written by the host
+#    from the MSI's ProductCode). The tattoo alone can be written by a deploy script whose MSI step never
+#    ran, so an MSI project also asserts its Uninstall key: present after install, gone after uninstall. ──
+$msiCode = ''
+$assertDataPath = 'C:\PSADT\Sandbox\InstallAssertionData.json'
+try {
+    if (Test-Path -LiteralPath $assertDataPath) {
+        $assertData = Get-Content -LiteralPath $assertDataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($assertData -and ($assertData.PSObject.Properties.Name -contains 'MsiProductCode') -and $null -ne $assertData.MsiProductCode) {
+            $msiCode = ("$($assertData.MsiProductCode)").Trim()
+        }
+    }
+} catch {
+    Write-AssertLine ('Failed to read InstallAssertionData.json: {0}' -f $_.Exception.Message)
+}
+if ($msiCode -ne '' -and $msiCode -notmatch '^\{[0-9A-Fa-f]{8}-([0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}\}$') {
+    Write-AssertLine 'InstallAssertionData.json MsiProductCode is not a GUID - MSI assertion skipped'
+    $msiCode = ''
+}
+if ($msiCode -ne '') {
+    $msiKeys = @(
+        ('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\' + $msiCode),
+        ('HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\' + $msiCode)
+    )
+    $msiPresent = $false
+    foreach ($mk in $msiKeys) {
+        # Same probe as the tattoo check: a missing key throws ('not installed'), an existing one does not.
+        try { $null = Get-ItemProperty -LiteralPath $mk -ErrorAction Stop; $msiPresent = $true } catch { }
+    }
+    Write-AssertLine ('MSI ProductCode {0} Uninstall key present=[{1}]' -f $msiCode, $msiPresent)
+    if ($Phase -eq 'PostInstall') {
+        if ($msiPresent) { Write-AssertLine 'ASSERT MsiProductInstalled-PostInstall = PASS' }
+        else             { Write-AssertLine 'ASSERT MsiProductInstalled-PostInstall = FAIL (MSI ProductCode not registered after install)' }
+    } else {
+        if (-not $msiPresent) { Write-AssertLine 'ASSERT MsiProductRemoved-PostUninstall = PASS' }
+        else                  { Write-AssertLine 'ASSERT MsiProductRemoved-PostUninstall = FAIL (MSI ProductCode still registered after uninstall)' }
+    }
+}
+
 Write-AssertLine ('=== End {0} ===' -f $Phase)
 if ($Phase -eq 'PostUninstall') { Write-AssertLine 'RESULT COMPLETE' }
 '@
@@ -169,6 +213,39 @@ if ($Phase -eq 'PostUninstall') { Write-AssertLine 'RESULT COMPLETE' }
         [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$errs) | Out-Null
         if ($errs -and $errs.Count) {
             throw "Generated InstallAssertions.ps1 has parse errors: $($errs[0].Message)"
+        }
+
+        # MSI projects: hand the guest the MSI's ProductCode as DATA (Sandbox\InstallAssertionData.json) so
+        # it can also assert Windows Installer's own Uninstall key. Validated as a strict GUID; any other
+        # project (or an unreadable MSI) gets no data file and no MSI assertion. Best-effort: never fails
+        # the tattoo assertions.
+        $dataPath = Join-Path $sandboxPath 'InstallAssertionData.json'
+        if (Test-Path -LiteralPath $dataPath) { Remove-Item -LiteralPath $dataPath -Force -ErrorAction SilentlyContinue }
+        try {
+            $cfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
+            $inst = if ($cfg.PSObject.Properties.Name -contains 'Installer') { $cfg.Installer } else { $null }
+            if ($inst -and "$($inst.Type)" -eq 'msi') {
+                $msi = $null
+                if ($inst.PSObject.Properties.Name -contains 'FileName' -and $inst.FileName) {
+                    $named = Join-Path (Join-Path $ProjectPath 'Files') ([string]$inst.FileName)
+                    if ($named -like '*.msi' -and (Test-Path -LiteralPath $named -PathType Leaf)) { $msi = $named }
+                }
+                if (-not $msi) {
+                    $first = Get-ChildItem -LiteralPath (Join-Path $ProjectPath 'Files') -Filter '*.msi' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($first) { $msi = $first.FullName }
+                }
+                $productCode = if ($msi) { Get-Win32ToolkitMsiProperty -Path $msi -Property 'ProductCode' } else { '' }
+                if (Test-Win32ToolkitProductCode $productCode) {
+                    $dataJson = ConvertTo-Json -InputObject ([ordered]@{ MsiProductCode = $productCode })
+                    [System.IO.File]::WriteAllText($dataPath, $dataJson, (New-Object System.Text.UTF8Encoding($false)))
+                }
+                else {
+                    Write-Verbose 'MSI project without a readable ProductCode - the MSI install assertion is skipped.'
+                }
+            }
+        }
+        catch {
+            Write-Verbose "MSI install-assertion data skipped: $($_.Exception.Message)"
         }
         return $scriptPath
     }

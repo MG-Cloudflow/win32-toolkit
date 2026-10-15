@@ -245,15 +245,31 @@ function Get-TargetedRegistrySnapshot {
 # too. Critically this runs BEFORE the pre-install baseline: if the dependency went in afterwards, its own
 # files / registry keys / services would show up in the diff as changes made by THIS app — poisoning the
 # generated detection rule, uninstall logic and processes-to-close.
+# The dependency script EXITS with the first failing dependency's code (it never throws for a failed
+# install), so read $LASTEXITCODE: the result is recorded as InstallationInfo.DependencyExitCode and the
+# host refuses a capture whose dependencies failed ($null = none declared / pre-installed checkpoint).
+$dependencyExitCode = $null
 if (Test-Path -LiteralPath 'C:\PSADT\Sandbox\InstallDependencies.ps1') {
     Write-Host "`nInstalling declared dependencies (before the baseline)..." -ForegroundColor Yellow
     Write-Log "Installing declared dependencies BEFORE the baseline capture" "INFO"
     try {
+        $global:LASTEXITCODE = 0
         & 'C:\PSADT\Sandbox\InstallDependencies.ps1'
-        Write-Log "Declared dependencies installed" "SUCCESS"
+        $dependencyExitCode = $LASTEXITCODE
+        if ($null -eq $dependencyExitCode) { $dependencyExitCode = 0 }
+        if (@(0, 1707, 3010, 1641) -contains $dependencyExitCode) {
+            Write-Log "Declared dependencies installed (exit code $dependencyExitCode)" "SUCCESS"
+        }
+        else {
+            Write-Host "Dependency install FAILED (exit code $dependencyExitCode) - the capture is unreliable." -ForegroundColor Red
+            Write-Log "Dependency install FAILED with exit code $dependencyExitCode" "ERROR"
+        }
     }
     catch {
-        Write-Host "Dependency install FAILED - the capture may be unreliable." -ForegroundColor Red
+        # A terminating error inside the script (e.g. Add-AppxPackage): record it as a failure (1, the code
+        # powershell.exe itself reports for an uncaught error) so the host refuses the capture.
+        $dependencyExitCode = 1
+        Write-Host "Dependency install FAILED - the capture is unreliable." -ForegroundColor Red
         Write-Log "Dependency install FAILED: $($_.Exception.Message)" "ERROR"
     }
 }
@@ -363,8 +379,18 @@ Write-Host "Waiting for installation to complete (this may take several minutes)
 
 $installProcess = Start-Process -FilePath "powershell.exe" -ArgumentList "-ExecutionPolicy", "Bypass", "-File", ".\Invoke-AppDeployToolkit.ps1", "-DeployMode", "Silent" -PassThru -Wait
 
-Write-Host "Installation process completed with exit code: $($installProcess.ExitCode)" -ForegroundColor Green
-Write-Log "PSADT installation process completed with exit code: $($installProcess.ExitCode)" "INFO"
+# Recorded as InstallationInfo.PsadtExitCode: the host refuses to derive detection / uninstall data from a
+# capture whose PSADT run failed (60001 = script error, 60008 = session/launch failure, ...).
+$psadtExitCode = $null
+if ($installProcess) { $psadtExitCode = $installProcess.ExitCode }
+if (@(0, 1707, 3010, 1641) -contains $psadtExitCode) {
+    Write-Host "Installation process completed with exit code: $psadtExitCode" -ForegroundColor Green
+    Write-Log "PSADT installation process completed with exit code: $psadtExitCode" "INFO"
+}
+else {
+    Write-Host "Installation process FAILED with exit code: $psadtExitCode" -ForegroundColor Red
+    Write-Log "PSADT installation process FAILED with exit code: $psadtExitCode" "ERROR"
+}
 
 Write-Host "`nWaiting for installation to fully finalize..." -ForegroundColor Yellow
 Write-Host "Allowing time for background processes, registry updates, and file operations to complete." -ForegroundColor Gray
@@ -514,6 +540,10 @@ $jsonData = @{
         ProjectName = $projectName
         Timestamp = $timestamp
         DocumentationDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        # Exit codes of the PSADT install and of the dependency script ($null = no dependencies ran);
+        # Wait-ForDocumentationAndProcess refuses a capture whose run failed.
+        PsadtExitCode = $psadtExitCode
+        DependencyExitCode = $dependencyExitCode
     }
     NewFiles = @()
     ModifiedFiles = @()
@@ -929,10 +959,12 @@ if ($backend -eq 'Sandbox') {
         # Auto-close: 30 s watched (the operator's Ctrl+C inspect window) / 5 s unattended (VSMB flush
         # only). Mode comes from the SHARED resolver so the -Unattended/config/non-interactive-host
         # precedence cannot drift from the test scenarios. Fail-safe to 30: a resolver hiccup must never
-        # leave the placeholder empty or shorten the operator's window.
+        # leave the placeholder empty or shorten the operator's window. The resolver's "this changes what
+        # is tested" warning is suppressed: the capture always runs -DeployMode Silent, only the auto-close
+        # value comes from here, and on Hyper-V the warning would also name the wrong backend.
         $autoCloseSeconds = 30
         try {
-            if ((Get-Win32ToolkitTestMode -Backend Sandbox) -eq 'Unattended') { $autoCloseSeconds = 5 }
+            if ((Get-Win32ToolkitTestMode -Backend Sandbox -WarningAction Ignore) -eq 'Unattended') { $autoCloseSeconds = 5 }
         } catch { $autoCloseSeconds = 30 }
         $documentationScript = $documentationScript.Replace('__AUTOCLOSE__', [string]$autoCloseSeconds)
 

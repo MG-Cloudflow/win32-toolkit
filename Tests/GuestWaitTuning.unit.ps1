@@ -34,7 +34,8 @@ Write-Host '[a] task poll: transition-keyed completion (no Ready-state race, no 
 function Invoke-Command { [CmdletBinding()] param($Session, [scriptblock]$ScriptBlock, $ArgumentList, [Parameter(ValueFromRemainingArguments)]$Rest) & $ScriptBlock @ArgumentList }
 function Unregister-ScheduledTask { param([Parameter(ValueFromRemainingArguments)]$Rest) }
 function New-ScheduledTaskAction { param([Parameter(ValueFromRemainingArguments)]$Rest) 'action' }
-function New-ScheduledTaskPrincipal { param([Parameter(ValueFromRemainingArguments)]$Rest) 'principal' }
+# Records the principal arguments: the task must run as SYSTEM (the only context since GAP1-01).
+function New-ScheduledTaskPrincipal { param([Parameter(ValueFromRemainingArguments)]$Rest) $script:principalArgs = @($Rest) -join ' '; 'principal' }
 function Register-ScheduledTask { param([Parameter(ValueFromRemainingArguments)]$Rest) 'task' }
 function Start-ScheduledTask { param([Parameter(ValueFromRemainingArguments)]$Rest) }
 function Start-Sleep { param([int]$Seconds, [int]$Milliseconds) $script:sleeps += $Seconds }
@@ -58,6 +59,7 @@ $script:stateSeq = @('Ready', 'Ready', 'Ready')
 $rc = Invoke-Win32ToolkitGuestScheduledTask -Session 'fake' -Command 'noop' -Label 'race'
 if ($rc -eq 0) { Ok 'phase completes with the real exit code' } else { Bad "rc=$rc" }
 if (@($script:sleeps).Count -ge 1) { Ok "did NOT trust the pre-launch 'Ready' sample (waited for the task-info transition)" } else { Bad 'completed on the ambiguous Ready state — the uninstall-races-install bug' }
+if ($script:principalArgs -match 'NT AUTHORITY\\SYSTEM' -and $script:principalArgs -match 'ServiceAccount' -and $script:principalArgs -match 'Highest' -and $script:principalArgs -notmatch 'Interactive') { Ok 'the task runs as NT AUTHORITY\SYSTEM (ServiceAccount, Highest)' } else { Bad "principal: $($script:principalArgs)" }
 
 # a2: fast-finishing task -> detected on the FIRST poll with zero sleeps (old code always slept 3 s).
 Reset-TaskShadows
@@ -116,7 +118,7 @@ function Start-Sleep { param([int]$Seconds, [int]$Milliseconds) }
 function Restore-VMCheckpoint { param([Parameter(ValueFromRemainingArguments)]$Rest) }
 function Get-VM { param([Parameter(ValueFromRemainingArguments)]$Rest) [pscustomobject]@{ State = 'Running' } }
 function Confirm-Win32ToolkitGuestDesktop { param([Parameter(ValueFromRemainingArguments)]$Rest) $script:calls += 'confirm'; $true }
-$cred = New-Object System.Management.Automation.PSCredential('u', (ConvertTo-SecureString 'p' -AsPlainText -Force))
+$cred = New-Object System.Management.Automation.PSCredential('u', (New-Object System.Security.SecureString))
 
 $script:calls = @()
 $s = Wait-Win32ToolkitVMReady -VMName 'vm' -Credential $cred -SkipPrep -ReturnSession

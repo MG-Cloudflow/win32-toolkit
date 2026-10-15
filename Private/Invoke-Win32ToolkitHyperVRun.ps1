@@ -15,7 +15,8 @@ function Invoke-Win32ToolkitHyperVRun {
         The PSADT project under test (host path). Copied to C:\PSADT in the guest.
     .PARAMETER Phase
         Ordered phases to run, each an object with: Label, Command (a 5.1-safe guest command string),
-        and optional IgnoreExit ([bool], default $false).
+        and optional IgnoreExit ([bool], default $false) and SuccessExitCodes ([int[]], default @(0): a
+        warning is printed only for an exit code outside them).
     .PARAMETER Output
         Project-relative globs to copy back from the guest after the phases (default the capture JSON +
         Sandbox\Logs).
@@ -164,10 +165,13 @@ function Invoke-Win32ToolkitHyperVRun {
                 Write-Verbose "  Skipping '$($ph.Label)' — dependencies are pre-installed in the checkpoint."
                 continue
             }
-            # Every phase runs as SYSTEM (the Intune context). For an interactive phase PSADT's own deploy
-            # mode renders its GUI in the logged-on user's session (a real desktop is ensured above).
+            # Every phase runs as SYSTEM (the Intune account; bitness and launcher parity come from the
+            # Intune-parity runner phases, not from this primitive). For an interactive phase PSADT's own
+            # deploy mode renders its GUI in the logged-on user's session (a real desktop is ensured above).
             $exit = Invoke-Win32ToolkitGuestPhase -Session $session -Command $ph.Command -Label $ph.Label
-            if (-not $ph.IgnoreExit -and $exit -ne 0) {
+            # A phase may declare its success codes (PSADT/Intune: 0, 1707, 3010, 1641); otherwise only 0 is.
+            $okExit = if ($ph.SuccessExitCodes) { @($ph.SuccessExitCodes) } else { @(0) }
+            if (-not $ph.IgnoreExit -and $okExit -notcontains $exit) {
                 Write-Warning "Guest phase '$($ph.Label)' exited with code $exit."
             }
             # A SUCCESSFUL dep install is the moment to freeze the deps checkpoint (opt-in feature): the

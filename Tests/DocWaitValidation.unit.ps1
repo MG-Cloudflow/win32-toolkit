@@ -42,7 +42,8 @@ Set-Content -LiteralPath $json -Value '{"InstallationInfo": {"ProjectName": "x",
 $script:sleeps = @(); $script:tick = 0
 $script:onTick = {
     if ($script:tick -eq 3) {
-        Set-Content -LiteralPath $json -Value '{"InstallationInfo":{"ProjectName":"x"},"NewFiles":[],"NewRegistryKeys":[]}'
+        # a real (non-empty) capture: an empty diff is refused by design (CaptureExitCode.unit.ps1)
+        Set-Content -LiteralPath $json -Value '{"InstallationInfo":{"ProjectName":"x","PsadtExitCode":0},"NewFiles":[{"Path":"C:\\Program Files\\X\\x.exe"}],"NewRegistryKeys":[]}'
     }
 }
 $r = Wait-ForDocumentationAndProcess -ProjectPath $tmp -InstallerType 'msi' -ExpectedJsonPath $json 6>$null
