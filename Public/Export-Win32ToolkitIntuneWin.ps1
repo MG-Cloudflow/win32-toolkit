@@ -12,6 +12,14 @@ function Export-Win32ToolkitIntuneWin {
 
     Steps performed:
     1. Resolves the target project (interactive picker if ProjectPath is omitted).
+       Then refuses to package a deploy script win32-toolkit cannot vouch for
+       (Assert-Win32ToolkitPackageReady -Stage Export), before anything is downloaded or copied: the
+       script must exist and parse (also under Windows PowerShell 5.1, which Intune uses), carry the
+       AppConfig loader written by win32-toolkit, use a supported PSAppDeployToolkit template layout
+       and version that matches the bundled module, and Invoke-AppDeployToolkit.exe (the launcher
+       Intune starts) must sit next to it. Every problem is listed in one W32T.PackageNotReady error.
+       A missing install tattoo, a project patched by win32-toolkit 1.1.6 or older, or a bundled
+       prerelease PSAppDeployToolkit (e.g. 4.2.0-rc2) only warns.
     2. Locates or auto-downloads IntuneWinAppUtil.exe into the module's Tools\ folder
        (Authenticode-verified as Microsoft-signed before use).
     3. Copies the raw project into Staging\<Template>\<ProjectName>\, EXCLUDING everything that
@@ -45,7 +53,9 @@ function Export-Win32ToolkitIntuneWin {
 .PARAMETER PublishIntune
     After packaging, upload the .intunewin file directly to Microsoft Intune via Graph API.
     Requires the Microsoft.Graph.Authentication module. You will be prompted to authenticate
-    interactively on the first run.
+    interactively on the first run. A project with no detection rule (no install tattoo and no install
+    capture) is not published: the W32T.NoDetectionRule error is passed through unchanged. To publish
+    such an app anyway, call Publish-Win32ToolkitIntuneApp -AllowNoDetectionRule on the package.
 .EXAMPLE
     Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0' -PublishIntune
 .PARAMETER PublishUpdate
@@ -61,6 +71,15 @@ function Export-Win32ToolkitIntuneWin {
 .EXAMPLE
     # A big package on a slow tenant — wait up to 15 minutes for the commit
     Export-Win32ToolkitIntuneWin -ProjectPath $proj -PublishIntune -PublishTimeoutSeconds 900
+.PARAMETER AllowLegacyScript
+    Package a deploy script that win32-toolkit never patched (no AppConfig loader), or whose PSADT
+    template layout or bundled module version this win32-toolkit version does not support, as-is: those
+    findings become warnings instead of stopping the export. Projects patched by older win32-toolkit
+    versions do not need it. A script that does not parse, or a missing Invoke-AppDeployToolkit.exe,
+    still stops the export.
+.EXAMPLE
+    # A hand-maintained deploy script that win32-toolkit never patched
+    Export-Win32ToolkitIntuneWin -ProjectPath $proj -NoPublishPrompt -AllowLegacyScript
 #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -87,7 +106,13 @@ function Export-Win32ToolkitIntuneWin {
         # default lives in exactly one place (Publish's own parameter) instead of being duplicated here.
         [Parameter(Mandatory = $false)]
         [ValidateRange(5, 7200)]
-        [int]$PublishTimeoutSeconds
+        [int]$PublishTimeoutSeconds,
+
+        # Package a deploy script win32-toolkit never patched, or whose template layout it does not
+        # support, as-is (the gate warns instead of stopping). Complete-Win32ToolkitManualApp -AllowLegacyScript
+        # reaches it through Invoke-Win32ToolkitFinalize.
+        [Parameter(Mandatory = $false)]
+        [switch]$AllowLegacyScript
     )
 
     # Silence stock-cmdlet progress bars (Copy-Item / Remove-Item on the Staging copy) for the packaging
@@ -122,6 +147,13 @@ function Export-Win32ToolkitIntuneWin {
         if (-not (Test-Path $setupFile)) {
             throw "Setup file not found: $setupFile`nVerify this is a valid PSADT v4 project folder."
         }
+
+        # ── Package gate (D15 / PKG-04 / L5) ─────────────────────────────────────
+        # Refuse to build (and later publish) a deploy script win32-toolkit cannot vouch for, BEFORE
+        # IntuneWinAppUtil.exe is located or downloaded and before Staging is touched. Throws one
+        # W32T.PackageNotReady error listing every problem; projects from older win32-toolkit versions
+        # pass with a warning.
+        $null = Assert-Win32ToolkitPackageReady -ProjectPath $ProjectPath -Stage Export -AllowLegacyScript:$AllowLegacyScript
 
         # ── Layout resolution: <BasePath>\Projects\<Template>\<ProjectName> ──────
         # An explicitly supplied -BasePath WINS — silently ignoring a parameter the caller passed and
@@ -324,6 +356,9 @@ function Export-Win32ToolkitIntuneWin {
         }
     }
     catch {
+        # Fail-closed gates (W32T.PackageNotReady here, W32T.NoDetectionRule from Publish) pass through
+        # unchanged, so scripted callers can catch them by FullyQualifiedErrorId.
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
         # Re-throw (terminating) so failures — including the -AsUpdate "no requirement rule, refusing to
         # publish" guard — reach callers (the TUI catch, automation) instead of being downgraded to a
         # non-terminating error that looks like success.

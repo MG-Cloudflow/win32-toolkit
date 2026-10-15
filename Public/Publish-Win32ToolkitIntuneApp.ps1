@@ -7,9 +7,11 @@ function Publish-Win32ToolkitIntuneApp {
     then executes the full Win32 Lob App upload sequence:
 
     1. Reads app metadata (name, publisher, version, description, URL) from AppConfig.json (winget YAML fallback).
-    2. Extracts encryption metadata from the .intunewin archive (metadata.xml).
-    3. Builds a detection rule (install-tattoo version rule preferred; else from the NEWEST
-       InstallationChanges_*.json capture in Documentation\).
+    2. Builds a detection rule (install-tattoo version rule preferred; else from the NEWEST
+       InstallationChanges_*.json capture in Documentation\) BEFORE signing in to Graph. No rule at
+       all stops the publish with a W32T.NoDetectionRule error unless -AllowNoDetectionRule is given.
+       A project that bundles a prerelease PSAppDeployToolkit (e.g. 4.2.0-rc2) only gets a warning.
+    3. Extracts encryption metadata from the .intunewin archive (metadata.xml).
     4. Creates the app shell in Intune.
     5. Registers a content version and file entry.
     6. Waits for the Azure Storage SAS URI.
@@ -64,6 +66,12 @@ function Publish-Win32ToolkitIntuneApp {
 
     Polling backs off exponentially (2 s, doubling, capped at 15 s), so a slow tenant is polled patiently
     rather than hammered.
+.PARAMETER AllowNoDetectionRule
+    Publish even when no detection rule can be built (no install tattoo and no usable install capture).
+    The app is created with an empty detection-rule list and you must add a rule in the Intune portal
+    before assigning it - Intune cannot tell whether such an app installed. Meant for apps a capture
+    cannot describe (per-user installs, some MSIX packages). Without it the publish stops before any
+    Graph call with a W32T.NoDetectionRule error.
 .EXAMPLE
     Publish-Win32ToolkitIntuneApp `
         -IntuneWinPath 'C:\Win32Apps\IntuneWin\Git_x64_2.53.0.intunewin' `
@@ -71,6 +79,9 @@ function Publish-Win32ToolkitIntuneApp {
 .EXAMPLE
     # Publish the update app (2nd app, requirement-gated to devices that already have it)
     Publish-Win32ToolkitIntuneApp -IntuneWinPath $win -ProjectPath $proj -AsUpdate
+.EXAMPLE
+    # A per-user app with no detectable footprint: publish it, then add a detection rule in the portal
+    Publish-Win32ToolkitIntuneApp -IntuneWinPath $win -ProjectPath $proj -AllowNoDetectionRule
 #>
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType([pscustomobject])]   # { AppId; DisplayName; IsUpdateApp; PortalUri } — see the Summary block
@@ -92,7 +103,11 @@ function Publish-Win32ToolkitIntuneApp {
         # Timeout for the two asynchronous Intune waits (SAS URI, file commit). See the help above for
         # why the default is 300 s and not the 60 s these loops were previously hardcoded to.
         [ValidateRange(5, 7200)]
-        [int]$TimeoutSeconds = 300
+        [int]$TimeoutSeconds = 300,
+
+        # Publish with an EMPTY detection-rule list instead of refusing (PKG-04). Only for apps no tattoo
+        # or capture can describe; add the rule in the Intune portal before assigning the app.
+        [switch]$AllowNoDetectionRule
     )
 
     $baseUri  = 'https://graph.microsoft.com/beta/deviceAppManagement'
@@ -224,6 +239,41 @@ function Publish-Win32ToolkitIntuneApp {
             Write-Host '  Mode         : UPDATE app (requirement: app already installed)' -ForegroundColor Gray
         }
 
+        # ── Detection rules (PKG-04) ──────────────────────────────────────────────
+        # Built from project files only, BEFORE the -WhatIf gate and before any Graph call: an app Intune can
+        # never detect is refused up front (it would report failure on every device, or reinstall forever)
+        # instead of after a sign-in and a large upload. -AllowNoDetectionRule publishes it anyway.
+        Write-Verbose 'Building detection rules...'
+        $detectionRules = @(Get-Win32DetectionRules -ProjectPath $ProjectPath)
+        if ($detectionRules.Count -eq 0) {
+            if (-not $AllowNoDetectionRule) {
+                $noRuleMessage = ("No detection rule for '$displayName' - Intune could not tell whether it installed. " +
+                    'win32-toolkit detects an app by its install tattoo (the deploy script writes HKLM:\SOFTWARE\<ScriptAuthor>\<Vendor>\<App>\Version; ' +
+                    'needs App.ScriptAuthor, App.Vendor, App.DisplayName and App.Version in SupportFiles\AppConfig.json, i.e. an org template, and a tattoo-writing deploy script) ' +
+                    'or, failing that, by the newest install capture (Documentation\InstallationChanges_*.json from the sandbox / Hyper-V test). ' +
+                    'Neither is available: re-create the project with an org template, or run the install capture, then publish again. ' +
+                    'To publish without a rule and add one by hand in the Intune portal (per-user or MSIX apps), call Publish-Win32ToolkitIntuneApp -AllowNoDetectionRule. ' +
+                    'Nothing was published.')
+                throw [System.Management.Automation.ErrorRecord]::new(
+                    [System.InvalidOperationException]::new($noRuleMessage), 'W32T.NoDetectionRule',
+                    [System.Management.Automation.ErrorCategory]::InvalidData, $ProjectPath)
+            }
+            Write-Warning 'No detection rule could be built (-AllowNoDetectionRule): the app is created WITHOUT one. Add a detection rule in the Intune portal before assigning it.'
+        }
+
+        # ── Prerelease PSADT (F-05) ───────────────────────────────────────────────
+        # Non-blocking, and before the -WhatIf gate so a dry run shows it too: a project scaffolded on a
+        # PSAppDeployToolkit prerelease (e.g. 4.2.0-rc2, allowed for testing) must not reach production
+        # devices unnoticed. Export warns once at packaging; every publish (standalone, or chained from
+        # Export -PublishIntune / -PublishUpdate) repeats it once, naming the app it creates. A failure to
+        # read the bundled module never blocks publishing.
+        $psadtVersion = $null
+        try { $psadtVersion = Get-Win32ToolkitProjectPsadtVersion -ProjectPath $ProjectPath }
+        catch { Write-Verbose "Could not read the bundled PSAppDeployToolkit version: $($_.Exception.Message)" }
+        if ($psadtVersion -and -not [string]::IsNullOrWhiteSpace([string]$psadtVersion.Prerelease)) {
+            Write-Warning "'$displayName' bundles PSAppDeployToolkit $($psadtVersion.VersionText), a PRERELEASE (for testing only). Rebuild the project on a stable PSAppDeployToolkit before you assign it to production devices."
+        }
+
         # ── -WhatIf / -Confirm gate for the ENTIRE publish ────────────────────────
         # Everything from here down mutates the live tenant (auth, app shell, content version, blob upload,
         # commit) and the later steps depend on the app id from the first POST. A per-step guard is therefore
@@ -255,13 +305,6 @@ function Publish-Win32ToolkitIntuneApp {
         $meta = Get-Win32IntuneWinMetadata -IntuneWinPath $IntuneWinPath
         Write-Host "  ✓ Unencrypted : $([math]::Round($meta.UnencryptedSize / 1MB, 2)) MB" -ForegroundColor Gray
         Write-Host "  ✓ Encrypted  : $([math]::Round($meta.SizeEncrypted   / 1MB, 2)) MB" -ForegroundColor Gray
-
-        # ── Detection rules ───────────────────────────────────────────────────────
-        Write-Verbose 'Building detection rules...'
-        $detectionRules = @(Get-Win32DetectionRules -ProjectPath $ProjectPath)
-        if ($detectionRules.Count -eq 0) {
-            Write-Warning 'No detection rules found. The app will be created but you must add a detection rule manually in the Intune portal.'
-        }
 
         # ── Step 1: Create app shell ──────────────────────────────────────────────
         Write-Verbose 'Creating app in Intune...'
@@ -475,6 +518,9 @@ function Publish-Win32ToolkitIntuneApp {
         }
     }
     catch {
+        # Fail-closed gates (W32T.NoDetectionRule, ...) pass through unchanged, so scripted callers and
+        # Export-Win32ToolkitIntuneWin can tell them apart by FullyQualifiedErrorId.
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
         $msg = "Publish-Win32ToolkitIntuneApp failed: $($_.Exception.Message)"
         if ($_.ErrorDetails.Message) {
             $msg += "`nGraph API error: $($_.ErrorDetails.Message)"

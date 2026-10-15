@@ -11,8 +11,14 @@
     The modern property is allowedArchitectures, documented null/x86/x64/arm64; setting it makes Intune
     set applicableArchitectures to 'none' itself. This affects ALL installer types, not just MSIX.
 
+    PKG-04: an app with NO detection rule (no install tattoo, no capture) used to be published anyway
+    with an empty rule list - after the sign-in and the upload - so Intune could never tell whether it
+    installed. Publish now refuses it with a W32T.NoDetectionRule error BEFORE any Graph call, unless
+    -AllowNoDetectionRule is given (then detectionRules = @()).
+
     Graph is fully shadowed; nothing hits a tenant. The POST body is captured at the /mobileApps call
-    and the run is aborted with a sentinel right after.
+    and the run is aborted with a sentinel right after. The fixtures carry a deploy script with the
+    install-tattoo marker, so the REAL Get-Win32DetectionRules builds the tattoo rule; -NoTattoo drops it.
 
     Run:  pwsh -File Tests\PublishAppBody.unit.ps1
 #>
@@ -30,27 +36,44 @@ Get-ChildItem (Join-Path $repo 'Private') -Filter *.ps1 | ForEach-Object { . $_.
 
 # ── Graph shadows ────────────────────────────────────────────────────────────────────────────────
 $script:capturedBody = $null
-function Connect-Win32ToolkitGraph { }
+$script:capturedJson = $null
+# Every shadow that stands for a tenant/Graph step counts itself, so a gate can be proven to fire
+# BEFORE any of them.
+$script:graphCalls = 0
+function Connect-Win32ToolkitGraph { $script:graphCalls++ }
 # Publish now verifies WHICH TENANT it is about to write to (Assert-Win32ToolkitTenant) before the app
 # shell is created. These fixtures pin no tenant, so the guard warns and proceeds; it still needs a
 # live session to report, and the tenant-name lookup must not attempt a real Graph call from a test.
-function Get-MgContext { [pscustomobject]@{ TenantId = 'tenant-1'; Account = 'test@contoso.com'; Scopes = @('DeviceManagementApps.ReadWrite.All'); ContextScope = 'Process'; AuthType = 'Delegated' } }
+function Get-MgContext { $script:graphCalls++; [pscustomobject]@{ TenantId = 'tenant-1'; Account = 'test@contoso.com'; Scopes = @('DeviceManagementApps.ReadWrite.All'); ContextScope = 'Process'; AuthType = 'Delegated' } }
 function Get-Win32ToolkitTenantInfo { $null }
-function Get-Win32IntuneWinMetadata { param($IntuneWinPath) [pscustomobject]@{ UnencryptedSize = 1MB; SizeEncrypted = 1MB; FileName = 'x.intunewin'; EncryptionInfo = @{} } }
+function Get-Win32IntuneWinMetadata { param($IntuneWinPath) $script:graphCalls++; [pscustomobject]@{ UnencryptedSize = 1MB; SizeEncrypted = 1MB; FileName = 'x.intunewin'; EncryptionInfo = @{} } }
 function Invoke-MgGraphRequest {
     param($Method, $Uri, $Body, $ContentType, $OutputType)
+    $script:graphCalls++
     if ($Uri -match '/mobileApps$' -and $Method -eq 'POST') {
+        $script:capturedJson = [string]$Body
         $script:capturedBody = $Body | ConvertFrom-Json
         throw 'W32T_TEST_SENTINEL'   # stop before content upload — we only need the body
     }
     return [pscustomobject]@{ id = 'fake' }
 }
 
+# Bundled-PSADT read for the F-05 prerelease warning: the fixtures carry no module, so pin what the helper
+# reports ('' = a stable PSADT, the default for every other case).
+$script:pvPrerelease = ''
+$script:pvThrow = $false
+function Get-Win32ToolkitProjectPsadtVersion {
+    param([string]$ProjectPath)
+    $null = $ProjectPath
+    if ($script:pvThrow) { throw 'manifest locked' }
+    [pscustomobject]@{ Prerelease = $script:pvPrerelease; VersionText = $(if ($script:pvPrerelease) { "4.2.0-$script:pvPrerelease" } else { '4.1.8' }) }
+}
+
 $base = Join-Path ([System.IO.Path]::GetTempPath()) ('w32body_' + [guid]::NewGuid().ToString('N').Substring(0,8))
 New-Item -ItemType Directory -Path $base -Force | Out-Null
 
 function New-Proj {
-    param([string]$Name, [string]$Arch, [string]$InstallerType, [string]$MinRelease)
+    param([string]$Name, [string]$Arch, [string]$InstallerType, [string]$MinRelease, [switch]$NoTattoo)
     $p = Join-Path $base $Name
     New-Item -ItemType Directory -Path (Join-Path $p 'SupportFiles') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $p 'Files') -Force | Out-Null
@@ -61,20 +84,38 @@ function New-Proj {
     if ($MinRelease) { $cfg['IntuneDefaults'] = [ordered]@{ MinimumWindowsRelease = $MinRelease } }
     ($cfg | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath (Join-Path $p 'SupportFiles\AppConfig.json') -Encoding UTF8
     Set-Content -LiteralPath (Join-Path $p "Files\App.$InstallerType") -Value 'stub'
+    # The deploy script only needs the tattoo marker the real Get-Win32DetectionRules keys on (never run).
+    if (-not $NoTattoo) {
+        Set-Content -LiteralPath (Join-Path $p 'Invoke-AppDeployToolkit.ps1') -Value '## win32-toolkit install tattoo - records the installed version (test stub)'
+    }
     $iw = Join-Path $base "$Name.intunewin"; Set-Content -LiteralPath $iw -Value 'stub'
     return @{ Project = $p; IntuneWin = $iw }
 }
 
 function Get-Body {
-    param($Proj)
+    param($Proj, [switch]$AllowNoDetectionRule)
     $script:capturedBody = $null
+    $script:capturedJson = $null
     try {
         Publish-Win32ToolkitIntuneApp -ProjectPath $Proj.Project -IntuneWinPath $Proj.IntuneWin `
-            -Confirm:$false -ErrorAction Stop 6>$null 3>$null | Out-Null
+            -AllowNoDetectionRule:$AllowNoDetectionRule -Confirm:$false -ErrorAction Stop 6>$null 3>$null | Out-Null
     } catch {
         if ("$($_.Exception.Message)" -notmatch 'W32T_TEST_SENTINEL') { throw }
     }
     return $script:capturedBody
+}
+
+# Runs Publish and returns the ErrorRecord it threw (or $null), the Graph-step count and the body (if any).
+function Invoke-PublishGate {
+    param($Proj, [switch]$DryRun)
+    $script:graphCalls = 0
+    $script:capturedBody = $null
+    $err = $null
+    try {
+        Publish-Win32ToolkitIntuneApp -ProjectPath $Proj.Project -IntuneWinPath $Proj.IntuneWin `
+            -WhatIf:$DryRun -Confirm:$false -ErrorAction Stop 6>$null 3>$null | Out-Null
+    } catch { $err = $_ }
+    [pscustomobject]@{ Error = $err; GraphCalls = $script:graphCalls; Body = $script:capturedBody }
 }
 
 try {
@@ -144,6 +185,84 @@ try {
     $rc = @($be.returnCodes | ForEach-Object { "$($_.returnCode)=$($_.type)" } | Sort-Object)
     $expected = @('0=success', '1618=retry', '1641=hardReboot', '1707=success', '3010=softReboot') | Sort-Object
     if (($rc -join ',') -ceq ($expected -join ',')) { Ok "returnCodes: $($rc -join ', ')" } else { Bad "returnCodes: $($rc -join ', ')" }
+
+    Write-Host '[8] the tattoo fixture publishes WITH its detection rule (the gate below is not a false positive)' -ForegroundColor Cyan
+    $det = @($be.detectionRules)
+    if ($det.Count -eq 1 -and $det[0].keyPath -eq 'HKEY_LOCAL_MACHINE\SOFTWARE\IT\Contoso\App' -and $det[0].detectionValue -eq '1.0') {
+        Ok 'one tattoo version rule (HKLM\SOFTWARE\IT\Contoso\App, Version = 1.0)'
+    } else { Bad "detectionRules: $($be.detectionRules | ConvertTo-Json -Compress -Depth 5)" }
+
+    Write-Host '[9] PKG-04: no detection rule -> W32T.NoDetectionRule BEFORE any Graph call' -ForegroundColor Cyan
+    $noDet = New-Proj -Name 'NoDet' -Arch 'x64' -InstallerType 'exe' -NoTattoo
+    $g = Invoke-PublishGate $noDet
+    if ($g.Error -and $g.Error.FullyQualifiedErrorId -eq 'W32T.NoDetectionRule') { Ok 'throws W32T.NoDetectionRule (FQID survives the Publish catch, C-2)' }
+    else { Bad "error: FQID='$($g.Error.FullyQualifiedErrorId)' message='$($g.Error.Exception.Message)'" }
+    if ($g.GraphCalls -eq 0) { Ok 'no sign-in, no tenant check, no .intunewin read, no Graph request' } else { Bad "$($g.GraphCalls) Graph step(s) ran before the refusal" }
+    if ($null -eq $g.Body) { Ok 'no app shell was POSTed' } else { Bad 'an app shell was POSTed' }
+    if ($g.Error -and $g.Error.CategoryInfo.Category -eq 'InvalidData' -and "$($g.Error.TargetObject)" -eq $noDet.Project) { Ok 'category InvalidData, target = the project path' }
+    else { Bad "category='$($g.Error.CategoryInfo.Category)' target='$($g.Error.TargetObject)'" }
+    $gm = "$($g.Error.Exception.Message)"
+    if ($gm -match 'tattoo' -and $gm -match 'InstallationChanges_' -and $gm -match '-AllowNoDetectionRule' -and $gm -match 'Nothing was published') {
+        Ok 'the message explains tattoo vs capture, names -AllowNoDetectionRule and says nothing was published'
+    } else { Bad "message: $gm" }
+    if (@([System.Text.Encoding]::UTF8.GetBytes($gm) | Where-Object { $_ -gt 127 }).Count -eq 0) { Ok 'the message is ASCII' } else { Bad 'the message has non-ASCII characters' }
+
+    Write-Host '[10] the refusal also fires under -WhatIf (the rule is built before the -WhatIf gate)' -ForegroundColor Cyan
+    $gw = Invoke-PublishGate $noDet -DryRun
+    if ($gw.Error -and $gw.Error.FullyQualifiedErrorId -eq 'W32T.NoDetectionRule' -and $gw.GraphCalls -eq 0) { Ok 'a dry run reports the missing rule too, still without Graph' }
+    else { Bad "WhatIf: FQID='$($gw.Error.FullyQualifiedErrorId)' graph=$($gw.GraphCalls)" }
+    $gok = Invoke-PublishGate (New-Proj -Name 'WhatIfOk' -Arch 'x64' -InstallerType 'exe') -DryRun
+    if (-not $gok.Error -and $gok.GraphCalls -eq 0) { Ok 'a project WITH a rule still dry-runs cleanly under -WhatIf (no Graph)' }
+    else { Bad "WhatIf with a rule: error='$($gok.Error)' graph=$($gok.GraphCalls)" }
+
+    Write-Host '[11] -AllowNoDetectionRule publishes with detectionRules = @()' -ForegroundColor Cyan
+    $warn = $null
+    $script:capturedBody = $null; $script:capturedJson = $null
+    try {
+        Publish-Win32ToolkitIntuneApp -ProjectPath $noDet.Project -IntuneWinPath $noDet.IntuneWin -AllowNoDetectionRule `
+            -Confirm:$false -ErrorAction Stop -WarningVariable warn 6>$null 3>$null | Out-Null
+    } catch { if ("$($_.Exception.Message)" -notmatch 'W32T_TEST_SENTINEL') { Bad "unexpected error: $($_.Exception.Message)" } }
+    if ($script:capturedBody) { Ok 'the app shell was POSTed' } else { Bad 'no body captured with -AllowNoDetectionRule' }
+    if ($script:capturedJson -match '"detectionRules"\s*:\s*\[\s*\]') { Ok 'body carries "detectionRules": [] (an empty list, not null/missing)' }
+    else { Bad "detectionRules in the JSON: $([regex]::Match([string]$script:capturedJson, '"detectionRules"[^\]]*\]').Value)" }
+    if (@($warn | Where-Object { "$_" -cmatch 'WITHOUT' -and "$_" -match 'portal' }).Count -eq 1) { Ok 'warns once: add a detection rule in the Intune portal before assigning' }
+    else { Bad "warnings: $(@($warn) -join ' | ')" }
+
+    Write-Host '[12] F-05: a prerelease bundled PSADT warns before the -WhatIf gate and never blocks' -ForegroundColor Cyan
+    $preProj = New-Proj -Name 'PreRel' -Arch 'x64' -InstallerType 'exe'
+    foreach ($case in @(@{ Pre = 'rc2'; Want = 1 }, @{ Pre = ''; Want = 0 })) {
+        $script:pvPrerelease = $case.Pre; $script:graphCalls = 0; $warn = $null; $err = $null
+        try {
+            Publish-Win32ToolkitIntuneApp -ProjectPath $preProj.Project -IntuneWinPath $preProj.IntuneWin -WhatIf `
+                -Confirm:$false -ErrorAction Stop -WarningVariable warn 6>$null 3>$null | Out-Null
+        } catch { $err = $_ }
+        $pw = @($warn | Where-Object { "$_" -match 'PRERELEASE' })
+        $label = if ($case.Pre) { "prerelease '$($case.Pre)'" } else { 'stable PSADT' }
+        if (-not $err -and $script:graphCalls -eq 0 -and $pw.Count -eq $case.Want -and ($case.Want -eq 0 -or "$($pw[0])" -match [regex]::Escape('PSAppDeployToolkit 4.2.0-rc2'))) {
+            Ok "$label -> $($case.Want) prerelease warning(s), dry run still clean (no Graph)"
+        }
+        else { Bad "$label -> error='$err' graph=$($script:graphCalls) warnings=$(@($warn) -join ' | ')" }
+    }
+    # A failure to READ the bundled module must never block a publish (and must not invent a warning).
+    $script:pvThrow = $true; $script:pvPrerelease = 'rc2'; $script:graphCalls = 0; $warn = $null; $err = $null
+    try {
+        Publish-Win32ToolkitIntuneApp -ProjectPath $preProj.Project -IntuneWinPath $preProj.IntuneWin -WhatIf `
+            -Confirm:$false -ErrorAction Stop -WarningVariable warn 6>$null 3>$null | Out-Null
+    } catch { $err = $_ }
+    $script:pvThrow = $false
+    if (-not $err -and $script:graphCalls -eq 0 -and @($warn | Where-Object { "$_" -match 'PRERELEASE' }).Count -eq 0) {
+        Ok 'unreadable bundled module -> no error, no prerelease warning, dry run still clean'
+    }
+    else { Bad "unreadable module -> error='$err' graph=$($script:graphCalls) warnings=$(@($warn) -join ' | ')" }
+    # The live path continues past the gate with a prerelease project (warning only; reaches the app POST).
+    $script:pvPrerelease = 'rc2'; $script:capturedBody = $null; $warn = $null
+    try {
+        Publish-Win32ToolkitIntuneApp -ProjectPath $preProj.Project -IntuneWinPath $preProj.IntuneWin `
+            -Confirm:$false -ErrorAction Stop -WarningVariable warn 6>$null 3>$null | Out-Null
+    } catch { if ("$($_.Exception.Message)" -notmatch 'W32T_TEST_SENTINEL') { Bad "unexpected error: $($_.Exception.Message)" } }
+    if ($script:capturedBody -and @($warn | Where-Object { "$_" -match 'PRERELEASE' }).Count -eq 1) { Ok 'live publish of a prerelease project: one warning, the app shell is still POSTed' }
+    else { Bad "live prerelease publish -> body=$([bool]$script:capturedBody) warnings=$(@($warn) -join ' | ')" }
+    $script:pvPrerelease = ''
 }
 finally {
     Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
