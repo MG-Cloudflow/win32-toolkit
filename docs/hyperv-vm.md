@@ -103,6 +103,51 @@ Set-VM -Name 'win32tk-golden' -CheckpointType Standard
 Checkpoint-VM -VMName 'win32tk-golden' -SnapshotName 'clean-base'
 ```
 
+### Tip: stop Edge and WebView2 from updating in the VM
+
+Microsoft Edge and the WebView2 runtime update themselves in the background. In the test VM that
+happens right after a checkpoint revert, during your test run, which:
+- adds unrelated files and registry changes to the install capture;
+- competes with the installer for CPU and network.
+
+Turn their updater off once, from an elevated PowerShell on the Hyper-V host. The VM must be
+running: start it with `Start-VM` if it is not.
+
+```powershell
+# Elevated PowerShell on the Hyper-V host
+Import-Module win32-toolkit
+$mod  = Get-Module win32-toolkit
+$vm   = & $mod { Get-Win32ToolkitConfigValue -Name 'HyperVVMName' }
+$cred = & $mod { Get-Win32ToolkitGuestCredential }
+
+Invoke-Command -VMName $vm -Credential $cred -ScriptBlock {
+    $p = 'HKLM:\SOFTWARE\Policies\Microsoft\EdgeUpdate'
+    New-Item $p -Force | Out-Null
+    Set-ItemProperty $p -Name AutoUpdateCheckPeriodMinutes -Type DWord -Value 0
+    Set-ItemProperty $p -Name UpdateDefault -Type DWord -Value 0
+    Set-ItemProperty $p -Name 'Update{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}' -Type DWord -Value 0  # Edge
+    Set-ItemProperty $p -Name 'Update{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -Type DWord -Value 0  # WebView2
+
+    'edgeupdate','edgeupdatem' | ForEach-Object {
+        Stop-Service $_ -Force -ErrorAction SilentlyContinue
+        Set-Service  $_ -StartupType Disabled -ErrorAction SilentlyContinue
+    }
+    Get-ScheduledTask -TaskName 'MicrosoftEdgeUpdate*' -ErrorAction SilentlyContinue | Disable-ScheduledTask
+}
+```
+
+**Then re-checkpoint.** Every test run reverts the VM to `clean-base`, so the change is lost unless
+you freeze it into the checkpoint, the same way as after Windows Updates (above):
+
+```powershell
+Get-VMCheckpoint -VMName $vm | Remove-VMCheckpoint
+Set-VM -Name $vm -CheckpointType Standard
+Checkpoint-VM -VMName $vm -SnapshotName 'clean-base'
+```
+
+Edge and WebView2 now stay at the version in the checkpoint. When you next update the VM (Windows
+Update, above), update them by hand as well if your apps depend on a recent WebView2.
+
 ### The TUI screen
 
 `Show-Win32Toolkit` → **Hyper-V test VM** shows backend readiness and the VM's current CPU/RAM, and
