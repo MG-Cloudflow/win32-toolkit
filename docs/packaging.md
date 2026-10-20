@@ -53,6 +53,58 @@ win32-toolkit refuses to package a deploy script it cannot vouch for. Every prob
 
 The same check (without the 5.1 parse, launcher, bundled-module and prerelease rows, and the uninstall cleanup-path row) also runs before a project is captured and tested by `Invoke-Win32Toolkit`, `New-Win32ToolkitManualApp` and `Complete-Win32ToolkitManualApp`. To package a hand-maintained deploy script that win32-toolkit never generated, pass `-AllowLegacyScript` to `Export-Win32ToolkitIntuneWin` (or `Complete-Win32ToolkitManualApp`): the loader, layout and bundled-module findings then become warnings. Parse errors, a missing launcher and an unsafe uninstall cleanup path still stop the export.
 
+## Installer technology
+
+Many apps on winget ship more than one installer for the same version: Notepad++, for example, offers a vendor EXE (NSIS) and an MSI. The two register differently in Windows (different uninstall entries, different product codes), so a device that already has one and then receives the other ends up with **two registrations over one folder**. Pick one technology per app and keep it from version to version.
+
+**Families.** win32-toolkit groups winget installer types into families that register the same way:
+
+| Family | winget installer types |
+|---|---|
+| MSIX | `msix`, `appx` (and `msstore`, which cannot be packaged) |
+| MSI | `msi`, `wix` |
+| EXE | `burn`, `nullsoft`, `inno`, `exe` |
+
+When you do not pin a technology, winget picks one by its own order of preference (winget 1.29.280 and later: `msstore`, `msix`, `msi`, `wix`, `burn`, `nullsoft`, `inno`, `exe`, `portable`). That is why winget may hand you the MSI of an app you used to package as an EXE.
+
+**Pinning the technology.** Pass `-InstallerType` to [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md):
+
+```powershell
+# Package the vendor EXE (NSIS) instead of winget's default MSI
+Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -InstallerType nullsoft
+```
+
+The pin covers the whole family: if the version you package does not offer that exact type, win32-toolkit tries the other types of the same family in order (for example `wix`, then `msi`) and warns which one it used. For each type that is not offered, winget prints `No applicable installer found; see logs for more details.` and the next line names the type win32-toolkit tries next. It never falls back to another family.
+
+**Continuity.** Without `-InstallerType`, win32-toolkit looks for an earlier version of the same winget id in the same template folder that was **published** (to the template's tenant when the template has one) or **pinned** with `-InstallerType`, and keeps that version's technology. An earlier version that was only built, never published or pinned, does not count. The run prints the decision before the download, for example `Installer technology: nullsoft (kept from Notepad++_x64_8.8.9 (published))`, or `Installer technology: winget's choice`.
+
+**Rebuilding a version.** Re-creating a version that is itself published or pinned (running it again with `-Force`) keeps that version's own technology, ahead of any earlier version: `Installer technology: wix (kept from Notepad++_x64_8.9.8.1 (published, rebuilt))`. The project's `Intune\Publications.json` is kept across the re-creation, so the rebuilt version still anchors later versions; if it cannot be kept (the command warns), republish the rebuilt version. Passing `-InstallerType` of another family still wins, with a warning that devices which already have the version get a second registration.
+
+**In the menu.** When you package an app from the menu (`Show-Win32Toolkit`), the wizard checks which technologies winget ships for the version and asks once when there is more than one you can package. With a published or pinned earlier version it offers `Keep <technology> (recommended)` first; when you rebuild a version that is itself published or pinned, that version is the one kept (`recommended: <project> is published; rebuilding it`). If the version no longer ships the earlier version's technology, the wizard says so before the build and asks once: skip this version (recommended, nothing is built), switch to a technology the version ships (devices that already have the earlier one get a second registration), or keep it anyway (the build then stops with `W32T.InstallerVariantUnavailable`). Technologies win32-toolkit cannot package (zip-wrapped installers, Microsoft Store only) are listed but cannot be chosen.
+
+**What is recorded.** The project's `SupportFiles\AppConfig.json` gets a `Source` section: the winget id and version, the installer type and family that were packaged, the scope, architecture and locale from the winget manifest, the winget client version, how the technology was chosen (`PinnedBy`: `parameter`, `continuity` or `winget-default`) and, for an MSI, its ProductCode and UpgradeCode. It is data only (the deploy script does not read it) and holds no tenant id or user name.
+
+**When the pinned technology is not offered.** If winget has no installer of the pinned family for the version (for example a vendor dropped its MSI for one release), the command stops with a `W32T.InstallerVariantUnavailable` error and nothing is downloaded. The message lists the types that were tried. You have two options:
+
+1. Skip this version and package the next one that ships the technology again. This is the recommended choice when a vendor drops a technology for one release.
+2. Switch technology on purpose with `-InstallerType <other type>`. Devices that already have the earlier technology then get a second registration.
+
+**Identity checks after the download.** Once the installer is downloaded, win32-toolkit compares it with what winget ships and with the earlier versions in the template folder, prints warnings, and stores the result in `Documentation\IdentityDelta.json` (it never ships). None of them blocks packaging:
+
+| Code | Meaning | What to do |
+|---|---|---|
+| `ID-SIBLING-FAMILY` | winget also ships another technology you could package for this version | Keep one technology across your devices; to package the other one, use the `-InstallerType` the message names. To test the switch, run `Test-Win32ToolkitProject -Scenario Update -BaselineInstallerType Both` |
+| `ID-SIBLING-UNTESTABLE` (info) | winget also ships a technology win32-toolkit cannot package or test (zip-wrapped, Microsoft Store only) | Nothing to do |
+| `ID-NO-ANCHOR` | winget chose the technology, the app ships more than one, and no earlier version in this template was published or pinned | Pin it with `-InstallerType` (or choose it in the menu) so later versions keep it |
+| `ID-PROBE-UNAVAILABLE` | The list of technologies could not be read from the winget repository (offline, proxy, rate limit) | If the app ships both an EXE and an MSI, pin one with `-InstallerType` |
+| `ID-FAMILY` | The technology changed compared with the published or pinned earlier version | Rebuild with the `-InstallerType` the message names to keep the earlier technology |
+| `ID-TATTOO` | The detection key (template author, vendor, display name) changed compared with the earlier version | Devices with the earlier version keep it detected under the old key; check the template and app names |
+| `ID-SCOPE` | The winget manifest labels the installer user-scope | Intune installs as SYSTEM; check the install capture in `Documentation\InstallationChanges_*.json` |
+| `ID-PREDECESSOR-AMBIGUOUS` | Several winget ids in the template look like the same product | Check that the named earlier version is the right one |
+| `ID-VARIANT-SUBSTITUTE` (info) | The version did not offer the exact pinned type; another type of the same family was packaged | Nothing to do |
+
+win32-toolkit does not yet remove the other technology from a device before installing. Until it can, keep one technology per app across your devices, and run the [Update test](testing.md#choosing-the-old-version-baseline) from the technology your devices already have.
+
 ## The Staging copy: what ships and what never does
 
 The raw project under `Projects\` is your source of truth and is **never modified during packaging**. Each run copies it fresh into `Staging\<Template>\<ProjectName>`, but the copy *excludes* the non-shipping folders up front, so they never exist in Staging at all:

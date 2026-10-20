@@ -22,12 +22,19 @@ function Configure-PSADTForInstaller {
         App metadata resolved from winget (used as a fallback for Name/Version).
     .PARAMETER Architecture
         Target architecture string (x64/x86/arm64).
+    .PARAMETER InstallerPin
+        The installer-technology pin the download used (Resolve-Win32ToolkitInstallerPin): its PinnedBy,
+        InstallerType and WingetClient are recorded in AppConfig.Source. Absent = winget's choice.
+        AppConfig.Source (installer-identity PR 1, spec 2.6) records which winget installer was packaged and
+        why; it is data only (the deploy script never reads it). If it cannot be built, a warning is written
+        and the project is still configured without it.
     #>
     [CmdletBinding()]
     param(
         [string]$ProjectPath,
         [PSCustomObject]$AppInfo,
-        [string]$Architecture
+        [string]$Architecture,
+        [PSCustomObject]$InstallerPin
     )
 
     try {
@@ -83,6 +90,23 @@ function Configure-PSADTForInstaller {
             FileName   = $fileInfo.FileName
             SilentArgs = $silent
         }) -Force
+
+        # ---- Source: which winget installer was packaged and why (installer identity) - data only ----
+        $pinnedBy = 'winget-default'; $requestedType = ''; $wingetClient = ''
+        if ($InstallerPin) {
+            if ($InstallerPin.PSObject.Properties['PinnedBy'] -and $InstallerPin.PinnedBy) { $pinnedBy = [string]$InstallerPin.PinnedBy }
+            if ($pinnedBy -ne 'winget-default' -and $InstallerPin.PSObject.Properties['InstallerType']) { $requestedType = [string]$InstallerPin.InstallerType }
+            if ($InstallerPin.PSObject.Properties['WingetClient']) { $wingetClient = [string]$InstallerPin.WingetClient }
+        }
+        try {
+            $source = Get-Win32ToolkitProjectSource -ProjectPath $ProjectPath -Rebuild -Architecture $Architecture -PinnedBy $pinnedBy -RequestedInstallerType $requestedType -WingetClient $wingetClient
+            $cfg | Add-Member -NotePropertyName Source -NotePropertyValue $source -Force
+        }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Warning "The installer source (AppConfig.Source) could not be recorded: $($_.Exception.Message). The project is configured without it; the identity checks rebuild it from Files\."
+        }
+
         if (-not ($cfg.PSObject.Properties.Name -contains 'ProcessesToClose')) {
             $cfg | Add-Member -NotePropertyName ProcessesToClose -NotePropertyValue @() -Force
         }

@@ -63,6 +63,23 @@ function Invoke-Win32Toolkit {
 .PARAMETER DependencyType
     How Intune should treat the declared dependencies: 'autoInstall' (default) installs them
     automatically; 'detect' only requires their presence.
+.PARAMETER InstallerType
+    Pin the installer technology of the package: the winget installer type to download (msi, wix, burn,
+    nullsoft, inno, exe or msix). winget may answer with another type of the same family (msi and wix are
+    one family; burn, nullsoft, inno and exe are another) and says so. Without it, rebuilding a version
+    that is itself published or pinned keeps its own technology; otherwise the technology of the
+    highest earlier version of this app (same winget id) in the template folder that was published, or
+    pinned with this parameter, is kept; otherwise winget chooses. When winget offers no installer of the
+    pinned family for this version, the command stops with W32T.InstallerVariantUnavailable and nothing is
+    downloaded. The choice and its reason are recorded in SupportFiles\AppConfig.json (Source); the
+    identity checks after the download warn when the app ships another technology too.
+.PARAMETER UpdateBaselineInstallerType
+    For -RunTest Update: the installer technology of the old-version baseline (see
+    Test-Win32ToolkitProject -BaselineInstallerType). Auto (the default when omitted) starts from the other
+    technology winget ships for this app when there is one, and falls back to the packaged technology with
+    a warning when the old version does not ship it; Both runs the Update test once per technology (one
+    record each); Packaged uses the packaged technology only; a type (msi, wix, burn, nullsoft, inno, exe,
+    msix) pins that technology.
 .EXAMPLE
     Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force
 .EXAMPLE
@@ -74,6 +91,12 @@ function Invoke-Win32Toolkit {
 .EXAMPLE
     # Fully scripted pipeline incl. both tests; the Update baseline is the previous release
     Invoke-Win32Toolkit -Id 'Mozilla.Firefox' -Architecture x64 -Force -RunTest InstallUninstall, Update -UpdateVersionsBack 1 -PackageIntune
+.EXAMPLE
+    # Package the vendor EXE (NSIS) installer instead of winget's default MSI, and keep it for later versions
+    Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -InstallerType nullsoft
+.EXAMPLE
+    # Update test from each installer technology winget ships (one run and one test record per technology)
+    Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -RunTest Update -UpdateVersionsBack 1 -UpdateBaselineInstallerType Both
 #>
     [CmdletBinding()]
     param(
@@ -132,7 +155,18 @@ function Invoke-Win32Toolkit {
         [string[]]$DependsOn,
 
         [ValidateSet('autoInstall', 'detect')]
-        [string]$DependencyType = 'autoInstall'
+        [string]$DependencyType = 'autoInstall',
+
+        # Installer technology pin for the package download (family-aware: wix <-> msi substitute).
+        # Declared last so the positions of the earlier parameters do not move.
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('msi', 'wix', 'burn', 'nullsoft', 'inno', 'exe', 'msix')]
+        [string]$InstallerType,
+
+        # Update-test baseline technology; passed on to Finalize -> Test-Win32ToolkitProject only when bound.
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Auto', 'Both', 'Packaged', 'msi', 'wix', 'burn', 'nullsoft', 'inno', 'exe', 'msix')]
+        [string]$UpdateBaselineInstallerType
     )
 
     try {
@@ -257,19 +291,57 @@ function Invoke-Win32Toolkit {
         }
         Write-Host "Template folder: $templateSeg" -ForegroundColor DarkGray
 
+        # Rebuilding an existing version: Create-PSADTProject deletes its folder, so read what anchors its
+        # installer technology FIRST (published or explicitly pinned, Get-Win32ToolkitSelfAnchor), and keep
+        # its Intune\Publications.json (the Intune app it records still exists) so the rebuilt version still
+        # anchors later versions and dependency lookups.
+        $projectFullPath   = Join-Path $projectsDir $projectName
+        $tenantId          = if ($script:OrgTemplate -and $script:OrgTemplate.PSObject.Properties['TenantId'] -and $script:OrgTemplate.TenantId) { [string]$script:OrgTemplate.TenantId } else { '' }
+        $selfAnchor        = Get-Win32ToolkitSelfAnchor -ProjectPath $projectFullPath -TenantId $tenantId
+        # Absolute (a relative -BasePath is used as-is): [System.IO.File] resolves against the process directory.
+        $publicationFile   = $PSCmdlet.SessionState.Path.GetUnresolvedProviderPathFromPSPath((Join-Path $projectFullPath 'Intune\Publications.json'))
+        $publicationBackup = $null
+        if (Test-Path -LiteralPath $publicationFile -PathType Leaf) {
+            try { $publicationBackup = [System.IO.File]::ReadAllBytes($publicationFile) }
+            catch {
+                if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                Write-Warning "Could not keep '$publicationFile' for the rebuild ($($_.Exception.Message)): republish the rebuilt version so later versions keep its installer technology."
+            }
+        }
+
         # Create the PSADT project scaffold inside Projects\<Template>\
         $projectCreated = Create-PSADTProject -ProjectName $projectName -ProjectPath $projectsDir -Force:$Force
 
         if ($projectCreated) {
-            $projectFullPath = Join-Path $projectsDir $projectName
             $downloadPath    = Join-Path $projectFullPath 'Files'
 
             if (!(Test-Path $downloadPath)) {
                 New-Item -Path $downloadPath -ItemType Directory -Force | Out-Null
             }
 
+            if ($null -ne $publicationBackup -and -not (Test-Path -LiteralPath $publicationFile)) {
+                try {
+                    $null = New-Item -ItemType Directory -Path (Split-Path -Path $publicationFile -Parent) -Force
+                    [System.IO.File]::WriteAllBytes($publicationFile, $publicationBackup)
+                    Write-Verbose "Kept the Intune publication record of the rebuilt project: $publicationFile"
+                }
+                catch {
+                    if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                    Write-Warning "Could not restore '$publicationFile' after the rebuild ($($_.Exception.Message)): republish the rebuilt version so later versions keep its installer technology."
+                }
+            }
+
+            # Installer technology (installer-identity PR 1): an explicit -InstallerType, else the technology of
+            # the version being rebuilt when it is itself published or pinned, else that of the highest
+            # published/pinned earlier version of this winget id in the template folder, else winget's choice.
+            # A pinned family with no installer for this version throws W32T.InstallerVariantUnavailable from
+            # the download (re-thrown by the catch below).
+            $pin = Resolve-Win32ToolkitInstallerPin -TemplateDirectory $projectsDir -WingetId $selectedApp.Id -Version $selectedApp.Version -InstallerType $InstallerType -ExcludePath $projectFullPath -TenantId $tenantId -SelfAnchor $selfAnchor
+            $techText = if ($pin.InstallerType) { "$($pin.InstallerType) ($($pin.Reason))" } else { "winget's choice" }
+            Write-Host "Installer technology: $techText" -ForegroundColor DarkGray
+
             Write-Verbose 'Downloading application to project Files directory...'
-            $downloadSuccess = Download-WingetApp -AppId $selectedApp.Id -AppName $selectedApp.Name -DownloadPath $downloadPath -Architecture $selectedArch
+            $downloadSuccess = Download-WingetApp -AppId $selectedApp.Id -AppName $selectedApp.Name -DownloadPath $downloadPath -Architecture $selectedArch -InstallerType $pin.InstallerType -PinnedBy $pin.PinnedBy -PinReason $pin.Reason
 
             if ($downloadSuccess) {
                 Write-Host "`n✓ App downloaded successfully!" -ForegroundColor Green
@@ -282,7 +354,7 @@ function Invoke-Win32Toolkit {
                 Write-Verbose 'Configuring PSADT for installer type...'
                 # Critical generator problems throw W32T.* (propagated by the catch below); $false means
                 # the project is not configured - never document, test, package or publish it then.
-                $psadtConfigured = Configure-PSADTForInstaller -ProjectPath $projectFullPath -AppInfo $selectedApp -Architecture $selectedArch
+                $psadtConfigured = Configure-PSADTForInstaller -ProjectPath $projectFullPath -AppInfo $selectedApp -Architecture $selectedArch -InstallerPin $pin
                 if (-not $psadtConfigured) {
                     throw [System.Management.Automation.ErrorRecord]::new(
                         [System.InvalidOperationException]::new('PSADT configuration failed - the project was NOT documented, tested, packaged or published (see the warnings above).'),
@@ -292,6 +364,10 @@ function Invoke-Win32Toolkit {
                 # Download and apply the app-specific icon from WinGet YAML
                 Write-Verbose 'Downloading app icon from WinGet...'
                 Get-AppIconFromWinget -ProjectPath $projectFullPath -FilesPath $downloadPath | Out-Null
+
+                # Installer identity checks (other technologies winget ships, the earlier versions in this
+                # template): warnings only, written to Documentation\IdentityDelta.json; never blocks (fail-open).
+                $null = Write-Win32ToolkitIdentityDelta -ProjectPath $projectFullPath -TenantId $tenantId
 
                 Write-Host "`n✓ SUCCESS: Project created, app downloaded, and PSADT configured!" -ForegroundColor Green
 
@@ -311,6 +387,7 @@ function Invoke-Win32Toolkit {
                 if ($RunTest) { $finalize['RunTest'] = $RunTest }   # omit when null (ValidateSet rejects $null)
                 if ($UpdateVersionsBack)    { $finalize['UpdateVersionsBack']    = $UpdateVersionsBack }
                 if ($UpdateSpecificVersion) { $finalize['UpdateSpecificVersion'] = $UpdateSpecificVersion }
+                if ($PSBoundParameters.ContainsKey('UpdateBaselineInstallerType')) { $finalize['UpdateBaselineInstallerType'] = $UpdateBaselineInstallerType }
                 Invoke-Win32ToolkitFinalize @finalize -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune -PublishUpdate:$PublishUpdate
 
 
@@ -356,6 +433,9 @@ function Invoke-Win32Toolkit {
             }
         }
         else {
+            if ($null -ne $publicationBackup -and -not (Test-Path -LiteralPath $publicationFile)) {
+                Write-Warning "The Intune publication record of '$projectName' (Intune\Publications.json) went with the old project folder: after you re-create the project, republish it so later versions keep its installer technology."
+            }
             throw [System.Management.Automation.ErrorRecord]::new(
                 [System.InvalidOperationException]::new("Failed to create the PSADT project '$projectName' (see the warnings above) - nothing was downloaded, documented, tested, packaged or published."),
                 'W32T.ProjectCreationFailed', [System.Management.Automation.ErrorCategory]::InvalidResult, $projectName)

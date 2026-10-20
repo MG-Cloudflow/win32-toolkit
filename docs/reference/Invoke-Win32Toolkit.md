@@ -9,8 +9,8 @@ End-to-end Win32 app packaging automation.
 Invoke-Win32Toolkit [[-SearchTerm] <String>] [[-Id] <String>] [[-TemplateName] <String>] [-NewTemplate]
  [[-Architecture] <String>] [-Force] [[-BasePath] <String>] [-Reconfigure] [[-RunTest] <String[]>]
  [[-UpdateVersionsBack] <Int32>] [[-UpdateSpecificVersion] <String>] [-PackageIntune] [-PublishIntune]
- [-PublishUpdate] [[-DependsOn] <String[]>] [[-DependencyType] <String>] [-ProgressAction <ActionPreference>]
- [<CommonParameters>]
+ [-PublishUpdate] [[-DependsOn] <String[]>] [[-DependencyType] <String>] [[-InstallerType] <String>]
+ [[-UpdateBaselineInstallerType] <String>] [-ProgressAction <ActionPreference>] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -49,6 +49,18 @@ Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -PackageIntune -Publi
 ```
 # Fully scripted pipeline incl. both tests; the Update baseline is the previous release
 Invoke-Win32Toolkit -Id 'Mozilla.Firefox' -Architecture x64 -Force -RunTest InstallUninstall, Update -UpdateVersionsBack 1 -PackageIntune
+```
+
+### EXAMPLE 6
+```
+# Package the vendor EXE (NSIS) installer instead of winget's default MSI, and keep it for later versions
+Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -InstallerType nullsoft
+```
+
+### EXAMPLE 7
+```
+# Update test from each installer technology winget ships (one run and one test record per technology)
+Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -RunTest Update -UpdateVersionsBack 1 -UpdateBaselineInstallerType Both
 ```
 
 ## PARAMETERS
@@ -322,6 +334,54 @@ Aliases:
 Required: False
 Position: 10
 Default value: AutoInstall
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -InstallerType
+Pin the installer technology of the package: the winget installer type to download (msi, wix, burn,
+nullsoft, inno, exe or msix).
+winget may answer with another type of the same family (msi and wix are
+one family; burn, nullsoft, inno and exe are another) and says so.
+Without it, rebuilding a version
+that is itself published or pinned keeps its own technology; otherwise the technology of the
+highest earlier version of this app (same winget id) in the template folder that was published, or
+pinned with this parameter, is kept; otherwise winget chooses.
+When winget offers no installer of the
+pinned family for this version, the command stops with W32T.InstallerVariantUnavailable and nothing is
+downloaded.
+The choice and its reason are recorded in SupportFiles\AppConfig.json (Source); the
+identity checks after the download warn when the app ships another technology too.
+
+```yaml
+Type: String
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: 11
+Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -UpdateBaselineInstallerType
+For -RunTest Update: the installer technology of the old-version baseline (see
+Test-Win32ToolkitProject -BaselineInstallerType).
+Auto (the default when omitted) starts from the other
+technology winget ships for this app when there is one, and falls back to the packaged technology with
+a warning when the old version does not ship it; Both runs the Update test once per technology (one
+record each); Packaged uses the packaged technology only; a type (msi, wix, burn, nullsoft, inno, exe,
+msix) pins that technology.
+
+```yaml
+Type: String
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: 12
+Default value: None
 Accept pipeline input: False
 Accept wildcard characters: False
 ```

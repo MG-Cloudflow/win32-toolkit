@@ -11,6 +11,7 @@
           retried once; every leg has a Label.
       [2] Download-OldVersionInstaller -FamilyPin (winget shadowed): --installer-type per tried type, no --locale,
           no unpinned retry; the soft scope (user -> no-applicable -> relaxed, cache key '..._any_inno_...');
+          one host line per fallback step naming the next attempt (none after the last);
           every type no-applicable -> W32T.InstallerVariantUnavailable naming every attempt; any other code ->
           a plain error; the return fields; the attempts use the staging folder '<OldVersion>.attempt' and
           Sandbox\OldVersion changes only on success (untouched on Unavailable or an error). Without -FamilyPin:
@@ -326,8 +327,13 @@ try {
     $script:cacheRoot = Join-Path $tmpRoot 'cache'
     New-Item -ItemType Directory -Path $script:cacheRoot -Force | Out-Null
     Clear-CallLog; $script:answer = { param([string[]]$A) if ((ValueOf $A '--scope') -eq 'user') { $NA } else { 0 } }
-    $warn = @()
-    $r = Download-OldVersionInstaller -AppId 'Git.Git' -Version '2.33.0' -ProjectPath $proj -Architecture x64 -Scope user -InstallerType inno -FamilyPin -WarningVariable warn 6>$null 3>$null
+    $warn = @(); $iv = $null
+    $r = Download-OldVersionInstaller -AppId 'Git.Git' -Version '2.33.0' -ProjectPath $proj -Architecture x64 -Scope user -InstallerType inno -FamilyPin -WarningVariable warn -InformationVariable iv 6>$null 3>$null
+    # The fallback step is announced on the host next to winget's own 'No applicable installer found' line
+    # (re-verification 2026-10-21, B1), with the scope of the attempt that found nothing.
+    $fb = @($iv | ForEach-Object { "$($_.MessageData)" } | Where-Object { $_ -like 'winget offers no*' })
+    if ($fb.Count -eq 1 -and $fb[0] -ceq "winget offers no user-scope 'inno' installer for 'Git.Git' v2.33.0 (the line above is winget's); trying 'inno' without a scope.") { Ok "soft scope: one host line 'no user-scope ''inno'' installer ... trying ''inno'' without a scope'" }
+    else { Bad "soft scope host lines: [$($fb -join ' | ')]" }
     if ($script:calls.Count -eq 2 -and (ValueOf $script:calls[0] '--scope') -eq 'user' -and (ValueOf $script:calls[0] '--installer-type') -eq 'inno' -and
         -not (Has $script:calls[1] '--scope') -and (ValueOf $script:calls[1] '--installer-type') -eq 'inno') { Ok 'soft scope: --scope user --installer-type inno -> no-applicable -> --installer-type inno without --scope' }
     else { Bad "soft: $(@($script:calls | ForEach-Object { $_ -join ' ' }) -join ' || ')" }
@@ -349,8 +355,15 @@ try {
     if (@($script:calls | Where-Object { (ValueOf $_ '--download-directory') -ne $attemptDir }).Count -eq 0) { Ok "-FamilyPin downloads into the staging folder '<Sandbox\OldVersion>.attempt'" } else { Bad "download dirs: $(@($script:calls | ForEach-Object { ValueOf $_ '--download-directory' }) -join ',')" }
 
     Clear-CallLog; $script:answer = { param([string[]]$A) $NA }
-    $err = $null
-    try { $null = Download-OldVersionInstaller -AppId 'Git.Git' -Version '2.33.0' -ProjectPath $proj -Architecture x64 -Scope user -InstallerType inno -FamilyPin 6>$null 3>$null } catch { $err = $_ }
+    $err = $null; $iv = $null
+    try { $null = Download-OldVersionInstaller -AppId 'Git.Git' -Version '2.33.0' -ProjectPath $proj -Architecture x64 -Scope user -InstallerType inno -FamilyPin -InformationVariable iv 6>$null 3>$null } catch { $err = $_ }
+    $fb = @($iv | ForEach-Object { "$($_.MessageData)" } | Where-Object { $_ -like 'winget offers no*' } | ForEach-Object { ($_ -replace "^winget offers (.+?) for 'Git\.Git' v2\.33\.0 \(the line above is winget's\); (.+)\.$", '$1 -> $2') })
+    $fbExp = @("no user-scope 'inno' installer -> trying 'inno' without a scope", "no 'inno' installer -> trying 'burn' (same technology family, user scope)",
+               "no user-scope 'burn' installer -> trying 'burn' without a scope", "no 'burn' installer -> trying 'nullsoft' (same technology family, user scope)",
+               "no user-scope 'nullsoft' installer -> trying 'nullsoft' without a scope", "no 'nullsoft' installer -> trying 'exe' (same technology family, user scope)",
+               "no user-scope 'exe' installer -> trying 'exe' without a scope")
+    if (($fb -join ' || ') -ceq ($fbExp -join ' || ')) { Ok 'every attempt no-applicable: one host line per fallback step (7 for 8 attempts), none after the last (the W32T error explains)' }
+    else { Bad "fallback host lines: [$($fb -join ' || ')]" }
     $tried = @($script:calls | ForEach-Object { "$(ValueOf $_ '--installer-type')/$(ValueOf $_ '--scope')" })
     if ($err -and $err.FullyQualifiedErrorId -eq 'W32T.InstallerVariantUnavailable') { Ok 'every type no-applicable (with and without scope) -> W32T.InstallerVariantUnavailable' } else { Bad "fqid: $($err.FullyQualifiedErrorId) $($err.Exception.Message)" }
     if (($tried -join ',') -eq 'inno/user,inno/,burn/user,burn/,nullsoft/user,nullsoft/,exe/user,exe/') { Ok 'each type tried with and then without the scope' } else { Bad "tried: $($tried -join ',')" }

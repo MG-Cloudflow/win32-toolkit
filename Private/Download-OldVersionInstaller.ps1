@@ -11,7 +11,8 @@ function Download-OldVersionInstaller {
     hard pin and there is never an unpinned retry: the types of the pinned type's family are tried in order
     (Get-Win32ToolkitInstallerFamily -PinOrder, e.g. nullsoft, burn, inno, exe). An explicit -Scope (machine or
     user) is only a preference: when winget answers "no applicable installer" (0x8A150010) the same type is
-    retried without --scope (ScopeRelaxed, one warning). Any other winget exit code is a plain error. When no
+    retried without --scope (ScopeRelaxed, one warning). Each such fallback step is announced with one host line
+    that names the next attempt. Any other winget exit code is a plain error. When no
     type of the family is offered, a W32T.InstallerVariantUnavailable error names every attempt. The pipeline
     cache key is computed per tried (type, scope) ('any' for a relaxed scope). The attempts download into a
     staging folder next to the destination ('<destination>.attempt'); the destination is replaced only after a
@@ -213,11 +214,13 @@ function Download-OldVersionInstaller {
             $pinScope = if ($Scope -and $Scope -in @('machine', 'user')) { $Scope.ToLowerInvariant() } else { '' }
             $attempts = [System.Collections.Generic.List[string]]::new()
             $done = $false
-            foreach ($t in $types) {
+            # The scope is a soft preference (L19): the same type is retried without --scope before the next type.
+            $tryScopes = if ($pinScope) { @($pinScope, '') } else { @('') }
+            for ($ti = 0; $ti -lt $types.Count; $ti++) {
+                $t = $types[$ti]
                 $triedTypes.Add($t)
-                # The scope is a soft preference (L19): the same type is retried without --scope before the next type.
-                $tryScopes = if ($pinScope) { @($pinScope, '') } else { @('') }
-                foreach ($s in $tryScopes) {
+                for ($si = 0; $si -lt $tryScopes.Count; $si++) {
+                    $s = $tryScopes[$si]
                     if ($s) { $attempts.Add("$t/$s") } elseif (-not $pinScope) { $attempts.Add($t) }
                     $cacheDir = if ($Version) { & $cacheKey $s $t } else { $null }
                     if (& $useCache $cacheDir) {
@@ -238,6 +241,21 @@ function Download-OldVersionInstaller {
                         elseif (Test-Win32ToolkitWingetNoApplicableInstaller -ExitCode $code) {
                             # Nothing of this attempt may survive into the next one (a survivor is a hard error).
                             & $clearDir $downloadDir
+                            # winget has just printed its own 'No applicable installer found' line: name the next
+                            # attempt on the host (never the output stream). After the last attempt nothing is printed
+                            # here - the W32T.InstallerVariantUnavailable error below explains (re-verification 2026-10-21).
+                            $missText = if ($s) { "no $s-scope '$t' installer" } else { "no '$t' installer" }
+                            $nextText = if ($si + 1 -lt $tryScopes.Count) {
+                                "trying '$t' without a scope"
+                            }
+                            elseif ($ti + 1 -lt $types.Count) {
+                                $nextScope = if ($tryScopes[0]) { ", $($tryScopes[0]) scope" } else { '' }
+                                "trying '$($types[$ti + 1])' (same technology family$nextScope)"
+                            }
+                            else { $null }
+                            if ($nextText) {
+                                Write-Host "winget offers $missText for '$AppId' $verLabel (the line above is winget's); $nextText." -ForegroundColor DarkGray
+                            }
                         }
                         else {
                             throw "winget download exited with code $code for '$AppId' $verLabel."

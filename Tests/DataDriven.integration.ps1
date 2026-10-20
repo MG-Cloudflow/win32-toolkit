@@ -207,6 +207,12 @@ InstallerSwitches:
         $exeU = @($cfg.Uninstall.Uninstallers) | Where-Object { $_.Type -eq 'exe' } | Select-Object -First 1
         if ($exeU.Args -eq $UNINST_PAYLOAD) { Ok 'uninstall payload stored as data' } else { Bad "uninstall data [$($exeU.Args)]" }
         if ($cfg.App.Vendor -eq "O'Reilly" -and $cfg.App.Name -eq "Evil'App") { Ok 'apostrophe metadata stored as data' } else { Bad 'metadata' }
+        # Installer identity (PR 1, spec 2.6 / 3.4): Configure records AppConfig.Source as DATA (no pin -> winget-default).
+        $src = $cfg.Source
+        if ($src -and $src.SchemaVersion -eq '1.0' -and $src.PinnedBy -eq 'winget-default' -and $src.RequestedInstallerType -eq '' -and
+            $src.InstallerType -eq 'exe' -and $src.Family -eq 'exe' -and $src.Architecture -eq 'x64') { Ok 'AppConfig.Source present: PinnedBy winget-default, exe (exe family), x64' }
+        else { Bad "AppConfig.Source = $($src | ConvertTo-Json -Compress)" }
+        if ($ps1 -notmatch '(?i)appConfig\.Source\b' -and -not $ps1.Contains('winget-default')) { Ok 'the deploy script never reads AppConfig.Source (data only)' } else { Bad 'AppConfig.Source referenced by the deploy script' }
 
         Write-Host "`n[5] Process-name validation" -ForegroundColor Cyan
         $procs = @($cfg.ProcessesToClose)

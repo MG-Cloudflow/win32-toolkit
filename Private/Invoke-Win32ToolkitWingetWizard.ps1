@@ -1,8 +1,12 @@
 function Invoke-Win32ToolkitWingetWizard {
     <#
     .SYNOPSIS
-        Guided winget packaging wizard (Spectre): search → select → arch → template → options →
-        summary → confirm → run. A thin front-end over Invoke-Win32Toolkit (driven non-interactively).
+        Guided winget packaging wizard (Spectre): search → select → arch → template → installer
+        technology → options → summary → confirm → run. A thin front-end over Invoke-Win32Toolkit (driven
+        non-interactively). The installer-technology question is asked once, only when winget ships more
+        than one technology that can be packaged for the version, or no longer ships the technology of the
+        published/pinned earlier version (skip this version, switch on purpose, or keep and stop)
+        (installer-identity PR 1, D4, L3).
         See knowledge-base/designs/tui.md.
     #>
     [CmdletBinding()]
@@ -55,6 +59,139 @@ function Invoke-Win32ToolkitWingetWizard {
     $template = Get-Win32ToolkitTemplateChoice -BasePath $BasePath
     if ([string]::IsNullOrWhiteSpace($template)) { return }
 
+    # 4a. Installer technology (installer-identity PR 1, D4): ask once when winget ships more than one
+    # technology for this version. A published/pinned earlier version (same winget id, this template) is kept
+    # by Invoke-Win32Toolkit itself (continuity), so 'Keep' passes nothing; any other choice is passed as
+    # -InstallerType <pin value>. When the probe answers and the version ships no packageable installer of the
+    # anchor's family, Keep would stop the build (W32T.InstallerVariantUnavailable): the wizard says so and asks
+    # (skip - recommended, switch, keep). Probe and predecessor lookup are fail-open: no answer -> no question.
+    $techPin = ''
+    $techSummary = "winget's choice"
+    $verText = ([string]$picked.Version).Trim()
+    if (-not $verText -or $verText -notmatch '^[vV]?\d+(\.\d+)*') {
+        Write-SpectreHost "[grey]Installer technology: not checked (version unknown); the checks after the download still run.[/]"
+        $techSummary = "winget's choice (not checked: version unknown)"
+    }
+    else {
+        $paths = Get-Win32ToolkitPaths -BasePath $BasePath
+        $templateSeg = Sanitize-ProjectName -Name $template
+        if ([string]::IsNullOrWhiteSpace($templateSeg)) { $templateSeg = 'Default' }
+        $templateDir = Join-Path $paths.Projects $templateSeg
+        $wouldBe = Join-Path $templateDir ('{0}_{1}_{2}' -f (Sanitize-ProjectName -Name $picked.Name), (Sanitize-ProjectName -Name $arch), (Sanitize-ProjectName -Name $picked.Version))
+        # The template's tenant (data only), so the 'Keep' label matches what Invoke-Win32Toolkit will pin.
+        $tenantId = ''
+        try {
+            $tplFile = Join-Path $paths.Templates "$template.json"
+            if (Test-Path -LiteralPath $tplFile) {
+                $tpl = Get-Content -LiteralPath $tplFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($tpl.PSObject.Properties['TenantId'] -and $tpl.TenantId) { $tenantId = [string]$tpl.TenantId }
+            }
+        }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Verbose "Template tenant not read: $($_.Exception.Message)"
+        }
+
+        # Rebuilding a version that is itself published or pinned keeps its own technology (the resolver
+        # in Invoke-Win32Toolkit reads the same self-anchor before the old folder is deleted, so 'Keep'
+        # still passes nothing and its label stays true, L3); otherwise the earlier versions anchor.
+        $selfAnchor = Get-Win32ToolkitSelfAnchor -ProjectPath $wouldBe -TenantId $tenantId
+        $anchor = if ($selfAnchor) { $selfAnchor }
+                  else { (Get-Win32ToolkitPreviousProject -TemplateDirectory $templateDir -WingetId $picked.Id -Version $verText -ExcludePath $wouldBe -TenantId $tenantId).Anchor }
+        Write-SpectreHost "[grey]Checking which installer technologies winget ships for $(Get-SpectreEscapedText -Text ('{0} {1} ({2})' -f $picked.Id, $verText, $arch))...[/]"
+        $probe = Get-Win32ToolkitSiblingInstaller -WingetId $picked.Id -Version $verText -Architecture $arch
+
+        # Families winget ships for this architecture: testable ones can be chosen (pin value of the
+        # highest-precedence testable type: msstore/msix/appx -> msix); zip-wrapped / Store-only cannot.
+        $families = [System.Collections.Generic.List[object]]::new()
+        $untestable = [System.Collections.Generic.List[string]]::new()
+        $sibs = @()
+        if ($probe -and $probe.Status -eq 'Ok') {
+            $sibs = @($probe.Siblings | Where-Object { $_.Registers } | Sort-Object -Stable -Property Precedence)
+            foreach ($fam in @($sibs | ForEach-Object { [string]$_.Family } | Select-Object -Unique)) {
+                $top = @($sibs | Where-Object { $_.Family -eq $fam -and $_.Testable -and $_.PinValue }) | Select-Object -First 1
+                if ($top) {
+                    $families.Add([pscustomobject]@{ Family = $fam; PinValue = [string]$top.PinValue; Label = [string]$top.Label })
+                } else {
+                    foreach ($u in @($sibs | Where-Object { $_.Family -eq $fam })) { $untestable.Add([string]$u.Label) }
+                }
+            }
+        }
+        foreach ($u in $untestable) {
+            Write-SpectreHost "[grey]winget also ships $(Get-SpectreEscapedText -Text $u) for ${arch}: it cannot be packaged.[/]"
+        }
+
+        # An anchor whose type cannot be pinned is not kept by the download either (Resolve-Win32ToolkitInstallerPin).
+        $anchorRow = if ($anchor) { Get-Win32ToolkitInstallerFamily -Type ([string]$anchor.InstallerType) } else { $null }
+        if ($anchorRow -and -not $anchorRow.PinValue) { $anchor = $null }
+
+        if ($anchor) {
+            $how = if ([string]$anchor.AnchorReason -eq 'published') { 'published' } else { 'pinned' }
+            if ($selfAnchor) { $how = "$how; rebuilding it" }
+            $others = @($families | Where-Object { $_.Family -ne $anchorRow.Family })
+            $anchorOffered = @($families | Where-Object { $_.Family -eq $anchorRow.Family }).Count -ge 1
+            if ($probe -and $probe.Status -eq 'Ok' -and -not $anchorOffered) {
+                # The probe answered and this version ships no installer of the anchor's family that can be packaged:
+                # keeping it stops the build (Download-WingetApp throws W32T.InstallerVariantUnavailable), so neither
+                # 'keeps ...' nor 'recommended' would be true. Say so and ask once with the two options of that error
+                # (skip this version - recommended; switch technology on purpose) and Keep as the last choice.
+                $zipOnly = @($sibs | Where-Object { $_.Family -eq $anchorRow.Family }).Count -ge 1
+                $what = "winget does not ship $($anchorRow.Label) for this version ($arch)"
+                if ($zipOnly) { $what = "winget ships $($anchorRow.Label) for this version ($arch) only in a form that cannot be packaged" }
+                $code = if ($zipOnly) { '' } else { ' (W32T.InstallerVariantUnavailable)' }
+                $switchNote = if ($families.Count -ge 1) { '; switching gives devices that already have it a second registration' } else { '' }
+                $line = '{0}, the technology of {1} ({2}): keeping it will stop the build{3}. Skipping this version is recommended{4}.' -f $what, $anchor.Name, $how, $code, $switchNote
+                Write-SpectreHost "[yellow]$(Get-SpectreEscapedText -Text $line)[/]"
+                $skipLabel = 'Skip this version (recommended)'
+                $techMap = [ordered]@{}
+                foreach ($f in $families) { $techMap[(Get-SpectreEscapedText -Text ('Switch to {0}' -f $f.Label))] = $f.PinValue }
+                $keepLabel = Get-SpectreEscapedText -Text ('Keep {0} (not offered for this version: the build will stop)' -f $anchorRow.Label)
+                $techMap[$keepLabel] = ''
+                $choice = Read-SpectreSelection -Message ('Installer technology for {0} in this tenant' -f (Get-SpectreEscapedText -Text $picked.Name)) -Choices @(@($skipLabel) + @($techMap.Keys)) -Color Blue
+                if ([string]$choice -eq $skipLabel -or -not $techMap.Contains([string]$choice)) {
+                    Write-SpectreHost "[yellow]$(Get-SpectreEscapedText -Text ('Skipped: nothing was built. Package a later version that ships {0} again.' -f $anchorRow.Label))[/]"
+                    Read-SpectrePause -Message 'Press any key to return' -AnyKey | Out-Null
+                    return
+                }
+                $techPin = [string]$techMap[[string]$choice]
+                $techSummary = if ($techPin) { "$techPin (your choice; the earlier version is $($anchorRow.EffectiveType))" } else { "keeps $($anchorRow.EffectiveType) ($($anchor.Name) is $how; not offered for this version: the build will stop)" }
+            }
+            elseif ($families.Count -ge 2 -and $others.Count -ge 1) {
+                $techMap = [ordered]@{}
+                $keepLabel = Get-SpectreEscapedText -Text ('Keep {0} (recommended: {1} is {2})' -f $anchorRow.Label, $anchor.Name, $how)
+                $techMap[$keepLabel] = ''
+                foreach ($f in $others) { $techMap[(Get-SpectreEscapedText -Text ('Switch to {0}' -f $f.Label))] = $f.PinValue }
+                $choice = Read-SpectreSelection -Message ('Installer technology for {0} in this tenant' -f (Get-SpectreEscapedText -Text $picked.Name)) -Choices @($techMap.Keys) -Color Blue
+                $techPin = if ($techMap.Contains([string]$choice)) { [string]$techMap[[string]$choice] } else { '' }
+                $techSummary = if ($techPin) { "$techPin (your choice; the earlier version is $($anchorRow.EffectiveType))" } else { "keeps $($anchorRow.EffectiveType) ($($anchor.Name) is $how)" }
+            }
+            else {
+                Write-SpectreHost "[grey]$(Get-SpectreEscapedText -Text ('Installer technology: keeps {0} ({1} is {2}).' -f $anchorRow.EffectiveType, $anchor.Name, $how))[/]"
+                $techSummary = "keeps $($anchorRow.EffectiveType) ($($anchor.Name) is $how)"
+            }
+        }
+        elseif ($families.Count -ge 2) {
+            Write-SpectreHost '[grey]Devices that already have the other technology would get two registrations; pick the one your devices already have.[/]'
+            $techMap = [ordered]@{}
+            for ($i = 0; $i -lt $families.Count; $i++) {
+                $text = if ($i -eq 0) { "$($families[$i].Label) - winget's default" } else { $families[$i].Label }
+                $techMap[(Get-SpectreEscapedText -Text $text)] = $families[$i].PinValue
+            }
+            $choice = Read-SpectreSelection -Message ('Installer technology for {0}' -f (Get-SpectreEscapedText -Text $picked.Name)) -Choices @($techMap.Keys) -Color Blue
+            if ($techMap.Contains([string]$choice)) { $techPin = [string]$techMap[[string]$choice] }
+            $techSummary = if ($techPin) { "$techPin (your choice)" } else { "winget's choice" }
+        }
+        elseif ($probe -and $probe.Status -eq 'Ok') {
+            $only = if ($families.Count -eq 1) { $families[0].Label } else { 'one technology' }
+            Write-SpectreHost "[grey]$(Get-SpectreEscapedText -Text ("Installer technology: winget ships $only for this version; nothing to choose."))[/]"
+        }
+        else {
+            $reason = if ($probe -and $probe.Reason) { [string]$probe.Reason } else { 'no answer' }
+            Write-SpectreHost "[grey]$(Get-SpectreEscapedText -Text ("Installer technology: winget's choice (the other technologies could not be checked: $reason); the checks after the download still run."))[/]"
+            $techSummary = "winget's choice (not checked: $reason)"
+        }
+    }
+
     # 4b. Dependencies — apps Intune must install BEFORE this one (e.g. a VC++ redistributable).
     # Sourced from winget or an already-packaged project; stored as data in AppConfig.json.
     $deps = @()
@@ -89,6 +226,7 @@ function Invoke-Win32ToolkitWingetWizard {
         "Application  : $($picked.Name)  (v$($picked.Version))"
         "Winget ID    : $($picked.Id)"
         "Architecture : $arch"
+        "Installer tech : $techSummary"
         "Template     : $template"
         "Base folder  : $BasePath"
         "Test/capture : $($bi.Label)"
@@ -110,6 +248,7 @@ function Invoke-Win32ToolkitWingetWizard {
     Clear-Host
     Write-SpectreRule -Title "Building $(Get-SpectreEscapedText -Text $picked.Name)…" -Color Blue
     $p = @{ Id = $picked.Id; Architecture = $arch; TemplateName = $template; BasePath = $BasePath; Force = $true }
+    if ($techPin)   { $p.InstallerType = $techPin }
     if ($deps)      { $p.DependsOn = $deps }
     if ($doTest)    { $p.RunTest = 'InstallUninstall' }
     if ($doPackage) { $p.PackageIntune = $true }

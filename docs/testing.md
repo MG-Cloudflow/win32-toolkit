@@ -170,7 +170,8 @@ The download rules:
 
 - **The installer type is always pinned.** The types of its family are tried in winget's order (for
   `nullsoft`: `nullsoft`, `burn`, `inno`, `exe`). There is **no unpinned retry** any more, so the baseline
-  can never silently be another technology than the one printed.
+  can never silently be another technology than the one printed. After each `No applicable installer found`
+  line from winget, one line names the attempt that comes next.
 - **A scope is only a preference.** When the pinned type comes with an explicit scope (the packaged
   manifest's `machine` or `user`), it is tried first; when that version has no installer of that scope, the
   same type is downloaded without a scope, with a warning, and `ScopeRelaxed` is recorded. A scope never

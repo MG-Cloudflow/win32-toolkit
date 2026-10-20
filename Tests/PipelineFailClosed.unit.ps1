@@ -14,6 +14,12 @@
         -AllowLegacyScript reaches both the Assert and Export-Win32ToolkitIntuneWin; a relative
         -ProjectPath reaches the Assert as an absolute path.
       * Configure-PSADTForInstaller: W32T errors propagate; Apply-OrgTemplate -> $false => $false.
+      * Installer technology (installer-identity PR 1, spec 3.4): the pin is resolved before the download
+        and reaches it and Configure (AppConfig.Source); the identity checks run after the icon step with
+        the template tenant; -UpdateBaselineInstallerType reaches Finalize only when bound; a
+        W32T.InstallerVariantUnavailable from the download passes Invoke unchanged and nothing downstream runs.
+        A rebuild reads the project's own anchor (Get-Win32ToolkitSelfAnchor) BEFORE Create-PSADTProject removes
+        the old folder, passes it as -SelfAnchor, and keeps the old Intune\Publications.json.
 
     Everything downstream is shadowed: no winget, no PSADT, no sandbox, no Intune.
 
@@ -59,7 +65,12 @@ function Reset-Case([hashtable]$Mode) { $script:Mode = $Mode; $script:Calls.Clea
 
 function Test-WingetInstalled { $true }
 function Get-Win32ToolkitBasePath { param($BasePath, [switch]$Reconfigure) $BASE }
-function Get-OrgTemplate { param($TemplateName, $BasePath) [pscustomobject]@{ TemplateName = 'Contoso'; AppScriptAuthor = 'IT' } }
+function Get-OrgTemplate {
+    param($TemplateName, $BasePath)
+    $t = [pscustomobject]@{ TemplateName = 'Contoso'; AppScriptAuthor = 'IT' }
+    if ($script:Mode.TenantId) { $t | Add-Member -NotePropertyName TenantId -NotePropertyValue $script:Mode.TenantId }
+    $t
+}
 function Resolve-Win32ToolkitWingetId { param($Id) [pscustomobject]@{ Name = 'Git'; Id = $Id; Version = '2.45.0'; Source = 'winget' } }
 function Get-WingetAppDetails { param($AppId) if ($script:Mode.DetailsThrows) { throw 'winget exploded' }; @('x64') }
 function Select-Architecture { param($Architectures, $AppName, $PreSelected) 'x64' }
@@ -72,11 +83,48 @@ function Create-PSADTProject {
     $script:Calls.Add('create')
     if ($script:Mode.CreateFails) { return $false }
     $full = Join-Path $ProjectPath $ProjectName
+    # -Force re-creation, as the real one: the old project folder is removed first.
+    if ($script:Mode.Recreate -and (Test-Path -LiteralPath $full)) { Remove-Item -LiteralPath $full -Recurse -Force }
     foreach ($d in 'Files', 'SupportFiles') { New-Item -ItemType Directory -Path (Join-Path $full $d) -Force | Out-Null }
     Set-Content -LiteralPath (Join-Path $full 'Invoke-AppDeployToolkit.ps1') -Value '# scaffold'
     return $true
 }
-function Download-WingetApp { param($AppId, $AppName, $DownloadPath, $Architecture) $script:Calls.Add('download'); Set-Content (Join-Path $DownloadPath 'setup.exe') 'x'; $true }
+# Installer technology (installer-identity PR 1, C-9): shadows mirror the real contracts.
+$script:PinSeen = $null; $script:DlSeen = $null; $script:SourceSeen = $null; $script:IdentitySeen = $null; $script:IdentityAt = $null
+# The rebuild self-anchor is read BEFORE Create-PSADTProject removes the old folder (it records the calls made so far).
+$script:SelfSeen = $null; $script:SelfAt = $null
+function Get-Win32ToolkitSelfAnchor {
+    param($ProjectPath, $TenantId)
+    $script:SelfSeen = $PSBoundParameters; $script:SelfAt = @($script:Calls)
+    $script:SelfFolderExisted = Test-Path -LiteralPath (Join-Path $ProjectPath 'SupportFiles')
+    $script:Mode.SelfAnchor
+}
+function Resolve-Win32ToolkitInstallerPin {
+    param($TemplateDirectory, $WingetId, $Version, $InstallerType, $ExcludePath, $TenantId, $SelfAnchor)
+    $script:PinSeen = $PSBoundParameters
+    [pscustomobject]@{
+        InstallerType = [string]$InstallerType; Family = ''; Predecessor = $null; WingetClient = '1.29.380'
+        PinnedBy      = if ($InstallerType) { 'parameter' } else { 'winget-default' }
+        Reason        = if ($InstallerType) { 'requested' } else { "winget's choice" }
+    }
+}
+function Get-Win32ToolkitProjectSource {
+    param($ProjectPath, [switch]$Rebuild, $Architecture, $PinnedBy, $RequestedInstallerType, $WingetClient)
+    $script:SourceSeen = $PSBoundParameters
+    [pscustomobject]@{ SchemaVersion = '1.0'; PinnedBy = $PinnedBy; RequestedInstallerType = $RequestedInstallerType; WingetClient = $WingetClient }
+}
+function Write-Win32ToolkitIdentityDelta {
+    param($ProjectPath, $TenantId, [switch]$Quiet)
+    $script:IdentitySeen = $PSBoundParameters; $script:IdentityAt = @($script:Calls)
+}
+function Download-WingetApp {
+    param($AppId, $AppName, $DownloadPath, $Architecture, $InstallerType, $PinnedBy, $PinReason)
+    $script:Calls.Add('download'); $script:DlSeen = $PSBoundParameters
+    if ($script:Mode.DownloadUnavailable) {
+        throw (New-W32TError 'W32T.InstallerVariantUnavailable' "winget offers no vendor EXE installer for $AppId (x64); tried: nullsoft, burn, inno, exe. Nothing was downloaded.")
+    }
+    Set-Content (Join-Path $DownloadPath 'setup.exe') 'x'; $true
+}
 function Rename-InstallerFile { param($FilesPath, $AppName, $Version, $Architecture) }
 function Get-AppIconFromWinget { param($ProjectPath, $FilesPath) $script:Calls.Add('icon') }
 function Set-Win32ToolkitAppDependency { param($ProjectPath, $DependsOn, $DependencyType) }
@@ -223,6 +271,84 @@ if ($r.Ret -eq $true -and ($r.Warnings -join ' ') -match 'completed with warning
 $r = Invoke-Configure @{ GeneratorPlainThrows = $true }
 if ($r.Ret -eq $false -and ($r.Warnings -join ' ') -match 'Failed to configure PSADT: plain generator failure') { Ok 'a non-W32T error keeps today''s warning + $false' } else { Bad "ret=$($r.Ret) fqid='$($r.Fqid)'" }
 $script:OrgTemplate = $null
+
+# == Installer technology (installer-identity PR 1) ================================================
+Write-Host '[5] Invoke-Win32Toolkit: installer pin, AppConfig.Source, identity checks, baseline technology, W32T.InstallerVariantUnavailable' -ForegroundColor Cyan
+$projDir = Join-Path $BASE 'Projects\Contoso'
+$newProj = Join-Path $projDir 'Git_x64_2.45.0'
+
+Reset-Case @{}
+$script:PinSeen = $null; $script:DlSeen = $null; $script:SourceSeen = $null; $script:IdentitySeen = $null; $script:IdentityAt = $null
+$r = Invoke-Case { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -InstallerType nullsoft -ErrorAction SilentlyContinue -ErrorVariable ev }
+$ps = $script:PinSeen
+if (-not $r.Fqid -and $ps -and $ps['TemplateDirectory'] -eq $projDir -and $ps['WingetId'] -eq 'Git.Git' -and $ps['Version'] -eq '2.45.0' -and $ps['InstallerType'] -eq 'nullsoft' -and
+    $ps['ExcludePath'] -eq $newProj -and $ps['TenantId'] -eq '') {
+    Ok 'the pin is resolved with the template folder, winget id, version, -InstallerType, the new project excluded and the tenant'
+} else { Bad "fqid='$($r.Fqid)' pin args: $(if ($ps) { ($ps.Keys | ForEach-Object { "$_=$($ps[$_])" }) -join '; ' })" }
+$ds = $script:DlSeen
+if ($ds -and $ds['InstallerType'] -eq 'nullsoft' -and $ds['PinnedBy'] -eq 'parameter' -and $ds['PinReason'] -eq 'requested') { Ok '-InstallerType nullsoft reaches Download-WingetApp with PinnedBy/PinReason' } else { Bad "download args: $(if ($ds) { ($ds.Keys | ForEach-Object { "$_=$($ds[$_])" }) -join '; ' })" }
+$ss = $script:SourceSeen
+if ($ss -and $ss['Rebuild'] -and $ss['PinnedBy'] -eq 'parameter' -and $ss['RequestedInstallerType'] -eq 'nullsoft' -and $ss['WingetClient'] -eq '1.29.380') { Ok 'Configure gets the pin: AppConfig.Source built with PinnedBy parameter, RequestedInstallerType nullsoft, the winget client' } else { Bad "source args: $(if ($ss) { ($ss.Keys | ForEach-Object { "$_=$($ss[$_])" }) -join '; ' })" }
+$cfgSrc = (Get-Win32ToolkitAppConfig -ProjectPath $newProj).Source
+if ($cfgSrc -and $cfgSrc.PinnedBy -eq 'parameter') { Ok 'AppConfig.json carries the Source section' } else { Bad 'no Source in AppConfig.json' }
+$is = $script:IdentitySeen
+if ($is -and $is['ProjectPath'] -eq $newProj -and $is['TenantId'] -eq '' -and (@($script:IdentityAt) -join ',') -eq 'create,download,generate,apply,icon') { Ok 'the identity checks run once, after the icon step and before Finalize, for the new project' } else { Bad "identity args: $(if ($is) { ($is.Keys | ForEach-Object { "$_=$($is[$_])" }) -join '; ' }) calls before: [$(@($script:IdentityAt) -join ',')]" }
+if (($script:Calls -join ',') -match 'icon,assert:Finalize:False,document') { Ok 'Finalize still runs after the identity checks (warnings never block)' } else { Bad "calls=[$($script:Calls -join ',')]" }
+
+Reset-Case @{ TenantId = 'tenant-9' }
+$script:PinSeen = $null; $script:IdentitySeen = $null; $script:DlSeen = $null
+$r = Invoke-Case { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -ErrorAction SilentlyContinue -ErrorVariable ev }
+if (-not $r.Fqid -and $script:PinSeen['TenantId'] -eq 'tenant-9' -and $script:IdentitySeen['TenantId'] -eq 'tenant-9' -and $script:PinSeen['InstallerType'] -eq '' -and $script:DlSeen['InstallerType'] -eq '' -and $script:DlSeen['PinnedBy'] -eq 'winget-default') {
+    Ok "the template tenant reaches the pin and the identity checks; no -InstallerType -> the download is unpinned ('')"
+} else { Bad "fqid='$($r.Fqid)' pin tenant=$($script:PinSeen['TenantId']) identity tenant=$($script:IdentitySeen['TenantId']) dl type=[$($script:DlSeen['InstallerType'])]" }
+
+# Rebuilding a version that is itself published or pinned: Create-PSADTProject removes the old folder, so the
+# self-anchor is read BEFORE it and handed to the resolver, and the old Intune\Publications.json is kept.
+$pubFile = Join-Path $newProj 'Intune\Publications.json'
+New-Item -ItemType Directory -Path (Split-Path -Path $pubFile -Parent) -Force | Out-Null
+$pubBytes = [System.Text.Encoding]::UTF8.GetBytes('[ { "TenantId": "tenant-9", "AppId": "11111111-2222-3333-4444-555555555555", "WingetId": "Git.Git" } ]')
+[System.IO.File]::WriteAllBytes($pubFile, $pubBytes)
+$selfGit = [pscustomobject]@{ Name = 'Git_x64_2.45.0'; Path = $newProj; InstallerType = 'inno'; Family = 'exe'; PinnedBy = 'winget-default'; Published = $true; Anchored = $true; AnchorReason = 'published' }
+Reset-Case @{ TenantId = 'tenant-9'; Recreate = $true; SelfAnchor = $selfGit }
+$script:SelfSeen = $null; $script:SelfAt = $null; $script:SelfFolderExisted = $false; $script:PinSeen = $null
+$r = Invoke-Case { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -ErrorAction SilentlyContinue -ErrorVariable ev }
+$ss = $script:SelfSeen
+if (-not $r.Fqid -and $ss -and $ss['ProjectPath'] -eq $newProj -and $ss['TenantId'] -eq 'tenant-9' -and 'create' -notin @($script:SelfAt) -and 'create' -in $script:Calls -and $script:SelfFolderExisted) {
+    Ok 'the self-anchor is read for the project being rebuilt (template tenant) BEFORE Create-PSADTProject removes the old folder'
+} else { Bad "fqid='$($r.Fqid)' self args: $(if ($ss) { ($ss.Keys | ForEach-Object { "$_=$($ss[$_])" }) -join '; ' }) calls before: [$(@($script:SelfAt) -join ',')] folder existed: $script:SelfFolderExisted" }
+if ($script:PinSeen -and $script:PinSeen['SelfAnchor'] -and $script:PinSeen['SelfAnchor'].Name -eq 'Git_x64_2.45.0' -and $script:PinSeen['ExcludePath'] -eq $newProj) { Ok 'the resolver gets it as -SelfAnchor (next to the excluded project path)' } else { Bad "pin args: $(if ($script:PinSeen) { ($script:PinSeen.Keys | ForEach-Object { "$_=$($script:PinSeen[$_])" }) -join '; ' })" }
+if ((Test-Path -LiteralPath $pubFile) -and [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($pubFile)) -ceq [Convert]::ToBase64String($pubBytes)) { Ok 'Intune\Publications.json survives the re-creation byte for byte (the rebuilt version keeps anchoring later versions)' } else { Bad "Publications.json after the rebuild: exists=$(Test-Path -LiteralPath $pubFile)" }
+Reset-Case @{}
+$script:PinSeen = $null
+$r = Invoke-Case { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -ErrorAction SilentlyContinue -ErrorVariable ev }
+if (-not $r.Fqid -and $script:PinSeen -and $script:PinSeen.ContainsKey('SelfAnchor') -and $null -eq $script:PinSeen['SelfAnchor']) { Ok 'no self-anchor -> the resolver gets -SelfAnchor $null (continuity from earlier versions as before)' } else { Bad "pin args: $(if ($script:PinSeen) { ($script:PinSeen.Keys | ForEach-Object { "$_=$($script:PinSeen[$_])" }) -join '; ' })" }
+
+# -UpdateBaselineInstallerType reaches Finalize only when bound (Finalize shadowed in a child scope).
+$finalizeRun = {
+    param([hashtable]$Extra)
+    function Invoke-Win32ToolkitFinalize {
+        param($ProjectPath, $ProjectName, $AppInfo, $RunTest, $UpdateVersionsBack, $UpdateSpecificVersion, $UpdateBaselineInstallerType,
+            [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate)
+        $script:FinalizeSeen = $PSBoundParameters
+    }
+    $script:FinalizeSeen = $null
+    Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force @Extra 6>$null 3>$null
+    $script:FinalizeSeen
+}
+Reset-Case @{}
+$fs = & $finalizeRun @{ RunTest = @('Update'); UpdateVersionsBack = 1; UpdateBaselineInstallerType = 'Both' }
+if ($fs -and $fs['UpdateBaselineInstallerType'] -eq 'Both' -and $fs['RunTest'] -eq 'Update' -and $fs['UpdateVersionsBack'] -eq 1) { Ok '-UpdateBaselineInstallerType Both reaches Invoke-Win32ToolkitFinalize' } else { Bad "finalize args: $(if ($fs) { ($fs.Keys | ForEach-Object { "$_=$($fs[$_])" }) -join '; ' })" }
+$fs = & $finalizeRun @{ RunTest = @('Update') }
+if ($fs -and -not $fs.ContainsKey('UpdateBaselineInstallerType')) { Ok 'not bound -> not passed (Finalize and Test keep their own default)' } else { Bad "finalize args: $(if ($fs) { ($fs.Keys | ForEach-Object { "$_=$($fs[$_])" }) -join '; ' })" }
+
+# W32T.InstallerVariantUnavailable from the download passes Invoke unchanged; nothing downstream runs.
+Reset-Case @{ DownloadUnavailable = $true }
+$script:IdentitySeen = $null
+$script:OrgTemplate = [pscustomobject]@{ TemplateName = 'stale' }
+$r = Invoke-Case { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -InstallerType nullsoft -PackageIntune -PublishIntune -ErrorAction SilentlyContinue -ErrorVariable ev }
+if ($r.Fqid -eq 'W32T.InstallerVariantUnavailable' -and $r.Message.StartsWith('winget offers no vendor EXE installer for Git.Git (x64); tried: nullsoft, burn, inno, exe.')) { Ok 'W32T.InstallerVariantUnavailable reaches the caller unchanged (C-2 re-throw)' } else { Bad "fqid='$($r.Fqid)' message=$($r.Message)" }
+if (($script:Calls -join ',') -eq 'create,download' -and $null -eq $script:IdentitySeen -and (& $downstream $script:Calls).Count -eq 0) { Ok 'nothing after the download ran: no configure, icon, identity checks, finalize, test or export' } else { Bad "calls=[$($script:Calls -join ',')] identity=$($null -ne $script:IdentitySeen)" }
+if ($null -eq $script:OrgTemplate) { Ok '$script:OrgTemplate is cleared by the finally' } else { Bad 'org template leaked' }
 
 Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''

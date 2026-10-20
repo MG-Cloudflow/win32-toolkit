@@ -14,11 +14,17 @@
     those (no false noise about flags they never passed), and still returns instead of throwing — the
     project folder is deliberately kept so the run can be retried.
 
-    Nothing heavy runs: winget, the base-path/template resolution, the scaffolder, the downloader and the
-    finalize step are all shadowed. No network, no PSADT, no Intune.
+    Also (installer-identity PR 1): -InstallerType reaches the download as the pin (parameter); without it
+    the download is unpinned (winget-default). The rebuild self-anchor is read before Create-PSADTProject
+    (which removes an existing project folder) and the pin is resolved after it.
+
+    Nothing heavy runs: winget, the base-path/template resolution, the scaffolder, the installer pin, the
+    downloader and the finalize step are all shadowed. No network, no PSADT, no Intune.
 
     Run:  pwsh -File Tests\P1_DroppedFlags.unit.ps1
 #>
+# Test shadows keep the real command names and signatures.
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'test shadows mirror the real signatures')]
 [CmdletBinding()]
 param()
 
@@ -55,15 +61,38 @@ function Get-Win32ToolkitPaths {
         IntuneWin = Join-Path $script:tmpBase 'IntuneWin'
     }
 }
-function Create-PSADTProject { param($ProjectName, $ProjectPath, [switch]$Force) $true }
+$script:order = [System.Collections.Generic.List[string]]::new()
+function Create-PSADTProject { param($ProjectName, $ProjectPath, [switch]$Force) $script:order.Add('create'); $true }
 
-# THE FAILURE UNDER TEST: the download does not succeed.
-function Download-WingetApp { param($AppId, $AppName, $DownloadPath, $Architecture) $false }
+# Rebuild self-anchor (installer-identity PR 1, C-9): read before Create-PSADTProject removes an old folder.
+$script:selfSeen = $null
+function Get-Win32ToolkitSelfAnchor { param($ProjectPath, $TenantId) $script:order.Add('self'); $script:selfSeen = $PSBoundParameters; $null }
+
+# Installer technology (installer-identity PR 1, C-9): the pin is resolved before the download. The shadow
+# mirrors the real resolver for an explicit -InstallerType (parameter) and for none (winget-default).
+function Resolve-Win32ToolkitInstallerPin {
+    param($TemplateDirectory, $WingetId, $Version, $InstallerType, $ExcludePath, $TenantId, $SelfAnchor)
+    $script:order.Add('pin')
+    [pscustomobject]@{
+        InstallerType = [string]$InstallerType; Family = ''; Predecessor = $null; WingetClient = '1.29.380'
+        PinnedBy      = if ($InstallerType) { 'parameter' } else { 'winget-default' }
+        Reason        = if ($InstallerType) { 'requested' } else { "winget's choice" }
+    }
+}
+
+# THE FAILURE UNDER TEST: the download does not succeed. It records what it was asked to download.
+$script:dlSeen = $null
+function Download-WingetApp { param($AppId, $AppName, $DownloadPath, $Architecture, $InstallerType, $PinnedBy, $PinReason) $script:dlSeen = $PSBoundParameters; $false }
 
 # Anything downstream of the download must never run on this path — if it does, the test explodes loudly.
 function Invoke-Win32ToolkitFinalize {
-    param($ProjectPath, $ProjectName, $AppInfo, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate)
+    param($ProjectPath, $ProjectName, $AppInfo, $RunTest, $UpdateVersionsBack, $UpdateSpecificVersion, $UpdateBaselineInstallerType,
+        [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate)
     throw 'Invoke-Win32ToolkitFinalize ran even though the download failed'
+}
+function Write-Win32ToolkitIdentityDelta {
+    param($ProjectPath, $TenantId, [switch]$Quiet)
+    throw 'Write-Win32ToolkitIdentityDelta ran even though the download failed'
 }
 function Set-Win32ToolkitAppDependency {
     param($ProjectPath, $DependsOn, $DependencyType)
@@ -144,6 +173,24 @@ else { Bad "bare run lost the download-failure warning:`n$($bare.Text)" }
 $off = Invoke-Failing -ExtraArgs @{ PackageIntune = $false }
 if ($off.Text -notmatch [regex]::Escape('-PackageIntune')) { Ok '-PackageIntune:$false is bound but NOT reported as skipped' }
 else { Bad "reported -PackageIntune even though it was explicitly `$false:`n$($off.Text)" }
+
+# ══ 3. installer technology reaches the download (installer-identity PR 1) ═════════════════════════
+Write-Host '[P1] -InstallerType reaches the download; without it winget chooses' -ForegroundColor Cyan
+$script:dlSeen = $null
+$t = Invoke-Failing -ExtraArgs @{ InstallerType = 'nullsoft'; UpdateBaselineInstallerType = 'Both'; RunTest = @('Update') }
+if ($null -eq $t.Threw -and $script:dlSeen -and $script:dlSeen['InstallerType'] -eq 'nullsoft' -and $script:dlSeen['PinnedBy'] -eq 'parameter' -and $script:dlSeen['PinReason'] -eq 'requested') {
+    Ok '-InstallerType nullsoft -> Download-WingetApp -InstallerType nullsoft -PinnedBy parameter -PinReason requested'
+} else { Bad "threw=$($t.Threw) download saw: $(if ($script:dlSeen) { ($script:dlSeen.Keys | ForEach-Object { "$_=$($script:dlSeen[$_])" }) -join '; ' })" }
+if ($t.Text -match [regex]::Escape('-RunTest (Update)')) { Ok 'the failed download still names the skipped -RunTest' } else { Bad "warnings:`n$($t.Text)" }
+$script:dlSeen = $null
+$null = Invoke-Failing
+if ($script:dlSeen -and $script:dlSeen['InstallerType'] -eq '' -and $script:dlSeen['PinnedBy'] -eq 'winget-default') { Ok "no -InstallerType -> the download gets -InstallerType '' (winget chooses, unpinned arguments)" } else { Bad "download saw: $(if ($script:dlSeen) { ($script:dlSeen.Keys | ForEach-Object { "$_=$($script:dlSeen[$_])" }) -join '; ' })" }
+
+$script:order.Clear(); $script:selfSeen = $null
+$null = Invoke-Failing
+$wantSelf = Join-Path $script:tmpBase 'Projects\TestTpl\Git_x64_2.45.0'
+if (($script:order -join ',') -eq 'self,create,pin' -and $script:selfSeen -and $script:selfSeen['ProjectPath'] -eq $wantSelf) { Ok 'the rebuild self-anchor is read for the project path BEFORE Create-PSADTProject, the pin after it' }
+else { Bad "order=[$($script:order -join ',')] self path=[$(if ($script:selfSeen) { $script:selfSeen['ProjectPath'] })]" }
 
 Remove-Item -LiteralPath $script:tmpBase -Recurse -Force -ErrorAction SilentlyContinue
 
