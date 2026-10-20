@@ -118,6 +118,9 @@ foreach ($phase in 'PreBaseline', 'PreUpdate', 'PostUpdate') {
 
 # The guard now WAITS instead of throwing immediately.
 if ($src -match 'Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90') { Ok 'single-instance guard waits up to 90 s before failing' } else { Bad 'guard still throws immediately' }
+# -BaselineInstallerType Both on watched Sandbox (installer-identity PR 1): the next leg waits for the operator to close
+# the previous leg's sandbox, up to the helper's 600 s maximum.
+if ($src -match 'Wait-Win32ToolkitSandboxFree -TimeoutSeconds 600') { Ok 'a Both leg on watched Sandbox waits up to 600 s for the previous sandbox' } else { Bad 'no 600 s wait between Both legs' }
 
 # ── (e) capture auto-close is mode-gated ───────────────────────────────────────────────────────────
 # The duration now flows through the SHARED resolver (Get-Win32ToolkitTestMode), so -Unattended/config/

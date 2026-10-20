@@ -8,8 +8,8 @@ Tests a PSADT project in a disposable guest: Windows Sandbox or the Hyper-V test
 ```
 Test-Win32ToolkitProject [[-ProjectPath] <String>] [[-BasePath] <String>] [[-Scenario] <String>]
  [[-VersionsBack] <Int32>] [[-SpecificVersion] <String>] [-SkipRequirementCheck]
- [[-BaselineProjectPath] <String>] [[-BaselineProject] <String>] [[-Backend] <String>] [-Unattended]
- [-ProgressAction <ActionPreference>] [<CommonParameters>]
+ [[-BaselineProjectPath] <String>] [[-BaselineProject] <String>] [[-BaselineInstallerType] <String>]
+ [[-Backend] <String>] [-Unattended] [-ProgressAction <ActionPreference>] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -36,6 +36,14 @@ first failing dependency and exits with its exit code.
 The app, an Update baseline project and the
 update run through the guest runner Sandbox\Invoke-PsadtPackage.ps1, which appends the exact exit
 code of each of its runs to Sandbox\Logs\PsadtExitCodes.log; those codes are printed after the run.
+
+Run logs: every run, and each run of -BaselineInstallerType Both, keeps its own copy of its logs (the
+assertion log, the Add/Remove Programs snapshots, its PsadtExitCodes.log lines and the PSADT and MSI
+logs) in a folder under Sandbox\Logs\Runs named after its start time, its scenario and, for an Update
+run, the old version's installer family, for example Sandbox\Logs\Runs\20261020-221500_Update_exe.
+Its Documentation\TestResults.json record names that folder (LogFolder).
+The files directly in
+Sandbox\Logs are the latest run's.
 
 The function is scenario-driven: new test types can be added as additional switch cases
 without changing the overall structure.
@@ -83,6 +91,18 @@ Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.5
 ### EXAMPLE 8
 ```
 Test-Win32ToolkitProject -BasePath 'D:\Packaging' -Scenario Update
+```
+
+### EXAMPLE 9
+```
+# One Update run per installer technology winget ships (e.g. the vendor EXE and the MSI), each recorded separately
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario Update -VersionsBack 1 -BaselineInstallerType Both
+```
+
+### EXAMPLE 10
+```
+# Pin the old version to the vendor EXE (NSIS) technology
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario Update -SpecificVersion '8.8.9' -BaselineInstallerType nullsoft
 ```
 
 ## PARAMETERS
@@ -241,6 +261,40 @@ Accept pipeline input: False
 Accept wildcard characters: False
 ```
 
+### -BaselineInstallerType
+Update scenario, winget baseline only: the installer technology the old-version baseline must use.
+The baseline download always pins an installer type (never an unpinned retry) and never a locale.
+The resolved technology is printed as 'Baseline technology : ...' before the version is picked.
+- Auto (default): the other installer technology winget ships for this app, when there is one (read
+  from Documentation\IdentityDelta.json, written on first use), so an MSI package is tested over the
+  vendor EXE install that devices may already have; otherwise the packaged one.
+  When the chosen version does not ship that technology, the run falls back to the packaged one with a
+  warning and records UsedFallback (such a run cannot show a technology switch).
+- Both: one Update run per technology (the packaged one, then each other one winget ships) at the same
+  version, each with its own verdict and TestResults.json record.
+  Returns $false when a run failed, $null when a run had no verdict, else $true.
+- Packaged: the packaged installer technology only.
+- msi, wix, burn, nullsoft, inno, exe, msix: exactly that technology family, no fallback.
+A pinned scope (machine or user) is only a preference: when the version has no installer of that
+scope, winget's choice of scope is used and ScopeRelaxed is recorded.
+When the version has no installer of the required technology, the run records an Inconclusive result
+(Baseline.Unavailable) and returns $null.
+When an old install of ANOTHER technology is still registered after the update, an ID-TECH-SWITCH
+warning names it.
+Not valid with -BaselineProject / -BaselineProjectPath (that package has its own technology).
+
+```yaml
+Type: String
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: 8
+Default value: Auto
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
 ### -Backend
 Which test backend to use for this run: 'Sandbox' (Windows Sandbox) or 'HyperV' (the local
 Hyper-V test VM over PowerShell Direct).
@@ -254,7 +308,7 @@ Parameter Sets: (All)
 Aliases:
 
 Required: False
-Position: 8
+Position: 9
 Default value: None
 Accept pipeline input: False
 Accept wildcard characters: False

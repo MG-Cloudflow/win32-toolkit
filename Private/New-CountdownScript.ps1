@@ -26,14 +26,17 @@ function New-CountdownScript {
     $countdownScript = @'
 # Verdict of the install that just ran, read from the guest runner's exit-code log
 # (Sandbox\Invoke-PsadtPackage.ps1 appends '[<time>] <label> <type> parent=<p> exit=<n> result=<r>').
-# The LAST 'Install' line wins (any label - in the Update scenario that is the baseline). Only the numeric
-# exit code and the one-word result class are taken from the log. Windows PowerShell 5.1-safe.
+# The LAST 'Install' line of the current run wins (any label - in the Update scenario that is the baseline):
+# the host starts each run with a '[<time>] -- test run <name> --' line, and the legs of an Update
+# '-BaselineInstallerType Both' run share the log, so only the lines after the last such line count.
+# Only the numeric exit code and the one-word result class are taken from the log. Windows PowerShell 5.1-safe.
 function Get-W32tInstallVerdict {
     param([string]$LogPath = 'C:\PSADT\Sandbox\Logs\PsadtExitCodes.log')
     $verdict = @{ Known = $false; Ok = $false; Exit = $null; Result = '' }
     if (-not (Test-Path -LiteralPath $LogPath)) { return $verdict }
     $last = $null
     foreach ($line in @(Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue)) {
+        if ("$line" -match '^\[[^\]]*\]\s+-- test run ') { $last = $null; continue }
         if ("$line" -match '^\[[^\]]*\]\s+\S+\s+Install\s') { $last = "$line" }
     }
     if (-not $last) { return $verdict }

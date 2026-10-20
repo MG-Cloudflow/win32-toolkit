@@ -4,6 +4,8 @@
       refusal (throw) when no safe comparison exists.
     - New-UpdateAssertionScript: generated 5.1-safe script, escaped tattoo values, ASSERT markers.
     - Wait-Win32ToolkitUpdateAssertion: PASS/FAIL/timeout verdicts from a pre-written log.
+    - [10] the baseline technology (installer-identity PR 1): Auto / Both / explicit legs, the pinned fallback,
+      the Unavailable record, the soft scope (the Git case) and the K5/K6 catches.
 
     Run:  pwsh -File Tests\UpdateTest.unit.ps1
 #>
@@ -30,6 +32,10 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Wait-Win32ToolkitSandboxFree.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitConfigValue.ps1')   # New-TargetedDocumentation reads SandboxTestMode
 . (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1')   # for -BaselineProjectPath validation (throws early)
+. (Join-Path $repo 'Private\Initialize-Win32ToolkitTestRunLog.ps1')   # C-9: each run keeps its logs in Sandbox\Logs\Runs\<run> (real)
+. (Join-Path $repo 'Private\Save-Win32ToolkitTestRunLog.ps1')
+function Wait-Win32ToolkitCollectedLog { param($TimeoutSeconds) $script:collectWaits += [int]$TimeoutSeconds; $true }   # no wait for a guest log collector
+$script:collectWaits = @()
 . (Join-Path $repo 'Private\Test-Win32ToolkitSandboxRunning.ps1')
 # Deterministic on any host (CI stdin is redirected, which would otherwise force Unattended).
 function Test-Win32ToolkitHostNonInteractive { $false }
@@ -357,6 +363,385 @@ try {
         $rt = ($jsonData | ConvertTo-Json -Depth 8) | ConvertFrom-Json
         if (@($rt.NewPrograms).Count -eq 1 -and $rt.NewPrograms[0].DisplayName -eq "Evil'App") { Ok 'derived data round-trips through JSON' } else { Bad 'JSON round-trip failed' }
     } else { Bad 'derivation block markers not found' }
+
+    Write-Host "`n[10] Baseline technology (installer-identity PR 1): Auto, fallback, unavailable, Both, the Git scope case" -ForegroundColor Cyan
+    # C-9: the Update arm now resolves the baseline technology (the real resolver and the WP-3 family table) and
+    # reads the source facts, the identity delta and the technology-switch finding (shadowed). The guest run is
+    # shadowed (Hyper-V, unattended); nothing is downloaded, installed or started.
+    . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+    . (Join-Path $repo 'Private\Get-Win32ToolkitInstallerFamily.ps1')
+    . (Join-Path $repo 'Private\Test-Win32ToolkitWingetNoApplicableInstaller.ps1')
+    . (Join-Path $repo 'Private\Resolve-Win32ToolkitBaselineFamily.ps1')
+    . (Join-Path $repo 'Private\Get-WingetManifestFile.ps1')
+    . (Join-Path $repo 'Private\Get-YAMLInstallerInfo.ps1')
+    . (Join-Path $repo 'Private\Get-WingetIdFromProject.ps1')
+
+    # Shadows declare only the parameters they read (the rest arrive in $args); state-changing verbs are defined through
+    # the function: drive, like a plain test double.
+    $script:testBackend = 'HyperV'; $script:testModeCfg = 'Unattended'
+    function Get-Win32ToolkitTestBackend { $script:testBackend }
+    function Get-Win32ToolkitConfigValue { $script:testModeCfg }
+    ${function:New-Win32ToolkitPackageRunnerScript} = { 'runner' }
+    function Initialize-Win32ToolkitDependencyStaging { 0 }
+    ${function:New-LogCollectorScript} = { 'collector' }
+    function Get-Win32ToolkitRequirementRule { 'rule' }
+    ${function:New-UpdateAssertionScript} = { 'assert.ps1' }
+    $script:hvRuns = 0
+    function Invoke-Win32ToolkitHyperVRun {
+        param($ProjectPath)
+        $script:hvRuns++
+        $ld = Join-Path $ProjectPath 'Sandbox\Logs'
+        New-Item -ItemType Directory -Path $ld -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $ld 'UpdateAssertions.log') -Value "[t] ASSERT Tattoo-PostUpdate = PASS (guest run $script:hvRuns)" -Encoding UTF8
+        Add-Content -LiteralPath (Join-Path $ld 'PsadtExitCodes.log') -Value "[t] update Install parent=x86-cmd exit=0 result=Success (guest run $script:hvRuns)" -Encoding UTF8
+        $true
+    }
+    $script:verdictQueue = [System.Collections.Generic.Queue[object]]::new()
+    function Wait-Win32ToolkitUpdateAssertion { if ($script:verdictQueue.Count) { $script:verdictQueue.Dequeue() } else { $true } }
+    ${function:Get-WingetVersions} = { @('8.8.9', '8.8.8') }
+    $script:pickerCalls = 0
+    function Show-VersionSelection { param($Versions) $script:pickerCalls++; Write-Host 'PICKER-CALLED'; $Versions[0] }
+    $script:outcomes = [System.Collections.Generic.List[object]]::new()
+    function Write-Win32ToolkitTestOutcome { param($Scenario, $Verdict, $Baseline, $LogFolder) $script:outcomes.Add([pscustomobject]@{ Scenario = $Scenario; Verdict = $Verdict; Baseline = $Baseline; LogFolder = $LogFolder }) }
+    $script:records = [System.Collections.Generic.List[object]]::new()
+    function Add-Win32ToolkitTestResult { param($Scenario, $Backend, $Verdict, $Mode, $Assertions, $Notes, $Baseline) $script:records.Add([pscustomobject]@{ Scenario = $Scenario; Backend = $Backend; Verdict = $Verdict; Mode = $Mode; Assertions = @($Assertions); Notes = $Notes; Baseline = $Baseline }) }
+    $script:switchCalls = 0
+    function Get-Win32ToolkitTechnologySwitch { $script:switchCalls++; [pscustomobject]@{ Code = 'ID-TECH-SWITCH'; Message = 'Technology switch: TEST' } }
+    $script:source = [pscustomobject]@{ InstallerType = 'wix'; Family = 'msi'; Scope = 'machine' }
+    function Get-Win32ToolkitProjectSource { $script:source }
+    $script:deltaWrites = 0
+    function Write-Win32ToolkitIdentityDelta { $script:deltaWrites++ }
+
+    # The old-version download, shadowed: records each call; $script:dlAnswer decides ('ok' | 'ivu' | 'boom').
+    $script:dlCalls = [System.Collections.Generic.List[hashtable]]::new()
+    $script:dlAnswer = { 'ok' }
+    ${function:New-IvuError} = {
+        param([string]$Message)
+        [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new($Message), 'W32T.InstallerVariantUnavailable',
+            [System.Management.Automation.ErrorCategory]::ObjectNotFound, 'x')
+    }
+    $dlShadow = {
+        param($AppId, $Version, $ProjectPath, $DestinationDir, $Architecture, $Scope, $InstallerType, $Locale, [switch]$FamilyPin)
+        $h = @{}; foreach ($k in $PSBoundParameters.Keys) { $h[$k] = $PSBoundParameters[$k] }
+        $script:dlCalls.Add($h)
+        $answer = & $script:dlAnswer $InstallerType
+        if ($answer -eq 'ivu') { throw (New-IvuError "winget offers no $InstallerType installer for $AppId v$Version.") }
+        if ($answer -eq 'boom') { throw "network down while downloading $InstallerType" }
+        [pscustomobject]@{
+            InstallerPath = 'C:\x\old.exe'; InstallerName = 'old.exe'; InstallerType = $(if ($InstallerType -in 'msi', 'wix') { 'msi' } else { 'exe' }); SilentArgs = '/S'
+            UsedFallback = $false; RequestedInstallerType = $InstallerType; ManifestInstallerType = $InstallerType; ManifestProductCode = ''; Scope = 'machine'; Locale = 'en-US'
+            Family = (Get-Win32ToolkitInstallerFamily -Type $InstallerType).Family; TriedTypes = @($InstallerType); ScopeRelaxed = $false
+        }
+    }
+    ${function:Download-OldVersionInstaller} = $dlShadow
+
+    # A Notepad++ 8.9.8.1 x64 project (the fixture manifest) whose IdentityDelta.json lists the nullsoft sibling.
+    $np = Join-Path $base 'npp'
+    New-Item -ItemType Directory -Path (Join-Path $np 'Files'), (Join-Path $np 'Documentation'), (Join-Path $np 'SupportFiles') -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $repo 'Tests\Fixtures\winget-manifests\Notepad++.Notepad++\8.9.8.1.installer.yaml') -Destination (Join-Path $np 'Files\Notepad++.Notepad++.installer.yaml')
+    Set-Content -LiteralPath (Join-Path $np 'Invoke-AppDeployToolkit.ps1') -Value '# stub'
+    $nppDelta = [pscustomobject]@{ SchemaVersion = '1.0'; Siblings = @([pscustomobject]@{
+                EffectiveType = 'nullsoft'; RegisteredType = ''; Family = 'exe'; InstallerType = 'nullsoft'; NestedInstallerType = ''; Scope = 'machine'; ProductCode = 'Notepad++'
+                ZipWrapped = $false; Registers = $true; Testable = $true; PinValue = 'nullsoft'; Precedence = 7; Label = 'nullsoft (vendor EXE, NSIS)' }) }
+    [System.IO.File]::WriteAllText((Join-Path $np 'Documentation\IdentityDelta.json'), ($nppDelta | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+    function Clear-RunState {
+        $script:dlCalls.Clear(); $script:outcomes.Clear(); $script:records.Clear(); $script:verdictQueue.Clear()
+        $script:switchCalls = 0; $script:pickerCalls = 0; $script:W32TUpdateLegContext = $null; $script:dlAnswer = { 'ok' }
+    }
+    function Split-Out($Items) {
+        [pscustomobject]@{
+            Warnings = @($Items | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { "$_" })
+            Info     = @($Items | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$_" })
+            Values   = @($Items | Where-Object { $null -ne $_ -and $_ -isnot [System.Management.Automation.WarningRecord] -and $_ -isnot [System.Management.Automation.InformationRecord] })
+        }
+    }
+
+    # (a) default Auto -> the sibling technology, printed before the version picker
+    Clear-RunState
+    $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update 6>&1 3>&1)
+    $iTech = [array]::FindIndex([string[]]$o.Info, [Predicate[string]] { param($l) $l -like 'Baseline technology : nullsoft (vendor EXE, NSIS) (other technology winget ships for this app)' })
+    $iPick = [array]::IndexOf([string[]]$o.Info, 'PICKER-CALLED')
+    if ($iTech -ge 0 -and $iPick -gt $iTech -and $script:pickerCalls -eq 1) { Ok "'Baseline technology : <label>' is printed before the version picker is called (Dv5)" } else { Bad "order: tech=$iTech pick=$iPick" }
+    $c0 = if ($script:dlCalls.Count) { $script:dlCalls[0] } else { @{} }
+    if ($script:dlCalls.Count -eq 1 -and $c0['FamilyPin'] -and $c0['InstallerType'] -eq 'nullsoft' -and $c0['Scope'] -eq 'machine' -and $c0['Version'] -eq '8.8.9' -and -not $c0.ContainsKey('Locale')) { Ok 'default Auto: Download-OldVersionInstaller gets -FamilyPin -InstallerType nullsoft (the sibling) -Scope machine, no -Locale' }
+    else { Bad "auto call: $($script:dlCalls | ConvertTo-Json -Compress)" }
+    $b0 = if ($script:outcomes.Count) { $script:outcomes[0].Baseline } else { $null }
+    if ($script:outcomes.Count -eq 1 -and $b0 -and $b0.Mode -eq 'Auto' -and $b0.Origin -eq 'Sibling' -and $b0.InstallerType -eq 'nullsoft' -and $b0.Family -eq 'exe' -and
+        $b0.Version -eq '8.8.9' -and $b0.UsedFallback -eq $false -and $b0.Source -eq 'winget' -and $b0.Unavailable -eq $false) { Ok 'the outcome is recorded with -Baseline (Mode Auto, Origin Sibling, nullsoft/exe, v8.8.9)' }
+    else { Bad "baseline: $($b0 | ConvertTo-Json -Compress)" }
+    if (@($o.Values) -contains $true -and $script:switchCalls -eq 0) { Ok 'a PASS returns $true and runs no technology-switch check' } else { Bad "values=$($o.Values -join ',') switch=$script:switchCalls" }
+
+    # (a2) the sibling lookup could not run (stored Probe Unavailable, e.g. HTTP 429): Auto uses the packaged technology
+    # and says so under 'Baseline technology', after one retry of the lookup (never a silent packaged-over-packaged pass).
+    $npu = Join-Path $base 'npp-unavailable'
+    New-Item -ItemType Directory -Path (Join-Path $npu 'Files'), (Join-Path $npu 'Documentation') -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $np 'Files\Notepad++.Notepad++.installer.yaml') -Destination (Join-Path $npu 'Files')
+    Set-Content -LiteralPath (Join-Path $npu 'Invoke-AppDeployToolkit.ps1') -Value '# stub'
+    [System.IO.File]::WriteAllText((Join-Path $npu 'Documentation\IdentityDelta.json'), '{"SchemaVersion":"1.0","Probe":{"Status":"Unavailable","Reason":"Network"},"Siblings":[]}', (New-Object System.Text.UTF8Encoding($false)))
+    Clear-RunState; $script:deltaWrites = 0
+    $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $npu -Scenario Update -SpecificVersion '8.8.9' 6>&1 3>&1)
+    $iTech = [array]::IndexOf([string[]]$o.Info, 'Baseline technology : wix (MSI) (packaged technology)')
+    $noteLine = '  Other installer technologies could not be checked (Network), so the packaged technology is used; pass -BaselineInstallerType <type> to choose one.'
+    if ($iTech -ge 0 -and $o.Info[$iTech + 1] -eq $noteLine) { Ok "probe Unavailable: 'Baseline technology : wix (MSI) (packaged technology)' followed by the 'could not be checked (Network)' note" }
+    else { Bad "probe note: $(@($o.Info | Where-Object { $_ -like 'Baseline technology*' -or $_ -like '  Other*' }) -join ' | ')" }
+    if ($script:deltaWrites -eq 1 -and $script:dlCalls.Count -eq 1 -and $script:dlCalls[0]['InstallerType'] -eq 'wix' -and $script:outcomes.Count -eq 1 -and $script:outcomes[0].Baseline.Origin -eq 'Packaged') { Ok 'the lookup is retried once; the run uses the packaged wix (Origin Packaged)' }
+    else { Bad "probe retry: writes=$script:deltaWrites calls=$($script:dlCalls | ConvertTo-Json -Compress)" }
+
+    # (b) the sibling is not offered at the baseline version -> pinned fallback to the packaged technology (L2)
+    Clear-RunState
+    $script:dlAnswer = { param($Type) if ($Type -eq 'nullsoft') { 'ivu' } else { 'ok' } }
+    $script:verdictQueue.Enqueue($false)
+    $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -SpecificVersion '8.8.9' 6>$null 3>&1)
+    if ($script:dlCalls.Count -eq 2 -and $script:dlCalls[1]['InstallerType'] -eq 'wix' -and $script:dlCalls[1]['FamilyPin'] -and $script:dlCalls[1]['Scope'] -eq 'machine') { Ok 'sibling unavailable -> a second, pinned call with the packaged type (wix, machine)' }
+    else { Bad "fallback calls: $($script:dlCalls | ConvertTo-Json -Compress)" }
+    $fbWarn = @($o.Warnings | Where-Object { $_ -like 'v8.8.9 has no vendor EXE installer for x64; this Update test falls back to the packaged technology (wix (MSI)) and cannot show a technology switch.*-BaselineInstallerType nullsoft.' })
+    if ($fbWarn.Count -eq 1) { Ok 'the L2 fallback warning (spec text)' } else { Bad "warnings: $($o.Warnings -join ' | ')" }
+    $b1 = if ($script:outcomes.Count) { $script:outcomes[0].Baseline } else { $null }
+    if ($b1 -and $b1.UsedFallback -eq $true -and $b1.FallbackReason -eq 'SiblingFamilyNotOfferedAtBaselineVersion' -and $b1.Origin -eq 'Sibling' -and $b1.InstallerType -eq 'wix' -and $b1.Family -eq 'msi') { Ok 'recorded: UsedFallback, FallbackReason, Origin Sibling, the packaged wix/msi' }
+    else { Bad "fallback baseline: $($b1 | ConvertTo-Json -Compress)" }
+    if ($script:switchCalls -eq 1 -and @($o.Warnings) -contains 'Technology switch: TEST' -and @($o.Values) -contains $false) { Ok 'a FAIL checks for a technology switch and prints each finding as a warning' } else { Bad "switch=$script:switchCalls" }
+
+    # (c) an explicit type that the version does not ship -> no verdict, one Unavailable record (L21)
+    foreach ($variant in 'preference', 'parameter') {
+        Clear-RunState
+        $script:dlAnswer = { 'ivu' }
+        $threw = $null; $items = @()
+        try {
+            $items = if ($variant -eq 'parameter') { @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -SpecificVersion '8.8.9' -BaselineInstallerType nullsoft -ErrorAction Stop 6>$null 3>&1) }
+                     else { @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -SpecificVersion '8.8.9' -BaselineInstallerType nullsoft 6>$null 3>&1) }
+        } catch { $threw = $_ }
+        $o = Split-Out $items
+        $label = if ($variant -eq 'parameter') { '-ErrorAction Stop' } else { "`$ErrorActionPreference = 'Stop'" }
+        $r = if ($script:records.Count) { $script:records[0] } else { $null }
+        if (-not $threw -and $script:dlCalls.Count -eq 1 -and $o.Values.Count -eq 0 -and $o.Warnings.Count -eq 1 -and $o.Warnings[0] -eq 'winget offers no nullsoft installer for Notepad++.Notepad++ v8.8.9.' -and $script:outcomes.Count -eq 0) {
+            Ok "explicit type unavailable ($label): no second call, one warning, returns `$null, no terminating error"
+        } else { Bad "unavailable ($label): threw=$($threw.Exception.Message) calls=$($script:dlCalls.Count) values=$($o.Values.Count) warnings=$($o.Warnings -join ' | ')" }
+        if ($script:records.Count -eq 1 -and $r.Scenario -eq 'Update' -and $r.Backend -eq 'HyperV' -and $r.Verdict -eq 'Inconclusive' -and $r.Mode -eq 'Unattended' -and $r.Assertions.Count -eq 0 -and
+            $r.Notes -like 'Baseline unavailable: winget offers no nullsoft installer*' -and $r.Baseline.Unavailable -eq $true -and $r.Baseline.InstallerType -eq '' -and
+            $r.Baseline.RequestedInstallerType -eq 'nullsoft' -and $r.Baseline.Family -eq 'exe' -and $r.Baseline.Origin -eq 'Explicit' -and $r.Baseline.Mode -eq 'nullsoft') {
+            Ok "($label) one Inconclusive record via Add-Win32ToolkitTestResult, Baseline.Unavailable, the leg's type and family"
+        } else { Bad "record ($label): $($script:records | ConvertTo-Json -Compress -Depth 5)" }
+    }
+    Clear-RunState
+    $script:dlAnswer = { 'ivu' }
+    $null = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -SpecificVersion '8.8.9' -BaselineInstallerType Packaged 6>$null 3>$null
+    if ($script:dlCalls.Count -eq 1 -and $script:dlCalls[0]['InstallerType'] -eq 'wix' -and $script:records.Count -eq 1 -and $script:records[0].Baseline.Origin -eq 'Packaged') { Ok '-BaselineInstallerType Packaged unavailable -> no fallback, Unavailable record' } else { Bad "packaged unavailable: $($script:records.Count)" }
+    Clear-RunState
+    $script:dlAnswer = { 'ivu' }
+    $null = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -SpecificVersion '8.8.9' 6>$null 3>$null
+    if ($script:dlCalls.Count -eq 2 -and $script:records.Count -eq 1 -and $script:records[0].Baseline.UsedFallback -eq $true -and $script:records[0].Baseline.RequestedInstallerType -eq 'nullsoft') { Ok 'Auto: the fallback unavailable too -> one Unavailable record (UsedFallback recorded)' } else { Bad "fallback unavailable: calls $($script:dlCalls.Count) records $($script:records.Count)" }
+    Clear-RunState
+    $script:dlAnswer = { 'boom' }
+    $threw = $null
+    try { $null = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -SpecificVersion '8.8.9' 6>$null 3>$null } catch { $threw = $_ }
+    if ($threw -and $threw.Exception.Message -match 'network down' -and $script:dlCalls.Count -eq 1 -and $script:records.Count -eq 0) { Ok 'any other download error keeps the old path (outer catch), no fallback, no record' } else { Bad "other error: $($threw.Exception.Message) calls $($script:dlCalls.Count)" }
+
+    # (d) the Git worked case: user-scope inno package, the 2.33.0 baseline ships machine scope only (the REAL download)
+    $gp = Join-Path $base 'git'
+    New-Item -ItemType Directory -Path (Join-Path $gp 'Files'), (Join-Path $gp 'Documentation') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $gp 'Invoke-AppDeployToolkit.ps1') -Value '# stub'
+    Set-Content -LiteralPath (Join-Path $gp 'Files\Git.Git.installer.yaml') -Encoding UTF8 -Value @(
+        'PackageIdentifier: Git.Git', 'PackageVersion: 2.55.0.5', 'Installers:', '- Architecture: x64', '  InstallerType: inno', '  Scope: user',
+        '  InstallerUrl: https://example.invalid/Git-2.55.0.5-64-bit.exe', '  InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000001', 'ManifestType: installer')
+    [System.IO.File]::WriteAllText((Join-Path $gp 'Documentation\IdentityDelta.json'), '{"SchemaVersion":"1.0","Siblings":[]}', (New-Object System.Text.UTF8Encoding($false)))
+    $script:source = [pscustomobject]@{ InstallerType = 'inno'; Family = 'exe'; Scope = 'user' }
+    . (Join-Path $repo 'Private\Download-OldVersionInstaller.ps1')   # the real one, with winget shadowed below
+    function Get-Win32ToolkitPipelineCacheRoot { $null }
+    $script:wingetCalls = [System.Collections.Generic.List[object]]::new()
+    function winget {
+        $a = [string[]]$args
+        $script:wingetCalls.Add($a)
+        if ([array]::IndexOf($a, 'user') -ge 0 -and [array]::IndexOf($a, '--scope') -ge 0) { $global:LASTEXITCODE = -1978335216; return }   # 0x8A150010
+        $dir = $a[[array]::IndexOf($a, '--download-directory') + 1]
+        [System.IO.File]::WriteAllBytes((Join-Path $dir 'Git-2.33.0-64-bit.exe'), [byte[]](1..32))
+        Set-Content -LiteralPath (Join-Path $dir 'Git.Git.installer.yaml') -Encoding UTF8 -Value @(
+            'PackageIdentifier: Git.Git', 'PackageVersion: 2.33.0', 'Installers:', '- Architecture: x64', '  InstallerType: inno', '  Scope: machine',
+            '  InstallerSwitches:', '    Silent: /VERYSILENT /NORESTART')
+        $global:LASTEXITCODE = 0
+    }
+    Clear-RunState
+    $threw = $null; $gv = $null
+    try { $gv = Test-Win32ToolkitProject -ProjectPath $gp -Scenario Update -SpecificVersion '2.33.0' 6>$null 3>$null } catch { $threw = $_ }
+    $gb = if ($script:outcomes.Count) { $script:outcomes[0].Baseline } else { $null }
+    $scopes = @($script:wingetCalls | ForEach-Object { $i = [array]::IndexOf([string[]]$_, '--scope'); if ($i -ge 0) { $_[$i + 1] } else { '-' } })
+    if (-not $threw -and $gv -eq $true -and $script:records.Count -eq 0 -and ($scopes -join ',') -eq 'user,-') { Ok 'Git worked case: --scope user no-applicable -> inno without --scope -> a verdict (not W32T, no Unavailable record)' }
+    else { Bad "git: threw=$($threw.Exception.Message) verdict=$gv scopes=$($scopes -join ',') records=$($script:records.Count)" }
+    if ($gb -and $gb.ScopeRelaxed -eq $true -and $gb.RequestedScope -eq 'user' -and $gb.Scope -eq 'machine' -and $gb.InstallerType -eq 'inno' -and $gb.Family -eq 'exe' -and $gb.Origin -eq 'Packaged' -and $gb.UsedFallback -eq $false) { Ok 'recorded: ScopeRelaxed, RequestedScope user, Scope machine, inno/exe, Origin Packaged' }
+    else { Bad "git baseline: $($gb | ConvertTo-Json -Compress)" }
+
+    # (d2) the REAL download, every type unavailable: no verdict, and Sandbox\OldVersion keeps the previous baseline (the
+    # 2.33.0 download above), still paired with the last UpdateAssertions.ps1, so an older FAIL stays judgeable (L21).
+    $gOv = Join-Path $gp 'Sandbox\OldVersion'
+    $gBefore = @(Get-ChildItem -LiteralPath $gOv -Force -File | Sort-Object Name | ForEach-Object { '{0}={1}' -f $_.Name, (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }) -join ';'
+    function winget { $script:wingetCalls.Add([string[]]$args); $global:LASTEXITCODE = -1978335216 }   # 0x8A150010 for every type and scope
+    Clear-RunState; $script:wingetCalls.Clear()
+    $threw = $null; $uv = 'unset'
+    try { $uv = Test-Win32ToolkitProject -ProjectPath $gp -Scenario Update -SpecificVersion '2.30.0' -BaselineInstallerType Packaged 6>$null 3>$null } catch { $threw = $_ }
+    $gAfter = @(Get-ChildItem -LiteralPath $gOv -Force -File | Sort-Object Name | ForEach-Object { '{0}={1}' -f $_.Name, (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }) -join ';'
+    if (-not $threw -and $null -eq $uv -and $script:records.Count -eq 1 -and $script:records[0].Baseline.Unavailable -eq $true -and $script:wingetCalls.Count -eq 8 -and $script:outcomes.Count -eq 0) { Ok 'real download, every type unavailable -> $null, one Unavailable record (8 attempts)' }
+    else { Bad "real unavailable: threw=$($threw.Exception.Message) v=$uv records=$($script:records.Count) calls=$($script:wingetCalls.Count)" }
+    if ($gBefore -match 'Git\.Git\.installer\.yaml=' -and $gAfter -eq $gBefore -and -not (Test-Path -LiteralPath "$gOv.attempt")) { Ok 'Sandbox\OldVersion still holds the previous baseline, byte for byte; no staging folder is left' }
+    else { Bad "OldVersion changed: before='$gBefore' after='$gAfter'" }
+    ${function:Download-OldVersionInstaller} = $dlShadow
+    $script:source = [pscustomobject]@{ InstallerType = 'wix'; Family = 'msi'; Scope = 'machine' }
+
+    # (e) Both -> one inner run per technology, at the picked version, recorded separately (L13)
+    Clear-RunState
+    $script:versionCalls = 0
+    $versionsShadowE = ${function:Get-WingetVersions}
+    ${function:Get-WingetVersions} = { $script:versionCalls++; @('8.8.9', '8.8.8') }
+    $script:verdictQueue.Enqueue($true); $script:verdictQueue.Enqueue($false)
+    $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -BaselineInstallerType Both -VersionsBack 1 6>&1 3>&1)
+    if ($script:dlCalls.Count -eq 2 -and $script:dlCalls[0]['InstallerType'] -eq 'wix' -and $script:dlCalls[1]['InstallerType'] -eq 'nullsoft' -and
+        $script:dlCalls[0]['Version'] -eq '8.8.9' -and $script:dlCalls[1]['Version'] -eq '8.8.9' -and $script:pickerCalls -eq 0) { Ok 'Both: two inner runs at the same version (-SpecificVersion 8.8.9, VersionsBack dropped): wix, then nullsoft' }
+    else { Bad "both calls: $($script:dlCalls | ConvertTo-Json -Compress)" }
+    # The inner leg keeps the outer list's label for its technology (H6-F2): never 'requested with -BaselineInstallerType',
+    # which the operator did not do (the pin value itself is proven by the download calls above).
+    if (@($o.Info | Where-Object { $_ -eq 'Baseline technology : wix (MSI) (packaged technology)' }).Count -ge 2 -and
+        @($o.Info | Where-Object { $_ -eq 'Baseline technology : nullsoft (vendor EXE, NSIS) (other technology winget ships for this app)' }).Count -eq 2 -and
+        @($o.Info | Where-Object { "$_" -match 'requested with -BaselineInstallerType' }).Count -eq 0) { Ok 'each leg shows the label the Both list gave it (the sibling leg stays "other technology winget ships for this app")' }
+    else { Bad "inner labels: $(@($o.Info | Where-Object { $_ -like 'Baseline technology*' }) -join ' | ')" }
+    if ($script:outcomes.Count -eq 2 -and $script:outcomes[0].Baseline.Mode -eq 'Both' -and $script:outcomes[0].Baseline.Origin -eq 'Packaged' -and
+        $script:outcomes[1].Baseline.Mode -eq 'Both' -and $script:outcomes[1].Baseline.Origin -eq 'Sibling' -and $script:outcomes[1].Baseline.Family -eq 'exe') { Ok 'one record per leg, Baseline.Mode Both with its own Origin (Packaged, Sibling)' }
+    else { Bad "both records: $($script:outcomes | ConvertTo-Json -Compress -Depth 5)" }
+    if ($null -eq $script:W32TUpdateLegContext) { Ok 'the leg context is cleared afterwards' } else { Bad 'leg context left set' }
+    # One winget version query for the whole Both run: the legs do not repeat the advisory lookup (H6-F3).
+    if ($script:versionCalls -eq 1) { Ok 'Both: one Get-WingetVersions call for two legs (no advisory re-query per leg)' } else { Bad "Get-WingetVersions calls: $($script:versionCalls)" }
+    ${function:Get-WingetVersions} = $versionsShadowE
+    if (@($o.Values).Count -eq 1 -and $o.Values[0] -eq $false -and $script:switchCalls -eq 1) { Ok 'combined verdict: a failed leg -> $false (and its technology switch is checked)' } else { Bad "combined: $($o.Values -join ',')" }
+    if (@($o.Info | Where-Object { $_ -like '  1. wix (MSI) (packaged technology): PASSED' }).Count -eq 1 -and @($o.Info | Where-Object { $_ -like '  2. nullsoft*: FAILED' }).Count -eq 1) { Ok 'one summary line per leg' } else { Bad 'summary lines missing' }
+    # Test campaign F2: each leg keeps its own logs (Sandbox\Logs\Runs\<run>_Update_<family>); the top-level exit-code log
+    # is cleared once (by the outer call) and holds both legs.
+    $lf = @($script:outcomes | ForEach-Object { [string]$_.LogFolder })
+    $legLog = { param($i, $name) $f = Join-Path $np "$($lf[$i])\$name"; if ($lf[$i] -and (Test-Path -LiteralPath $f)) { Get-Content -LiteralPath $f -Raw } else { '' } }
+    $g1 = [regex]::Match((& $legLog 0 'UpdateAssertions.log'), 'guest run (\d+)').Groups[1].Value
+    $g2 = [regex]::Match((& $legLog 1 'UpdateAssertions.log'), 'guest run (\d+)').Groups[1].Value
+    if ($lf.Count -eq 2 -and $lf[0] -match '^Sandbox\\Logs\\Runs\\\d{8}-\d{6}_Update_msi(-\d+)?$' -and $lf[1] -match '^Sandbox\\Logs\\Runs\\\d{8}-\d{6}_Update_exe(-\d+)?$' -and $g1 -and $g2 -and [int]$g2 -eq [int]$g1 + 1) {
+        Ok "each leg's record names its own run folder ($($lf -join ', ')), which keeps that leg's UpdateAssertions.log"
+    } else { Bad "leg folders: $($lf -join ' | ') runs=$g1/$g2" }
+    $c1 = & $legLog 0 'PsadtExitCodes.log'; $c2 = & $legLog 1 'PsadtExitCodes.log'
+    if ($c1 -match "guest run $g1\b" -and $c1 -notmatch "guest run $g2\b" -and $c2 -match "guest run $g2\b" -and $c2 -notmatch "guest run $g1\b") { Ok "each leg's folder keeps only its own exit-code line" } else { Bad "leg codes: [$c1] [$c2]" }
+    $topCodes = @(Get-Content -LiteralPath (Join-Path $np 'Sandbox\Logs\PsadtExitCodes.log'))
+    if ($topCodes.Count -eq 4 -and $topCodes[1] -match "guest run $g1\b" -and $topCodes[3] -match "guest run $g2\b" -and @($topCodes -match ' -- test run ').Count -eq 2) { Ok 'the top-level PsadtExitCodes.log holds both legs (cleared once by the outer call)' } else { Bad "top codes: $($topCodes -join ' | ')" }
+    Clear-RunState
+    $script:verdictQueue.Enqueue($true); $script:verdictQueue.Enqueue($true)
+    $v = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -BaselineInstallerType Both -SpecificVersion '8.8.9' 6>$null 3>$null
+    $script:verdictQueue.Enqueue($true); $script:verdictQueue.Enqueue($null)
+    $script:outcomes.Clear()
+    $v2 = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -BaselineInstallerType Both -SpecificVersion '8.8.9' 6>$null 3>$null
+    if ($v -eq $true -and $null -eq $v2 -and $script:outcomes.Count -eq 2) { Ok 'combined verdict: all passed -> $true; a leg without a verdict -> $null' } else { Bad "combined: v=$v v2=$v2" }
+
+    # (f) a leg that throws: warned, no verdict, the other leg still runs, the context is cleared
+    foreach ($eaMode in 'Stop', 'Continue') {
+        Clear-RunState
+        $script:dlAnswer = { param($Type) if ($Type -eq 'wix') { 'boom' } else { 'ok' } }
+        $script:verdictQueue.Enqueue($true)
+        $threw = $null; $items = @()
+        try { $items = @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -BaselineInstallerType Both -SpecificVersion '8.8.9' -ErrorAction $eaMode 6>$null 3>&1 2>$null) } catch { $threw = $_ }
+        $o = Split-Out $items
+        if (-not $threw -and $null -eq $script:W32TUpdateLegContext -and $script:dlCalls.Count -eq 2 -and $script:outcomes.Count -eq 1 -and $o.Values.Count -eq 0) {
+            Ok "Both, the first leg throws (-ErrorAction $eaMode): the second leg still runs, combined verdict `$null, context cleared"
+        } else { Bad "leg throws ($eaMode): threw=$($threw.Exception.Message) ctx=$($script:W32TUpdateLegContext) calls=$($script:dlCalls.Count) outcomes=$($script:outcomes.Count) values=$($o.Values -join ',')" }
+    }
+
+    # (f2) Test campaign F2 on the Sandbox backend (the campaign's S3 path: SandboxTestMode=Unattended, Both): each leg
+    #      keeps its own evidence. The sandbox launch is shadowed and writes what the guest would: the leg's
+    #      UpdateAssertions.log and one exit-code line. The collector wait (60 s max) follows only a launched leg.
+    $script:testBackend = 'Sandbox'; $script:testModeCfg = 'Unattended'
+    function Wait-Win32ToolkitSandboxFree { param($TimeoutSeconds) $null = $TimeoutSeconds; $true }
+    ${function:New-Win32ToolkitSandboxConfig} = { '<Configuration/>' }
+    $script:sbRuns = 0
+    $script:sbLaunch = { $true }
+    function Invoke-Win32ToolkitTestRun {
+        param($Backend, $SandboxConfigPath)
+        $null = $Backend
+        $script:sbRuns++
+        if (-not (& $script:sbLaunch $script:sbRuns)) { return [pscustomobject]@{ Launched = $false } }
+        $ld = Join-Path (Split-Path -Parent (Split-Path -Parent $SandboxConfigPath)) 'Sandbox\Logs'
+        New-Item -ItemType Directory -Path $ld -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $ld 'UpdateAssertions.log') -Value "[t] ASSERT Tattoo-PostUpdate = PASS (sandbox run $script:sbRuns)" -Encoding UTF8
+        Add-Content -LiteralPath (Join-Path $ld 'PsadtExitCodes.log') -Value "[t] update Install parent=x64-direct exit=0 result=Success (sandbox run $script:sbRuns)" -Encoding UTF8
+        [pscustomobject]@{ Launched = $true }
+    }
+    Clear-RunState; $script:collectWaits = @()
+    $script:verdictQueue.Enqueue($true); $script:verdictQueue.Enqueue($false)
+    $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -BaselineInstallerType Both -SpecificVersion '8.8.9' 6>&1 3>&1)
+    $lf = @($script:outcomes | ForEach-Object { [string]$_.LogFolder })
+    $sbLeg = { param($i, $name) $f = Join-Path $np "$($lf[$i])\$name"; if ($lf[$i] -and (Test-Path -LiteralPath $f)) { Get-Content -LiteralPath $f -Raw } else { '' } }
+    $s1 = [regex]::Match((& $sbLeg 0 'UpdateAssertions.log'), 'sandbox run (\d+)').Groups[1].Value
+    $s2 = [regex]::Match((& $sbLeg 1 'UpdateAssertions.log'), 'sandbox run (\d+)').Groups[1].Value
+    if ($script:dlCalls.Count -eq 2 -and $lf.Count -eq 2 -and $lf[0] -match '^Sandbox\\Logs\\Runs\\\d{8}-\d{6}_Update_msi(-\d+)?$' -and $lf[1] -match '^Sandbox\\Logs\\Runs\\\d{8}-\d{6}_Update_exe(-\d+)?$' -and
+        $s1 -and $s2 -and [int]$s2 -eq [int]$s1 + 1) { Ok "Sandbox Both: each leg's record names its own run folder ($($lf -join ', ')), with that leg's UpdateAssertions.log" }
+    else { Bad "sandbox leg folders: $($lf -join ' | ') runs=$s1/$s2 downloads=$($script:dlCalls.Count)" }
+    $k1 = & $sbLeg 0 'PsadtExitCodes.log'; $k2 = & $sbLeg 1 'PsadtExitCodes.log'
+    if ($k1 -match "sandbox run $s1\b" -and $k1 -notmatch "sandbox run $s2\b" -and $k2 -match "sandbox run $s2\b" -and $k2 -notmatch "sandbox run $s1\b") { Ok "Sandbox Both: each leg's folder keeps only its own exit-code line" } else { Bad "sandbox leg codes: [$k1] [$k2]" }
+    if (($script:collectWaits -join ',') -eq '60,60') { Ok 'Sandbox Both: one collector wait of 60 s after each launched leg' } else { Bad "collector waits: $($script:collectWaits -join ',')" }
+    if (@($o.Values).Count -eq 1 -and $o.Values[0] -eq $false) { Ok 'Sandbox Both: the failed leg fails the combined verdict' } else { Bad "sandbox combined: $($o.Values -join ',')" }
+    # A leg whose sandbox did not launch: no collector wait for it, and no folder of the other leg's logs.
+    Clear-RunState; $script:collectWaits = @(); $script:sbRuns = 0
+    $script:sbLaunch = { param($n) $n -ne 2 }
+    $script:verdictQueue.Enqueue($true); $script:verdictQueue.Enqueue($null)
+    $null = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -BaselineInstallerType Both -SpecificVersion '8.8.9' 6>$null 3>$null
+    $lf = @($script:outcomes | ForEach-Object { [string]$_.LogFolder })
+    if (($script:collectWaits -join ',') -eq '60' -and $lf.Count -eq 2 -and $lf[0] -match '_Update_msi' -and -not $lf[1]) { Ok 'a leg that did not launch: no collector wait, no run folder (nothing of the other leg is filed under it)' }
+    else { Bad "not launched: waits=$($script:collectWaits -join ',') folders=$($lf -join ' | ')" }
+    $script:sbLaunch = { $true }
+    $script:testBackend = 'HyperV'
+
+    # (g) Both on watched Sandbox: close the previous leg's sandbox first (up to 600 s), else that leg has no verdict
+    $script:testBackend = 'Sandbox'; $script:testModeCfg = 'Interactive'
+    $script:freeCalls = [System.Collections.Generic.List[int]]::new()
+    function Wait-Win32ToolkitSandboxFree { param($TimeoutSeconds) $script:freeCalls.Add([int]$TimeoutSeconds); [int]$TimeoutSeconds -ne 600 }
+    ${function:New-CountdownScript} = { 'countdown.ps1' }
+    ${function:New-Win32ToolkitSandboxConfig} = { '<Configuration/>' }
+    function Invoke-Win32ToolkitTestRun { [pscustomobject]@{ Launched = $true } }
+    Clear-RunState
+    $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -BaselineInstallerType Both -SpecificVersion '8.8.9' 6>&1 3>&1)
+    if ($script:freeCalls -contains 600 -and @($o.Info | Where-Object { $_ -eq 'Close the Windows Sandbox of the previous leg to start the exe leg' }).Count -eq 1) { Ok 'watched Sandbox: asks to close the previous sandbox and waits up to 600 s before leg 2' }
+    else { Bad "sandbox wait: $($script:freeCalls -join ',') info=$(@($o.Info | Where-Object { $_ -like 'Close*' }) -join '|')" }
+    if ($script:dlCalls.Count -eq 1 -and $script:outcomes.Count -eq 1 -and $o.Values.Count -eq 0 -and @($o.Warnings | Where-Object { $_ -like '*still open after 10 minutes*' }).Count -eq 1) { Ok 'still busy -> that leg did not run (warning), combined verdict $null' }
+    else { Bad "busy: calls=$($script:dlCalls.Count) outcomes=$($script:outcomes.Count) values=$($o.Values -join ',')" }
+    $script:testBackend = 'HyperV'; $script:testModeCfg = 'Unattended'
+
+    # (h) parameter rules
+    if (Test-BaselineErr @{ ProjectPath = $put; Scenario = 'InstallUninstall'; BaselineInstallerType = 'Both' } 'BaselineInstallerType apply only to -Scenario Update') { Ok '-BaselineInstallerType with -Scenario InstallUninstall -> the Update-only error' } else { Bad 'InstallUninstall accepted -BaselineInstallerType' }
+    $bp = Join-Path $base 'bp'; New-Item -ItemType Directory -Path $bp -Force | Out-Null; Set-Content (Join-Path $bp 'Invoke-AppDeployToolkit.ps1') '# stub'
+    if (Test-BaselineErr @{ ProjectPath = $put; Scenario = 'Update'; BaselineProjectPath = $bp; BaselineInstallerType = 'nullsoft' } 'applies to a winget baseline; the baseline project has its own technology') { Ok '-BaselineInstallerType with -BaselineProjectPath -> the new error' } else { Bad 'baseline project accepted a technology' }
+
+    # (i) K5/K6: the two catches around the baseline download start with the IVU line; the download is family-pinned
+    $tpFile = Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1'
+    $tpAst = [System.Management.Automation.Language.Parser]::ParseFile($tpFile, [ref]$null, [ref]$null)
+    # The try statement whose BODY directly encloses a command (not the outer try of the whole function).
+    $enclosingTry = {
+        param($Node)
+        $child = $Node; $p = $Node.Parent
+        while ($p) {
+            if ($p -is [System.Management.Automation.Language.TryStatementAst] -and [object]::ReferenceEquals($p.Body, $child)) { return $p }
+            if ($p -is [System.Management.Automation.Language.CatchClauseAst]) { return $null }
+            $child = $p; $p = $p.Parent
+        }
+        $null
+    }
+    $triesOf = {
+        param([string[]]$Names)
+        $seen = @{}
+        $wanted = $Names
+        foreach ($cmd in $tpAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -in $wanted }, $true)) {
+            $try = & $enclosingTry $cmd
+            if ($try -and -not $seen.ContainsKey($try.Extent.StartOffset)) { $seen[$try.Extent.StartOffset] = $true; $try }
+        }
+    }
+    $dlTries = @(& $triesOf @('Download-OldVersionInstaller'))
+    $ivu = "if (`$_.FullyQualifiedErrorId -ne 'W32T.InstallerVariantUnavailable') { throw }"
+    $dlCatches = @($dlTries | ForEach-Object { $_.CatchClauses })
+    if ($dlCatches.Count -eq 2 -and @($dlCatches | Where-Object { ($_.Body.Statements[0].Extent.Text -replace '\s+', ' ') -eq $ivu }).Count -eq 2) { Ok 'K5/K6: both catches around Download-OldVersionInstaller start with the IVU line' }
+    else { Bad "K5/K6: $($dlCatches.Count) catch(es)" }
+    $c2 = "if (`$_.FullyQualifiedErrorId -like 'W32T.*') { throw }"
+    $newCatches = @(& $triesOf @('Get-Win32ToolkitTechnologySwitch', 'Add-Win32ToolkitTestResult', 'Test-Win32ToolkitProject') | ForEach-Object { $_.CatchClauses })
+    if ($newCatches.Count -eq 3 -and @($newCatches | Where-Object { ($_.Body.Statements[0].Extent.Text -replace '\s+', ' ') -eq $c2 }).Count -eq 3) { Ok 'the three other new catches (technology switch, Unavailable record, Both leg) start with the C-2 line' }
+    else { Bad "new catches: $($newCatches.Count)" }
+    $tpSrc = Get-Content -LiteralPath $tpFile -Raw -Encoding UTF8
+    if ($tpSrc -match '(?s)\$dl = @\{[^}]*FamilyPin\s*=\s*\$true' -and $tpSrc -notmatch "\`$dl\['Locale'\]") { Ok 'the baseline download is always family-pinned and never passes -Locale' } else { Bad 'download hashtable not family-pinned' }
 }
 finally { Remove-Item -Path $base -Recurse -Force -ErrorAction SilentlyContinue }
 

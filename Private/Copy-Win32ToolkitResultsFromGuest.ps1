@@ -15,6 +15,10 @@ function Copy-Win32ToolkitResultsFromGuest {
         one locked/unreadable guest file loses only itself — and, unlike the old per-file
         -ErrorAction SilentlyContinue loop, every skipped file is now REPORTED instead of vanishing.
         A guest-vs-host entry-count check makes a torn transfer loud.
+
+        Sandbox\Logs\Runs\ is never brought back: it is the host's own copy of earlier runs' logs (test campaign
+        F2), never copied in (New-Win32ToolkitProjectZip), so a guest file there is not a result. The guest skips
+        it, and the host refuses such an entry (with a warning) so a guest can never overwrite that evidence.
     .PARAMETER Session
         An open PowerShell Direct PSSession.
     .PARAMETER GuestPath
@@ -58,6 +62,8 @@ function Copy-Win32ToolkitResultsFromGuest {
                 $rel = if ($f.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
                     $f.Substring($rootPrefix.Length)
                 } else { Split-Path -Leaf $f }
+                # The host's earlier run logs (Sandbox\Logs\Runs\) are never a guest result: never sent back.
+                if ($rel.StartsWith('Sandbox\Logs\Runs\', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
                 try {
                     $null = [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
                         $archive, $f, ($rel -replace '\\', '/'), [System.IO.Compression.CompressionLevel]::NoCompression)
@@ -94,6 +100,7 @@ function Copy-Win32ToolkitResultsFromGuest {
 
         Add-Type -AssemblyName 'System.IO.Compression.FileSystem' -ErrorAction SilentlyContinue
         $destRoot  = [System.IO.Path]::GetFullPath(($Destination.TrimEnd('\') + '\'))
+        $runsRoot  = $destRoot + 'Sandbox\Logs\Runs\'
         $extracted = 0
         $archive   = [System.IO.Compression.ZipFile]::OpenRead($hostZip)
         try {
@@ -102,6 +109,11 @@ function Copy-Win32ToolkitResultsFromGuest {
                 # The guest just ran an untrusted installer: never let an entry escape the project root.
                 if (-not $target.StartsWith($destRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
                     Write-Warning "Skipped a result entry that resolves outside the project ('$($entry.FullName)')."
+                    continue
+                }
+                # ...nor overwrite the host's own run logs (the guest skips them; this holds against any guest).
+                if ($target.StartsWith($runsRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    Write-Warning "Skipped a result entry inside Sandbox\Logs\Runs ('$($entry.FullName)'): the run logs there are kept on the host."
                     continue
                 }
                 $targetDir = Split-Path -Parent $target

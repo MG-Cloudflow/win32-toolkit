@@ -21,6 +21,10 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Get-Win32ToolkitTestMode.ps1')          # mode resolver (Interactive/Unattended)
 . (Join-Path $repo 'Private\Wait-Win32ToolkitSandboxFree.ps1')      # the guard now waits instead of throwing
 . (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1')
+. (Join-Path $repo 'Private\Initialize-Win32ToolkitTestRunLog.ps1')   # C-9: each run keeps its logs in Sandbox\Logs\Runs\<run> (real)
+. (Join-Path $repo 'Private\Save-Win32ToolkitTestRunLog.ps1')
+function Wait-Win32ToolkitCollectedLog { param($TimeoutSeconds) $script:collectWaits += [int]$TimeoutSeconds; $true }   # no wait for a guest log collector
+$script:collectWaits = @()
 # Deterministic mode resolution regardless of the host running the tests (CI stdin is redirected,
 # which would otherwise force Unattended and flip the interactive-default assertions below).
 function Test-Win32ToolkitHostNonInteractive { $false }
@@ -47,7 +51,7 @@ ${function:New-Win32ToolkitPackageRunnerScript} = { param($ProjectPath) $script:
 $script:installAssertGen = 0
 $script:recorded = $null
 function New-InstallAssertionScript { param($ProjectPath) $script:installAssertGen++; 'fake' }
-function Write-Win32ToolkitTestOutcome { param($ProjectPath, $Scenario, $Backend, $Mode, $Verdict, $LogFileName, $Notes) $script:recorded = @{ Scenario = $Scenario; Backend = $Backend; Mode = $Mode; LogFileName = $LogFileName } }
+function Write-Win32ToolkitTestOutcome { param($ProjectPath, $Scenario, $Backend, $Mode, $Verdict, $LogFileName, $Notes, $Baseline, $LogFolder) $script:recorded = @{ Scenario = $Scenario; Backend = $Backend; Mode = $Mode; LogFileName = $LogFileName; Baseline = $Baseline; LogFolder = $LogFolder } }
 function Get-Win32ToolkitTestBackend { param($Backend) return $script:backend }
 function Get-Process { param($Name, $ErrorAction) return $script:procs }
 # The single-instance guard goes through the Phase-0 seam helper, NOT Get-Process directly. Without this
@@ -115,6 +119,12 @@ function New-CountdownScript { param($ProjectPath) $script:countdownMade++; 'cd.
 $script:waitArgs = $null
 function Wait-Win32ToolkitUpdateAssertion { param($ProjectPath, $Backend, $TimeoutMinutes, $PollSeconds, $LogFileName, $Label) $script:waitArgs = @{ Backend = $Backend; TimeoutMinutes = $TimeoutMinutes; LogFileName = $LogFileName }; return $true }
 function Get-Win32ToolkitBaselineInstallCommand { param($InstallerSandboxPath, $InstallerType, $SilentArgs) "& '$InstallerSandboxPath'" }
+# Installer-identity PR 1 (C-9): the Update arm records the baseline project's technology (its source facts), checks
+# for a technology switch after a failed run, and resolves a winget baseline's technology before the version pick.
+$script:baselineSource = [pscustomobject]@{ InstallerType = 'nullsoft'; Family = 'exe'; Scope = 'machine'; Locale = 'en-US' }
+function Get-Win32ToolkitProjectSource { $script:baselineSource }
+function Get-Win32ToolkitTechnologySwitch { @() }
+function Resolve-Win32ToolkitBaselineFamily { [pscustomobject]@{ Family = 'msi'; InstallerType = 'wix'; Scope = ''; Origin = 'Packaged'; FallbackInstallerType = ''; FallbackScope = ''; Label = 'wix (MSI) (packaged technology)'; Note = '' } }
 $script:hvBaseline = $null
 $script:hvCopiesLog = $true    # simulate the provider copying UpdateAssertions.log back out of the guest
 function Invoke-Win32ToolkitHyperVRun {
@@ -154,6 +164,9 @@ if ($upd6.Command -eq '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -Deploymen
 $base6 = @($script:hvPhase | Where-Object { $_.Label -like 'Install baseline*' })[0]
 if ($base6.Command -eq '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -Path ''C:\PSADTOld\Invoke-AppDeployToolkit.ps1'' -DeployMode Silent -Label baseline; exit $LASTEXITCODE' -and (Test-CodesEqual $base6.SuccessExitCodes)) { Ok 'baseline project runs in its OWN process via the runner (-Label baseline), exact exit code' } else { Bad "baseline cmd: $($base6.Command)" }
 if ($script:waitArgs.Backend -eq 'HyperV' -and $script:waitArgs.TimeoutMinutes -le 1) { Ok 'waiter told HyperV + short timeout (no 30-min hang)' } else { Bad "waitArgs=$($script:waitArgs | Out-String)" }
+# The record names the baseline variant: a project baseline carries Source = project and that project's technology.
+$bl6 = $script:recorded.Baseline
+if ($bl6 -and $bl6.Source -eq 'project' -and $bl6.ProjectName -eq (Split-Path -Leaf $base) -and $bl6.Origin -eq 'Project' -and $bl6.InstallerType -eq 'nullsoft' -and $bl6.Family -eq 'exe' -and $bl6.Version -eq '1.0' -and $bl6.Unavailable -eq $false) { Ok 'the project-baseline record carries Baseline.Source = project, its folder leaf and its technology' } else { Bad "baseline record: $($bl6 | ConvertTo-Json -Compress)" }
 
 Write-Host '[7] Update + HyperV + -Unattended = no pause, explicit SILENT deploy mode' -ForegroundColor Cyan
 $script:backend = 'HyperV'; $script:countdownMade = 0
@@ -276,6 +289,43 @@ if ($script:staleSeen -eq $false) { Ok 'a previous run''s PsadtExitCodes.log is 
 if (($out12 -match 'app Install parent=x86-cmd exit=3010 result=SoftReboot') -and ($out12 -match 'app Uninstall parent=x86-cmd exit=60008 result=Failed')) { Ok 'both exit-code lines printed after the Hyper-V run' } else { Bad "output: $($out12 -join ' / ')" }
 if (-not ($out12 -match 'STALE-RUN')) { Ok 'no stale line printed' } else { Bad 'stale line printed' }
 
+Write-Host '[13] each run keeps its own logs in Sandbox\Logs\Runs\<run> (test campaign F2); a Both leg keeps the earlier lines' -ForegroundColor Cyan
+# (a) Hyper-V: the run folder holds this run's two exit-code lines, the record names it, nothing waits for a guest collector.
+$script:collectWaits = @(); $script:recorded = $null
+Set-Content -LiteralPath $codes12 -Value '[2020-01-01 00:00:00] app Install parent=x64-direct exit=1 result=Failed STALE-RUN'
+$out13 = @(Test-Win32ToolkitProject -ProjectPath $proj -Scenario 'InstallUninstall' -Unattended 6>&1 3>$null | ForEach-Object { "$_" })
+$rf13 = [string]$script:recorded.LogFolder
+$rfCodes = if ($rf13 -and (Test-Path -LiteralPath (Join-Path $proj "$rf13\PsadtExitCodes.log"))) { @(Get-Content -LiteralPath (Join-Path $proj "$rf13\PsadtExitCodes.log")) } else { @() }
+if ($rf13 -match '^Sandbox\\Logs\\Runs\\\d{8}-\d{6}_InstallUninstall(-\d+)?$' -and $rfCodes.Count -eq 2 -and $rfCodes[0] -match 'exit=3010' -and $rfCodes[1] -match 'exit=60008') {
+    Ok "Hyper-V: the record names the run folder ($rf13), which holds this run's two exit-code lines"
+} else { Bad "hv run folder: '$rf13' codes=$($rfCodes -join ' | ')" }
+if (@($script:collectWaits).Count -eq 0) { Ok 'Hyper-V: no wait for a guest log collector (the logs came back with the copy-out)' } else { Bad "collector waits: $($script:collectWaits -join ',')" }
+if (@($out13 | Where-Object { $_ -like 'Run logs         : *' }).Count -eq 1) { Ok "the host prints 'Run logs : <folder>'" } else { Bad "no 'Run logs' line: $($out13 -join ' / ')" }
+$top13 = @(Get-Content -LiteralPath $codes12)
+if ($top13.Count -eq 3 -and $top13[0] -match '^\[[^\]]*\] -- test run \S+ --$' -and -not ($top13 -match 'STALE-RUN')) { Ok 'an outer call clears the exit-code log, then starts it with the run marker' } else { Bad "top: $($top13 -join ' | ')" }
+# (b) a call made inside a Both leg (leg context set) keeps the earlier leg's lines and prints only its own.
+Set-Content -LiteralPath $codes12 -Value '[2026-10-20 09:00:00] update Install parent=x86-cmd exit=0 result=Success EARLIER-LEG'
+$script:W32TUpdateLegContext = @{ Mode = 'Both'; Origin = 'Sibling'; Index = 2; Count = 2 }
+try { $out13b = @(Test-Win32ToolkitProject -ProjectPath $proj -Scenario 'InstallUninstall' -Unattended 6>&1 3>$null | ForEach-Object { "$_" }) }
+finally { $script:W32TUpdateLegContext = $null }
+$top13b = @(Get-Content -LiteralPath $codes12)
+if ($top13b.Count -eq 4 -and $top13b[0] -match 'EARLIER-LEG' -and $top13b[1] -match ' -- test run ') { Ok 'inside a Both leg the exit-code log is NOT cleared: the earlier leg''s line stays, then this run''s marker' } else { Bad "leg top: $($top13b -join ' | ')" }
+if (-not ($out13b -match 'EARLIER-LEG') -and ($out13b -match 'exit=3010 result=SoftReboot') -and -not ($out13b -match ' -- test run ')) { Ok 'only this run''s exit-code lines are printed (no earlier leg, no marker)' } else { Bad "leg output: $($out13b -join ' / ')" }
+# (c) Sandbox: wait (60 s max) for the guest log collector before keeping the logs; no wait when the sandbox did not launch.
+$script:backend = 'Sandbox'; $script:procs = @()
+$script:sbLaunch = $true
+function Invoke-Win32ToolkitTestRun {
+    Set-Content -LiteralPath (Join-Path $proj 'Sandbox\Logs\InstallAssertions.log') -Value '[t] ASSERT InstallDetected-PostInstall = PASS'
+    [pscustomobject]@{ Launched = $script:sbLaunch }
+}
+$script:collectWaits = @(); $script:recorded = $null
+Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
+$rf13c = [string]$script:recorded.LogFolder
+if (($script:collectWaits -join ',') -eq '60' -and $rf13c -and (Test-Path -LiteralPath (Join-Path $proj "$rf13c\InstallAssertions.log"))) { Ok 'Sandbox: waits up to 60 s for the collector, then keeps the run''s InstallAssertions.log in its folder' }
+else { Bad "sandbox: waits=$($script:collectWaits -join ',') folder='$rf13c'" }
+$script:sbLaunch = $false; $script:collectWaits = @()
+Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
+if (@($script:collectWaits).Count -eq 0) { Ok 'Sandbox did not launch -> no wait for a collector' } else { Bad "not launched: waits=$($script:collectWaits -join ',')" }
 Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
 
 Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue

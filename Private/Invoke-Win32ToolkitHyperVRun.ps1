@@ -94,21 +94,23 @@ function Invoke-Win32ToolkitHyperVRun {
     # ── Overlap: build the copy-in zip(s) WHILE the checkpoint reverts ────────────────────────────────
     # The zip needs no session and used to sit serially in every run (5-20 s). Pure .NET work in a
     # thread job; joined (with errors surfaced) right before the transfer. No ThreadJob => build inline
-    # in the copy helper, exactly as before.
+    # in the copy helper, exactly as before. The job has none of this module's functions, so it rebuilds
+    # New-Win32ToolkitProjectZip from its text: one builder, the same zip either way (Sandbox\Logs\Runs\
+    # stays on the host, test campaign F2).
     $zipJobs = @{}
-    $canThreadJob = [bool](Get-Command Start-ThreadJob -ErrorAction SilentlyContinue)
+    $zipBuilderText = [string]${function:New-Win32ToolkitProjectZip}
+    $canThreadJob = [bool](Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) -and -not [string]::IsNullOrWhiteSpace($zipBuilderText)
     if ($canThreadJob) {
         $zipBuilder = {
-            param($src, $dst)
-            Add-Type -AssemblyName 'System.IO.Compression.FileSystem' -ErrorAction SilentlyContinue
-            [System.IO.Compression.ZipFile]::CreateFromDirectory($src, $dst, [System.IO.Compression.CompressionLevel]::NoCompression, $false)
-            $dst
+            param($src, $dst, $builderText)
+            $build = [scriptblock]::Create($builderText)
+            & $build -ProjectPath $src -ZipPath $dst
         }
         $projZipPath = Join-Path ([System.IO.Path]::GetTempPath()) ('w32proj_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.zip')
-        $zipJobs['project'] = @{ Job = (Start-ThreadJob -ScriptBlock $zipBuilder -ArgumentList $ProjectPath, $projZipPath); Path = $projZipPath }
+        $zipJobs['project'] = @{ Job = (Start-ThreadJob -ScriptBlock $zipBuilder -ArgumentList $ProjectPath, $projZipPath, $zipBuilderText); Path = $projZipPath }
         if ($BaselineProjectPath) {
             $baseZipPath = Join-Path ([System.IO.Path]::GetTempPath()) ('w32proj_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.zip')
-            $zipJobs['baseline'] = @{ Job = (Start-ThreadJob -ScriptBlock $zipBuilder -ArgumentList $BaselineProjectPath, $baseZipPath); Path = $baseZipPath }
+            $zipJobs['baseline'] = @{ Job = (Start-ThreadJob -ScriptBlock $zipBuilder -ArgumentList $BaselineProjectPath, $baseZipPath, $zipBuilderText); Path = $baseZipPath }
         }
     }
     # Joins a prebuild job and returns its zip path — or $null (build-inline fallback) on any job error.

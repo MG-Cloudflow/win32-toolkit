@@ -128,6 +128,46 @@ $null = Download-OldVersionInstaller -AppId 'Acme.App' -Version '1.2.3' -Project
 if (@($script:wingetCalls).Count -eq 1) { Ok 'cache Off -> bit-identical old behavior (always downloads)' } else { Bad "winget calls with cache off: $(@($script:wingetCalls).Count)" }
 $script:cfg.Clear()
 
+# ── (d) -FamilyPin (installer-identity PR 1): the key encodes the TRIED type and scope ────────────────
+Write-Host '[d] Download-OldVersionInstaller -FamilyPin: one cache key per tried (type, scope)' -ForegroundColor Cyan
+# The family pin calls the two WP-3 helpers (only under -FamilyPin, so cases a-c never needed them; C-9).
+. (Join-Path $repo 'Private\Get-Win32ToolkitInstallerFamily.ps1')
+. (Join-Path $repo 'Private\Test-Win32ToolkitWingetNoApplicableInstaller.ps1')
+$script:naWhen = { $false }
+function winget {
+    $a = [string[]]$args
+    $script:wingetCalls += , @($a)
+    if (& $script:naWhen $a) { $global:LASTEXITCODE = -1978335216; return }   # 0x8A150010 no applicable installer
+    $dir = $a[[array]::IndexOf($a, '--download-directory') + 1]
+    $type = $a[[array]::IndexOf($a, '--installer-type') + 1]
+    [System.IO.File]::WriteAllBytes((Join-Path $dir 'app.msi'), [byte[]](7..99))
+    $sha = (Get-FileHash -LiteralPath (Join-Path $dir 'app.msi') -Algorithm SHA256).Hash
+    Set-Content -LiteralPath (Join-Path $dir 'a.installer.yaml') "InstallerType: $type`nInstallerSha256: $sha`nSilentSwitches: '/qn'" -Encoding UTF8
+    $global:LASTEXITCODE = 0
+}
+$verRoot = Join-Path (Get-Win32ToolkitPipelineCacheRoot) 'Acme.Fam\5.0'
+
+# d1: wix is not offered (any scope), msi with the machine scope is -> cached under the msi/machine key only.
+$script:naWhen = { param([string[]]$A) [array]::IndexOf($A, 'wix') -ge 0 }
+$script:wingetCalls = @()
+$d1 = Download-OldVersionInstaller -AppId 'Acme.Fam' -Version '5.0' -ProjectPath $proj -Scope machine -InstallerType wix -FamilyPin 6>$null 3>$null
+$keys1 = @(Get-ChildItem -LiteralPath $verRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object Name)
+if ($d1.ManifestInstallerType -eq 'msi' -and @($script:wingetCalls).Count -eq 3) { Ok 'family pin: wix/machine, wix (relaxed), then msi/machine downloaded' } else { Bad "d1: type $($d1.ManifestInstallerType) calls $(@($script:wingetCalls).Count)" }
+if (($keys1 -join ',') -eq 'any_machine_msi_any') { Ok "the key encodes the tried type and scope ('any_machine_msi_any'; nothing under a wix key)" } else { Bad "keys: $($keys1 -join ',')" }
+
+# d2: the same request again: the wix attempts still ask winget (not cached), the msi/machine attempt is a hit.
+$script:wingetCalls = @()
+$d2 = Download-OldVersionInstaller -AppId 'Acme.Fam' -Version '5.0' -ProjectPath $proj -Scope machine -InstallerType wix -FamilyPin 6>$null 3>$null
+$hitTypes = @($script:wingetCalls | ForEach-Object { $_[[array]::IndexOf([string[]]$_, '--installer-type') + 1] })
+if ($d2.ManifestInstallerType -eq 'msi' -and ($hitTypes -join ',') -eq 'wix,wix') { Ok 'hit: only the two wix attempts reached winget; msi/machine came from the cache' } else { Bad "d2: $($hitTypes -join ',')" }
+
+# d3: a relaxed scope is cached under 'any', never under the requested scope.
+$script:naWhen = { param([string[]]$A) [array]::IndexOf($A, '--scope') -ge 0 }
+$script:wingetCalls = @()
+$d3 = Download-OldVersionInstaller -AppId 'Acme.Fam' -Version '6.0' -ProjectPath $proj -Scope user -InstallerType msi -FamilyPin 6>$null 3>$null
+$keys3 = @(Get-ChildItem -LiteralPath (Join-Path (Get-Win32ToolkitPipelineCacheRoot) 'Acme.Fam\6.0') -Directory -ErrorAction SilentlyContinue | ForEach-Object Name)
+if ($d3.ScopeRelaxed -and ($keys3 -join ',') -eq 'any_any_msi_any') { Ok "relaxed scope cached under 'any_any_msi_any' (never the user key)" } else { Bad "d3: relaxed $($d3.ScopeRelaxed) keys $($keys3 -join ',')" }
+$script:naWhen = { $false }
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'ALL PASS' -ForegroundColor Green; exit 0 }
 else { Write-Host "$fail FAILED" -ForegroundColor Red; exit 1 }

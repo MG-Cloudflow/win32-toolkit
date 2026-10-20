@@ -18,6 +18,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 
 . (Join-Path $repo 'Private\Add-Win32ToolkitTestResult.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitTestResult.ps1')
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')   # -Baseline / -OldArpSurvivors strings (installer-identity PR 1)
 
 function New-Proj {
     $p = Join-Path ([System.IO.Path]::GetTempPath()) ('w32tr_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -129,6 +130,41 @@ Set-Content -LiteralPath (Join-Path $proj4 'Documentation\TestResults.json') -Va
 $empty = Get-Win32ToolkitTestResult -ProjectPath $proj4
 if ($null -ne $empty -and @($empty).Count -eq 0) { Ok 'empty file -> @()' } else { Bad 'empty file did not return @()' }
 
+# ── Update baseline facts (installer-identity PR 1): written only when supplied ──────────────────────
+Write-Host '[6] -Baseline / -OldArpSurvivors are written only when supplied; older entries keep their shape' -ForegroundColor Cyan
+$proj5 = New-Proj; $made += $proj5
+$p5 = Join-Path $proj5 'Documentation\TestResults.json'
+$null = Add-Win32ToolkitTestResult -ProjectPath $proj5 -Scenario 'Update' -Backend 'HyperV' -Verdict 'Failed' -Assertions @(@{ Name = 'OldArpGone-PostUpdate'; Result = 'FAIL' })
+$raw5a = Get-Content -LiteralPath $p5 -Raw -Encoding UTF8
+if ($raw5a -notmatch '"Baseline"' -and $raw5a -notmatch '"OldArpSurvivors"') { Ok 'without -Baseline / -OldArpSurvivors: no such property (the pre-PR-1 shape)' } else { Bad 'unsupplied properties written' }
+$firstBefore = (@($raw5a | ConvertFrom-Json)[0] | ConvertTo-Json -Compress -Depth 6)
+
+$esc = [char]27
+$bl = @{ ProjectName = ''; Source = 'winget'; Version = '8.8.9'; Mode = 'Auto'; Origin = 'Sibling'; RequestedInstallerType = 'nullsoft'; InstallerType = "null${esc}soft"
+         Family = 'exe'; UsedFallback = $false; FallbackReason = ''; RequestedScope = 'machine'; Scope = 'machine'; ScopeRelaxed = $true; Unavailable = $false
+         Locale = 'en-US'; Extra = 'x' }
+$surv = @(
+    [pscustomobject]@{ DisplayName = 'Notepad++ (64-bit x64)'; Key = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Notepad++'; KeyLeaf = 'Notepad++'; View = 'Native' },
+    @{ DisplayName = 'Two'; Key = 'HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Two'; KeyLeaf = 'Two'; View = 'User' })
+$e5 = Add-Win32ToolkitTestResult -ProjectPath $proj5 -Scenario 'Update' -Backend 'HyperV' -Verdict 'Failed' -Assertions @(@{ Name = 'OldArpGone-PostUpdate'; Result = 'FAIL' }) -Baseline $bl -OldArpSurvivors $surv
+$all5 = Get-Win32ToolkitTestResult -ProjectPath $proj5   # the reader returns the array itself (unary comma)
+$b5 = $all5[1].Baseline
+if (@($all5).Count -eq 2 -and $b5.Family -eq 'exe' -and $b5.Version -eq '8.8.9' -and $b5.Origin -eq 'Sibling' -and $b5.Source -eq 'winget') { Ok 'Baseline read back' } else { Bad "baseline: $($b5 | ConvertTo-Json -Compress)" }
+if ($b5.UsedFallback -is [bool] -and $b5.UsedFallback -eq $false -and $b5.ScopeRelaxed -eq $true -and $b5.Unavailable -eq $false) { Ok 'booleans stay JSON booleans' } else { Bad "bools: $($b5 | ConvertTo-Json -Compress)" }
+if ($b5.InstallerType -eq 'null?soft') { Ok 'string values pass ConvertTo-Win32ToolkitSafeText (ESC -> ?)' } else { Bad "unsafe: $($b5.InstallerType)" }
+$names = @($b5.PSObject.Properties.Name)
+if (($names -join ',') -eq 'Version,Mode,Origin,RequestedInstallerType,InstallerType,Family,UsedFallback,FallbackReason,RequestedScope,Scope,ScopeRelaxed,Unavailable,Locale,Source,ProjectName,Extra') { Ok 'Baseline keys in the contract order, extra keys after them' } else { Bad "order: $($names -join ',')" }
+$s5 = @($all5[1].OldArpSurvivors)
+if ($s5.Count -eq 2 -and $s5[0].KeyLeaf -eq 'Notepad++' -and $s5[0].View -eq 'Native' -and $s5[1].DisplayName -eq 'Two' -and $s5[1].View -eq 'User') { Ok 'OldArpSurvivors read back (objects and hashtables)' } else { Bad "survivors: $($s5 | ConvertTo-Json -Compress)" }
+if ((@($all5)[0] | ConvertTo-Json -Compress -Depth 6) -eq $firstBefore) { Ok 'the older entry is unchanged by the append' } else { Bad 'older entry changed' }
+if ($e5.PSObject.Properties['Baseline'] -and $e5.PSObject.Properties['OldArpSurvivors']) { Ok 'the returned entry carries both' } else { Bad 'returned entry lacks them' }
+$many = @(1..12 | ForEach-Object { @{ DisplayName = "A$_"; Key = "HKLM\X\A$_"; KeyLeaf = "A$_"; View = 'Native' } })
+$null = Add-Win32ToolkitTestResult -ProjectPath $proj5 -Scenario 'Update' -Backend 'Sandbox' -Verdict 'Failed' -OldArpSurvivors $many
+$last5 = (Get-Win32ToolkitTestResult -ProjectPath $proj5)[-1]
+if (@($last5.OldArpSurvivors).Count -eq 10 -and -not $last5.PSObject.Properties['Baseline']) { Ok 'at most 10 survivors; -OldArpSurvivors alone writes no Baseline' } else { Bad "cap: $(@($last5.OldArpSurvivors).Count)" }
+$null = Add-Win32ToolkitTestResult -ProjectPath $proj5 -Scenario 'Update' -Backend 'Sandbox' -Verdict 'Inconclusive' -Baseline @{ Version = '1.0'; Unavailable = $true; InstallerType = ''; Family = 'msi' }
+$last6 = (Get-Win32ToolkitTestResult -ProjectPath $proj5)[-1]
+if ($last6.Baseline.Unavailable -eq $true -and $last6.Baseline.InstallerType -eq '' -and -not $last6.PSObject.Properties['OldArpSurvivors']) { Ok 'an Unavailable record: Baseline only, empty InstallerType kept' } else { Bad "unavailable: $($last6 | ConvertTo-Json -Compress -Depth 5)" }
 # ── cleanup ───────────────────────────────────────────────────────────────────────────────────────
 foreach ($m in $made) { Remove-Item -LiteralPath $m -Recurse -Force -ErrorAction SilentlyContinue }
 

@@ -16,6 +16,9 @@ function New-LogCollectorScript {
         all resolved with [Environment]::GetEnvironmentVariable inside the sandbox; a path with an unknown
         variable is skipped rather than searched half-expanded.
 
+        Its last step writes Sandbox\Logs\CollectLogs.done ('collected=<n>'): the host waits for it
+        (Wait-Win32ToolkitCollectedLog) before it keeps the run's logs in Sandbox\Logs\Runs\<run>\.
+
         The Sandbox\ folder is stripped from the Staging copy during packaging, so these logs never
         ship inside the .intunewin.
     .PARAMETER ProjectPath
@@ -116,6 +119,10 @@ Write-Host '========================================' -ForegroundColor Cyan
 Write-Host "win32-toolkit: collected $collected log file(s)" -ForegroundColor Cyan
 Write-Host '  -> project\Sandbox\Logs (on the host)' -ForegroundColor White
 Write-Host '========================================' -ForegroundColor Cyan
+
+# Written LAST: tells the host that this run's logs are complete, so it can keep them in the run's own folder
+# (Sandbox\Logs\Runs\<run>).
+Set-Content -LiteralPath (Join-Path $dest 'CollectLogs.done') -Value ('collected=' + $collected) -Encoding ASCII
 '@
 
     $collectorPath = Join-Path $sandboxPath 'CollectLogs.ps1'

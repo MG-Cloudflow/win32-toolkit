@@ -143,6 +143,67 @@ Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.5
 | **winget** (default) | The toolkit reads the package ID from the project's YAML, lists older winget versions, and downloads one to `Sandbox\OldVersion\`, picked interactively, or via `-VersionsBack` / `-SpecificVersion`. Silent install switches come from the downloaded manifest; when none are published, installer-type defaults apply (NSIS `/S` · Inno `/VERYSILENT /NORESTART /SP-` · WiX/Burn `/quiet /norestart` · MSI `/qn /norestart`), and only for an **unknown/typeless installer**, where `/S` is a guess, a warning tells you to watch the run. | winget-sourced apps |
 | **A local packaged project** | `-BaselineProject 'Contoso\Git_x64_2.52.0'` (a friendly `<Template>\<Name>` reference under `Projects\`) or `-BaselineProjectPath` (full path). The baseline package is mapped **read-only** into the guest at `C:\PSADTOld` (its raw `Projects\` copy is never modified) and installed via *its own* PSADT script, in its own process, so the baseline and the update may use different PSADT versions. | Manual (non-winget) apps, which have no winget version history. Also for proving the **tattoo-overwrite** path: the old package writes its tattoo, and the new one must replace it |
 
+#### Which installer technology the old version uses
+
+Many apps ship the same version as more than one installer technology, for example a vendor EXE (NSIS)
+and an MSI. Devices that installed the EXE outside Intune are exactly the ones your MSI update meets, and an
+MSI never removes an EXE install: the device ends up with two registrations over one folder. So for a
+winget baseline, `-BaselineInstallerType` decides the technology of the old version, and the default
+looks for the other one:
+
+| Value | Old version installed as |
+|---|---|
+| `Auto` (default) | The **other** installer technology winget ships for this app, when there is one (for example the NSIS EXE under a WiX MSI package); otherwise the packaged technology. The other technologies come from `Documentation\IdentityDelta.json`, which the test writes on first use (one lookup of the app's winget-pkgs manifest). When that lookup could not run (offline, rate-limited), the test looks again on the next run; until it succeeds, the packaged technology is used and the line under `Baseline technology` says the other technologies could not be checked. |
+| `Both` | One Update run **per technology**, at the same version: the packaged one, then each other one winget ships. Each run has its own verdict and its own `TestResults.json` record; the command returns `$false` when any run failed, `$null` when any run had no verdict, otherwise `$true`. |
+| `Packaged` | The packaged technology only. |
+| `msi`, `wix`, `burn`, `nullsoft`, `inno`, `exe`, `msix` | Exactly that technology family. |
+
+The technology is printed as `Baseline technology : ...` **before** you pick the version, so you know what
+the old version has to ship.
+
+```powershell
+# Test the update over every technology winget ships for the previous release
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario Update -VersionsBack 1 -BaselineInstallerType Both
+```
+
+The download rules:
+
+- **The installer type is always pinned.** The types of its family are tried in winget's order (for
+  `nullsoft`: `nullsoft`, `burn`, `inno`, `exe`). There is **no unpinned retry** any more, so the baseline
+  can never silently be another technology than the one printed.
+- **A scope is only a preference.** When the pinned type comes with an explicit scope (the packaged
+  manifest's `machine` or `user`), it is tried first; when that version has no installer of that scope, the
+  same type is downloaded without a scope, with a warning, and `ScopeRelaxed` is recorded. A scope never
+  makes the test fail to download. The installer locale is never pinned.
+- **`Auto` falls back loudly.** When the chosen version does not ship the other technology, the run falls
+  back to the packaged technology (still pinned) with a warning and records `UsedFallback`. Such a run cannot
+  show a technology switch, so Export keeps warning until a run with the other technology passes: pick a
+  version that ships it (`-SpecificVersion`) or pass that type to `-BaselineInstallerType`.
+- **An explicit type, `Packaged` and each `Both` run never fall back.** When the version has no installer of
+  that technology, the run has **no verdict**: it prints a warning, records an `Inconclusive` entry marked
+  `Baseline.Unavailable` in `TestResults.json` (listed in the documentation, never treated as a test result)
+  and returns `$null`. `Sandbox\OldVersion\` keeps the previous old version: it is replaced only when a
+  download succeeds.
+- **Windows Sandbox in watched mode** keeps each sandbox open for verification, and only one may run: with
+  `Both`, close the previous run's sandbox when the console asks (`Close the Windows Sandbox of the previous
+  leg ...`). The next run waits up to 10 minutes, then has no verdict. Unattended runs and Hyper-V runs one
+  after the other without help.
+
+`-BaselineInstallerType` applies to a winget baseline only; with `-BaselineProject` /
+`-BaselineProjectPath` the baseline package has its own technology.
+
+#### Technology switch warning
+
+When the old install of **another** technology is still registered after the update (the `OldArpGone`
+assertion failed and the baseline's family differs from the package's), the test prints:
+
+```text
+WARNING: Technology switch: the vendor nullsoft install of v8.8.9 (Notepad++ (64-bit x64), ARP key 'Notepad++') was still registered after the wix package installed. Devices that have the vendor EXE install get two registrations over one folder. Do not publish this package to them; see docs/packaging.md, Installer technology.
+```
+
+Treat it as a real problem for the devices that have the other install: rebuild the package with the
+technology they already have, or plan how those devices move from one technology to the other.
+
 ### What the run does
 
 ```mermaid
@@ -168,7 +229,21 @@ Intune detection rule). If the project has no usable requirement rule yet, pass
 `-SkipRequirementCheck`. Those assertions report SKIP while the tattoo assertion still runs.
 
 Assertion results stream back to `Sandbox\Logs\UpdateAssertions.log`; the command reports the verdict
-and records it in `TestResults.json`, like the InstallUninstall scenario.
+and records it in `TestResults.json`, like the InstallUninstall scenario. An Update record also says which
+old version was installed and how, so every verdict can be read with its baseline variant:
+
+| Field | Meaning |
+|---|---|
+| `Baseline.Version` | The old version that was installed. |
+| `Baseline.Source` | `winget` (vendor installer) or `project` (a local packaged project, named in `Baseline.ProjectName`). |
+| `Baseline.Mode`, `Baseline.Origin` | The `-BaselineInstallerType` value (`Both` for each run of a `Both` test) and where the technology came from (`Sibling`, `Packaged`, `Explicit`, `Project`). |
+| `Baseline.RequestedInstallerType`, `Baseline.InstallerType`, `Baseline.Family` | The type asked for, the type winget delivered and its family (`msi`, `exe`, `msix`). |
+| `Baseline.UsedFallback`, `Baseline.FallbackReason` | `Auto` fell back to the packaged technology because the version did not ship the other one. |
+| `Baseline.RequestedScope`, `Baseline.Scope`, `Baseline.ScopeRelaxed` | The scope asked for, the scope of the delivered installer, and whether the scope preference was dropped. |
+| `Baseline.Unavailable` | No installer of that technology at that version: the record has no verdict and is never judged. |
+| `OldArpSurvivors` | When `OldArpGone` failed: the old Add/Remove Programs entries still registered (name, key, registry view). |
+
+Records written by older versions of the toolkit have no `Baseline`; they are kept as they are.
 
 <!-- SCREENSHOT: Host console showing the Update test verdict block (PASS with the requirement and tattoo assertions listed) -->
 

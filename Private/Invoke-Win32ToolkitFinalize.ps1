@@ -26,6 +26,10 @@ function Invoke-Win32ToolkitFinalize {
         Project (folder) name — used for the sandbox documentation config.
     .PARAMETER AppInfo
         App metadata object (passed through to New-TargetedDocumentation).
+    .PARAMETER UpdateBaselineInstallerType
+        Update test only: the installer technology of the old-version baseline (Auto, Both, Packaged or an
+        installer type), passed on as Test-Win32ToolkitProject -BaselineInstallerType only when it is given
+        (unbound = that command's default, Auto).
     .PARAMETER AllowLegacyScript
         Finalise a deploy script that win32-toolkit never patched (no AppConfig loader) or whose template
         layout this version does not support; the package is built as-is (passed on to the export).
@@ -52,6 +56,10 @@ function Invoke-Win32ToolkitFinalize {
         [int]$UpdateVersionsBack,
 
         [string]$UpdateSpecificVersion,
+
+        # Update-test baseline technology (installer-identity PR 1), passed through only when bound.
+        [ValidateSet('Auto', 'Both', 'Packaged', 'msi', 'wix', 'burn', 'nullsoft', 'inno', 'exe', 'msix')]
+        [string]$UpdateBaselineInstallerType,
 
         [switch]$PackageIntune,
 
@@ -124,11 +132,17 @@ function Invoke-Win32ToolkitFinalize {
                 # Plumb the baseline choice through so automation never lands on the interactive picker.
                 if ($UpdateSpecificVersion)   { $testArgs['SpecificVersion'] = $UpdateSpecificVersion }
                 elseif ($UpdateVersionsBack)  { $testArgs['VersionsBack']    = $UpdateVersionsBack }
+                if ($UpdateBaselineInstallerType) { $testArgs['BaselineInstallerType'] = $UpdateBaselineInstallerType }
             }
+            $testStartUtc = [datetime]::UtcNow
             $verdict = Test-Win32ToolkitProject @testArgs
             if ($verdict -eq $false) {
                 $assertLog = if ($scenario -eq 'InstallUninstall') { 'InstallAssertions.log' } else { 'UpdateAssertions.log' }
-                Write-Warning "The $scenario test FAILED its assertions — review $ProjectPath\Sandbox\Logs\$assertLog before publishing this package."
+                # Name the failed run's own log folder (each leg of an Update 'Both' run has one; test campaign F2).
+                $review = @(Get-Win32ToolkitTestRunLogFolder -ProjectPath $ProjectPath -Scenario $scenario -SinceUtc $testStartUtc |
+                        ForEach-Object { Join-Path $_ $assertLog })
+                if ($review.Count -eq 0) { $review = @("$ProjectPath\Sandbox\Logs\$assertLog") }
+                Write-Warning "The $scenario test FAILED its assertions — review $($review -join ' and ') before publishing this package."
             }
             elseif ($null -eq $verdict) {
                 # $null means NO verdict — the test errored before running (e.g. a sandbox that never

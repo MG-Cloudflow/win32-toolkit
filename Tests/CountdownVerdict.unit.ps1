@@ -1,7 +1,8 @@
 <#
     The watched-Sandbox countdown reports the REAL install outcome (spec WP-E t9, TST-04): the generated
     Sandbox\Countdown.ps1 defines Get-W32tInstallVerdict BEFORE any WinForms code; it reads the guest
-    runner's C:\PSADT\Sandbox\Logs\PsadtExitCodes.log, takes the LAST 'Install' line (any label) and
+    runner's C:\PSADT\Sandbox\Logs\PsadtExitCodes.log, takes the LAST 'Install' line (any label) after the last
+    '-- test run <name> --' marker the host writes when a run starts, and
     returns @{ Known; Ok; Exit; Result }. The banner / form title then say
       INSTALLATION COMPLETED SUCCESSFULLY!                                   (Ok)
       INSTALLATION FAILED (exit <n>, <result>) - see C:\PSADT\Sandbox\Logs    (not Ok)
@@ -77,6 +78,9 @@ else {
         'last-install-wins' = @{ Lines = @("$ts dep Install parent=x64-direct exit=0 result=Success", "$ts app Install parent=x64-direct exit=60001 result=Failed", "$ts app Uninstall parent=x64-direct exit=0 result=Success"); Expect = 'True|False|60001|Failed|INSTALLATION FAILED (exit 60001, Failed) - see C:\PSADT\Sandbox\Logs' }
         'update-baseline'  = @{ Lines = @("$ts baseline Install parent=x64-direct exit=0 result=Success"); Expect = 'True|True|0|Success|INSTALLATION COMPLETED SUCCESSFULLY!' }
         'only-uninstall'   = @{ Lines = @("$ts app Uninstall parent=x64-direct exit=0 result=Success"); Expect = 'False|False||' + '|INSTALLATION FINISHED (no exit code recorded)' }
+        # Test campaign F2: the legs of an Update Both run share the log; each run starts with the host's marker line.
+        'marker-resets'    = @{ Lines = @("$ts update Install parent=x64-direct exit=0 result=Success", "$ts -- test run 20261020-100000_Update_exe --"); Expect = 'False|False||' + '|INSTALLATION FINISHED (no exit code recorded)' }
+        'after-marker'     = @{ Lines = @("$ts update Install parent=x64-direct exit=1603 result=Failed", "$ts -- test run 20261020-100000_Update_exe --", "$ts baseline Install parent=x64-direct exit=0 result=Success"); Expect = 'True|True|0|Success|INSTALLATION COMPLETED SUCCESSFULLY!' }
         'no-log'           = @{ Lines = $null; Expect = 'False|False||' + '|INSTALLATION FINISHED (no exit code recorded)' }
     }
     $harness = $fn.Extent.Text + "`r`n" + @'

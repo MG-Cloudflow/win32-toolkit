@@ -25,6 +25,10 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Get-Win32ToolkitTestMode.ps1')              # mode resolver (Interactive/Unattended)
 . (Join-Path $repo 'Private\Wait-Win32ToolkitSandboxFree.ps1')          # the guard now waits instead of throwing
 . (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1')
+. (Join-Path $repo 'Private\Initialize-Win32ToolkitTestRunLog.ps1')   # C-9: each run keeps its logs in Sandbox\Logs\Runs\<run> (real)
+. (Join-Path $repo 'Private\Save-Win32ToolkitTestRunLog.ps1')
+function Wait-Win32ToolkitCollectedLog { param($TimeoutSeconds) $script:collectWaits += [int]$TimeoutSeconds; $true }   # no wait for a guest log collector
+$script:collectWaits = @()
 # Deterministic on any host (CI stdin is redirected, which would otherwise force Unattended).
 function Test-Win32ToolkitHostNonInteractive { $false }
 
@@ -57,8 +61,14 @@ function New-UpdateAssertionScript { param($ProjectPath, [switch]$SkipRequiremen
 function New-CountdownScript { param($ProjectPath) 'cd.ps1' }
 function Get-Win32ToolkitBaselineInstallCommand { param($InstallerSandboxPath, $InstallerType, $SilentArgs) "& '$InstallerSandboxPath'" }
 function Wait-Win32ToolkitUpdateAssertion { param($ProjectPath, $Backend, $TimeoutMinutes, $PollSeconds, $LogFileName, $Label) $true }
-# The Update arm now records its outcome via this helper — shadow it (the resolution/guard tests don't care).
-function Write-Win32ToolkitTestOutcome { param($ProjectPath, $Scenario, $Backend, $Mode, $Verdict, $LogFileName, $Notes) }
+# The Update arm now records its outcome via this helper — shadow it (and keep the baseline it records).
+$script:recordedBaseline = $null
+function Write-Win32ToolkitTestOutcome { param($ProjectPath, $Scenario, $Backend, $Mode, $Verdict, $LogFileName, $Notes, $Baseline) $script:recordedBaseline = $Baseline }
+# Installer-identity PR 1 (C-9): the project baseline's technology for the record, the technology-switch check
+# after a failed run (never reached here: the waiter passes).
+function Get-Win32ToolkitProjectSource { [pscustomobject]@{ InstallerType = 'inno'; Family = 'exe'; Scope = 'machine'; Locale = '' } }
+function Get-Win32ToolkitTechnologySwitch { @() }
+function Resolve-Win32ToolkitBaselineFamily { throw 'a project baseline never resolves a winget baseline technology' }
 
 $script:hvBaseline = $null
 $script:hvCalled   = 0
@@ -90,6 +100,8 @@ $script:hvCalled = 0; $script:hvBaseline = $null
 Test-Win32ToolkitProject -ProjectPath $proj -Scenario Update -BaselineProject "$TEMPLATE\$NAME" *>$null
 if ($script:hvCalled -eq 1) { Ok 'the Update run reached the provider (validation + resolution passed)' } else { Bad "hvCalled=$script:hvCalled (validation/resolution rejected a valid ref)" }
 if ($script:hvBaseline -eq $EXPECTED) { Ok "forwarded the resolved baseline path ($EXPECTED)" } else { Bad "baseline=$script:hvBaseline expected=$EXPECTED" }
+$rb = $script:recordedBaseline
+if ($rb -and $rb.Source -eq 'project' -and $rb.ProjectName -eq $NAME -and $rb.Origin -eq 'Project' -and $rb.Mode -eq 'Auto' -and $rb.InstallerType -eq 'inno' -and $rb.Family -eq 'exe') { Ok 'the record''s Baseline says Source = project, the project''s folder leaf and its technology' } else { Bad "recorded baseline: $($rb | ConvertTo-Json -Compress)" }
 
 # ══ [2] the 'project:' prefix form is accepted identically ════════════════════════════════════════
 Write-Host '[2] -BaselineProject ''project:<Template>\<Name>'' resolves the same way' -ForegroundColor Cyan
@@ -119,6 +131,16 @@ if (ExpectThrow @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProject = "
 Write-Host '[3b] baseline/version params with -Scenario InstallUninstall are rejected (not silently ignored)' -ForegroundColor Cyan
 if (ExpectThrow @{ ProjectPath = $proj; Scenario = 'InstallUninstall'; BaselineProject = "$TEMPLATE\$NAME" } 'apply only to -Scenario Update') { Ok '-BaselineProject + InstallUninstall -> clear "Update only" error' } else { Bad '-BaselineProject silently ignored under InstallUninstall' }
 if (ExpectThrow @{ ProjectPath = $proj; Scenario = 'InstallUninstall'; VersionsBack = 1 } 'apply only to -Scenario Update') { Ok '-VersionsBack + InstallUninstall -> rejected too (fixes the pre-existing silent no-op)' } else { Bad '-VersionsBack silently ignored under InstallUninstall' }
+
+# ══ [3b2] -BaselineInstallerType applies to a winget baseline only ════════════════════════════════════
+Write-Host '[3b2] -BaselineInstallerType with a baseline project: only Auto (the default) is accepted' -ForegroundColor Cyan
+$techNeedle = '-BaselineInstallerType applies to a winget baseline; the baseline project has its own technology.'
+if (ExpectThrow @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProject = "$TEMPLATE\$NAME"; BaselineInstallerType = 'nullsoft' } $techNeedle) { Ok '-BaselineProject + -BaselineInstallerType nullsoft -> the new error, before anything runs' } else { Bad '-BaselineInstallerType accepted with -BaselineProject' }
+if (ExpectThrow @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProjectPath = $baseProj; BaselineInstallerType = 'Both' } $techNeedle) { Ok '-BaselineProjectPath + -BaselineInstallerType Both -> the new error' } else { Bad '-BaselineInstallerType accepted with -BaselineProjectPath' }
+$script:hvCalled = 0
+Test-Win32ToolkitProject -ProjectPath $proj -Scenario Update -BaselineProject "$TEMPLATE\$NAME" -BaselineInstallerType Auto *>$null
+if ($script:hvCalled -eq 1) { Ok 'an explicit -BaselineInstallerType Auto (the default) is accepted with a baseline project' } else { Bad 'explicit Auto rejected with a baseline project' }
+if (ExpectThrow @{ ProjectPath = $proj; Scenario = 'InstallUninstall'; BaselineInstallerType = 'Auto' } 'apply only to -Scenario Update') { Ok '-BaselineInstallerType + InstallUninstall -> the Update-only error' } else { Bad '-BaselineInstallerType silently ignored under InstallUninstall' }
 
 # ══ [3c] an unconfigured BasePath fails clearly instead of prompting ═══════════════════════════════
 Write-Host '[3c] -BaselineProject with no configured BasePath -> clear error (never a Read-Host hang)' -ForegroundColor Cyan

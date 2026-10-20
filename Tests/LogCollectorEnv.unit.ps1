@@ -12,6 +12,7 @@
           $envWinDir, $env:ProgramData, ${env:SystemDrive}, $envProgramFilesX86 and literal paths, and
           returns $null for unknown variables or any other '$' (path skipped, never half-expanded)
       [4] the same resolver gives the same answers under Windows PowerShell 5.1 (skipped if absent)
+      [5] its last statement writes Sandbox\Logs\CollectLogs.done, which the host waits for (test campaign F2)
 
     The collector itself is never run (it copies from system log folders into C:\PSADT).
 
@@ -121,6 +122,12 @@ foreach ($b in $env:W32T_LC_CASES.Split(',')) {
         }
         if ($same) { Ok "Windows PowerShell 5.1 resolves all $($inputs.Count) cases identically" }
     } else { Write-Host '  SKIP: Windows PowerShell 5.1 not present' -ForegroundColor DarkGray }
+
+    Write-Host "`n[5] The last statement writes Sandbox\Logs\CollectLogs.done (test campaign F2)" -ForegroundColor Cyan
+    $last = @($ast.EndBlock.Statements)[-1].Extent.Text
+    if ($last -ceq "Set-Content -LiteralPath (Join-Path `$dest 'CollectLogs.done') -Value ('collected=' + `$collected) -Encoding ASCII") {
+        Ok 'CollectLogs.done (collected=<n>) is written last, after every copy: the host waits for it before keeping the run''s logs'
+    } else { Bad "last statement: $last" }
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

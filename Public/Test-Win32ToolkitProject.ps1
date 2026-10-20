@@ -22,6 +22,13 @@ function Test-Win32ToolkitProject {
     update run through the guest runner Sandbox\Invoke-PsadtPackage.ps1, which appends the exact exit
     code of each of its runs to Sandbox\Logs\PsadtExitCodes.log; those codes are printed after the run.
 
+    Run logs: every run, and each run of -BaselineInstallerType Both, keeps its own copy of its logs (the
+    assertion log, the Add/Remove Programs snapshots, its PsadtExitCodes.log lines and the PSADT and MSI
+    logs) in a folder under Sandbox\Logs\Runs named after its start time, its scenario and, for an Update
+    run, the old version's installer family, for example Sandbox\Logs\Runs\20261020-221500_Update_exe.
+    Its Documentation\TestResults.json record names that folder (LogFolder). The files directly in
+    Sandbox\Logs are the latest run's.
+
     The function is scenario-driven: new test types can be added as additional switch cases
     without changing the overall structure.
 .PARAMETER ProjectPath
@@ -59,6 +66,27 @@ function Test-Win32ToolkitProject {
     (or 'project:<Template>\<Name>'), resolved to <BasePath>\Projects\<Template>\<Name> — exactly how a
     'project:' dependency is referenced, so you don't type the full path. Mutually exclusive with
     -BaselineProjectPath / -VersionsBack / -SpecificVersion.
+.PARAMETER BaselineInstallerType
+    Update scenario, winget baseline only: the installer technology the old-version baseline must use.
+    The baseline download always pins an installer type (never an unpinned retry) and never a locale.
+    The resolved technology is printed as 'Baseline technology : ...' before the version is picked.
+    - Auto (default): the other installer technology winget ships for this app, when there is one (read
+      from Documentation\IdentityDelta.json, written on first use), so an MSI package is tested over the
+      vendor EXE install that devices may already have; otherwise the packaged one.
+      When the chosen version does not ship that technology, the run falls back to the packaged one with a
+      warning and records UsedFallback (such a run cannot show a technology switch).
+    - Both: one Update run per technology (the packaged one, then each other one winget ships) at the same
+      version, each with its own verdict and TestResults.json record.
+      Returns $false when a run failed, $null when a run had no verdict, else $true.
+    - Packaged: the packaged installer technology only.
+    - msi, wix, burn, nullsoft, inno, exe, msix: exactly that technology family, no fallback.
+    A pinned scope (machine or user) is only a preference: when the version has no installer of that
+    scope, winget's choice of scope is used and ScopeRelaxed is recorded.
+    When the version has no installer of the required technology, the run records an Inconclusive result
+    (Baseline.Unavailable) and returns $null.
+    When an old install of ANOTHER technology is still registered after the update, an ID-TECH-SWITCH
+    warning names it.
+    Not valid with -BaselineProject / -BaselineProjectPath (that package has its own technology).
 .PARAMETER Backend
     Which test backend to use for this run: 'Sandbox' (Windows Sandbox) or 'HyperV' (the local
     Hyper-V test VM over PowerShell Direct). Omit to use the configured default (the TestBackend
@@ -94,6 +122,12 @@ function Test-Win32ToolkitProject {
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario Update -SpecificVersion '2.47.0'
 .EXAMPLE
     Test-Win32ToolkitProject -BasePath 'D:\Packaging' -Scenario Update
+.EXAMPLE
+    # One Update run per installer technology winget ships (e.g. the vendor EXE and the MSI), each recorded separately
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario Update -VersionsBack 1 -BaselineInstallerType Both
+.EXAMPLE
+    # Pin the old version to the vendor EXE (NSIS) technology
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario Update -SpecificVersion '8.8.9' -BaselineInstallerType nullsoft
 #>
     [CmdletBinding()]
     param(
@@ -131,6 +165,13 @@ function Test-Win32ToolkitProject {
         # -SpecificVersion.
         [Parameter(Mandatory = $false)]
         [string]$BaselineProject,
+
+        # Update scenario, winget baseline only: the installer technology of the old version. Auto (default) = the
+        # other technology winget ships (falling back, pinned and loudly, to the packaged one), Both = one run per
+        # technology, Packaged = the packaged one, or an installer type. Never an unpinned download.
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Auto', 'Both', 'Packaged', 'msi', 'wix', 'burn', 'nullsoft', 'inno', 'exe', 'msix')]
+        [string]$BaselineInstallerType = 'Auto',
 
         # Which test backend to run against. Omit to use the configured/resolved default (Sandbox unless
         # HyperV is configured AND ready). 'HyperV' runs the scenario in the local Hyper-V VM over
@@ -184,7 +225,7 @@ function Test-Win32ToolkitProject {
         # ignore them under InstallUninstall (so the user thinks they configured an update-from-baseline test
         # but got a plain install/uninstall), reject the mismatch up front.
         if ($Scenario -ne 'Update') {
-            $updateOnly = @('BaselineProject', 'BaselineProjectPath', 'VersionsBack', 'SpecificVersion') |
+            $updateOnly = @('BaselineProject', 'BaselineProjectPath', 'VersionsBack', 'SpecificVersion', 'BaselineInstallerType') |
                 Where-Object { $PSBoundParameters.ContainsKey($_) }
             if ($updateOnly) {
                 throw "$(@($updateOnly | ForEach-Object { "-$_" }) -join ', ') apply only to -Scenario Update (got '$Scenario')."
@@ -194,7 +235,13 @@ function Test-Win32ToolkitProject {
         # -BaselineProject: resolve a friendly '<Template>\<Name>' (or 'project:<Template>\<Name>') reference
         # to a packaged project under BasePath, then feed the SAME -BaselineProjectPath machinery below — so
         # you can name a local package the way a 'project:' dependency does, instead of typing the full path.
+        # A baseline PROJECT is installed by its own package, so its technology is fixed: only the winget baseline
+        # takes an installer-technology choice (installer-identity PR 1).
+        $baselineTechError = '-BaselineInstallerType applies to a winget baseline; the baseline project has its own technology.'
         if ($Scenario -eq 'Update' -and $BaselineProject) {
+            if ($PSBoundParameters.ContainsKey('BaselineInstallerType') -and $BaselineInstallerType -ne 'Auto') {
+                throw $baselineTechError
+            }
             if ($BaselineProjectPath) {
                 throw '-BaselineProject and -BaselineProjectPath are mutually exclusive — both name the baseline package; use one.'
             }
@@ -230,6 +277,9 @@ function Test-Win32ToolkitProject {
         # $BaselineProjectPath above, so it flows through exactly the same checks.)
         $baselineApp = $null
         if ($Scenario -eq 'Update' -and $BaselineProjectPath) {
+            if ($PSBoundParameters.ContainsKey('BaselineInstallerType') -and $BaselineInstallerType -ne 'Auto') {
+                throw $baselineTechError
+            }
             if ($VersionsBack -or $SpecificVersion) {
                 throw '-BaselineProjectPath is mutually exclusive with -VersionsBack / -SpecificVersion (the baseline IS the supplied project).'
             }
@@ -269,17 +319,25 @@ function Test-Win32ToolkitProject {
         # runner Sandbox\Invoke-PsadtPackage.ps1 instead of being dot-called inside the LogonCommand / phase
         # process — PSADT 4.2 refuses a second copy of its module in a process (60008), and 4.1/4.2 cannot
         # share one. Written BEFORE any scenario builds a command. The runner appends each run's exact exit
-        # code to Sandbox\Logs\PsadtExitCodes.log; clear it so the printed codes (and the watched countdown's
-        # verdict) belong to THIS run only.
+        # code to Sandbox\Logs\PsadtExitCodes.log. It is cleared once per OUTER call: the legs of an Update
+        # '-BaselineInstallerType Both' run (inner calls) append to it, each after its own start marker
+        # (Initialize-Win32ToolkitTestRunLog), so the printed codes and the watched countdown's verdict belong
+        # to the current run, and every leg's lines stay (test campaign F2).
         $null = New-Win32ToolkitPackageRunnerScript -ProjectPath $ProjectPath
         $exitCodeLog = Join-Path $ProjectPath 'Sandbox\Logs\PsadtExitCodes.log'
-        if (Test-Path -LiteralPath $exitCodeLog) { Remove-Item -LiteralPath $exitCodeLog -Force -ErrorAction SilentlyContinue }
+        if ($null -eq $script:W32TUpdateLegContext -and (Test-Path -LiteralPath $exitCodeLog)) {
+            Remove-Item -LiteralPath $exitCodeLog -Force -ErrorAction SilentlyContinue
+        }
         # PSADT / Intune success codes (0, 1707 success; 3010 soft, 1641 hard reboot) for the runner phases.
         $psadtSuccessCodes = @(0, 1707, 3010, 1641)
-        # Prints the runner's exit-code lines after a run (when the log came back / was written).
+        # Prints the runner's exit-code lines of the current run (after its start marker) when the log came back.
         $showExitCodes = {
+            param($Run)
             if (Test-Path -LiteralPath $exitCodeLog) {
                 $codeLines = @(Get-Content -LiteralPath $exitCodeLog -ErrorAction SilentlyContinue | Where-Object { $_ })
+                $at = if ($Run -and $Run.Marker) { [array]::LastIndexOf([string[]]$codeLines, [string]$Run.Marker) } else { -1 }
+                if ($at -ge 0) { $codeLines = @($codeLines | Select-Object -Skip ($at + 1)) }
+                $codeLines = @($codeLines | Where-Object { $_ -notmatch '^\[[^\]]*\]\s+-- test run ' })
                 if ($codeLines.Count -gt 0) {
                     Write-Host 'PSADT exit codes (Sandbox\Logs\PsadtExitCodes.log):' -ForegroundColor Cyan
                     foreach ($codeLine in $codeLines) {
@@ -288,6 +346,20 @@ function Test-Win32ToolkitProject {
                     }
                 }
             }
+        }
+        # Keeps the run's logs in its own folder, Sandbox\Logs\Runs\<run>\ (test campaign F2): the top-level
+        # Sandbox\Logs files are overwritten by the next run (the next leg of a Both run). Under Sandbox the guest
+        # collects the PSADT/MSI logs AFTER the last assertion, so wait for its collector first (-WaitSeconds).
+        # Returns the folder relative to the project for the TestResults.json record ('' when none).
+        $saveRunLog = {
+            param($Run, [int]$WaitSeconds)
+            if (-not $Run) { return '' }
+            if ($WaitSeconds -gt 0 -and -not (Wait-Win32ToolkitCollectedLog -ProjectPath $ProjectPath -TimeoutSeconds $WaitSeconds)) {
+                Write-Warning "The Sandbox log collector did not finish within $WaitSeconds s: this run's log folder may miss its PSADT/MSI logs (see Sandbox\Logs)."
+            }
+            $rel = Save-Win32ToolkitTestRunLog -Run $Run
+            if ($rel) { Write-Host "Run logs         : $(Join-Path $ProjectPath $rel)" -ForegroundColor Gray }
+            [string]$rel
         }
 
         # Stage declared dependencies (winget installers / packaged projects) into Sandbox\Dependencies\ so
@@ -357,21 +429,24 @@ function Test-Win32ToolkitProject {
                         )
                         Write-Host 'Running an UNATTENDED Install → Uninstall in the Hyper-V VM with the Intune command line (32-bit parent, SYSTEM)...' -ForegroundColor Cyan
                     }
+                    $runLog = Initialize-Win32ToolkitTestRunLog -ProjectPath $ProjectPath -Scenario 'InstallUninstall'
                     $ran = Invoke-Win32ToolkitHyperVRun -ProjectPath $ProjectPath -Phase $phases -Output @('Sandbox\Logs\*')
                     if ($ran) {
                         Write-Host "✓ Hyper-V install/uninstall completed. Logs: $(Join-Path $ProjectPath 'Sandbox\Logs')" -ForegroundColor Green
                     } else {
                         Write-Warning 'Hyper-V install/uninstall run did not complete cleanly — see the warnings above.'
                     }
-                    & $showExitCodes
+                    & $showExitCodes $runLog
                     # Read the install/uninstall assertions the guest wrote (only if the log came back — no 30-min
                     # hang if the run died before writing it), report a verdict, and record it for the docs.
                     $iuVerdict = $null
                     if ($ran -and (Test-Path -LiteralPath $installAssertLog)) {
                         $iuVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -TimeoutMinutes 1 -LogFileName 'InstallAssertions.log' -Label 'INSTALL/UNINSTALL TEST'
                     }
+                    # The logs came back with the copy-out: nothing to wait for.
+                    $runFolder = & $saveRunLog $runLog 0
                     Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'InstallUninstall' -Backend 'HyperV' `
-                        -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $iuVerdict -LogFileName 'InstallAssertions.log'
+                        -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $iuVerdict -LogFileName 'InstallAssertions.log' -LogFolder $runFolder
                     return $iuVerdict
                 }
 
@@ -437,6 +512,7 @@ function Test-Win32ToolkitProject {
                 }
                 Write-Host '=============================================' -ForegroundColor Cyan
 
+                $runLog = Initialize-Win32ToolkitTestRunLog -ProjectPath $ProjectPath -Scenario 'InstallUninstall'
                 $launched = (Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched
                 if ($launched) {
                     Write-Host "`n✓ Final demo sandbox launched successfully!" -ForegroundColor Green
@@ -451,9 +527,10 @@ function Test-Win32ToolkitProject {
                 $iuVerdict = if ($launched) {
                     Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend Sandbox -TimeoutMinutes 10 -LogFileName 'InstallAssertions.log' -Label 'INSTALL/UNINSTALL TEST'
                 } else { $null }
-                & $showExitCodes
+                & $showExitCodes $runLog
+                $runFolder = & $saveRunLog $runLog $(if ($launched) { 60 } else { 0 })
                 Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'InstallUninstall' -Backend 'Sandbox' `
-                    -Mode $(if ($sbInteractive) { 'Interactive' } else { 'Unattended' }) -Verdict $iuVerdict -LogFileName 'InstallAssertions.log'
+                    -Mode $(if ($sbInteractive) { 'Interactive' } else { 'Unattended' }) -Verdict $iuVerdict -LogFileName 'InstallAssertions.log' -LogFolder $runFolder
                 return $iuVerdict
             }
 
@@ -461,11 +538,47 @@ function Test-Win32ToolkitProject {
                 $useBaselineProject = [bool]$BaselineProjectPath
                 Write-Host "`nScenario: Install Old Version → Countdown → Run PSADT Update" -ForegroundColor Cyan
 
+                # Baseline technology (installer-identity PR 1): the canonical -BaselineInstallerType value, and the
+                # leg context a '-BaselineInstallerType Both' run sets for each of its inner runs (L13).
+                $baselineMode = @('Auto', 'Both', 'Packaged', 'msi', 'wix', 'burn', 'nullsoft', 'inno', 'exe', 'msix') |
+                    Where-Object { $_ -eq $BaselineInstallerType } | Select-Object -First 1
+                $legContext = $script:W32TUpdateLegContext
+                # What this run's old version was (Documentation\TestResults.json 'Baseline').
+                $baselineInfo = $null
+                # A failed Update test whose surviving old install is ANOTHER technology: say so (ID-TECH-SWITCH, V42).
+                $warnTechSwitch = {
+                    try {
+                        foreach ($s in @(Get-Win32ToolkitTechnologySwitch -ProjectPath $ProjectPath)) { Write-Warning $s.Message }
+                    }
+                    catch {
+                        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                        Write-Verbose "Technology-switch check skipped: $($_.Exception.Message)"
+                    }
+                }
+
                 if ($useBaselineProject) {
                     # ── Baseline = a previous TOOLKIT package (no winget) ──────────────────
                     $targetVersion = $baselineApp.Version
                     Write-Host "Baseline project : $BaselineProjectPath" -ForegroundColor Gray
                     Write-Host "Baseline version : $targetVersion (from its AppConfig)" -ForegroundColor Yellow
+                    $baselineSource = Get-Win32ToolkitProjectSource -ProjectPath $BaselineProjectPath
+                    $baselineInfo = @{
+                        Version                = [string]$targetVersion
+                        Mode                   = $baselineMode
+                        Origin                 = 'Project'
+                        RequestedInstallerType = ''
+                        InstallerType          = [string]$baselineSource.InstallerType
+                        Family                 = [string]$baselineSource.Family
+                        UsedFallback           = $false
+                        FallbackReason         = ''
+                        RequestedScope         = ''
+                        Scope                  = [string]$baselineSource.Scope
+                        ScopeRelaxed           = $false
+                        Unavailable            = $false
+                        Locale                 = [string]$baselineSource.Locale
+                        Source                 = 'project'
+                        ProjectName            = Split-Path -Leaf $BaselineProjectPath
+                    }
 
                     # Warn if the baseline is a different app (the tattoo-overwrite test would be meaningless).
                     $cfgU = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
@@ -509,18 +622,41 @@ function Test-Win32ToolkitProject {
                     Write-Host "Package ID       : $wingetId"       -ForegroundColor Gray
                     Write-Host "Packaged version : $currentVersion" -ForegroundColor Gray
 
+                    # ── Baseline technology (installer-identity PR 1) ─────────────────────────────
+                    # Resolved BEFORE the version is picked, so the operator knows which technology the old version
+                    # must ship (Dv5). Every leg pins an installer type (never an unpinned download, never a locale);
+                    # Auto prefers the other technology winget ships for this app (V22, D5).
+                    $legs = @(Resolve-Win32ToolkitBaselineFamily -ProjectPath $ProjectPath -Mode $baselineMode)
+                    if ($legs.Count -eq 0) {
+                        throw 'No Update baseline technology could be resolved for this project.'
+                    }
+                    foreach ($leg in $legs) {
+                        # Inside a Both leg the inner run resolves its pin value ('requested with
+                        # -BaselineInstallerType'): show the label the outer list gave this leg instead (H6-F2).
+                        $legLabel = if ($legContext -and $legContext.Label) { [string]$legContext.Label } else { $leg.Label }
+                        Write-Host "Baseline technology : $legLabel" -ForegroundColor Cyan
+                        if ($leg.Note) { Write-Host "  $($leg.Note)" -ForegroundColor DarkGray }
+                    }
+                    if ($legContext) {
+                        Write-Host "Update test leg  : $($legContext.Index) of $($legContext.Count) (-BaselineInstallerType Both)" -ForegroundColor Gray
+                    }
+
                     # ── Step 2-3: Pick the target baseline version ────────────────────────────
                     if ($SpecificVersion) {
                         # Explicit baseline: usable even when winget lists no (or no older) versions —
                         # the older-version lookup is advisory only here.
                         $targetVersion = $SpecificVersion
-                        try {
-                            $known = @(Get-WingetVersions -AppId $wingetId -CurrentVersion $currentVersion)
-                            if ($known -notcontains $SpecificVersion) {
-                                Write-Warning "'$SpecificVersion' was not found in the filtered older-version list but will be used as requested."
+                        # Inside a Both leg the outer call already picked (or warned about) this version: no second
+                        # advisory winget query per leg (test campaign 2026-10-21, H6-F3).
+                        if (-not $legContext) {
+                            try {
+                                $known = @(Get-WingetVersions -AppId $wingetId -CurrentVersion $currentVersion)
+                                if ($known -notcontains $SpecificVersion) {
+                                    Write-Warning "'$SpecificVersion' was not found in the filtered older-version list but will be used as requested."
+                                }
                             }
+                            catch { Write-Verbose "Older-version lookup skipped: $($_.Exception.Message)" }
                         }
-                        catch { Write-Verbose "Older-version lookup skipped: $($_.Exception.Message)" }
 
                     } else {
                         # @() guard: a single older version must stay an array, or indexing below would
@@ -539,19 +675,176 @@ function Test-Win32ToolkitProject {
 
                     Write-Host "Target version   : $targetVersion" -ForegroundColor Yellow
 
-                    # ── Step 4: Download the old-version installer (pinned to the packaged variant) ──
+                    # ── Both (L13, D5): one Update run per technology at this version, each recorded ──
+                    # The legs re-invoke this command with -SpecificVersion and a single-technology
+                    # -BaselineInstallerType; the leg's Mode/Origin reach the inner run through a script-scoped
+                    # context (no hidden parameter), cleared in finally.
+                    if ($baselineMode -eq 'Both' -and $null -eq $script:W32TUpdateLegContext) {
+                        Write-Host ''
+                        Write-Host "Both technologies: $($legs.Count) Update run(s) of v$targetVersion, one per installer technology, each recorded separately:" -ForegroundColor Cyan
+                        for ($i = 1; $i -le $legs.Count; $i++) { Write-Host ('  {0}. {1}' -f $i, $legs[$i - 1].Label) -ForegroundColor Cyan }
+                        $sandboxWatched = $resolvedBackend -eq 'Sandbox' -and
+                            (Get-Win32ToolkitTestMode -Backend Sandbox -Unattended:$Unattended) -eq 'Interactive'
+                        $legVerdicts = [System.Collections.Generic.List[object]]::new()
+                        for ($i = 1; $i -le $legs.Count; $i++) {
+                            $leg = $legs[$i - 1]
+                            $legVerdict = $null
+                            $legRan = $true
+                            if ($i -gt 1 -and $sandboxWatched) {
+                                # Watched Sandbox runs stay open for verification; only one Sandbox may run.
+                                Write-Host "Close the Windows Sandbox of the previous leg to start the $($leg.Family) leg" -ForegroundColor Yellow
+                                if (-not (Wait-Win32ToolkitSandboxFree -TimeoutSeconds 600)) {
+                                    Write-Warning "The Windows Sandbox of the previous leg is still open after 10 minutes: the $($leg.Family) leg did not run (no verdict)."
+                                    $legRan = $false
+                                }
+                            }
+                            if ($legRan) {
+                                $innerArgs = @{}
+                                foreach ($k in $PSBoundParameters.Keys) { $innerArgs[$k] = $PSBoundParameters[$k] }
+                                [void]$innerArgs.Remove('VersionsBack')
+                                $innerArgs['ProjectPath']           = $ProjectPath
+                                $innerArgs['Scenario']              = 'Update'
+                                $innerArgs['SpecificVersion']       = $targetVersion
+                                $innerArgs['BaselineInstallerType'] = if ($leg.Origin -eq 'Packaged') { 'Packaged' } else { $leg.InstallerType }
+                                Write-Host "`n=== Update test leg $i of $($legs.Count): $($leg.Label) ===" -ForegroundColor Cyan
+                                try {
+                                    $script:W32TUpdateLegContext = @{ Mode = 'Both'; Origin = $leg.Origin; Label = $leg.Label; Index = $i; Count = $legs.Count }
+                                    $legVerdict = @(Test-Win32ToolkitProject @innerArgs) | Select-Object -Last 1
+                                }
+                                catch {
+                                    if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                                    Write-Warning "The $($leg.Family) leg of the Update test did not finish (no verdict): $($_.Exception.Message)"
+                                    $legVerdict = $null
+                                }
+                                finally {
+                                    $script:W32TUpdateLegContext = $null
+                                }
+                            }
+                            $legVerdicts.Add($legVerdict)
+                        }
+
+                        Write-Host "`nUpdate test, one run per installer technology:" -ForegroundColor Cyan
+                        for ($i = 1; $i -le $legs.Count; $i++) {
+                            $lv = $legVerdicts[$i - 1]
+                            $text, $color = if ($lv -eq $true) { 'PASSED', 'Green' } elseif ($lv -eq $false) { 'FAILED', 'Red' } else { 'NO VERDICT', 'Yellow' }
+                            Write-Host ('  {0}. {1}: {2}' -f $i, $legs[$i - 1].Label, $text) -ForegroundColor $color
+                        }
+                        # Combined verdict: a failed leg fails the test; otherwise a leg without a verdict leaves it open.
+                        if (@($legVerdicts | Where-Object { $_ -eq $false }).Count -gt 0) { return $false }
+                        if (@($legVerdicts | Where-Object { $null -eq $_ }).Count -gt 0) { return $null }
+                        return $true
+                    }
+
+                    # ── Step 4: Download the old-version installer, pinned to the leg's technology ──
+                    # K5/K6: only 'no installer of that technology at this version' is handled here; every other
+                    # error keeps the outer catch. Auto's sibling leg falls back, pinned and loudly, to the packaged
+                    # technology (L2); otherwise the run has no verdict and says so in TestResults.json (L21).
+                    $leg            = $legs[0]
+                    $legMode        = if ($legContext) { 'Both' } else { $baselineMode }
+                    $legOrigin      = if ($legContext -and $legContext.Origin) { [string]$legContext.Origin } else { [string]$leg.Origin }
+                    $usedFallback   = $false
+                    $fallbackReason = ''
+                    $unavailable    = $null
+                    $oldInstaller   = $null
                     $dl = @{
-                        AppId        = $wingetId
-                        Version      = $targetVersion
-                        ProjectPath  = $ProjectPath
-                        Architecture = $architecture
+                        AppId         = $wingetId
+                        Version       = $targetVersion
+                        ProjectPath   = $ProjectPath
+                        Architecture  = $architecture
+                        InstallerType = [string]$leg.InstallerType
+                        FamilyPin     = $true
                     }
-                    if ($yamlInfo) {
-                        if ($yamlInfo.Scope)           { $dl['Scope']         = $yamlInfo.Scope }
-                        if ($yamlInfo.InstallerType)   { $dl['InstallerType'] = $yamlInfo.InstallerType }
-                        if ($yamlInfo.InstallerLocale) { $dl['Locale']        = $yamlInfo.InstallerLocale }
+                    if ($leg.Scope) { $dl['Scope'] = [string]$leg.Scope }
+                    if (-not $leg.InstallerType) {
+                        $unavailable = "No Update baseline can be downloaded: the packaged installer technology of this project cannot be pinned. $($leg.Note)".Trim()
                     }
-                    $oldInstaller = Download-OldVersionInstaller @dl
+                    else {
+                        try {
+                            $oldInstaller = Download-OldVersionInstaller @dl
+                        }
+                        catch {
+                            if ($_.FullyQualifiedErrorId -ne 'W32T.InstallerVariantUnavailable') { throw }
+                            if ($leg.FallbackInstallerType) {
+                                $fbRow = Get-Win32ToolkitInstallerFamily -Type $leg.FallbackInstallerType
+                                $legFamilyLabel = switch ([string]$leg.Family) { 'msi' { 'MSI' } 'exe' { 'vendor EXE' } 'msix' { 'MSIX package' } default { [string]$leg.Family } }
+                                Write-Warning (("v{0} has no {1} installer for {2}; this Update test falls back to the packaged technology ({3}) and cannot show a technology switch. " +
+                                    'Export keeps warning until a {1} baseline passes: pick a version that ships it (-SpecificVersion) or run -BaselineInstallerType {4}.') -f
+                                    $targetVersion, $legFamilyLabel, $(if ($architecture) { $architecture } else { 'any architecture' }), $fbRow.Label, $leg.InstallerType)
+                                $usedFallback   = $true
+                                $fallbackReason = 'SiblingFamilyNotOfferedAtBaselineVersion'
+                                $dl['InstallerType'] = [string]$leg.FallbackInstallerType
+                                if ($leg.FallbackScope) { $dl['Scope'] = [string]$leg.FallbackScope } else { [void]$dl.Remove('Scope') }
+                                try {
+                                    $oldInstaller = Download-OldVersionInstaller @dl
+                                }
+                                catch {
+                                    if ($_.FullyQualifiedErrorId -ne 'W32T.InstallerVariantUnavailable') { throw }
+                                    $unavailable = $_.Exception.Message
+                                }
+                            }
+                            else {
+                                $unavailable = $_.Exception.Message
+                            }
+                        }
+                    }
+
+                    if ($null -ne $unavailable) {
+                        # L21: no verdict. Recorded directly (never Write-Win32ToolkitTestOutcome, which would read a
+                        # stale assertions log) and marked Unavailable, so it is listed but never judged.
+                        Write-Warning $unavailable
+                        $baselineInfo = @{
+                            Version                = [string]$targetVersion
+                            Mode                   = $legMode
+                            Origin                 = $legOrigin
+                            RequestedInstallerType = [string]$leg.InstallerType
+                            InstallerType          = ''
+                            Family                 = [string]$leg.Family
+                            UsedFallback           = $usedFallback
+                            FallbackReason         = $fallbackReason
+                            RequestedScope         = [string]$leg.Scope
+                            Scope                  = ''
+                            ScopeRelaxed           = $false
+                            Unavailable            = $true
+                            Locale                 = ''
+                            Source                 = 'winget'
+                            ProjectName            = ''
+                        }
+                        try {
+                            $null = Add-Win32ToolkitTestResult -ProjectPath $ProjectPath -Scenario 'Update' -Backend $resolvedBackend `
+                                -Mode (Get-Win32ToolkitTestMode -Backend $resolvedBackend -Unattended:$Unattended) -Verdict 'Inconclusive' `
+                                -Assertions @() -Notes "Baseline unavailable: $unavailable" -Baseline $baselineInfo
+                        }
+                        catch {
+                            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                            Write-Warning "Could not record the test result to Documentation\TestResults.json: $($_.Exception.Message)"
+                        }
+                        Write-Host 'Update test: NO VERDICT (the baseline technology is not available at this version).' -ForegroundColor Yellow
+                        return $null
+                    }
+
+                    $baselineType = if ($oldInstaller.ManifestInstallerType) { [string]$oldInstaller.ManifestInstallerType } else { [string]$dl['InstallerType'] }
+                    $baselineInfo = @{
+                        Version                = [string]$targetVersion
+                        Mode                   = $legMode
+                        Origin                 = $legOrigin
+                        RequestedInstallerType = [string]$dl['InstallerType']
+                        InstallerType          = $baselineType
+                        Family                 = [string]$oldInstaller.Family
+                        UsedFallback           = [bool]($usedFallback -or $oldInstaller.UsedFallback)
+                        FallbackReason         = $fallbackReason
+                        RequestedScope         = if ($dl.ContainsKey('Scope')) { [string]$dl['Scope'] } else { '' }
+                        Scope                  = [string]$oldInstaller.Scope
+                        ScopeRelaxed           = [bool]$oldInstaller.ScopeRelaxed
+                        Unavailable            = $false
+                        Locale                 = [string]$oldInstaller.Locale
+                        Source                 = 'winget'
+                        ProjectName            = ''
+                    }
+                    $usedNotes = @()
+                    if ($baselineInfo.ScopeRelaxed) { $usedNotes += 'scope relaxed' }
+                    if ($baselineInfo.UsedFallback) { $usedNotes += 'packaged-technology fallback' }
+                    Write-Host ("Baseline used    : {0} ({1}){2}" -f $baselineInfo.InstallerType, $baselineInfo.Family,
+                        $(if ($usedNotes) { ', ' + ($usedNotes -join ', ') } else { '' })) -ForegroundColor Gray
                 }
 
                 # ── Step 5: Ensure Countdown.ps1 exists (Sandbox WATCHED mode only) ──────
@@ -669,10 +962,13 @@ function Test-Win32ToolkitProject {
                     if ($useBaselineProject) { $hvArgs['BaselineProjectPath'] = $BaselineProjectPath }
 
                     Write-Host "`nRunning the Update test in the Hyper-V VM..." -ForegroundColor Cyan
+                    $runLog = Initialize-Win32ToolkitTestRunLog -ProjectPath $ProjectPath -Scenario 'Update' -Family ([string]$baselineInfo.Family)
                     if (-not (Invoke-Win32ToolkitHyperVRun @hvArgs)) {
                         Write-Warning 'The Hyper-V update run did not complete cleanly — see the warnings above.'
                     }
-                    & $showExitCodes
+                    & $showExitCodes $runLog
+                    # The logs came back with the copy-out: nothing to wait for.
+                    $runFolder = & $saveRunLog $runLog 0
 
                     # The Hyper-V run is SYNCHRONOUS: UpdateAssertions.log already came back with
                     # Sandbox\Logs, so the waiter's first poll succeeds. If the copy-out silently failed
@@ -680,11 +976,12 @@ function Test-Win32ToolkitProject {
                     $assertLog = Join-Path $ProjectPath 'Sandbox\Logs\UpdateAssertions.log'
                     if (-not (Test-Path -LiteralPath $assertLog)) {
                         Write-Warning "No UpdateAssertions.log came back from the VM — the assertions never ran, or the copy-out failed. Check $ProjectPath\Sandbox\Logs and the phase warnings above."
-                        Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $null -Notes 'Assertions log did not return from the VM.'
+                        Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $null -Notes 'Assertions log did not return from the VM.' -Baseline $baselineInfo -LogFolder $runFolder
                         return $null
                     }
                     $updVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -TimeoutMinutes 1 -PollSeconds 1
-                    Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict
+                    Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict -Baseline $baselineInfo -LogFolder $runFolder
+                    if ($updVerdict -eq $false) { & $warnTechSwitch }
                     return $updVerdict
                 }
 
@@ -753,7 +1050,9 @@ function Test-Win32ToolkitProject {
                 }
                 Write-Host '================================================'          -ForegroundColor Cyan
 
-                if ((Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched) {
+                $runLog = Initialize-Win32ToolkitTestRunLog -ProjectPath $ProjectPath -Scenario 'Update' -Family ([string]$baselineInfo.Family)
+                $launched = (Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched
+                if ($launched) {
                     Write-Host "`n✓ Update test sandbox launched." -ForegroundColor Green
                 } else {
                     Write-Warning "The sandbox did NOT auto-launch — start it manually by double-clicking: $sandboxConfigFile"
@@ -763,9 +1062,11 @@ function Test-Win32ToolkitProject {
                 # The verdict is RETURNED ($true pass / $false fail / $null inconclusive) so callers
                 # (finalize pipeline, TUI, automation) can gate on a failed update test.
                 $updVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath
-                & $showExitCodes
+                & $showExitCodes $runLog
+                $runFolder = & $saveRunLog $runLog $(if ($launched) { 60 } else { 0 })
                 Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'Sandbox' `
-                    -Mode $(if ($sbInteractive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict
+                    -Mode $(if ($sbInteractive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict -Baseline $baselineInfo -LogFolder $runFolder
+                if ($updVerdict -eq $false) { & $warnTechSwitch }
                 return $updVerdict
             }
         }
