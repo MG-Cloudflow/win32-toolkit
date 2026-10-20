@@ -41,6 +41,7 @@ function Set-Win32ToolkitPublication { param($ProjectPath, $AppId, $TenantId, $D
 # resolution is controlled per-test
 $script:deps = @()
 function Resolve-Win32ToolkitDependencies { param($ProjectPath, $TenantId, $BaseUri) $script:calls += 'resolve'; return @($script:deps) }
+function Write-Win32ToolkitPackageAdvisory { param($ProjectPath, $Context, $AppLabel, [switch]$ProbeIfMissing) $null = $ProjectPath, $Context, $AppLabel, $ProbeIfMissing }   # the package advisory (PackageAdvisory.unit covers it)
 $script:relDeps = $null
 function Set-Win32ToolkitAppRelationships { param($AppId, $Dependency, $BaseUri) $script:calls += 'relate'; $script:relDeps = @($Dependency); return @($Dependency).Count }
 

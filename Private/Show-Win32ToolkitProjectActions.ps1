@@ -136,6 +136,32 @@ function Show-Win32ToolkitProjectActions {
                             if ($bproj) { $testSplat['BaselineProjectPath'] = $bproj.Path } else { $abort = $true }
                         }
 
+                        if (-not $abort -and $isWinget -and -not $useLocal) {
+                            # Baseline installer technology (D5, Dv5), resolved BEFORE the test so the operator knows
+                            # which technology the old version must ship. Asked only when winget ships another
+                            # technology that can be tested; otherwise one grey line names the only one.
+                            try {
+                                $legs = @(Resolve-Win32ToolkitBaselineFamily -ProjectPath $project.Path -Mode Both | Where-Object { $_ })
+                                if ($legs.Count -gt 1) {
+                                    $packagedLeg = @($legs | Where-Object { $_.Origin -eq 'Packaged' }) + @($legs) | Select-Object -First 1
+                                    $siblingLeg  = @($legs | Where-Object { $_ -ne $packagedLeg }) | Select-Object -First 1
+                                    $techPick = Read-SpectreSelection -Message 'Baseline installer technology' -Choices @(
+                                        [pscustomobject]@{ Key = 'Auto';     Label = Get-SpectreEscapedText -Text "Auto - start from the other technology ($($siblingLeg.Label))" }
+                                        [pscustomobject]@{ Key = 'Both';     Label = "Test both technologies ($($legs.Count) runs)" }
+                                        [pscustomobject]@{ Key = 'Packaged'; Label = Get-SpectreEscapedText -Text "Only the packaged technology ($($packagedLeg.Label))" }
+                                    ) -ChoiceLabelProperty 'Label' -Color Blue
+                                    $testSplat['BaselineInstallerType'] = $techPick.Key
+                                }
+                                elseif ($legs.Count -eq 1) {
+                                    Write-SpectreHost "[grey]Baseline technology: $(Get-SpectreEscapedText -Text ([string]$legs[0].Label))[/]"
+                                }
+                            }
+                            catch {
+                                if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                                Write-SpectreHost "[grey]Baseline technology: not resolved here ($(Get-SpectreEscapedText -Text $_.Exception.Message)); the test resolves it.[/]"
+                            }
+                        }
+
                         if (-not $abort) {
                             if (-not (Read-SpectreConfirm -Message 'Also verify the update-app requirement rule during the test? (recommended)' -DefaultAnswer 'y')) {
                                 $testSplat['SkipRequirementCheck'] = $true
@@ -145,10 +171,33 @@ function Show-Win32ToolkitProjectActions {
                     if (-not $abort) {
                         Clear-Host; Write-SpectreRule -Title "Running the $($backend.Key) test…" -Color Blue
                         try {
+                            $testStartUtc = [datetime]::UtcNow
                             $verdict = Test-Win32ToolkitProject @testSplat
                             if ($sc.Key -eq 'Update') {
+                                # A failed Update test whose surviving registration belongs to another installer
+                                # technology (V42) gets its own panel: devices with that install must not get it.
+                                $switches = @()
+                                if ($verdict -eq $false) {
+                                    try { $switches = @(Get-Win32ToolkitTechnologySwitch -ProjectPath $project.Path | Where-Object { $_ }) }
+                                    catch {
+                                        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                                        Write-Verbose "Technology-switch check failed: $($_.Exception.Message)"
+                                        $switches = @()
+                                    }
+                                }
                                 if     ($verdict -eq $true)  { Format-SpectrePanel -Data 'All in-sandbox assertions passed.' -Header 'UPDATE TEST PASSED' -Border Rounded -Color Green }
-                                elseif ($verdict -eq $false) { Format-SpectrePanel -Data 'One or more assertions FAILED - see Sandbox\Logs\UpdateAssertions.log in the project folder.' -Header 'UPDATE TEST FAILED' -Border Rounded -Color Red }
+                                elseif ($switches.Count -gt 0) {
+                                    $switchText = @($switches | ForEach-Object { [string]$_.Message }) -join "`n`n"
+                                    Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $switchText) -Header 'TECHNOLOGY SWITCH' -Border Rounded -Color Red
+                                }
+                                elseif ($verdict -eq $false) {
+                                    # Name the failed run's own log folder (each leg of a Both run has one; test campaign F2).
+                                    $failedLogs = @(Get-Win32ToolkitTestRunLogFolder -ProjectPath $project.Path -Scenario 'Update' -SinceUtc $testStartUtc |
+                                            ForEach-Object { Join-Path $_ 'UpdateAssertions.log' })
+                                    $failedText = if ($failedLogs.Count) { 'One or more assertions FAILED - see ' + ($failedLogs -join ' and ') + '.' }
+                                                  else { 'One or more assertions FAILED - see Sandbox\Logs\UpdateAssertions.log in the project folder.' }
+                                    Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $failedText) -Header 'UPDATE TEST FAILED' -Border Rounded -Color Red
+                                }
                                 else                         { Format-SpectrePanel -Data 'No conclusive assertion results (sandbox closed early, timeout, or everything skipped).' -Header 'Inconclusive' -Border Rounded -Color Yellow }
                             }
                         }
@@ -181,30 +230,63 @@ function Show-Win32ToolkitProjectActions {
                     ) -join "`n"
                     Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $summary) -Header 'About to PUBLISH to Intune' -Border Rounded -Color Yellow
 
-                    $which = Read-SpectreSelection -Message 'Publish which app?' -Choices @(
-                        [pscustomobject]@{ Key = 'install'; Label = 'Install app — normal deployment (assign to target devices)' }
-                        [pscustomobject]@{ Key = 'both';    Label = 'Install app + Update app (2nd app, only where already installed)' }
-                        [pscustomobject]@{ Key = 'update';  Label = 'Update app only — applies only where the app is already installed' }
-                        [pscustomobject]@{ Key = 'cancel';  Label = 'Cancel' }
-                    ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 10
-
-                    if ($which.Key -ne 'cancel') {
-                        Write-SpectreHost "[yellow]You will sign in to Microsoft Graph — the target tenant is shown during sign-in.[/]"
-                        if (Read-SpectreConfirm -Message 'Package and upload now?' -DefaultAnswer 'n') {
-                            Clear-Host; Write-SpectreRule -Title 'Publishing to Intune…' -Color Blue
-                            try {
-                                $splat = @{ ProjectPath = $project.Path }
-                                switch ($which.Key) {
-                                    'install' { $splat['PublishIntune'] = $true }
-                                    'update'  { $splat['PublishUpdate'] = $true }
-                                    'both'    { $splat['PublishIntune'] = $true; $splat['PublishUpdate'] = $true }
-                                }
-                                Export-Win32ToolkitIntuneWin @splat
-                                Format-SpectrePanel -Data 'Published. See the messages above for the app ID(s) and portal link.' -Header 'Done' -Border Rounded -Color Green
+                    # Advisory run scope (L20): this action shows the package advisory once, as a panel, and the
+                    # Export / Publish calls below stay quiet for this project. Closed after Export returns.
+                    $ownsAdvisoryRun = $null -eq $script:W32TAdvisoryRun
+                    if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = @{} }
+                    try {
+                        # Package advisory (D1: warn, never block): red when an Update test failed, a technology
+                        # switch was seen or the uninstall cleanup paths are unsafe; yellow for other warnings.
+                        try {
+                            $advisory = Get-Win32ToolkitPackageAdvisory -ProjectPath $project.Path -Context Tui -ProbeIfMissing
+                            $advWarnings = @($advisory.Findings | Where-Object { $_ -and $_.Severity -eq 'Warning' })
+                            if ($advWarnings.Count -gt 0) {
+                                $severe = @($advWarnings | Where-Object { $_.Code -in @('UNSAFE-CLEANUP', 'UPDATE-FAILED', 'ID-TECH-SWITCH') }).Count -gt 0
+                                $advText = @($advWarnings | ForEach-Object { [string]$_.Message }) -join "`n`n"
+                                $advHeader = if ($severe) { 'Review before you publish' } else { 'Check before you publish' }
+                                $advColor  = if ($severe) { 'Red' } else { 'Yellow' }
+                                Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $advText) -Header $advHeader -Border Rounded -Color $advColor | Out-SpectreHost
                             }
-                            catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
-                            Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                            foreach ($advInfo in @($advisory.Findings | Where-Object { $_ -and $_.Severity -ne 'Warning' })) {
+                                Write-SpectreHost "[grey]$(Get-SpectreEscapedText -Text ([string]$advInfo.Message))[/]"
+                            }
                         }
+                        catch {
+                            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                            Write-Warning "Could not check the Update test and identity warnings: $($_.Exception.Message)"
+                        }
+                        if ($script:W32TAdvisoryRun -is [hashtable]) {
+                            $script:W32TAdvisoryRun[[System.IO.Path]::GetFullPath($project.Path).TrimEnd('\')] = $true
+                        }
+
+                        $which = Read-SpectreSelection -Message 'Publish which app?' -Choices @(
+                            [pscustomobject]@{ Key = 'install'; Label = 'Install app — normal deployment (assign to target devices)' }
+                            [pscustomobject]@{ Key = 'both';    Label = 'Install app + Update app (2nd app, only where already installed)' }
+                            [pscustomobject]@{ Key = 'update';  Label = 'Update app only — applies only where the app is already installed' }
+                            [pscustomobject]@{ Key = 'cancel';  Label = 'Cancel' }
+                        ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 10
+
+                        if ($which.Key -ne 'cancel') {
+                            Write-SpectreHost "[yellow]You will sign in to Microsoft Graph — the target tenant is shown during sign-in.[/]"
+                            if (Read-SpectreConfirm -Message 'Package and upload now?' -DefaultAnswer 'n') {
+                                Clear-Host; Write-SpectreRule -Title 'Publishing to Intune…' -Color Blue
+                                try {
+                                    $splat = @{ ProjectPath = $project.Path }
+                                    switch ($which.Key) {
+                                        'install' { $splat['PublishIntune'] = $true }
+                                        'update'  { $splat['PublishUpdate'] = $true }
+                                        'both'    { $splat['PublishIntune'] = $true; $splat['PublishUpdate'] = $true }
+                                    }
+                                    Export-Win32ToolkitIntuneWin @splat
+                                    Format-SpectrePanel -Data 'Published. See the messages above for the app ID(s) and portal link.' -Header 'Done' -Border Rounded -Color Green
+                                }
+                                catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
+                                Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                            }
+                        }
+                    }
+                    finally {
+                        if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = $null }
                     }
                 }
                 'doc' {

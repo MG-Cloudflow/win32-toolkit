@@ -242,7 +242,22 @@ function Export-Win32ToolkitDocumentation {
         $null = $sb.AppendLine('| --- | --- | --- | --- |')
         $failNotes = @()
         foreach ($t in $testResults) {
-            $sc = & $cell (& $prop $t 'Scenario' '')
+            $scenario = & $prop $t 'Scenario' ''
+            # An Update record names the baseline technology it upgraded FROM (D1/D5), so the two rows of a
+            # 'Both' run (one per technology) can be told apart. Older records (no Baseline) keep 'Update'.
+            $baseline = if ($t -is [System.Collections.IDictionary]) { $t['Baseline'] } elseif ($t.PSObject.Properties.Name -contains 'Baseline') { $t.Baseline } else { $null }
+            if ($scenario -eq 'Update' -and $null -ne $baseline) {
+                if ((& $prop $baseline 'Unavailable' '') -eq 'True') {
+                    $scenario = "Update (baseline unavailable: $(& $prop $baseline 'RequestedInstallerType' 'unknown'))"
+                }
+                else {
+                    $tech = ('{0} {1}' -f (& $prop $baseline 'InstallerType' ''), (& $prop $baseline 'Family' '')).Trim()
+                    if (-not $tech) { $tech = 'unknown technology' }
+                    $baseVer = & $prop $baseline 'Version' ''
+                    $scenario = if ($baseVer) { "Update (baseline: $tech, v$baseVer)" } else { "Update (baseline: $tech)" }
+                }
+            }
+            $sc = & $cell $scenario
             $bk = & $cell (& $prop $t 'Backend' '')
             # Render the timestamp as a clean, culture-invariant UTC date (ConvertFrom-Json coerces the ISO
             # string to a [datetime] whose default [string] form is the host's locale, e.g. 07/15/2026).

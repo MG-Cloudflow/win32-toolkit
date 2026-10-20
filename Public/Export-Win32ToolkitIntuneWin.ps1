@@ -17,7 +17,8 @@ function Export-Win32ToolkitIntuneWin {
        script must exist and parse (also under Windows PowerShell 5.1, which Intune uses), carry the
        AppConfig loader written by win32-toolkit, use a supported PSAppDeployToolkit template layout
        and version that matches the bundled module, and Invoke-AppDeployToolkit.exe (the launcher
-       Intune starts) must sit next to it. Every problem is listed in one W32T.PackageNotReady error.
+       Intune starts) must sit next to it, and every uninstall cleanup path must be a folder the
+       app's own install created (no override). Every problem is listed in one W32T.PackageNotReady error.
        A missing install tattoo, a project patched by win32-toolkit 1.1.6 or older, or a bundled
        prerelease PSAppDeployToolkit (e.g. 4.2.0-rc2) only warns.
     2. Locates or auto-downloads IntuneWinAppUtil.exe into the module's Tools\ folder
@@ -31,6 +32,9 @@ function Export-Win32ToolkitIntuneWin {
        *.wsb files, the TargetedDocumentationScript, and empty dirs. Projects\ stays untouched.
     5. Runs IntuneWinAppUtil.exe against the Staging copy, outputting to IntuneWin\<Template>\.
     6. Renames the produced Invoke-AppDeployToolkit.intunewin → <ProjectName>.intunewin.
+    6b. Warns (never stops) when the latest Update test failed, a technology switch was seen, or
+       identity checks found something (for example winget also ships another installer technology
+       for this app that no Update test has covered). Shown once per run, also when Export publishes.
 
 .PARAMETER ProjectPath
     Full path to the raw PSADT project folder under Projects\.
@@ -120,6 +124,11 @@ function Export-Win32ToolkitIntuneWin {
     # step (and in finally) so the intentional Azure-upload progress bar is left untouched.
     $prevProgress = $ProgressPreference
     $ProgressPreference = 'SilentlyContinue'
+    # Advisory run scope (L20): the package advisory below prints once per project for this whole action,
+    # so the Publish calls of Step 7 (install app, then -AsUpdate) do not repeat it. A caller that already
+    # opened a scope (the TUI publish action) keeps it; only the opener closes it (finally).
+    $ownsAdvisoryRun = $null -eq $script:W32TAdvisoryRun
+    if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = @{} }
     try {
         # Captured BEFORE the picker branch below overwrites $BasePath with the resolved/registry value:
         # only a base the CALLER actually passed may override the layout derived from the project path.
@@ -314,6 +323,17 @@ function Export-Win32ToolkitIntuneWin {
             Write-Warning 'IntuneWinAppUtil.exe completed but the expected .intunewin file was not found.'
         }
 
+        # ── Step 6b: Package advisory (D1: warn, never block) ───────────────────
+        # A failed Update test, a technology switch or an identity finding is shown next to the upload
+        # prompt. Read-only and fail-open: nothing it calls raises W32T.*, so it can never stop a package.
+        try {
+            $null = Write-Win32ToolkitPackageAdvisory -ProjectPath $ProjectPath -Context Export -ProbeIfMissing
+        }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Warning "Could not check the Update test and identity warnings: $($_.Exception.Message)"
+        }
+
         # ── Step 7: Publish to Intune ─────────────────────────────────────────────
         # Restore the caller's progress preference before publishing: the Azure Storage upload bar
         # (Invoke-AzBlobUpload) is an intentional, useful progress bar and must be left to render.
@@ -367,5 +387,6 @@ function Export-Win32ToolkitIntuneWin {
     finally {
         # Never leak the silenced progress preference to the caller (e.g. the TUI menu loop), on any path.
         $ProgressPreference = $prevProgress
+        if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = $null }
     }
 }

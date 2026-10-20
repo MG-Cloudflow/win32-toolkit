@@ -41,6 +41,17 @@ Links the content version to the app.
 
 Requires the Microsoft.Graph.Authentication module (installed automatically on prompt).
 
+Before the -WhatIf gate (so a dry run shows them too), Publish warns, and never stops, when the
+latest Update test of the project failed (naming the failed assertions), an Update test saw a
+technology switch (the vendor's other installer stayed registered next to this package), or the
+identity checks found something, for example winget also ships another installer technology for
+this app that no Update test has covered.
+It also warns UNSAFE-CLEANUP when the project's
+uninstall cleanup paths fail the check Export enforces: a package exported before that check still
+carries them, so re-export packages built before this check, then publish them.
+The warnings are
+shown once per action: Export-Win32ToolkitIntuneWin -PublishIntune -PublishUpdate prints them once.
+
 Command lines (from Get-Win32ToolkitIntuneCommandLine, the single source; the app runs as SYSTEM):
 
     Install   : Invoke-AppDeployToolkit.exe -DeploymentType Install

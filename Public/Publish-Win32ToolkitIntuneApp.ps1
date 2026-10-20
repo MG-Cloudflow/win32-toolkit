@@ -21,6 +21,15 @@ function Publish-Win32ToolkitIntuneApp {
 
     Requires the Microsoft.Graph.Authentication module (installed automatically on prompt).
 
+    Before the -WhatIf gate (so a dry run shows them too), Publish warns, and never stops, when the
+    latest Update test of the project failed (naming the failed assertions), an Update test saw a
+    technology switch (the vendor's other installer stayed registered next to this package), or the
+    identity checks found something, for example winget also ships another installer technology for
+    this app that no Update test has covered. It also warns UNSAFE-CLEANUP when the project's
+    uninstall cleanup paths fail the check Export enforces: a package exported before that check still
+    carries them, so re-export packages built before this check, then publish them. The warnings are
+    shown once per action: Export-Win32ToolkitIntuneWin -PublishIntune -PublishUpdate prints them once.
+
     Command lines (from Get-Win32ToolkitIntuneCommandLine, the single source; the app runs as SYSTEM):
 
         Install   : Invoke-AppDeployToolkit.exe -DeploymentType Install
@@ -112,6 +121,10 @@ function Publish-Win32ToolkitIntuneApp {
 
     $baseUri  = 'https://graph.microsoft.com/beta/deviceAppManagement'
     $tempFile = $null
+    # Advisory run scope (L20): when Export-Win32ToolkitIntuneWin (or the TUI) already opened one, the
+    # package advisory it printed is not repeated here; a standalone publish opens and closes its own.
+    $ownsAdvisoryRun = $null -eq $script:W32TAdvisoryRun
+    if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = @{} }
 
     try {
         # ── Validate inputs ───────────────────────────────────────────────────────
@@ -272,6 +285,19 @@ function Publish-Win32ToolkitIntuneApp {
         catch { Write-Verbose "Could not read the bundled PSAppDeployToolkit version: $($_.Exception.Message)" }
         if ($psadtVersion -and -not [string]::IsNullOrWhiteSpace([string]$psadtVersion.Prerelease)) {
             Write-Warning "'$displayName' bundles PSAppDeployToolkit $($psadtVersion.VersionText), a PRERELEASE (for testing only). Rebuild the project on a stable PSAppDeployToolkit before you assign it to production devices."
+        }
+
+        # ── Package advisory (D1, L22) ────────────────────────────────────────────
+        # Warn only, before the -WhatIf gate so a dry run shows it too: a failed Update test, a technology
+        # switch, identity findings, and UNSAFE-CLEANUP for a package exported before the cleanup-path
+        # check (Export refuses such a project; a standalone publish of an old .intunewin only warns).
+        # Fail-open: nothing it calls raises W32T.*, so it can never stop a publish.
+        try {
+            $null = Write-Win32ToolkitPackageAdvisory -ProjectPath $ProjectPath -Context Publish -AppLabel $displayName -ProbeIfMissing
+        }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Warning "Could not check the Update test and identity warnings: $($_.Exception.Message)"
         }
 
         # ── -WhatIf / -Confirm gate for the ENTIRE publish ────────────────────────
@@ -531,5 +557,6 @@ function Publish-Win32ToolkitIntuneApp {
         if ($tempFile -and (Test-Path $tempFile)) {
             Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
         }
+        if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = $null }
     }
 }

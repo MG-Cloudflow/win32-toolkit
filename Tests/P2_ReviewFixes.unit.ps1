@@ -49,6 +49,7 @@ function Get-YAMLInstallerInfo { param($FilesPath) $null }
 function Get-MgContext { [pscustomobject]@{ TenantId = 'tenant-1' } }
 function Get-Win32ToolkitTenantInfo { $null }   # never let the tenant-name lookup hit the network
 function Resolve-Win32ToolkitDependencies { param($ProjectPath, $TenantId, $BaseUri) @() }
+function Write-Win32ToolkitPackageAdvisory { param($ProjectPath, $Context, $AppLabel, [switch]$ProbeIfMissing) $null = $ProjectPath, $Context, $AppLabel, $ProbeIfMissing }   # the package advisory (PackageAdvisory.unit covers it)
 function Set-Win32ToolkitAppRelationships { param($AppId, $Dependency, $BaseUri) 0 }
 function Set-Win32ToolkitPublication { param($ProjectPath, $AppId, $TenantId, $DisplayName, $DisplayVersion, $WingetId) 'p' }
 function Invoke-AzBlobUpload { param($SasUri, $FilePath) }

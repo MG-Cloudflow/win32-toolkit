@@ -27,7 +27,8 @@ Resolves the target project (interactive picker if ProjectPath is omitted).
    script must exist and parse (also under Windows PowerShell 5.1, which Intune uses), carry the
    AppConfig loader written by win32-toolkit, use a supported PSAppDeployToolkit template layout
    and version that matches the bundled module, and Invoke-AppDeployToolkit.exe (the launcher
-   Intune starts) must sit next to it.
+   Intune starts) must sit next to it, and every uninstall cleanup path must be a folder the
+   app's own install created (no override).
 Every problem is listed in one W32T.PackageNotReady error.
    A missing install tattoo, a project patched by win32-toolkit 1.1.6 or older, or a bundled
    prerelease PSAppDeployToolkit (e.g.
@@ -49,6 +50,11 @@ Projects\ stays untouched.
 Runs IntuneWinAppUtil.exe against the Staging copy, outputting to IntuneWin\\\<Template\>\.
 6.
 Renames the produced Invoke-AppDeployToolkit.intunewin → \<ProjectName\>.intunewin.
+6b.
+Warns (never stops) when the latest Update test failed, a technology switch was seen, or
+   identity checks found something (for example winget also ships another installer technology
+   for this app that no Update test has covered).
+Shown once per run, also when Export publishes.
 
 ## EXAMPLES
 

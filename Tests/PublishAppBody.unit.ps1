@@ -20,8 +20,14 @@
     and the run is aborted with a sentinel right after. The fixtures carry a deploy script with the
     install-tattoo marker, so the REAL Get-Win32DetectionRules builds the tattoo rule; -NoTattoo drops it.
 
+    Installer-identity PR 1 (D1, L22): the REAL package advisory runs before the -WhatIf gate. A failed
+    Update test warns (UPDATE-FAILED) and an unsafe uninstall cleanup path warns (UNSAFE-CLEANUP); neither
+    blocks the publish. The fixtures carry no winget manifest, so the sibling probe is Skipped and the
+    throwing Invoke-WebRequest shadow is never reached.
+
     Run:  pwsh -File Tests\PublishAppBody.unit.ps1
 #>
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidOverwritingBuiltInCmdlets', '', Justification = 'Invoke-WebRequest is shadowed: the suite never touches the network')]
 [CmdletBinding()]
 param()
 
@@ -72,8 +78,16 @@ function Get-Win32ToolkitProjectPsadtVersion {
 $base = Join-Path ([System.IO.Path]::GetTempPath()) ('w32body_' + [guid]::NewGuid().ToString('N').Substring(0,8))
 New-Item -ItemType Directory -Path $base -Force | Out-Null
 
+# The package advisory (real) must never reach the network here: no fixture has a winget manifest.
+$script:webCalls = 0
+function Invoke-WebRequest { $script:webCalls++; throw 'PublishAppBody: no network in this suite' }
+# WP-4's Get-Win32ToolkitTechnologySwitch (spec 2.12) only when the real one is not there yet.
+if (-not (Get-Command -Name Get-Win32ToolkitTechnologySwitch -CommandType Function -ErrorAction SilentlyContinue)) {
+    function Get-Win32ToolkitTechnologySwitch { param([string]$ProjectPath, [string]$PackageType, [string]$PackageFamily) $null = $ProjectPath, $PackageType, $PackageFamily; @() }
+}
+
 function New-Proj {
-    param([string]$Name, [string]$Arch, [string]$InstallerType, [string]$MinRelease, [switch]$NoTattoo)
+    param([string]$Name, [string]$Arch, [string]$InstallerType, [string]$MinRelease, [switch]$NoTattoo, [hashtable]$Uninstall, [object[]]$TestResults)
     $p = Join-Path $base $Name
     New-Item -ItemType Directory -Path (Join-Path $p 'SupportFiles') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $p 'Files') -Force | Out-Null
@@ -82,6 +96,11 @@ function New-Proj {
         Installer = [ordered]@{ Type=$InstallerType; FileName="App.$InstallerType"; SilentArgs='' }
     }
     if ($MinRelease) { $cfg['IntuneDefaults'] = [ordered]@{ MinimumWindowsRelease = $MinRelease } }
+    if ($Uninstall) { $cfg['Uninstall'] = $Uninstall }
+    if ($TestResults) {
+        New-Item -ItemType Directory -Path (Join-Path $p 'Documentation') -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $p 'Documentation\TestResults.json'), (ConvertTo-Json -InputObject @($TestResults) -Depth 6), [System.Text.UTF8Encoding]::new($false))
+    }
     ($cfg | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath (Join-Path $p 'SupportFiles\AppConfig.json') -Encoding UTF8
     Set-Content -LiteralPath (Join-Path $p "Files\App.$InstallerType") -Value 'stub'
     # The deploy script only needs the tattoo marker the real Get-Win32DetectionRules keys on (never run).
@@ -263,6 +282,51 @@ try {
     if ($script:capturedBody -and @($warn | Where-Object { "$_" -match 'PRERELEASE' }).Count -eq 1) { Ok 'live publish of a prerelease project: one warning, the app shell is still POSTed' }
     else { Bad "live prerelease publish -> body=$([bool]$script:capturedBody) warnings=$(@($warn) -join ' | ')" }
     $script:pvPrerelease = ''
+
+    Write-Host '[13] D1: a failed Update test warns (UPDATE-FAILED) before the -WhatIf line and never blocks' -ForegroundColor Cyan
+    $failedRecord = [ordered]@{
+        Scenario = 'Update'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-19T11:03:09Z'; Verdict = 'Failed'; Notes = ''
+        Assertions = @([ordered]@{ Name = 'Tattoo-PostUpdate'; Result = 'PASS' }, [ordered]@{ Name = 'OldArpGone-PostUpdate'; Result = 'FAIL' })
+        Baseline = [ordered]@{ Version = '0.9'; Mode = 'Auto'; Origin = 'Packaged'; RequestedInstallerType = 'exe'; InstallerType = 'exe'; Family = 'exe'; UsedFallback = $false
+                               FallbackReason = ''; RequestedScope = ''; Scope = ''; ScopeRelaxed = $false; Unavailable = $false; Locale = ''; Source = 'winget'; ProjectName = '' }
+    }
+    $upd = New-Proj -Name 'UpdFail' -Arch 'x64' -InstallerType 'exe' -TestResults @($failedRecord)
+    $script:graphCalls = 0; $script:webCalls = 0; $err = $null
+    $stream = @(try {
+            Publish-Win32ToolkitIntuneApp -ProjectPath $upd.Project -IntuneWinPath $upd.IntuneWin -WhatIf -Confirm:$false -ErrorAction Stop *>&1
+        } catch { $err = $_ })
+    $ufIdx = -1; $wiIdx = -1
+    for ($i = 0; $i -lt $stream.Count; $i++) {
+        if ($ufIdx -lt 0 -and $stream[$i] -is [System.Management.Automation.WarningRecord] -and "$($stream[$i])" -match "^Publishing 'App': The latest Update test with an exe \(vendor EXE\) baseline \(v0\.9, HyperV/Unattended, 2026-10-19\) FAILED: OldArpGone-PostUpdate\. This only warns: publishing continues\.") { $ufIdx = $i }
+        if ($wiIdx -lt 0 -and "$($stream[$i])" -match '^WhatIf: would connect to Microsoft Graph') { $wiIdx = $i }
+    }
+    if (-not $err -and $ufIdx -ge 0 -and $wiIdx -gt $ufIdx -and $script:graphCalls -eq 0) { Ok "-WhatIf: the UPDATE-FAILED warning (naming OldArpGone-PostUpdate) comes before the WhatIf line; no Graph call" }
+    else { Bad "WhatIf: err='$err' updateFailed=$ufIdx whatIf=$wiIdx graph=$($script:graphCalls)" }
+    $warn = $null; $script:capturedBody = $null; $err = $null
+    try {
+        Publish-Win32ToolkitIntuneApp -ProjectPath $upd.Project -IntuneWinPath $upd.IntuneWin -Confirm:$false -ErrorAction Stop -WarningVariable warn 6>$null 3>$null | Out-Null
+    } catch { if ("$($_.Exception.Message)" -notmatch 'W32T_TEST_SENTINEL') { $err = $_ } }
+    if (-not $err -and $script:capturedBody -and @($warn | Where-Object { "$_" -match 'FAILED: OldArpGone-PostUpdate' }).Count -eq 1) { Ok 'live publish with a failed Update test: one warning, the app shell is still POSTed (no W32T error, D1)' }
+    else { Bad "live UPDATE-FAILED publish -> err='$err' body=$([bool]$script:capturedBody) warnings=$(@($warn) -join ' | ')" }
+    if ($script:webCalls -eq 0) { Ok 'no network request (no winget manifest: the sibling probe is skipped)' } else { Bad "$($script:webCalls) network request(s)" }
+
+    Write-Host '[14] L22: an unsafe uninstall cleanup path warns UNSAFE-CLEANUP at publish and never blocks' -ForegroundColor Cyan
+    $unsafe = New-Proj -Name 'UnsafeCleanup' -Arch 'x64' -InstallerType 'exe' -Uninstall ([ordered]@{
+            AppName = 'App'; ProductCodes = @(); Uninstallers = @(); CleanupPaths = @('C:\Program Files (x86)') })
+    $warn = $null; $script:capturedBody = $null; $err = $null
+    try {
+        Publish-Win32ToolkitIntuneApp -ProjectPath $unsafe.Project -IntuneWinPath $unsafe.IntuneWin -Confirm:$false -ErrorAction Stop -WarningVariable warn 6>$null 3>$null | Out-Null
+    } catch { if ("$($_.Exception.Message)" -notmatch 'W32T_TEST_SENTINEL') { $err = $_ } }
+    $uc = @($warn | Where-Object { "$_" -match '^Publishing ''App'': UNSAFE-CLEANUP: ' })
+    if (-not $err -and $script:capturedBody -and $uc.Count -eq 1 -and "$($uc[0])" -match [regex]::Escape("first: 'C:\Program Files (x86)'") -and "$($uc[0])" -match 're-export it') {
+        Ok "CleanupPaths ['C:\Program Files (x86)'] -> one UNSAFE-CLEANUP warning naming the path and 're-export'; the publish goes ahead"
+    } else { Bad "UNSAFE-CLEANUP -> err='$err' body=$([bool]$script:capturedBody) warnings=$(@($warn) -join ' | ')" }
+    $warn = $null
+    $safeProj = New-Proj -Name 'SafeExe' -Arch 'x64' -InstallerType 'exe'
+    try {
+        Publish-Win32ToolkitIntuneApp -ProjectPath $safeProj.Project -IntuneWinPath $safeProj.IntuneWin -WhatIf -Confirm:$false -ErrorAction Stop -WarningVariable warn 6>$null 3>$null | Out-Null
+    } catch { Bad "unexpected error: $($_.Exception.Message)" }
+    if (@($warn).Count -eq 0) { Ok 'a project without test results or cleanup paths -> no advisory warning at all' } else { Bad "unexpected warnings: $(@($warn) -join ' | ')" }
 }
 finally {
     Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue

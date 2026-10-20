@@ -193,6 +193,41 @@ Write-Host '[5] Manifest export' -ForegroundColor Cyan
 $psd1 = Get-Content -LiteralPath (Join-Path $repo 'win32-toolkit.psd1') -Raw
 if ($psd1 -match "'Export-Win32ToolkitDocumentation'") { Ok 'Export-Win32ToolkitDocumentation is in FunctionsToExport' } else { Bad 'not exported in the manifest' }
 
+# ══ Test 6: Update rows name their baseline technology (installer-identity PR 1, spec 2.13) ═══════
+# A 'Both' run records one Update entry per technology (spec 2.11 Baseline); the customer doc must tell them
+# apart and name the failing one. An Unavailable baseline is listed as such; a pre-PR-1 record keeps 'Update'.
+Write-Host '[6] Update rows: baseline technology + version; Both legs told apart; unavailable baseline' -ForegroundColor Cyan
+function Get-BaselineFixture([string]$Type, [string]$Family, [string]$Requested, [switch]$Unavailable) {
+    [ordered]@{ Version = '8.8.9'; Mode = 'Both'; Origin = $(if ($Family -eq 'msi') { 'Packaged' } else { 'Sibling' }); RequestedInstallerType = $Requested; InstallerType = $Type
+                Family = $Family; UsedFallback = $false; FallbackReason = ''; RequestedScope = 'machine'; Scope = 'machine'; ScopeRelaxed = $false
+                Unavailable = [bool]$Unavailable; Locale = 'en-US'; Source = 'winget'; ProjectName = '' }
+}
+@(
+    [ordered]@{ Scenario = 'Update'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-20T09:00:00Z'; Verdict = 'Failed'
+                Assertions = @(@{ Name = 'Tattoo-PostUpdate'; Result = 'PASS' }, @{ Name = 'OldArpGone-PostUpdate'; Result = 'FAIL' }); Notes = ''
+                Baseline = (Get-BaselineFixture 'nullsoft' 'exe' 'nullsoft') }
+    [ordered]@{ Scenario = 'Update'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-20T09:30:00Z'; Verdict = 'Passed'
+                Assertions = @(@{ Name = 'OldArpGone-PostUpdate'; Result = 'PASS' }); Notes = ''; Baseline = (Get-BaselineFixture 'wix' 'msi' 'wix') }
+    [ordered]@{ Scenario = 'Update'; Backend = 'Sandbox'; Mode = 'Unattended'; TimestampUtc = '2026-10-20T10:00:00Z'; Verdict = 'Inconclusive'
+                Assertions = @(); Notes = 'Baseline unavailable: winget offers no vendor EXE installer'; Baseline = (Get-BaselineFixture '' 'exe' 'nullsoft' -Unavailable) }
+    [ordered]@{ Scenario = 'Update'; Backend = 'HyperV'; Mode = 'Interactive'; TimestampUtc = '2026-10-19T09:00:00Z'; Verdict = 'Failed'
+                Assertions = @(@{ Name = 'VersionBumped'; Result = 'FAIL' }); Notes = '' }
+) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $proj 'Documentation\TestResults.json') -Encoding UTF8
+$out6 = Join-Path $proj 'Documentation_both.md'
+$null = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath $out6 3>$null
+$md6 = Get-Content -LiteralPath $out6 -Raw
+$rows6 = @($md6 -split "\r?\n" | Where-Object { $_ -like '| Update*' })
+if (@($rows6 | Where-Object { $_ -match '^\| Update \(baseline: nullsoft exe, v8\.8\.9\) \| HyperV \|.*\| Failed \|$' }).Count -eq 1) { Ok 'the nullsoft leg: | Update (baseline: nullsoft exe, v8.8.9) | HyperV | ... | Failed |' } else { Bad "nullsoft row missing: $($rows6 -join ' / ')" }
+if (@($rows6 | Where-Object { $_ -match '^\| Update \(baseline: wix msi, v8\.8\.9\) \| HyperV \|.*\| Passed \|$' }).Count -eq 1) { Ok 'the wix leg: | Update (baseline: wix msi, v8.8.9) | HyperV | ... | Passed |' } else { Bad "wix row missing: $($rows6 -join ' / ')" }
+if (@($rows6 | Where-Object { $_ -match '^\| Update \(baseline unavailable: nullsoft\) \| Sandbox \|.*\| Inconclusive \|$' }).Count -eq 1) { Ok 'an unavailable baseline: | Update (baseline unavailable: nullsoft) | ... | Inconclusive |' } else { Bad "unavailable row missing: $($rows6 -join ' / ')" }
+if (@($rows6 | Where-Object { $_ -match '^\| Update \| HyperV \|.*\| Failed \|$' }).Count -eq 1) { Ok 'a record without Baseline keeps the plain | Update | row' } else { Bad "legacy row missing: $($rows6 -join ' / ')" }
+$notes6 = @($md6 -split "\r?\n" | Where-Object { $_ -like '- **Update*' })
+if ($notes6 -ccontains '- **Update (baseline: nullsoft exe, v8.8.9) / HyperV** - issues: OldArpGone-PostUpdate (FAIL)' -and @($notes6 | Where-Object { $_ -match 'wix msi' }).Count -eq 0 -and
+    @($notes6 | Where-Object { $_ -match 'unavailable' }).Count -eq 0) {
+    Ok 'the fail note names the nullsoft leg (not the passing wix leg, not the unavailable one)'
+} else { Bad "fail notes: $($notes6 -join ' / ')" }
+if (@(($rows6 + $notes6) -join '' | ForEach-Object { $_.ToCharArray() } | Where-Object { [int]$_ -gt 127 }).Count -eq 0) { Ok 'the Update rows and notes are ASCII' } else { Bad 'non-ASCII characters in the Update rows' }
+
 # ── Cleanup ───────────────────────────────────────────────────────────────────────
 Remove-Item -LiteralPath $proj, $bare -Recurse -Force -ErrorAction SilentlyContinue
 

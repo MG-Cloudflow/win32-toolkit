@@ -134,6 +134,7 @@ function Get-YAMLInstallerInfo { param($FilesPath) $null }
 function Invoke-AzBlobUpload { param($SasUri, $FilePath) $script:uploaded = $true }
 function Set-Win32ToolkitPublication { param($ProjectPath, $AppId, $TenantId, $DisplayName, $DisplayVersion, $WingetId) 'p' }
 function Resolve-Win32ToolkitDependencies { param($ProjectPath, $TenantId, $BaseUri) @() }
+function Write-Win32ToolkitPackageAdvisory { param($ProjectPath, $Context, $AppLabel, [switch]$ProbeIfMissing) $null = $ProjectPath, $Context, $AppLabel, $ProbeIfMissing }   # the package advisory (PackageAdvisory.unit covers it)
 
 # Graph shadow for the full publish: the SAS URI stays 'pending' for 21 polls, the commit for 21 more.
 $script:sasPolls    = 0

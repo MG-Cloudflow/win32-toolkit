@@ -130,6 +130,32 @@ The update app's requirement rule checks the install tattoo in **both** registry
 64-bit key and `HKLM\SOFTWARE\WOW6432Node\...`), so devices installed by a package published before
 this version (see below) still count as "already installed".
 
+## Warnings before you publish
+
+Packaging and publishing look at the project's test results and identity checks once more and
+**warn**. They never stop a package or a publish, so read them before you assign the app:
+
+| Warning | Meaning | What to do |
+|---|---|---|
+| `UPDATE-FAILED` | The latest Update test from that installer technology failed. The warning names the failed assertions (for example `OldArpGone-PostUpdate`). | Read `Sandbox\Logs\UpdateAssertions.log` in the project before you assign the app. |
+| `ID-TECH-SWITCH` | An Update test saw the vendor's other installer technology (for example its NSIS EXE) stay registered after this package installed. | **Do not publish this package to devices that have the other technology:** they would get two registrations over one folder. Package the technology your devices already have (see Installer technology in [Packaging](packaging.md)). |
+| `ID-SIBLING-UNTESTED` | winget also ships another installer technology for this app, and the latest Update test from it did not pass (or none ran). | Run `Test-Win32ToolkitProject -Scenario Update -BaselineInstallerType Both`. Once the latest test from that technology passes, the warning goes away. |
+| `UNSAFE-CLEANUP` (publish only) | The project's uninstall cleanup paths fail the check that packaging enforces, so a package exported before this check deletes folders outside the app's own install folder. | Re-run the install capture, re-export, then publish. |
+| Other `ID-...` codes | The identity checks from packaging time (another technology, an earlier version of another technology, a changed detection key, a user-scope installer, ...), shown again. | See [Packaging](packaging.md). |
+
+They are shown **once per action**: `Export-Win32ToolkitIntuneWin -PublishIntune -PublishUpdate` prints
+them once, not once per app, and a dry run (`-WhatIf`) prints them too. In the TUI, **Publish to
+Intune** shows them in a panel before you pick which app to publish: red when an Update test failed,
+a technology switch was seen or the cleanup paths are unsafe, yellow for the other warnings.
+**Package and upload now?** still defaults to No.
+
+**Packages exported before this version:** re-export them before you publish. Packaging now refuses a
+project whose uninstall cleanup paths reach outside the app's own install folder, but an older
+`.intunewin` still carries them. Publish warns `UNSAFE-CLEANUP` when the project's cleanup paths fail
+the check, or cannot be checked because `SupportFiles\AppConfig.json` cannot be read (Windows
+PowerShell 5.1 on the device may still read it). It reads the project, not the package: a package
+exported before the project was re-captured is not detected, so re-export it anyway.
+
 ## Apps published before this version
 
 win32-toolkit 1.1.6 and older published every app with the command line
@@ -178,7 +204,9 @@ settings, detection method in plain English, captured-change summary and test hi
 [Export-Win32ToolkitDocumentation](reference/Export-Win32ToolkitDocumentation.md). The output is
 customer-safe by default: no tenant id, no Intune app id, no raw host paths. Pass
 `-IncludeIntuneIds` only for an **internal copy** (or when the customer owns the tenant) to add
-the app id and a portal deep-link.
+the app id and a portal deep-link. In the test history, each Update test names the installer
+technology and version it upgraded from (for example `Update (baseline: nullsoft exe, v8.8.9)`), and a
+failed one lists its failed assertions.
 
 ## Troubleshooting
 
@@ -190,3 +218,4 @@ the app id and a portal deep-link.
 | **An older app fails with 60008 everywhere, or installs but is "not detected"** | It still has the `powershell.exe -File` command line of win32-toolkit 1.1.6 or older. See [Apps published before this version](#apps-published-before-this-version). |
 | **`W32T.NoDetectionRule`** | No install tattoo and no usable install capture. See the detection rule list in [What gets created](#what-gets-created). |
 | **`W32T.PackageNotReady`** while packaging | The deploy script failed the packaging check (every problem and its fix is listed in the message). See [Packaging](packaging.md#the-package-check). |
+| **`UNSAFE-CLEANUP` warning** while publishing | The package was exported before the cleanup-path check. See [Warnings before you publish](#warnings-before-you-publish). |

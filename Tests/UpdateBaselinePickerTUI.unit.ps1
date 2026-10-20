@@ -11,7 +11,18 @@
       D. manual app + NO candidate               -> aborts (Test-Win32ToolkitProject is never called)
       E. Hyper-V run mode                        -> the unattended choice says Intune parity, never Silent
 
-    Every Spectre / helper call is shadowed; nothing renders, nothing runs a test.
+    Installer-identity PR 1 (WP-5, spec 2.13 / 3.5 task 4):
+      F. winget baseline, two technologies       -> 'Baseline installer technology' (Auto / Both / Packaged)
+                                                    reaches Test-Win32ToolkitProject -BaselineInstallerType
+      G. one technology / local baseline / error -> no question (a grey 'Baseline technology:' line)
+      H. failed verdict + a technology switch    -> the TECHNOLOGY SWITCH panel (escaped); without one, the
+                                                    UPDATE TEST FAILED panel names each failed run's own log
+                                                    folder (Sandbox\Logs\Runs\<run>, test campaign F2)
+      I. publish                                 -> the advisory panel (red / yellow), printed once: Export
+                                                    under the TUI publish action prints no second advisory
+
+    Every Spectre / helper call is shadowed (WP-4's Resolve-Win32ToolkitBaselineFamily and
+    Get-Win32ToolkitTechnologySwitch by their spec 2.11 / 2.12 contracts); nothing renders, nothing runs a test.
 
     Run:  pwsh -File Tests\UpdateBaselinePickerTUI.unit.ps1
 #>
@@ -25,22 +36,29 @@ function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
 . (Join-Path $repo 'Private\Show-Win32ToolkitProjectActions.ps1')
+# Real: the Export-side writer (I proves it stays quiet under the TUI publish action) and its sanitiser.
+. (Join-Path $repo 'Private\Write-Win32ToolkitPackageAdvisory.ps1')
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
 
-# --- Spectre / rendering shadows (no-ops) ---------------------------------------------------------
+# --- Spectre / rendering shadows (recorded, nothing renders) ---------------------------------------
+$script:panels = New-Object System.Collections.Generic.List[object]
+$script:hostLines = New-Object System.Collections.Generic.List[string]
 function Clear-Host {}
 function Write-SpectreRule { param($Title, $Color) }
-function Write-SpectreHost { param($Message) }
+function Write-SpectreHost { param($Message) $script:hostLines.Add([string]$Message) }
 function Out-SpectreHost { param([Parameter(ValueFromPipeline)]$InputObject) process {} }
-function Format-SpectrePanel { param($Data, $Header, $Border, $Color) }
-function Get-SpectreEscapedText { param($Text) $Text }
+function Format-SpectrePanel { param($Data, $Header, $Border, $Color) $script:panels.Add([pscustomobject]@{ Data = [string]$Data; Header = [string]$Header; Color = [string]$Color }) }
+function Get-SpectreEscapedText { param($Text) ([string]$Text).Replace('[', '[[').Replace(']', ']]') }   # what Spectre's escaper does
 function Read-SpectrePause { param($Message, [switch]$AnyKey) }
 function Read-SpectreConfirm { param($Message, $DefaultAnswer) $true }   # yes: verify requirement rule
 
 # scripted selection: object-choices (with -ChoiceLabelProperty) are matched by a queued .Key; plain
 # label-choices default to the FIRST choice (a real built label, so $map/$bmap lookups resolve).
 $script:keys = New-Object System.Collections.Queue
+$script:prompts = New-Object System.Collections.Generic.List[object]
 function Read-SpectreSelection {
     param($Message, $Choices, $ChoiceLabelProperty, $Color, [switch]$EnableSearch, $PageSize)
+    $script:prompts.Add([pscustomobject]@{ Message = $Message; Choices = @($Choices) })
     if ($Message -eq 'Hyper-V run mode') { $script:hvModeChoices = @($Choices) }
     if ($ChoiceLabelProperty) {
         $want = if ($script:keys.Count) { $script:keys.Dequeue() } else { $null }
@@ -60,13 +78,57 @@ function Get-Win32ToolkitDependencies { param($ProjectPath) @() }
 function Get-Win32ToolkitBackendInfo { [pscustomobject]@{ Label = 'Sandbox' } }
 function Get-Win32ToolkitAppConfig { param($ProjectPath) [pscustomobject]@{ App = [pscustomobject]@{ Version = '1.0'; Name = 'App'; Vendor = 'ACME' } } }
 
-$script:splat  = $null
-$script:called = 0
+$script:splat   = $null
+$script:called  = 0
+$script:verdict = $true
 function Test-Win32ToolkitProject {
-    param($ProjectPath, $Scenario, $Backend, $BaselineProjectPath, [switch]$Unattended, [switch]$SkipRequirementCheck)
+    param($ProjectPath, $Scenario, $Backend, $BaselineProjectPath, [switch]$Unattended, [switch]$SkipRequirementCheck, $BaselineInstallerType)
     $script:called++
     $script:splat = $PSBoundParameters
-    $true
+    $script:verdict
+}
+
+# WP-4 contracts (spec 2.11 / 2.12), shadowed: the baseline legs and the technology switches.
+$script:legs = @()
+$script:legCalls = New-Object System.Collections.Generic.List[object]
+function Resolve-Win32ToolkitBaselineFamily {
+    param($ProjectPath, $Mode, [switch]$NoProbe)
+    $script:legCalls.Add([pscustomobject]@{ ProjectPath = $ProjectPath; Mode = $Mode; NoProbe = [bool]$NoProbe })
+    if ($script:legs -is [scriptblock]) { return & $script:legs }
+    $script:legs
+}
+$script:switches = @()
+$script:switchCalls = 0
+function Get-Win32ToolkitTechnologySwitch { param($ProjectPath, $PackageType, $PackageFamily) $null = $ProjectPath, $PackageType, $PackageFamily; $script:switchCalls++; $script:switches }
+# Test campaign F2 (C-9): a failed Update test names the run's own log folder(s), read back from TestResults.json.
+$script:runFolders = @()
+$script:runFolderCalls = New-Object System.Collections.Generic.List[object]
+function Get-Win32ToolkitTestRunLogFolder { param($ProjectPath, $Scenario, $SinceUtc) $script:runFolderCalls.Add([pscustomobject]@{ ProjectPath = $ProjectPath; Scenario = $Scenario; SinceUtc = $SinceUtc }); $script:runFolders }
+function Leg($Origin, $Type, $Family, $Label) { [pscustomobject]@{ Family = $Family; InstallerType = $Type; Scope = ''; Origin = $Origin; FallbackInstallerType = ''; FallbackScope = ''; Label = $Label; Note = '' } }
+$twoLegs = @((Leg 'Packaged' 'wix' 'msi' 'wix (MSI) (packaged)'), (Leg 'Sibling' 'nullsoft' 'exe' 'nullsoft (vendor EXE, NSIS) (other technology [winget])'))
+
+# The publish action: the advisory (shadowed contract, spec 2.13) and Export, which runs the REAL writer.
+$script:advisory = $null
+$script:advisoryCalls = New-Object System.Collections.Generic.List[object]
+function Get-Win32ToolkitPackageAdvisory {
+    param($ProjectPath, $Context, [switch]$ProbeIfMissing)
+    $script:advisoryCalls.Add([pscustomobject]@{ ProjectPath = $ProjectPath; Context = $Context; ProbeIfMissing = [bool]$ProbeIfMissing })
+    if ($script:advisory -is [scriptblock]) { return & $script:advisory }
+    $script:advisory
+}
+function F($Code, $Severity, $Message) { [pscustomobject]@{ Code = $Code; Severity = $Severity; Source = 'UpdateTest'; Message = $Message } }
+$script:exportCalls = 0
+$script:exportResult = 'unset'
+$script:exportWarnings = @()
+$script:scopeInExport = $null
+function Export-Win32ToolkitIntuneWin {
+    param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$NoPublishPrompt)
+    $null = $PublishIntune, $PublishUpdate, $NoPublishPrompt
+    $script:exportCalls++
+    $script:scopeInExport = $script:W32TAdvisoryRun
+    $w = @()
+    $script:exportResult = Write-Win32ToolkitPackageAdvisory -ProjectPath $ProjectPath -Context Export -ProbeIfMissing -WarningVariable w 3>$null
+    $script:exportWarnings = @($w)
 }
 
 function P($template, $name) { [pscustomobject]@{ Template = $template; Name = $name; Path = "C:\Base\Projects\$template\$name" } }
@@ -125,6 +187,120 @@ $ua = @($script:hvModeChoices | Where-Object { $_.Key -eq 'unattended' })
 if ($ua.Count -eq 1 -and $ua[0].Label -match 'Intune parity' -and $ua[0].Label -notmatch '(?i)silent|no GUI') { Ok "unattended label: '$($ua[0].Label)'" } else { Bad "unattended label: '$($ua.Label)'" }
 if ($script:hvModeChoices.Count -eq 2 -and -not @($script:hvModeChoices | Where-Object { $_.Label -match '[\[\]]' }).Count) { Ok 'no Spectre markup brackets in the Hyper-V run mode labels' } else { Bad "labels: $($script:hvModeChoices.Label -join ' | ')" }
 if ($script:called -eq 1 -and $script:splat['Unattended'] -eq $true) { Ok 'choosing it passes -Unattended' } else { Bad "called=$script:called unattended=$($script:splat['Unattended'])" }
+
+# ══ F. baseline installer technology: asked only with two or more technologies ══════════════════════
+Write-Host '[F] winget baseline with two technologies -> "Baseline installer technology" reaches -BaselineInstallerType' -ForegroundColor Cyan
+$script:projects = @($under, $cand)
+$script:wingetId = 'Publisher.App'
+$script:legs = $twoLegs
+foreach ($pick in 'Auto', 'Both', 'Packaged') {
+    $script:prompts.Clear(); $script:legCalls.Clear()
+    DriveUpdate @('test', 'Sandbox', 'Update', 'winget', $pick, 'back')
+    $tech = @($script:prompts | Where-Object Message -eq 'Baseline installer technology')
+    if ($script:called -eq 1 -and $script:splat['BaselineInstallerType'] -eq $pick -and $tech.Count -eq 1) { Ok "'$pick' -> Test-Win32ToolkitProject -BaselineInstallerType $pick" } else { Bad "pick $pick -> called=$script:called type=$($script:splat['BaselineInstallerType']) prompts=$($tech.Count)" }
+}
+$labels = @($tech[0].Choices | ForEach-Object Label)
+if ((@($tech[0].Choices | ForEach-Object Key) -join ',') -eq 'Auto,Both,Packaged' -and
+    $labels[0] -ceq 'Auto - start from the other technology (nullsoft (vendor EXE, NSIS) (other technology [[winget]]))' -and
+    $labels[1] -ceq 'Test both technologies (2 runs)' -and $labels[2] -ceq 'Only the packaged technology (wix (MSI) (packaged))') {
+    Ok 'choices: Auto (the other technology, escaped) / Test both technologies (2 runs) / Only the packaged technology'
+} else { Bad "choices: $($labels -join ' | ')" }
+if ($script:legCalls.Count -eq 1 -and $script:legCalls[0].Mode -eq 'Both' -and $script:legCalls[0].ProjectPath -eq $under.Path) { Ok 'the legs come from Resolve-Win32ToolkitBaselineFamily -Mode Both for the project' } else { Bad "leg calls: $($script:legCalls | ConvertTo-Json -Compress)" }
+
+Write-Host '[G] one technology -> a grey line, no question; a local baseline or a resolver error -> no question' -ForegroundColor Cyan
+$script:legs = @(Leg 'Packaged' 'inno' 'exe' 'inno (vendor EXE, Inno Setup) (packaged)')
+$script:prompts.Clear(); $script:hostLines.Clear()
+DriveUpdate @('test', 'Sandbox', 'Update', 'winget', 'back')
+if ($script:called -eq 1 -and -not $script:splat.ContainsKey('BaselineInstallerType') -and @($script:prompts | Where-Object Message -eq 'Baseline installer technology').Count -eq 0 -and
+    $script:hostLines -ccontains '[grey]Baseline technology: inno (vendor EXE, Inno Setup) (packaged)[/]') {
+    Ok "one leg -> '[grey]Baseline technology: <label>[/]', no question, no -BaselineInstallerType"
+} else { Bad "one leg -> type=$($script:splat['BaselineInstallerType']) lines=$($script:hostLines -join ' | ')" }
+$script:legs = $twoLegs
+$script:legCalls.Clear()
+DriveUpdate @('test', 'Sandbox', 'Update', 'project', 'back')
+if ($script:legCalls.Count -eq 0 -and -not $script:splat.ContainsKey('BaselineInstallerType') -and $script:splat['BaselineProjectPath'] -eq $cand.Path) { Ok 'a local packaged baseline -> no technology lookup, no question' } else { Bad "local -> legCalls=$($script:legCalls.Count)" }
+$script:legs = { throw 'resolver exploded' }
+$script:hostLines.Clear()
+DriveUpdate @('test', 'Sandbox', 'Update', 'winget', 'back')
+if ($script:called -eq 1 -and -not $script:splat.ContainsKey('BaselineInstallerType') -and @($script:hostLines | Where-Object { $_ -match '^\[grey\]Baseline technology: not resolved here \(resolver exploded\)' }).Count -eq 1) {
+    Ok 'a resolver error -> one grey line, the test still runs (it resolves the technology itself)'
+} else { Bad "resolver error -> called=$script:called lines=$($script:hostLines -join ' | ')" }
+$script:legs = @()
+
+Write-Host '[H] a failed Update test with a technology switch -> the TECHNOLOGY SWITCH panel' -ForegroundColor Cyan
+$esc = [char]0x1B
+$script:switches = @([pscustomobject]@{ Code = 'ID-TECH-SWITCH'; Message = "Technology switch: [red]v8.8.9[/] (Notepad++ ${esc}x) was still registered." })
+$script:verdict = $false; $script:panels.Clear(); $script:switchCalls = 0
+DriveUpdate @('test', 'Sandbox', 'Update', 'winget', 'back')
+$p = @($script:panels | Where-Object Header -eq 'TECHNOLOGY SWITCH')
+if ($p.Count -eq 1 -and $p[0].Color -eq 'Red' -and $p[0].Data.StartsWith('Technology switch: [[red]]v8.8.9[[/]]') -and @($script:panels | Where-Object Header -eq 'UPDATE TEST FAILED').Count -eq 0) {
+    Ok 'FAILED + a switch -> a red TECHNOLOGY SWITCH panel with the escaped message (instead of UPDATE TEST FAILED)'
+} else { Bad "panels: $($script:panels | ConvertTo-Json -Compress)" }
+$script:switches = @(); $script:panels.Clear()
+DriveUpdate @('test', 'Sandbox', 'Update', 'winget', 'back')
+if (@($script:panels | Where-Object Header -eq 'UPDATE TEST FAILED').Count -eq 1 -and @($script:panels | Where-Object Header -eq 'TECHNOLOGY SWITCH').Count -eq 0) { Ok 'FAILED without a switch -> the existing UPDATE TEST FAILED panel' } else { Bad "no switch -> $($script:panels.Header -join ',')" }
+$uf = @($script:panels | Where-Object Header -eq 'UPDATE TEST FAILED')
+if ($uf.Count -eq 1 -and $uf[0].Data -ceq 'One or more assertions FAILED - see Sandbox\Logs\UpdateAssertions.log in the project folder.' -and $script:runFolderCalls.Count -ge 1 -and
+    $script:runFolderCalls[-1].Scenario -eq 'Update' -and $script:runFolderCalls[-1].SinceUtc -is [datetime]) { Ok 'no recorded run folder -> the panel names Sandbox\Logs\UpdateAssertions.log (the lookup asked for Update records since the test started)' }
+else { Bad "no run folder -> $($uf | ConvertTo-Json -Compress)" }
+$script:runFolders = @('C:\Base\Projects\A\App [x]\Sandbox\Logs\Runs\20261020-221500_Update_msi', 'C:\Base\Projects\A\App [x]\Sandbox\Logs\Runs\20261020-222000_Update_exe')
+$script:panels.Clear()
+DriveUpdate @('test', 'Sandbox', 'Update', 'winget', 'back')
+$uf = @($script:panels | Where-Object Header -eq 'UPDATE TEST FAILED')
+$wantUf = 'One or more assertions FAILED - see C:\Base\Projects\A\App [[x]]\Sandbox\Logs\Runs\20261020-221500_Update_msi\UpdateAssertions.log and C:\Base\Projects\A\App [[x]]\Sandbox\Logs\Runs\20261020-222000_Update_exe\UpdateAssertions.log.'
+if ($uf.Count -eq 1 -and $uf[0].Data -ceq $wantUf) { Ok "a failed run with its own log folder(s) -> the panel names each run's UpdateAssertions.log (escaped)" } else { Bad "run folders -> $($uf | ConvertTo-Json -Compress)" }
+$script:runFolders = @()
+$script:verdict = $true; $script:switchCalls = 0; $script:panels.Clear()
+DriveUpdate @('test', 'Sandbox', 'Update', 'winget', 'back')
+if ($script:switchCalls -eq 0 -and @($script:panels | Where-Object Header -eq 'UPDATE TEST PASSED').Count -eq 1) { Ok 'PASSED -> no switch lookup, UPDATE TEST PASSED' } else { Bad "passed -> switchCalls=$($script:switchCalls)" }
+
+Write-Host '[I] publish: the advisory panel before "Publish which app?", printed once (Export stays quiet)' -ForegroundColor Cyan
+$script:W32TAdvisoryRun = $null
+$script:advisory = [pscustomobject]@{ Findings = @(
+        (F 'UNSAFE-CLEANUP' 'Warning' "UNSAFE-CLEANUP: this project's uninstall would delete 1 folder(s) [C:\Program Files (x86)]"),
+        (F 'ID-NO-ANCHOR' 'Warning' 'winget chose wix (wix (MSI)) ...'),
+        (F 'UPDATE-INCONCLUSIVE' 'Info' 'The latest Update test gave no verdict [x]')) }
+$script:panels.Clear(); $script:hostLines.Clear(); $script:advisoryCalls.Clear(); $script:prompts.Clear(); $script:exportCalls = 0
+DriveUpdate @('publish', 'install', 'back')
+$ap = @($script:panels | Where-Object { $_.Header -in 'Review before you publish', 'Check before you publish' })
+$whichIdx = [array]::IndexOf(@($script:prompts | ForEach-Object Message), 'Publish which app?')
+if ($script:advisoryCalls.Count -eq 1 -and $script:advisoryCalls[0].Context -eq 'Tui' -and $script:advisoryCalls[0].ProbeIfMissing -and $script:advisoryCalls[0].ProjectPath -eq $under.Path -and $whichIdx -ge 0) {
+    Ok 'Get-Win32ToolkitPackageAdvisory -Context Tui -ProbeIfMissing once, then "Publish which app?"'
+} else { Bad "advisory calls: $($script:advisoryCalls | ConvertTo-Json -Compress) which=$whichIdx" }
+if ($ap.Count -eq 1 -and $ap[0].Header -eq 'Review before you publish' -and $ap[0].Color -eq 'Red' -and $ap[0].Data -match 'would delete 1 folder\(s\) \[\[C:\\Program Files \(x86\)\]\]' -and $ap[0].Data -match 'winget chose wix') {
+    Ok 'UNSAFE-CLEANUP -> one RED panel with every warning, escaped'
+} else { Bad "advisory panel: $($ap | ConvertTo-Json -Compress)" }
+if ($script:hostLines -ccontains '[grey]The latest Update test gave no verdict [[x]][/]') { Ok 'an Info finding -> one grey line, escaped' } else { Bad "info line: $($script:hostLines -join ' | ')" }
+if ($script:exportCalls -eq 1 -and $null -eq $script:exportResult -and $script:exportWarnings.Count -eq 0 -and $script:advisoryCalls.Count -eq 1 -and $script:scopeInExport -is [hashtable]) {
+    Ok 'Export under the TUI publish action: the run scope is open, the writer returns $null, prints nothing and asks for no second advisory'
+} else { Bad "export: calls=$($script:exportCalls) result=$($script:exportResult) warnings=$($script:exportWarnings.Count) advisoryCalls=$($script:advisoryCalls.Count)" }
+if ($null -eq $script:W32TAdvisoryRun) { Ok 'the TUI closed the run scope after Export returned' } else { Bad 'the run scope leaked out of the TUI publish action' }
+
+$script:advisory = [pscustomobject]@{ Findings = @((F 'ID-SIBLING-UNTESTED' 'Warning' 'winget also ships nullsoft ...')) }
+$script:panels.Clear()
+DriveUpdate @('publish', 'install', 'back')
+$ap = @($script:panels | Where-Object { $_.Header -in 'Review before you publish', 'Check before you publish' })
+if ($ap.Count -eq 1 -and $ap[0].Color -eq 'Yellow' -and $ap[0].Header -eq 'Check before you publish') { Ok 'other warnings only -> a YELLOW panel' } else { Bad "yellow: $($ap | ConvertTo-Json -Compress)" }
+foreach ($code in 'UPDATE-FAILED', 'ID-TECH-SWITCH') {
+    $script:advisory = [pscustomobject]@{ Findings = @((F $code 'Warning' "$code text")) }
+    $script:panels.Clear()
+    DriveUpdate @('publish', 'install', 'back')
+    if (@($script:panels | Where-Object { $_.Header -eq 'Review before you publish' -and $_.Color -eq 'Red' }).Count -eq 1) { Ok "$code -> a RED panel" } else { Bad "$code -> $($script:panels | ConvertTo-Json -Compress)" }
+}
+$script:advisory = [pscustomobject]@{ Findings = @((F 'ID-SIBLING-UNTESTABLE' 'Info' 'zip-wrapped')) }
+$script:panels.Clear()
+DriveUpdate @('publish', 'cancel', 'back')
+if (@($script:panels | Where-Object { $_.Header -in 'Review before you publish', 'Check before you publish' }).Count -eq 0 -and $null -eq $script:W32TAdvisoryRun) { Ok 'no warning -> no advisory panel; Cancel still closes the run scope' } else { Bad 'no-warning panel / scope after cancel' }
+$script:advisory = { throw 'advisory exploded' }
+$script:prompts.Clear()
+$script:keys = New-Object System.Collections.Queue
+foreach ($k in 'publish', 'install', 'back') { $script:keys.Enqueue($k) }
+$script:exportCalls = 0
+$w = @(Show-Win32ToolkitProjectActions -BasePath 'C:\Base' 3>&1 6>$null | Where-Object { $_ -is [System.Management.Automation.WarningRecord] })
+if (@($w | Where-Object { "$_" -match '^Could not check the Update test and identity warnings: advisory exploded' }).Count -eq 1 -and $script:exportCalls -eq 1) {
+    Ok 'a failing advisory -> one "Could not check ..." warning, the publish still goes ahead'
+} else { Bad "advisory failure: warnings=$(@($w).Count) export=$($script:exportCalls)" }
+$script:advisory = $null
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All UpdateBaselinePickerTUI tests passed.' -ForegroundColor Green; exit 0 }
