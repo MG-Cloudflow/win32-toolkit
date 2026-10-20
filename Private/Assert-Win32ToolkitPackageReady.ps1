@@ -23,6 +23,8 @@ function Assert-Win32ToolkitPackageReady {
             the bundled PSADT module and the script form a supported    Export   error; -AllowLegacyScript: warning
             pair (Get-Win32ToolkitProjectPsadtVersion)
             the bundled PSADT module is a prerelease (e.g. 4.2.0-rc2)   Export   warning only (F-05)
+            uninstall cleanup paths stay inside the app's own install   Export   error (no override)
+            folders (AppConfig)
 
         The shape/version policy itself lives in Get-Win32ToolkitDeployScriptShape (its Support value), so
         this gate and Get-Win32ToolkitProjectPsadtVersion cannot drift apart. A project patched by
@@ -33,16 +35,25 @@ function Assert-Win32ToolkitPackageReady {
         that does not pair with the script) is reported on a line that starts with the stable text
         'Unsupported PSADT template shape: ' (the same prefix the generator uses), followed by
         '<script path>; shape <Shape>; DeployAppScriptVersion <version or none>; supported: <range>. <hint>'.
+
+        The uninstall deletes every SupportFiles\AppConfig.json Uninstall.CleanupPaths entry recursively as
+        SYSTEM. At Export, each entry outside the app's own install folders (Get-Win32ToolkitCleanupPathFinding,
+        Test-Win32ToolkitCleanupPath) is an error line that starts with 'Unsafe uninstall cleanup path: '
+        (an invalid Uninstall.InstallRoots entry: 'Unsafe uninstall install root: '); -AllowLegacyScript does
+        not downgrade it. Finalize does not check it: Finalize is the step that re-captures and repairs the
+        paths. An AppConfig.json that cannot be read is an error too: Windows PowerShell 5.1 accepts JSON that
+        PowerShell 7 rejects (e.g. +1), so the device could delete paths nobody checked.
     .PARAMETER ProjectPath
         Path to the PSADT project folder (the folder that contains Invoke-AppDeployToolkit.ps1). A relative,
         '~' or PSDrive path is resolved against the current PowerShell location; messages show the full path.
     .PARAMETER Stage
         'Finalize' (before testing) or 'Export' (before packaging). Export adds the Windows PowerShell 5.1
-        parse, the launcher check and the bundled-module check.
+        parse, the launcher check, the bundled-module check and the uninstall cleanup-path check.
     .PARAMETER AllowLegacyScript
         Downgrade the loader, shape and bundled-module findings to warnings: package a deploy script that
         win32-toolkit never patched, or whose layout this version does not support, as-is. Projects
-        patched by older win32-toolkit versions do not need it. Parse and launcher errors still stop.
+        patched by older win32-toolkit versions do not need it. Parse, launcher and uninstall cleanup-path
+        errors still stop.
     .OUTPUTS
         [pscustomobject] Ready ($true), Shape, VersionText, Warnings ([string[]]). Throws an ErrorRecord with
         FullyQualifiedErrorId 'W32T.PackageNotReady' instead when any error was found.
@@ -178,6 +189,18 @@ function Assert-Win32ToolkitPackageReady {
 
     if ($Stage -eq 'Export' -and -not (Test-Path -LiteralPath $launcherPath -PathType Leaf)) {
         $errors.Add("$($commandLine.Launcher) is missing from '$ProjectPath': Intune starts every install and uninstall through it ('$($commandLine.Install)'), so the package would fail on every device. Re-create the project with this win32-toolkit version (PSADT's template copies the launcher).")
+    }
+
+    # -- uninstall cleanup paths (D6, L7) ----------------------------------------------------------------------
+    # The uninstall deletes every cleanup path recursively as SYSTEM: a path outside the app's own install
+    # folders is an error with NO override (never $addOverridable). Export only: Finalize is the step that
+    # re-captures and repairs the paths. Every finding is an error, an unreadable AppConfig.json included:
+    # Windows PowerShell 5.1 on the device accepts JSON that PowerShell 7 rejects (e.g. +1), so its cleanup
+    # paths could still be deleted unchecked.
+    if ($Stage -eq 'Export') {
+        foreach ($finding in @(Get-Win32ToolkitCleanupPathFinding -ProjectPath $ProjectPath)) {
+            $errors.Add([string]$finding.Message)
+        }
     }
 
     foreach ($w in $warnings) { Write-Warning $w }

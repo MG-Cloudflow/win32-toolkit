@@ -16,7 +16,8 @@
     The shape detector (WP-B) and the project-version helper (WP-A) are SHADOWED with their contract
     results (spec 2.4 / 2.5): this suite proves the gate's policy, not the detectors. The same assertions
     on the real legacy fixtures run in LegacyProjectPackaging.unit after integration. The Windows
-    PowerShell 5.1 checker is shadowed too; nothing is ever executed.
+    PowerShell 5.1 checker is shadowed too; nothing is ever executed. The uninstall cleanup-path check
+    ([19]-[26]) runs the real finding helper, predicate and install-root helper on the capture fixtures.
 
     Run:  pwsh -File Tests\PackageReady.unit.ps1
 #>
@@ -35,6 +36,13 @@ $script:PsadtSupportedRange = [pscustomobject]@{ Min = [version]'4.1.0'; MaxExcl
 $assertPath = Join-Path $repo 'Private\Assert-Win32ToolkitPackageReady.ps1'
 . $assertPath
 . (Join-Path $repo 'Private\Get-Win32ToolkitIntuneCommandLine.ps1')
+# The uninstall cleanup-path check (spec 2.5) runs for real (C-9): the finding helper and what it calls.
+$findingPath = Join-Path $repo 'Private\Get-Win32ToolkitCleanupPathFinding.ps1'
+. $findingPath
+. (Join-Path $repo 'Private\Test-Win32ToolkitCleanupPath.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitInstallRoot.ps1')
+. (Join-Path $repo 'Private\Get-WingetManifestFile.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitAppConfig.ps1')
 
 # == Shadows: contract results of the WP-A / WP-B helpers ==========================================
 $script:shape      = $null
@@ -462,6 +470,202 @@ try {
         else { Bad "Export '.\ExpGood' -> $($x.Error.FullyQualifiedErrorId): $($x.Error)" }
     }
     finally { Pop-Location }
+
+    # == [19]-[26] uninstall cleanup paths (spec 2.5, D6, L7, Dv3) ======================================
+    # The deploy script deletes every Uninstall.CleanupPaths entry recursively as SYSTEM. Export refuses a
+    # path outside the app's own install folders, with NO override; Finalize never checks it (Finalize is
+    # the step that re-captures and repairs the paths). The real finding helper, predicate and install-root
+    # helper run here (C-9); the capture fixtures are Tests\Fixtures\captures\*.json (see CleanupPath.unit).
+    $captures = Join-Path $PSScriptRoot 'Fixtures\captures'
+    $cleanupRx = "^Unsafe uninstall cleanup path: '"
+    $rootRx    = "^Unsafe uninstall install root: '"
+    $edgePaths = @(
+        'C:\Program Files (x86)\Microsoft\Edge\Application', 'C:\Program Files (x86)\Microsoft\EdgeCore',
+        'C:\Program Files (x86)\Microsoft\EdgeCore\152.0.4191.66', 'C:\Program Files (x86)\Microsoft\EdgeCore\Optimized',
+        'C:\Program Files (x86)\Microsoft\EdgeUpdate', 'C:\Program Files (x86)\Microsoft\EdgeUpdate\1.3.265.7',
+        'C:\Program Files (x86)\Microsoft\EdgeUpdate\Install', 'C:\Program Files (x86)\Microsoft\EdgeWebView\Application'
+    )
+    # A gate-ready project (Build-PkgProject) plus SupportFiles\AppConfig.json, an optional capture copied to
+    # Documentation\ and an optional winget manifest in Files\.
+    function Build-CleanupProject {
+        param([string]$Name, [AllowNull()][object]$Uninstall, [string]$Capture, [string]$RawConfig, [string]$Manifest, [string]$DisplayName = 'App')
+        $p = Build-PkgProject -Name $Name
+        New-Item -ItemType Directory -Path (Join-Path $p 'SupportFiles') -Force | Out-Null
+        $json = if ($RawConfig) { $RawConfig } else {
+            $cfg = [ordered]@{ SchemaVersion = '1.0'; App = [ordered]@{ Name = 'App'; Version = '1.0'; DisplayName = $DisplayName } }
+            if ($null -ne $Uninstall) { $cfg.Uninstall = $Uninstall }
+            $cfg | ConvertTo-Json -Depth 8
+        }
+        [System.IO.File]::WriteAllText((Join-Path $p 'SupportFiles\AppConfig.json'), $json, (New-Object System.Text.UTF8Encoding($false)))
+        if ($Capture) {
+            New-Item -ItemType Directory -Path (Join-Path $p 'Documentation') -Force | Out-Null
+            Copy-Item -LiteralPath (Join-Path $captures $Capture) -Destination (Join-Path $p 'Documentation\InstallationChanges_20260101_120000.json')
+        }
+        if ($Manifest) {
+            New-Item -ItemType Directory -Path (Join-Path $p 'Files') -Force | Out-Null
+            [System.IO.File]::WriteAllText((Join-Path $p 'Files\x.installer.yaml'), $Manifest, (New-Object System.Text.UTF8Encoding($false)))
+        }
+        $p
+    }
+    function Get-CleanupLine($r) { @($r.Lines | Where-Object { $_ -match $cleanupRx }) }
+
+    Write-Host '[19] a shell folder as cleanup path + a capture -> W32T.PackageNotReady at Export' -ForegroundColor Cyan
+    $p19 = Build-CleanupProject -Name 'Cleanup19' -Capture 'git-edge-noise.json' -DisplayName 'Git' -Uninstall ([ordered]@{
+            AppName = 'Git'; ProductCodes = @(); Uninstallers = @(); CleanupPaths = @('C:\Program Files\Git', 'C:\Program Files (x86)') })
+    Initialize-TestDouble
+    $r = Invoke-Gate -ProjectPath $p19 -Stage Export
+    $lines = @(Get-CleanupLine $r)
+    if ((Test-NotReady $r) -and $lines.Count -eq 1 -and $lines[0].StartsWith("Unsafe uninstall cleanup path: 'C:\Program Files (x86)'")) { Ok "one line starting Unsafe uninstall cleanup path: 'C:\Program Files (x86)'" } else { Bad "[19] -> $($r.Lines -join ' | ')" }
+    if ($lines.Count -eq 1 -and $lines[0].Contains('it is a Windows system folder itself') -and $lines[0].Contains("Complete-Win32ToolkitManualApp -ProjectPath '$p19'") -and
+        $lines[0].Contains('re-create the project') -and $lines[0].EndsWith('This check has no override.')) {
+        Ok 'the line explains why, names the re-capture (Complete-Win32ToolkitManualApp) and the rebuild, and says there is no override'
+    } else { Bad "[19] line: $($lines -join ' | ')" }
+    if ($r.Lines[-1] -ceq 'Nothing was packaged or published. Fix each problem above and retry.' -and (@($r.Lines | Select-Object -Skip 1 | Select-Object -SkipLast 1)).Count -eq 1) { Ok 'the cleanup line is the only problem line of the one W32T.PackageNotReady' } else { Bad "[19] lines: $($r.Lines -join ' | ')" }
+
+    Write-Host '[20] the 8 Edge / WebView2 cleanup paths of the Git capture -> 8 lines' -ForegroundColor Cyan
+    $p20 = Build-CleanupProject -Name 'Cleanup20' -Capture 'git-edge-noise.json' -DisplayName 'Git' -Uninstall ([ordered]@{
+            AppName = 'Git'; ProductCodes = @(); Uninstallers = @(); CleanupPaths = @(@('C:\Program Files\Git', 'C:\Program Files\Git\bin', 'C:\Program Files\Git\usr\bin') + $edgePaths) })
+    Initialize-TestDouble
+    $r = Invoke-Gate -ProjectPath $p20 -Stage Export
+    $lines = @(Get-CleanupLine $r)
+    $named = @($edgePaths | Where-Object { $e = $_; @($lines | Where-Object { $_.StartsWith("Unsafe uninstall cleanup path: '$e'") }).Count -eq 1 })
+    if ((Test-NotReady $r) -and $lines.Count -eq 8 -and $named.Count -eq 8) { Ok '8 lines, one per Edge / EdgeCore / EdgeUpdate / EdgeWebView path; the 3 Git paths pass' } else { Bad "[20] $($lines.Count) line(s): $($lines -join ' | ')" }
+    $f20 = @(Get-Win32ToolkitCleanupPathFinding -ProjectPath $p20)
+    if ($f20.Count -eq 8 -and @($f20 | Where-Object { $_.Kind -ceq 'CleanupPath' -and @($_.Reasons) -contains 'DeniedTree' -and @($_.Reasons) -contains 'OutsideInstallRoot' }).Count -eq 8) { Ok 'the 8 findings: Kind CleanupPath, reasons DeniedTree + OutsideInstallRoot' } else { Bad "[20] findings: $(@($f20 | ForEach-Object { "$($_.Path) [$(@($_.Reasons) -join ',')]" }) -join ' | ')" }
+    $notCreated = @($f20 | Where-Object { @($_.Reasons) -contains 'NotCreatedByInstall' })
+    if ($notCreated.Count -eq 2 -and @($notCreated.Path) -contains 'C:\Program Files (x86)\Microsoft\EdgeCore\Optimized') { Ok 'the 2 Edge paths the capture never created are also NotCreatedByInstall' } else { Bad "[20] NotCreatedByInstall: $(@($notCreated.Path) -join ' | ')" }
+
+    Write-Host '[21] -AllowLegacyScript does not downgrade it (no override, D6)' -ForegroundColor Cyan
+    Initialize-TestDouble
+    $r = Invoke-Gate -ProjectPath $p20 -Stage Export -AllowLegacyScript
+    if ((Test-NotReady $r) -and @(Get-CleanupLine $r).Count -eq 8 -and @($r.Warnings | Where-Object { $_ -match 'Unsafe uninstall' }).Count -eq 0) { Ok 'still W32T.PackageNotReady with the 8 lines; nothing became a warning' } else { Bad "[21] -> error='$($r.Error)' warnings=$($r.Warnings -join ' | ')" }
+
+    Write-Host '[22] -Stage Finalize never checks the cleanup paths (L7)' -ForegroundColor Cyan
+    Initialize-TestDouble
+    $r = Invoke-Gate -ProjectPath $p20 -Stage Finalize
+    if (-not $r.Error -and $r.Result.Ready -and $r.Warnings.Count -eq 0) { Ok 'Finalize with the same data -> Ready, no cleanup finding' } else { Bad "[22] -> error='$($r.Error)' warnings=$($r.Warnings -join ' | ')" }
+
+    Write-Host '[23] legacy sub-folders inside a valid root (not top-most) -> Ready (Dv3)' -ForegroundColor Cyan
+    $p23 = Build-CleanupProject -Name 'Cleanup23' -Capture 'git-edge-noise.json' -DisplayName 'Git' -Uninstall ([ordered]@{
+            AppName = 'Git'; ProductCodes = @(); Uninstallers = @(); CleanupPaths = @('C:\Program Files\Git', 'C:\Program Files\Git\bin', 'C:\Program Files\Git\cmd', 'C:\Program Files\Git\usr', 'C:\Program Files\Git\usr\bin') })
+    Initialize-TestDouble
+    $r = Invoke-Gate -ProjectPath $p23 -Stage Export
+    if (-not $r.Error -and $r.Result.Ready -and $r.Warnings.Count -eq 0) { Ok 'C:\Program Files\Git + 4 sub-folders (incl. usr\bin) -> Ready, no warning' } else { Bad "[23] -> $($r.Lines -join ' | ') warnings=$($r.Warnings -join ' | ')" }
+    $p23b = Build-CleanupProject -Name 'Cleanup23b' -Capture 'git-edge-noise.json' -DisplayName 'Git' -Uninstall ([ordered]@{
+            AppName = 'Git'; ProductCodes = @(); Uninstallers = @(); CleanupPaths = @('C:\Program Files\Git'); InstallRoots = @('C:\Program Files\Git') })
+    Initialize-TestDouble
+    $r = Invoke-Gate -ProjectPath $p23b -Stage Export
+    if (-not $r.Error -and $r.Result.Ready) { Ok 'a new capture (CleanupPaths + InstallRoots [C:\Program Files\Git]) -> Ready' } else { Bad "[23b] -> $($r.Lines -join ' | ')" }
+
+    Write-Host '[24] an invalid Uninstall.InstallRoots entry is reported and never used' -ForegroundColor Cyan
+    $p24 = Build-CleanupProject -Name 'Cleanup24' -Uninstall ([ordered]@{
+            AppName = 'X'; ProductCodes = @(); Uninstallers = @(); CleanupPaths = @('C:\Program Files (x86)\X'); InstallRoots = @('C:\Program Files (x86)') })
+    Initialize-TestDouble
+    $r = Invoke-Gate -ProjectPath $p24 -Stage Export
+    $rootLines = @($r.Lines | Where-Object { $_ -match $rootRx })
+    $lines = @(Get-CleanupLine $r)
+    if ((Test-NotReady $r) -and $rootLines.Count -eq 1 -and $rootLines[0].StartsWith("Unsafe uninstall install root: 'C:\Program Files (x86)' in SupportFiles\AppConfig.json (Uninstall.InstallRoots)") -and $rootLines[0].EndsWith('This check has no override.')) { Ok 'one "Unsafe uninstall install root:" line' } else { Bad "[24] root lines: $($r.Lines -join ' | ')" }
+    $f24 = @(Get-Win32ToolkitCleanupPathFinding -ProjectPath $p24 | Where-Object Kind -ceq 'CleanupPath')
+    if ($lines.Count -eq 1 -and $lines[0].StartsWith("Unsafe uninstall cleanup path: 'C:\Program Files (x86)\X'") -and $f24.Count -eq 1 -and (@($f24[0].Reasons) -join ',') -ceq 'NoInstallRoot') { Ok "and one path line: 'C:\Program Files (x86)\X' -> NoInstallRoot (the invalid root is not used)" } else { Bad "[24] path: $($lines -join ' | ') reasons $(@($f24.Reasons) -join ',')" }
+
+    Write-Host '[25] no capture and no InstallRoots -> NoInstallRoot error; unreadable AppConfig -> error too (no override)' -ForegroundColor Cyan
+    $p25 = Build-CleanupProject -Name 'Cleanup25' -Uninstall ([ordered]@{ AppName = 'Acme'; ProductCodes = @(); Uninstallers = @(); CleanupPaths = @('C:\Program Files\Acme') })
+    Initialize-TestDouble
+    $r = Invoke-Gate -ProjectPath $p25 -Stage Export
+    $lines = @(Get-CleanupLine $r)
+    if ((Test-NotReady $r) -and $lines.Count -eq 1 -and $lines[0].Contains("the app's own install folder is unknown (no Uninstall.InstallRoots and no install capture)")) { Ok "'C:\Program Files\Acme' without roots -> error: the install folder is unknown" } else { Bad "[25] -> $($r.Lines -join ' | ')" }
+    # An AppConfig.json PowerShell 7 cannot read is an ERROR, not a warning: Windows PowerShell 5.1 (the
+    # device) accepts JSON that PowerShell 7 rejects, so its cleanup paths could still be deleted unchecked.
+    $unreadRx = '^SupportFiles\\AppConfig\.json could not be read, so its uninstall cleanup paths could not be checked: '
+    $p25b = Build-CleanupProject -Name 'Cleanup25b' -RawConfig '{ "SchemaVersion": "1.0", "Uninstall": { "CleanupPaths": [ "C:\\Windows" '
+    foreach ($allowLegacy in $false, $true) {
+        Initialize-TestDouble
+        $r = Invoke-Gate -ProjectPath $p25b -Stage Export -AllowLegacyScript:$allowLegacy
+        $e25 = @($r.Lines | Where-Object { $_ -match $unreadRx })
+        $label = if ($allowLegacy) { 'corrupt AppConfig.json + -AllowLegacyScript' } else { 'corrupt AppConfig.json' }
+        if ((Test-NotReady $r) -and $e25.Count -eq 1 -and $e25[0].EndsWith('This check has no override.') -and $e25[0].Contains('Windows PowerShell 5.1') -and
+            @($r.Lines | Select-Object -Skip 1 | Select-Object -SkipLast 1).Count -eq 1 -and @($r.Warnings | Where-Object { $_ -match 'could not be read' }).Count -eq 0) {
+            Ok "$label -> W32T.PackageNotReady with exactly one 'could not be read' line (not a warning, no override)"
+        } else { Bad "[25b] $label -> error='$($r.Error)' lines=$($r.Lines -join ' | ') warnings=$($r.Warnings -join ' | ')" }
+    }
+    # The parser gap itself: '+1' is rejected by PowerShell 7's ConvertFrom-Json but read by Windows PowerShell
+    # 5.1's, which would then delete 'C:\Program Files (x86)' on every device.
+    $p25plus = Build-CleanupProject -Name 'Cleanup25plus' -RawConfig '{ "SchemaVersion": "1.0", "Revision": +1, "Uninstall": { "AppName": "X", "CleanupPaths": [ "C:\\Program Files (x86)" ] } }'
+    Initialize-TestDouble
+    $r = Invoke-Gate -ProjectPath $p25plus -Stage Export
+    if ((Test-NotReady $r) -and $r.Error.FullyQualifiedErrorId -ceq 'W32T.PackageNotReady' -and @($r.Lines | Where-Object { $_ -match $unreadRx }).Count -eq 1) {
+        Ok "[25c] '`"Revision`": +1' (PowerShell 7 cannot read it, 5.1 can) with CleanupPaths ['C:\Program Files (x86)'] -> W32T.PackageNotReady"
+    } else { Bad "[25c] '+1' AppConfig -> error='$($r.Error)' warnings=$($r.Warnings -join ' | ')" }
+    $f25plus = @(Get-Win32ToolkitCleanupPathFinding -ProjectPath $p25plus)
+    if ($f25plus.Count -eq 1 -and $f25plus[0].Kind -ceq 'Unreadable' -and $f25plus[0].Message -match $unreadRx -and $f25plus[0].Message -notmatch 'Complete-Win32ToolkitManualApp') {
+        Ok "the helper keeps Kind 'Unreadable' (the capture cannot repair the file, so the message does not offer it)"
+    } else { Bad "[25c] findings: $(@($f25plus | ForEach-Object { "$($_.Kind): $($_.Message)" }) -join ' | ')" }
+    # A missing AppConfig.json is the empty seed config: nothing to delete, nothing to report.
+    $p25none = Build-PkgProject -Name 'Cleanup25none'
+    Initialize-TestDouble
+    $r = Invoke-Gate -ProjectPath $p25none -Stage Export
+    if (-not $r.Error -and $r.Result.Ready -and @(Get-Win32ToolkitCleanupPathFinding -ProjectPath $p25none).Count -eq 0) { Ok 'no SupportFiles\AppConfig.json at all -> no finding, Ready' } else { Bad "[25] missing AppConfig -> error='$($r.Error)'" }
+    $p25c = Build-CleanupProject -Name 'Cleanup25c' -Capture 'git-edge-noise.json' -Uninstall ([ordered]@{ AppName = 'Git'; ProductCodes = @(); Uninstallers = @(); CleanupPaths = @() })
+    $p25d = Build-CleanupProject -Name 'Cleanup25d' -Uninstall $null
+    Initialize-TestDouble
+    $rc = Invoke-Gate -ProjectPath $p25c -Stage Export
+    $rd = Invoke-Gate -ProjectPath $p25d -Stage Export
+    if (-not $rc.Error -and -not $rd.Error -and $rc.Warnings.Count -eq 0 -and $rd.Warnings.Count -eq 0) { Ok 'CleanupPaths = [] or no Uninstall section (MSI) -> Ready, nothing to check' } else { Bad "[25c/d] -> '$($rc.Error)' / '$($rd.Error)'" }
+    $p25e = Build-CleanupProject -Name 'Cleanup25e' -RawConfig '{ "SchemaVersion": "1.0", "Uninstall": [ { "CleanupPaths": [ "C:\\Windows" ] } ] }'
+    Initialize-TestDouble
+    $r = Invoke-Gate -ProjectPath $p25e -Stage Export
+    if ((Test-NotReady $r) -and @(Get-CleanupLine $r).Count -eq 1) { Ok 'paths are read the way the deploy script reads them (an Uninstall ARRAY is still checked)' } else { Bad "[25e] -> $($r.Lines -join ' | ')" }
+    # A check that fails unexpectedly never lets the paths through (fail closed).
+    $realPredicate = ${function:Test-Win32ToolkitCleanupPath}
+    try {
+        ${function:Test-Win32ToolkitCleanupPath} = { param($Path, $InstallRoot, $CreatedDirectory, [switch]$AsInstallRoot) $null = $Path, $InstallRoot, $CreatedDirectory, $AsInstallRoot; throw 'predicate failed' }
+        Initialize-TestDouble
+        $r = Invoke-Gate -ProjectPath $p25 -Stage Export
+        if ((Test-NotReady $r) -and @($r.Lines | Where-Object { $_.StartsWith('Unsafe uninstall cleanup path: the entries in SupportFiles\AppConfig.json (Uninstall.CleanupPaths) could not be checked (predicate failed)') }).Count -eq 1) { Ok 'an unexpected error in the check -> still an error line (fail closed)' }
+        else { Bad "[25f] -> error='$($r.Error)' lines=$($r.Lines -join ' | ')" }
+    }
+    finally { ${function:Test-Win32ToolkitCleanupPath} = $realPredicate }
+
+    Write-Host '[26] Firefox + co-installed Maintenance Service, the old 15-path AppConfig -> exactly 3 lines' -ForegroundColor Cyan
+    $ffPaths = @(
+        'C:\Program Files (x86)', 'C:\Program Files (x86)\Mozilla Maintenance Service', 'C:\Program Files (x86)\Mozilla Maintenance Service\logs',
+        'C:\Program Files\Mozilla Firefox', 'C:\Program Files\Mozilla Firefox\browser', 'C:\Program Files\Mozilla Firefox\browser\features',
+        'C:\Program Files\Mozilla Firefox\browser\VisualElements', 'C:\Program Files\Mozilla Firefox\defaults', 'C:\Program Files\Mozilla Firefox\defaults\pref',
+        'C:\Program Files\Mozilla Firefox\distribution', 'C:\Program Files\Mozilla Firefox\fonts', 'C:\Program Files\Mozilla Firefox\gmp-clearkey',
+        'C:\Program Files\Mozilla Firefox\gmp-clearkey\0.1', 'C:\Program Files\Mozilla Firefox\tobedeleted', 'C:\Program Files\Mozilla Firefox\uninstall'
+    )
+    $p26 = Build-CleanupProject -Name 'Cleanup26' -Capture 'firefox-coinstalled.json' -DisplayName 'Mozilla Firefox' -Manifest "PackageIdentifier: Mozilla.Firefox`nInstallers:`n- Architecture: x64`n  ProductCode: Mozilla Firefox`n" -Uninstall ([ordered]@{
+            AppName = 'Mozilla Firefox (x64 en-US)'; ProductCodes = @(); Uninstallers = @(); CleanupPaths = $ffPaths })
+    $before26 = @(Get-ChildItem -LiteralPath $p26 -Recurse -File | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }) -join "`n"
+    Initialize-TestDouble
+    $r = Invoke-Gate -ProjectPath $p26 -Stage Export
+    $lines = @(Get-CleanupLine $r)
+    $want = @("Unsafe uninstall cleanup path: 'C:\Program Files (x86)'", "Unsafe uninstall cleanup path: 'C:\Program Files (x86)\Mozilla Maintenance Service'", "Unsafe uninstall cleanup path: 'C:\Program Files (x86)\Mozilla Maintenance Service\logs'")
+    $hit = @($want | Where-Object { $w = $_; @($lines | Where-Object { $_.StartsWith("$w ") }).Count -eq 1 })
+    if ($ffPaths.Count -eq 15 -and (Test-NotReady $r) -and $lines.Count -eq 3 -and $hit.Count -eq 3) { Ok '15 stored paths -> exactly 3 lines: Program Files (x86), Mozilla Maintenance Service and its logs' } else { Bad "[26] $($lines.Count) line(s): $($lines -join ' | ')" }
+    $f26 = @(Get-Win32ToolkitCleanupPathFinding -ProjectPath $p26)
+    $pf86 = @($f26 | Where-Object { $_.Path -ceq 'C:\Program Files (x86)' })
+    $mms = @($f26 | Where-Object { $_.Path -like '*Mozilla Maintenance Service*' })
+    if ($pf86.Count -eq 1 -and (@($pf86[0].Reasons) -join ',') -ceq 'ShellFolder,OutsideInstallRoot,NotCreatedByInstall' -and $mms.Count -eq 2 -and @($mms | Where-Object { (@($_.Reasons) -join ',') -ceq 'OutsideInstallRoot' }).Count -eq 2) {
+        Ok 'reasons: (x86) = ShellFolder, OutsideInstallRoot, NotCreatedByInstall; the co-installed service folders = OutsideInstallRoot (L17)'
+    } else { Bad "[26] reasons: $(@($f26 | ForEach-Object { "$($_.Path) [$(@($_.Reasons) -join ',')]" }) -join ' | ')" }
+    $names = @($f26[0].PSObject.Properties.Name) -join ','
+    if ($names -ceq 'Kind,Path,Reasons,Explanation,Message' -and $f26[0].Reasons -is [string[]] -and $f26[0].Message.Contains($f26[0].Explanation)) { Ok 'a finding has Kind, Path, Reasons ([string[]]), Explanation and Message' } else { Bad "[26] finding properties: $names" }
+    $after26 = @(Get-ChildItem -LiteralPath $p26 -Recurse -File | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }) -join "`n"
+    if ($before26 -ceq $after26) { Ok 'the check changed nothing in the project (read-only)' } else { Bad '[26] the check touched the project files' }
+
+    $findingBytes = [System.IO.File]::ReadAllBytes($findingPath)
+    if (@($findingBytes | Where-Object { $_ -gt 127 }).Count -eq 0) { Ok 'Get-Win32ToolkitCleanupPathFinding.ps1 is ASCII-only' } else { Bad 'non-ASCII bytes in the finding helper' }
+    $fAst = [System.Management.Automation.Language.Parser]::ParseFile($findingPath, [ref]$null, [ref]$null)
+    $c2 = "if (`$_.FullyQualifiedErrorId -like 'W32T.*') { throw }"
+    $k2 = @($fAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.TryStatementAst] -and
+                @($n.Body.FindAll({ param($c) $c -is [System.Management.Automation.Language.CommandAst] -and $c.GetCommandName() -eq 'Get-Win32ToolkitAppConfig' }, $true)).Count }, $true))
+    if ($k2.Count -eq 1 -and $k2[0].CatchClauses.Count -eq 1 -and $k2[0].CatchClauses[0].Body.Statements[0].Extent.Text -ceq $c2) { Ok 'K2: the catch around Get-Win32ToolkitAppConfig starts with the C-2 re-throw' } else { Bad '[26] K2 catch' }
+    $catches = @($fAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CatchClauseAst] }, $true))
+    if ($catches.Count -ge 1 -and @($catches | Where-Object { $_.Body.Statements[0].Extent.Text -cne $c2 }).Count -eq 0) { Ok "K1: all $($catches.Count) catches start with the C-2 re-throw" } else { Bad '[26] K1 catches' }
+    $top = @($fAst.EndBlock.Statements)
+    $reads = @($fAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-Content' }, $true))
+    if ($top.Count -eq 1 -and $top[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and @($reads | Where-Object { $_.Extent.Text -notmatch '-Encoding UTF8' }).Count -eq 0) { Ok 'the file defines only its function; every Get-Content passes -Encoding UTF8' } else { Bad '[26] top-level code or Get-Content without -Encoding' }
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
