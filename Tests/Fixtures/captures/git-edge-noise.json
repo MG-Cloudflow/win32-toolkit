@@ -1,0 +1,43 @@
+{
+  "DocumentationInfo": { "ProjectName": "Fixture_git-edge-noise", "Timestamp": "20260101_120000", "PsadtExitCode": 0, "DependencyExitCode": null },
+  "NewFiles": [
+    { "Path": "C:\\Program Files\\Git", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Git\\bin", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Git\\cmd", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Git\\usr", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Git\\usr\\bin", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Git\\git-bash.exe", "Type": "File" },
+    { "Path": "C:\\Program Files\\Git\\unins000.exe", "Type": "File" },
+    { "Path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application", "Type": "Directory" },
+    { "Path": "C:\\Program Files (x86)\\Microsoft\\EdgeCore", "Type": "Directory" },
+    { "Path": "C:\\Program Files (x86)\\Microsoft\\EdgeCore\\152.0.4191.66", "Type": "Directory" },
+    { "Path": "C:\\Program Files (x86)\\Microsoft\\EdgeUpdate", "Type": "Directory" },
+    { "Path": "C:\\Program Files (x86)\\Microsoft\\EdgeUpdate\\1.3.265.7", "Type": "Directory" },
+    { "Path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application", "Type": "Directory" },
+    { "Path": "C:\\Program Files (x86)\\Microsoft\\EdgeUpdate\\MicrosoftEdgeUpdate.exe", "Type": "File" },
+    { "Path": "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Git", "Type": "Directory" },
+    { "Path": "C:\\Users\\WDAGUtilityAccount\\AppData\\Local\\Temp\\setup-tmp", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Git\\mingw64", "Type": "Unknown" }
+  ],
+  "NewRegistryKeys": [
+    {
+      "Path": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Git_is1",
+      "KeyName": "Git_is1",
+      "Values": {
+        "DisplayName": "Git",
+        "DisplayVersion": "2.55.0",
+        "InstallLocation": "C:\\Program Files\\Git\\",
+        "UninstallString": "\"C:\\Program Files\\Git\\unins000.exe\"",
+        "QuietUninstallString": "\"C:\\Program Files\\Git\\unins000.exe\" /SILENT",
+        "DisplayIcon": "C:\\Program Files\\Git\\mingw64\\share\\git\\git-for-windows.ico"
+      }
+    },
+    {
+      "Path": "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+      "KeyName": "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+      "Values": { "name": "Microsoft Edge WebView2 Runtime", "location": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application" }
+    }
+  ],
+  "NewServices": [],
+  "NewPrograms": []
+}

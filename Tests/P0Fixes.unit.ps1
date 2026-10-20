@@ -27,6 +27,9 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Set-Win32ToolkitAppConfig.ps1')
 . (Join-Path $repo 'Private\Test-Win32ToolkitProductCode.ps1')
 . (Join-Path $repo 'Private\Update-PSADTUninstallLogic.ps1')
+. (Join-Path $repo 'Private\Get-WingetManifestFile.ps1')         # Update-PSADTUninstallLogic -> Get-Win32ToolkitInstallRoot (C-9)
+. (Join-Path $repo 'Private\Test-Win32ToolkitCleanupPath.ps1')    # the cleanup-path allowlist
+. (Join-Path $repo 'Private\Get-Win32ToolkitInstallRoot.ps1')     # install roots from the app's own uninstall key
 
 # ══ P0-1 ═════════════════════════════════════════════════════════════════════════════════════════
 Write-Host '[P0-1] Download-WingetApp: a winget FAILURE must not be reported as success' -ForegroundColor Cyan
@@ -94,6 +97,11 @@ catch { $threw = $true }
 if (-not $threw) { Ok 'runs 3x over the same project without throwing (data-driven: no marker to consume)' } else { Bad 're-run threw' }
 $cfg = Get-Win32ToolkitAppConfig -ProjectPath $proj
 if ($cfg.PSObject.Properties.Name -contains 'Uninstall') { Ok 'the Uninstall section is written as DATA (overwritten, not appended)' } else { Bad 'no Uninstall section' }
+# The only key points at C:\App (outside Program Files / ProgramData) and the capture created no folder:
+# no install root, nothing to clean up (the cleanup-path allowlist, V1).
+$un = $cfg.Uninstall
+if ($un -and $un.PSObject.Properties.Name -contains 'InstallRoots' -and @($un.InstallRoots).Count -eq 0) { Ok 'the 3x re-run writes InstallRoots = @()' } else { Bad "InstallRoots: $(if ($un) { @($un.InstallRoots) -join ' | ' })" }
+if ($un -and $un.PSObject.Properties.Name -contains 'CleanupPaths' -and @($un.CleanupPaths).Count -eq 0) { Ok 'the 3x re-run writes CleanupPaths = @()' } else { Bad "CleanupPaths: $(if ($un) { @($un.CleanupPaths) -join ' | ' })" }
 $uSrc = Get-Content -LiteralPath (Join-Path $repo 'Private\Update-PSADTUninstallLogic.ps1') -Raw
 if ($uSrc -notmatch '<Perform Uninstallation tasks here>') { Ok 'no pristine-marker dependency remains (the old non-idempotency)' } else { Bad 'still consumes the pristine marker' }
 

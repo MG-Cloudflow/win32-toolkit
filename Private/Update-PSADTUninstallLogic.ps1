@@ -13,6 +13,11 @@ function Update-PSADTUninstallLogic {
         Product codes are validated as strict GUIDs (Test-Win32ToolkitProductCode). Only EXE-based
         projects call this; MSI stays on PSADT Zero-Config MSI.
 
+        Cleanup paths are only the top-most folders the install created inside the app's own install
+        folders, taken from its own uninstall entry (Get-Win32ToolkitInstallRoot), and every one passes
+        the allowlist (Test-Win32ToolkitCleanupPath): the uninstall deletes them recursively as SYSTEM.
+        The install folders are stored next to them as Uninstall.InstallRoots.
+
         See knowledge-base/designs/data-driven-generation.md.
     .PARAMETER ProjectPath
         Full path to the PSADT project folder.
@@ -82,30 +87,34 @@ function Update-PSADTUninstallLogic {
             }
         }
 
-        # Install-folder cleanup candidates (avoid the shared roots).
-        if ($data.NewFiles) {
-            foreach ($file in $data.NewFiles) {
-                if ($file.Path -like '*Program Files*') {
-                    $dir = Split-Path $file.Path -Parent
-                    if ($dir -notin $cleanupPaths -and
-                        $dir -notlike '*Program Files' -and $dir -notlike '*ProgramData' -and
-                        $dir -ne 'C:\Program Files' -and $dir -ne 'C:\ProgramData') {
-                        $cleanupPaths += $dir
-                    }
-                }
-            }
-        }
-
+        # Install-folder cleanup paths (V1, S18): only folders the install created inside the app's own
+        # install folders, which come from its own uninstall entry (a new folder alone never qualifies).
         $cfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
+        $dn  = if ($cfg.App -and $cfg.App.DisplayName) { [string]$cfg.App.DisplayName } elseif ($cfg.App) { [string]$cfg.App.Name } else { '' }
+        $ir  = Get-Win32ToolkitInstallRoot -Capture $data -ProjectPath $ProjectPath -DisplayName $dn
+        $keep = @($ir.CreatedDirectories | Where-Object {
+                    (Test-Win32ToolkitCleanupPath -Path $_ -InstallRoot $ir.Roots -CreatedDirectory $ir.CreatedDirectories).Valid })
+        # top-most only: drop any kept folder that lies below another kept folder
+        $cleanupPaths = @($keep | Where-Object { $d = $_; -not ($keep | Where-Object { $_ -ne $d -and ($d + '\').StartsWith($_ + '\', [StringComparison]::OrdinalIgnoreCase) }) } | Sort-Object)
+
+        $rejectedText = @($ir.Rejected | ForEach-Object {
+                $why = if (@($_.Reasons).Count) { ": $(@($_.Reasons) -join ', ')" } else { '' }
+                "$($_.Candidate) ($($_.Origin)$why)"
+            })
+        $verboseText = "Cleanup paths: $(@($ir.CreatedDirectories).Count - $keep.Count) created folder(s) outside the app's install folders were not kept; rejected uninstall keys and install-folder candidates: $(if ($rejectedText.Count) { $rejectedText -join '; ' } else { 'none' })."
+        Write-Verbose ($verboseText -replace '[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]', '?')
+
         $cfg | Add-Member -NotePropertyName Uninstall -NotePropertyValue ([pscustomobject]@{
             AppName      = $appName
             ProductCodes = $productCodes
             Uninstallers = $uninstallers
             CleanupPaths = $cleanupPaths
+            InstallRoots = @($ir.Roots)
         }) -Force
         Set-Win32ToolkitAppConfig -ProjectPath $ProjectPath -Config $cfg | Out-Null
 
-        Write-Host "✓ Uninstall data written for '$appName' (product codes: $($productCodes.Count), uninstallers: $($uninstallers.Count), cleanup paths: $($cleanupPaths.Count))" -ForegroundColor Green
+        $rootText = if (@($ir.Roots).Count) { @($ir.Roots) -join ', ' } else { 'none' }
+        Write-Host "✓ Uninstall data written for '$appName' (product codes: $($productCodes.Count), uninstallers: $($uninstallers.Count), cleanup paths: $($cleanupPaths.Count), install roots: $rootText)" -ForegroundColor Green
         return $true
     }
     catch {

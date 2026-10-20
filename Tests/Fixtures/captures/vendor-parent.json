@@ -1,0 +1,24 @@
+{
+  "DocumentationInfo": { "ProjectName": "Fixture_vendor-parent", "Timestamp": "20260101_120000", "PsadtExitCode": 0, "DependencyExitCode": null },
+  "NewFiles": [
+    { "Path": "C:\\Program Files\\Acme", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Acme\\App", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Acme\\App\\uninst", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Acme\\Uninstall", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Acme\\App\\app.exe", "Type": "File" },
+    { "Path": "C:\\Program Files\\Acme\\Uninstall\\unins000.exe", "Type": "File" }
+  ],
+  "NewRegistryKeys": [
+    {
+      "Path": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\AcmeApp",
+      "KeyName": "AcmeApp",
+      "Values": {
+        "DisplayName": "Acme App",
+        "UninstallString": "\"C:\\Program Files\\Acme\\Uninstall\\unins000.exe\" /S",
+        "DisplayIcon": "C:\\Program Files\\Acme\\App\\app.exe"
+      }
+    }
+  ],
+  "NewServices": [],
+  "NewPrograms": []
+}
