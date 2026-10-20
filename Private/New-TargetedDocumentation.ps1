@@ -943,8 +943,9 @@ if ($backend -eq 'Sandbox') {
     Write-Host "`nClosing Windows Sandbox..." -ForegroundColor Red
     Write-Log "Sandbox auto-close initiated after $autoClose-second countdown" "INFO"
 
-    # Gracefully shut down the sandbox so the host client can disconnect cleanly
-    Stop-Computer
+    # Shut the sandbox down with -Force, like the unattended test guests: a bare Stop-Computer left the
+    # Windows Sandbox 0.8 client window on 'The remote environment is shutting down', which blocked the next run.
+    Stop-Computer -Force
 }
 '@
 

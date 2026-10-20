@@ -4,7 +4,8 @@
       (a) Get-Win32ToolkitTestMode precedence: -Unattended > config Unattended > non-interactive host
           (forced Unattended + warning) > Interactive default.
       (b) Wait-Win32ToolkitSandboxFree: free -> immediate $true; frees mid-wait -> $true; never ->
-          $false at the 90 s ceiling (no throw).
+          $false at the 90 s ceiling (no throw). Without a wsb answer (shadowed $null), as here, only the
+          process check decides; the wsb-based close of a leftover client window: SandboxStaleClient.unit.ps1.
       (c) New-CountdownScript -Seconds honored; the 120 s watched default unchanged.
       (d) The generated Sandbox LogonCommands: watched keeps -NoExit + Countdown + interactive PSADT;
           unattended drops all three, runs -DeployMode Silent, and ends with Stop-Computer (after a 5 s
@@ -25,6 +26,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 
 . (Join-Path $repo 'Private\Get-Win32ToolkitTestMode.ps1')
 . (Join-Path $repo 'Private\Wait-Win32ToolkitSandboxFree.ps1')
+function Get-Win32ToolkitSandboxEnvironment { $null }   # C-9: no wsb answer -> the process check decides (test campaign F1)
 . (Join-Path $repo 'Private\New-CountdownScript.ps1')
 
 function New-TempDir { $p = Join-Path ([System.IO.Path]::GetTempPath()) ('sbu_' + [guid]::NewGuid().ToString('N').Substring(0, 8)); New-Item -ItemType Directory -Path $p -Force | Out-Null; $p }

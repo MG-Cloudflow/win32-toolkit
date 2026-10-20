@@ -311,3 +311,12 @@ For the chained Update scenario, `-UpdateVersionsBack` picks the baseline N rele
 interactively. Chained runs benefit from the single-instance handling: the toolkit waits up to 90 s for
 a previous sandbox to close before starting the next one, and unattended sandboxes shut themselves down,
 so `InstallUninstall, Update` completes hands-off.
+
+Windows Sandbox 0.8 can leave its window open on *The remote environment is shutting down* after the
+sandbox itself is gone. When the Windows Sandbox command line (`wsb`) is installed, the toolkit asks it:
+if `wsb list` reports no running sandbox for 20 seconds while the same window (at least 20 seconds old,
+in your Windows session) is the only one left, the toolkit asks `wsb` once more, closes the window, says
+so in one line, and starts the next run. A sandbox that `wsb` still lists, such as a watched one you are
+checking, is never closed, and neither is a window that appears meanwhile (a sandbox that is starting) or
+another user's sandbox. Without `wsb`, or when the window cannot be closed, the toolkit waits for the window
+as before.

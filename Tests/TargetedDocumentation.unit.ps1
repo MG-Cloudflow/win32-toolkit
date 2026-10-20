@@ -56,7 +56,9 @@ if (-not $perr) { Ok 'generated script parses (5.1-safe syntax)' } else { Bad "p
 if ($text.Contains("`$backend = 'Sandbox'")) { Ok 'backend literal baked = Sandbox' } else { Bad 'backend not baked to Sandbox' }
 if ((GuardCount $text $sandGuard) -eq 2) { Ok 'two Sandbox-only guards (init wait + auto-close/Stop-Computer)' } else { Bad "sandbox guards = $(GuardCount $text $sandGuard)" }
 if ((GuardCount $text $hvGuard) -eq 1) { Ok 'one HyperV guard (ProgressPreference)' } else { Bad "hyperv guards = $(GuardCount $text $hvGuard)" }
-if ($text.Contains('Stop-Computer')) { Ok 'Stop-Computer present (guarded)' } else { Bad 'Stop-Computer missing' }
+# Test campaign F1: a bare Stop-Computer left the Windows Sandbox 0.8 client window open after the capture.
+$stops = @([System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$null).FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Stop-Computer' }, $true))
+if ($stops.Count -eq 1 -and @($stops[0].CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq 'Force' }).Count -eq 1) { Ok 'one Stop-Computer (guarded), with -Force like the test guests' } else { Bad "Stop-Computer calls: $(@($stops | ForEach-Object { $_.Extent.Text }) -join ' | ')" }
 
 # THE most important ordering rule in the capture: declared dependencies must be installed BEFORE the
 # pre-install baseline. If they went in afterwards, the dependency's own files/registry/services would show

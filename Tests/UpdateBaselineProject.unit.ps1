@@ -24,6 +24,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Get-Win32ToolkitPaths.ps1')                 # real tier resolver
 . (Join-Path $repo 'Private\Get-Win32ToolkitTestMode.ps1')              # mode resolver (Interactive/Unattended)
 . (Join-Path $repo 'Private\Wait-Win32ToolkitSandboxFree.ps1')          # the guard now waits instead of throwing
+function Get-Win32ToolkitSandboxEnvironment { $null }   # C-9: no wsb answer -> the process check decides (test campaign F1)
 . (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1')
 . (Join-Path $repo 'Private\Initialize-Win32ToolkitTestRunLog.ps1')   # C-9: each run keeps its logs in Sandbox\Logs\Runs\<run> (real)
 . (Join-Path $repo 'Private\Save-Win32ToolkitTestRunLog.ps1')

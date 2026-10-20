@@ -14,6 +14,8 @@ function Test-Win32ToolkitSandboxRunning {
     [OutputType([bool])]
     param()
 
-    $procs = @(Get-Process -Name 'WindowsSandbox', 'WindowsSandboxClient', 'WindowsSandboxRemoteSession' -ErrorAction SilentlyContinue)
+    # Ignore, not SilentlyContinue: an absent name must leave no NoProcessFoundForGivenName record in $Error or a
+    # caller's -ErrorVariable (the test campaign F4 class of noise).
+    $procs = @(Get-Process -Name 'WindowsSandbox', 'WindowsSandboxClient', 'WindowsSandboxRemoteSession' -ErrorAction Ignore)
     return $procs.Count -gt 0
 }
