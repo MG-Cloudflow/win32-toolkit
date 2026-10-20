@@ -188,6 +188,14 @@ That last row is the one to remember: **`.exe` is the only type whose uninstall 
 capture.** An MSI is removed by PSADT from the MSI itself, and an MSIX by its package identity. Both
 work even if a capture run finds nothing.
 
+winget can ship the same app version as more than one installer type, and the toolkit groups them into
+**families** that register the same way in Windows: MSI (`msi`, `wix`), EXE (`burn`, `nullsoft`,
+`inno`, `exe`) and MSIX (`msix`, `appx`). It is common: in a sample of 43 popular winget apps (October
+2026), 12 shipped two families for the same architecture in at least one version. A device that has one
+family installed and then receives another gets two registrations over one folder, so pin one family per
+app with `-InstallerType` and keep it from version to version: see
+[Installer technology](packaging.md#installer-technology).
+
 ### `.msi`: Zero-Config
 
 The toolkit deliberately leaves the PSADT `AppName` empty for an MSI, which keeps PSADT's
@@ -319,6 +327,16 @@ Matching is deliberately strict: exact name equality, never a partial or first-w
 | **MSI** | PSADT's **Zero-Config MSI** block in the deploy script (4.1.x default template; 4.2 scaffolded with `-ZeroConfig`): `AppName` is left empty, PSADT reads the product name and product code straight from the MSI database and uninstalls via `msiexec`. No generated uninstall code needed. |
 | **EXE** | The capture's new Uninstall key supplies the `UninstallString` / `QuietUninstallString`, and the toolkit writes matching uninstall logic into `Invoke-AppDeployToolkit.ps1`. This is the case that genuinely needs the capture. |
 | **MSIX / APPX** | Uninstall is **identity-driven**: the package identity is read from the package manifest at configure time and removed via the Appx cmdlets, written before any capture runs. |
+
+For an EXE, the uninstall also deletes **cleanup paths**: folders the installer left behind. Because they
+are deleted recursively as SYSTEM, only the **top-most folders the install created inside the app's own
+install folders** qualify. Those install folders come from the app's **own** Add/Remove Programs entry
+(its `InstallLocation`, or the folder of its uninstaller and icon), never from a new folder alone, and
+are recorded in `SupportFiles\AppConfig.json` as `Uninstall.InstallRoots`. A folder of a product the
+installer put on the device next to the app (for example a maintenance service with its own uninstall
+entry) is left alone, and so are system and shared folders such as `Program Files` itself, `Common Files`
+or anything under a `Microsoft` folder. Packaging refuses a project with a cleanup path outside the app's
+own install folders or inside such a shared folder (see [the package check](packaging.md#the-package-check)).
 
 Two more things fall out of the same diff: any new **App Paths** registry entries become the
 PSADT `AppProcessesToClose` list (so an open app is closed gracefully before install/uninstall),

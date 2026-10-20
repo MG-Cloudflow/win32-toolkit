@@ -87,9 +87,32 @@ exit code of each run in `Sandbox\Logs\PsadtExitCodes.log`, for example:
 [2026-10-16 10:12:03] app Install parent=x86-cmd exit=0 result=Success
 ```
 
-`parent=x86-cmd` marks an Intune-parity run, `parent=x64-direct` a direct run. The host prints these
-lines after each test, and the Sandbox countdown banner reports the real install result (green on
-success, red with the exit code on failure) instead of always claiming success.
+`parent=x86-cmd` marks an Intune-parity run, `parent=x64-direct` a direct run. Each test run starts its
+lines with a `-- test run <name> --` line. The host prints the lines of the run that just ended, and the
+Sandbox countdown banner reports the real install result of the current run (green on success, red with
+the exit code on failure) instead of always claiming success. The file is emptied when a test command
+starts, so after a `-BaselineInstallerType Both` test it holds the lines of every run.
+
+### Each run keeps its own logs
+
+The guest writes its logs to `Sandbox\Logs\`, and the next run overwrites them. So after every run (and
+every run of a `-BaselineInstallerType Both` test) the toolkit copies the files that run wrote or changed
+into a folder of its own:
+
+```text
+Sandbox\Logs\Runs\20261020-221500_InstallUninstall\
+Sandbox\Logs\Runs\20261020-222900_Update_msi\
+Sandbox\Logs\Runs\20261020-224100_Update_exe\
+```
+
+The folder name is the start time, the scenario and, for an Update run, the old version's installer family.
+It holds the assertion log, the Add/Remove Programs snapshots, the run's own `PsadtExitCodes.log` lines and
+the PSADT and MSI logs. The host prints it as `Run logs : <folder>`, and the run's record in
+`Documentation\TestResults.json` names it in `LogFolder`. The files directly in `Sandbox\Logs\` are always
+the latest run's. In Windows Sandbox, the toolkit waits up to 60 seconds after the verdict for the guest to
+finish copying its logs; a Hyper-V run copies them back before the verdict. The run folders stay on the host:
+a Hyper-V run neither copies them into the VM nor brings them back. Like the rest of `Sandbox\`,
+these folders are never packaged.
 
 ## The InstallUninstall scenario
 
@@ -118,7 +141,8 @@ What happens inside the guest, in order:
 6. **Assert: uninstalled**. The detection signal (and, for an MSI, the product code) must now be
    *gone*.
 7. **Log collection**. PSADT and MSI logs are copied back to the project's `Sandbox\Logs\` folder for
-   troubleshooting, whatever the outcome.
+   troubleshooting, whatever the outcome, and kept in the run's own folder
+   (see [Each run keeps its own logs](#each-run-keeps-its-own-logs)).
 
 The host waits for the in-guest assertion log (`Sandbox\Logs\InstallAssertions.log`), prints a
 **PASS/FAIL verdict**, and appends the outcome (scenario, backend, mode, verdict, timestamp) to
@@ -154,7 +178,7 @@ looks for the other one:
 | Value | Old version installed as |
 |---|---|
 | `Auto` (default) | The **other** installer technology winget ships for this app, when there is one (for example the NSIS EXE under a WiX MSI package); otherwise the packaged technology. The other technologies come from `Documentation\IdentityDelta.json`, which the test writes on first use (one lookup of the app's winget-pkgs manifest). When that lookup could not run (offline, rate-limited), the test looks again on the next run; until it succeeds, the packaged technology is used and the line under `Baseline technology` says the other technologies could not be checked. |
-| `Both` | One Update run **per technology**, at the same version: the packaged one, then each other one winget ships. Each run has its own verdict and its own `TestResults.json` record; the command returns `$false` when any run failed, `$null` when any run had no verdict, otherwise `$true`. |
+| `Both` | One Update run **per technology**, at the same version: the packaged one, then each other one winget ships. Each run has its own verdict, its own `TestResults.json` record and its own log folder; the command returns `$false` when any run failed, `$null` when any run had no verdict, otherwise `$true`. |
 | `Packaged` | The packaged technology only. |
 | `msi`, `wix`, `burn`, `nullsoft`, `inno`, `exe`, `msix` | Exactly that technology family. |
 
@@ -178,8 +202,9 @@ The download rules:
   makes the test fail to download. The installer locale is never pinned.
 - **`Auto` falls back loudly.** When the chosen version does not ship the other technology, the run falls
   back to the packaged technology (still pinned) with a warning and records `UsedFallback`. Such a run cannot
-  show a technology switch, so Export keeps warning until a run with the other technology passes: pick a
-  version that ships it (`-SpecificVersion`) or pass that type to `-BaselineInstallerType`.
+  show a technology switch, so [Export keeps warning](publishing.md#warnings-before-you-publish) until a run
+  with the other technology passes: pick a version that ships it (`-SpecificVersion`) or pass that type to
+  `-BaselineInstallerType`.
 - **An explicit type, `Packaged` and each `Both` run never fall back.** When the version has no installer of
   that technology, the run has **no verdict**: it prints a warning, records an `Inconclusive` entry marked
   `Baseline.Unavailable` in `TestResults.json` (listed in the documentation, never treated as a test result)
@@ -203,7 +228,8 @@ WARNING: Technology switch: the vendor nullsoft install of v8.8.9 (Notepad++ (64
 ```
 
 Treat it as a real problem for the devices that have the other install: rebuild the package with the
-technology they already have, or plan how those devices move from one technology to the other.
+[technology they already have](packaging.md#installer-technology), or plan how those devices move from one
+technology to the other.
 
 ### What the run does
 
@@ -220,7 +246,7 @@ sequenceDiagram
     G->>G: Run the project's PSADT package (the update)
     G->>G: Assert PostUpdate: requirement still met, tattoo = NEW version, old ARP entry gone
     G-->>H: Sandbox\Logs\UpdateAssertions.log (+ PSADT/MSI logs)
-    H->>H: Print PASS/FAIL, append to Documentation\TestResults.json
+    H->>H: Print PASS/FAIL, keep the run's logs under Sandbox\Logs\Runs, append to Documentation\TestResults.json
 ```
 
 The **requirement-rule assertion** is the key extra: before the update runs, the guest executes the same
@@ -243,8 +269,9 @@ old version was installed and how, so every verdict can be read with its baselin
 | `Baseline.RequestedScope`, `Baseline.Scope`, `Baseline.ScopeRelaxed` | The scope asked for, the scope of the delivered installer, and whether the scope preference was dropped. |
 | `Baseline.Unavailable` | No installer of that technology at that version: the record has no verdict and is never judged. |
 | `OldArpSurvivors` | When `OldArpGone` failed: the old Add/Remove Programs entries still registered (name, key, registry view). |
+| `LogFolder` | The run's own log folder, `Sandbox\Logs\Runs\<run>` (every scenario). When an Update test fails, the console, Export and Publish name the `UpdateAssertions.log` in this folder. |
 
-Records written by older versions of the toolkit have no `Baseline`; they are kept as they are.
+Records written by older versions of the toolkit have no `Baseline` or `LogFolder`; they are kept as they are.
 
 <!-- SCREENSHOT: Host console showing the Update test verdict block (PASS with the requirement and tattoo assertions listed) -->
 

@@ -105,7 +105,9 @@ function Get-Win32ToolkitRequirementRule {
 
     # Version-independent product names for an EXACT (safe) Add/Remove-Programs match: App.DisplayName/Name
     # AND, for MSI, the MSI ProductName (authoritative — Windows Installer writes it verbatim as the ARP
-    # DisplayName, and it often differs from the winget name, e.g. 'Notepad++' vs 'Notepad++ (64-bit x64)').
+    # DisplayName, and it often differs from the winget name, e.g. 'Notepad++' (winget) vs 'Notepad++ (x64)'
+    # (MSI ProductName); a vendor NSIS install registers 'Notepad++ (64-bit x64)', which this rule does not
+    # see (F-03, PR 3)).
     # Matched with exact equality and never a substring wildcard, so it cannot match unrelated products.
     $cleanNames = @(@($appName; $msiName) | Where-Object { $_ } | Select-Object -Unique)
     $cleanName  = if ($cleanNames.Count) { $cleanNames[0] } else { $null }   # display/reporting name
