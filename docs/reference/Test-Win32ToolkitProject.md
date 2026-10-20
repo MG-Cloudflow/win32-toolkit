@@ -170,6 +170,10 @@ Automatically selects the version that is X positions older
 than the currently packaged version (e.g.
 1 = the immediately previous release).
 Mutually exclusive intent with SpecificVersion; SpecificVersion takes priority.
+When neither is given, an interactive run shows a list of older versions to pick from; an unattended
+run (-Unattended, or the SandboxTestMode / HyperVTestMode config value) or a host that cannot prompt
+(a service, redirected input, or a console started with pwsh -NonInteractive) uses the previous
+version (as -VersionsBack 1) and says so in a warning.
 
 ```yaml
 Type: Int32

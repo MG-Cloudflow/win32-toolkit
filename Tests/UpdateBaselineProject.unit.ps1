@@ -32,6 +32,7 @@ function Wait-Win32ToolkitCollectedLog { param($TimeoutSeconds) $script:collectW
 $script:collectWaits = @()
 # Deterministic on any host (CI stdin is redirected, which would otherwise force Unattended).
 function Test-Win32ToolkitHostNonInteractive { $false }
+function Test-Win32ToolkitNonInteractiveSwitch { $false }   # C-9: the Update version choice (test campaign F5)
 
 # --- BasePath + a real packaged baseline under <base>\Projects\<Template>\<Name> -------------------
 $script:base = Join-Path ([System.IO.Path]::GetTempPath()) ('w32bp_' + [guid]::NewGuid().ToString('N').Substring(0, 8))

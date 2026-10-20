@@ -51,7 +51,8 @@ function Invoke-Win32ToolkitFinalize {
 
         # Update-test baseline selection, passed through to Test-Win32ToolkitProject so a scripted
         # pipeline never blocks on the interactive version picker mid-run. Omit both to keep the
-        # interactive picker (current behavior). SpecificVersion wins when both are supplied.
+        # interactive picker (an unattended run or a non-interactive host then uses the previous version,
+        # with a warning: Test-Win32ToolkitProject, test campaign F5). SpecificVersion wins when both are supplied.
         [ValidateRange(1, 1000)]
         [int]$UpdateVersionsBack,
 

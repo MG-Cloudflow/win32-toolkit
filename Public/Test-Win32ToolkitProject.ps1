@@ -49,6 +49,10 @@ function Test-Win32ToolkitProject {
     Update scenario only. Automatically selects the version that is X positions older
     than the currently packaged version (e.g. 1 = the immediately previous release).
     Mutually exclusive intent with SpecificVersion; SpecificVersion takes priority.
+    When neither is given, an interactive run shows a list of older versions to pick from; an unattended
+    run (-Unattended, or the SandboxTestMode / HyperVTestMode config value) or a host that cannot prompt
+    (a service, redirected input, or a console started with pwsh -NonInteractive) uses the previous
+    version (as -VersionsBack 1) and says so in a warning.
 .PARAMETER SpecificVersion
     Update scenario only. Installs this exact version as the baseline. Overrides
     VersionsBack if both are supplied.
@@ -663,13 +667,40 @@ function Test-Win32ToolkitProject {
                         # slice characters out of the version STRING.
                         $olderVersions = @(Get-WingetVersions -AppId $wingetId -CurrentVersion $currentVersion)
 
-                        if ($VersionsBack -gt 0) {
-                            if ($VersionsBack -gt $olderVersions.Count) {
-                                throw "Requested $VersionsBack version(s) back but only $($olderVersions.Count) older version(s) are available for '$wingetId'."
+                        # A run nobody can answer never reaches the version picker (test campaign F5): under
+                        # -NonInteractive its Read-Host threw, the test had no verdict and packaging went on
+                        # UNTESTED. An unattended run (-Unattended, SandboxTestMode / HyperVTestMode) or a host
+                        # that cannot prompt (a service or redirected input, or a console started with
+                        # -NonInteractive) uses the previous version, as -VersionsBack 1, and says so. A prompt
+                        # the host still refuses (NonInteractive mode under a host not recognised here) does the same.
+                        $versionsBackToUse = $VersionsBack
+                        $noPromptWarning = 'No baseline version was given (-VersionsBack or -SpecificVersion) and this run cannot ask for one (an unattended run or a non-interactive host): the Update test uses the previous version (-VersionsBack 1). Pass -VersionsBack or -SpecificVersion to test from another version.'
+                        if ($versionsBackToUse -le 0) {
+                            $cannotAsk = [bool]$Unattended -or (Test-Win32ToolkitHostNonInteractive) -or (Test-Win32ToolkitNonInteractiveSwitch) -or
+                                ((Get-Win32ToolkitTestMode -Backend $resolvedBackend -WarningAction SilentlyContinue) -eq 'Unattended')
+                            if ($cannotAsk) {
+                                Write-Warning $noPromptWarning
+                                $versionsBackToUse = 1
                             }
-                            $targetVersion = $olderVersions[$VersionsBack - 1]
-                        } else {
-                            $targetVersion = Show-VersionSelection -Versions $olderVersions
+                            else {
+                                try {
+                                    $targetVersion = Show-VersionSelection -Versions $olderVersions
+                                }
+                                catch {
+                                    if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                                    if ($_.FullyQualifiedErrorId -notlike '*,Microsoft.PowerShell.Commands.ReadHostCommand') { throw }
+                                    Write-Verbose "The version picker could not prompt: $($_.Exception.Message)"
+                                    Write-Warning $noPromptWarning
+                                    $versionsBackToUse = 1
+                                }
+                            }
+                        }
+
+                        if ($versionsBackToUse -gt 0) {
+                            if ($versionsBackToUse -gt $olderVersions.Count) {
+                                throw "Requested $versionsBackToUse version(s) back but only $($olderVersions.Count) older version(s) are available for '$wingetId'."
+                            }
+                            $targetVersion = $olderVersions[$versionsBackToUse - 1]
                         }
                     }
 

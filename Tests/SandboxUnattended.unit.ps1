@@ -36,6 +36,7 @@ Write-Host '[a] Get-Win32ToolkitTestMode precedence' -ForegroundColor Cyan
 $script:cfg = @{}
 function Get-Win32ToolkitConfigValue { param($Name, $Default) if ($script:cfg.ContainsKey($Name)) { $script:cfg[$Name] } else { $Default } }
 function Test-Win32ToolkitHostNonInteractive { $script:hostNonInteractive }
+function Test-Win32ToolkitNonInteractiveSwitch { $false }   # C-9: the Update version choice (test campaign F5)
 $script:hostNonInteractive = $false
 
 if ((Get-Win32ToolkitTestMode -Backend Sandbox) -eq 'Interactive') { Ok 'default: Interactive (human-in-the-loop unchanged)' } else { Bad 'default not Interactive' }

@@ -29,6 +29,7 @@ $script:collectWaits = @()
 # Deterministic mode resolution regardless of the host running the tests (CI stdin is redirected,
 # which would otherwise force Unattended and flip the interactive-default assertions below).
 function Test-Win32ToolkitHostNonInteractive { $false }
+function Test-Win32ToolkitNonInteractiveSwitch { $false }   # C-9: the Update version choice (test campaign F5)
 
 # --- shadows --------------------------------------------------------------------------------------
 $script:backend  = 'HyperV'

@@ -164,7 +164,7 @@ Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.5
 
 | Baseline source | How | Best for |
 |---|---|---|
-| **winget** (default) | The toolkit reads the package ID from the project's YAML, lists older winget versions, and downloads one to `Sandbox\OldVersion\`, picked interactively, or via `-VersionsBack` / `-SpecificVersion`. Silent install switches come from the downloaded manifest; when none are published, installer-type defaults apply (NSIS `/S` · Inno `/VERYSILENT /NORESTART /SP-` · WiX/Burn `/quiet /norestart` · MSI `/qn /norestart`), and only for an **unknown/typeless installer**, where `/S` is a guess, a warning tells you to watch the run. | winget-sourced apps |
+| **winget** (default) | The toolkit reads the package ID from the project's YAML, lists older winget versions, and downloads one to `Sandbox\OldVersion\`, picked interactively, or via `-VersionsBack` / `-SpecificVersion`. An unattended run, or a host that cannot prompt (a service, redirected input, or a console started with `pwsh -NonInteractive`), that names no version uses the previous one (as `-VersionsBack 1`) and says so in a warning. In the `Show-Win32Toolkit` menu you always choose the version from the list. Silent install switches come from the downloaded manifest; when none are published, installer-type defaults apply (NSIS `/S` · Inno `/VERYSILENT /NORESTART /SP-` · WiX/Burn `/quiet /norestart` · MSI `/qn /norestart`), and only for an **unknown/typeless installer**, where `/S` is a guess, a warning tells you to watch the run. | winget-sourced apps |
 | **A local packaged project** | `-BaselineProject 'Contoso\Git_x64_2.52.0'` (a friendly `<Template>\<Name>` reference under `Projects\`) or `-BaselineProjectPath` (full path). The baseline package is mapped **read-only** into the guest at `C:\PSADTOld` (its raw `Projects\` copy is never modified) and installed via *its own* PSADT script, in its own process, so the baseline and the update may use different PSADT versions. | Manual (non-winget) apps, which have no winget version history. Also for proving the **tattoo-overwrite** path: the old package writes its tattoo, and the new one must replace it |
 
 #### Which installer technology the old version uses
@@ -308,7 +308,9 @@ Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUnins
 
 For the chained Update scenario, `-UpdateVersionsBack` picks the baseline N releases back and
 `-UpdateSpecificVersion` pins an exact one (it wins when both are given); omit both to pick
-interactively. Chained runs benefit from the single-instance handling: the toolkit waits up to 90 s for
+interactively. When the test runs unattended (the `SandboxTestMode` / `HyperVTestMode` config value) or
+the host cannot prompt (a service, redirected input, or `pwsh -NonInteractive`), omitting both uses the
+previous version, with a warning, instead of stopping at a prompt nobody answers. Chained runs benefit from the single-instance handling: the toolkit waits up to 90 s for
 a previous sandbox to close before starting the next one, and unattended sandboxes shut themselves down,
 so `InstallUninstall, Update` completes hands-off.
 

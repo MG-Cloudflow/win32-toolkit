@@ -39,7 +39,8 @@ function Wait-Win32ToolkitCollectedLog { param($TimeoutSeconds) $script:collectW
 $script:collectWaits = @()
 . (Join-Path $repo 'Private\Test-Win32ToolkitSandboxRunning.ps1')
 # Deterministic on any host (CI stdin is redirected, which would otherwise force Unattended).
-function Test-Win32ToolkitHostNonInteractive { $false }
+function Test-Win32ToolkitHostNonInteractive { [bool]$script:hostNonInteractive }   # $false unless a test sets it (F5)
+function Test-Win32ToolkitNonInteractiveSwitch { [bool]$script:noniSwitch }        # C-9: pwsh -NonInteractive in a console (F5); $false unless set
 . (Join-Path $repo 'Private\Start-Win32ToolkitSandbox.ps1')
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitTestRun.ps1')
 
@@ -457,9 +458,11 @@ try {
         }
     }
 
-    # (a) default Auto -> the sibling technology, printed before the version picker
+    # (a) default Auto -> the sibling technology, printed before the version picker (an interactive run on an interactive host)
     Clear-RunState
+    $script:testModeCfg = 'Interactive'
     $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update 6>&1 3>&1)
+    $script:testModeCfg = 'Unattended'
     $iTech = [array]::FindIndex([string[]]$o.Info, [Predicate[string]] { param($l) $l -like 'Baseline technology : nullsoft (vendor EXE, NSIS) (other technology winget ships for this app)' })
     $iPick = [array]::IndexOf([string[]]$o.Info, 'PICKER-CALLED')
     if ($iTech -ge 0 -and $iPick -gt $iTech -and $script:pickerCalls -eq 1) { Ok "'Baseline technology : <label>' is printed before the version picker is called (Dv5)" } else { Bad "order: tech=$iTech pick=$iPick" }
@@ -471,7 +474,64 @@ try {
         $b0.Version -eq '8.8.9' -and $b0.UsedFallback -eq $false -and $b0.Source -eq 'winget' -and $b0.Unavailable -eq $false) { Ok 'the outcome is recorded with -Baseline (Mode Auto, Origin Sibling, nullsoft/exe, v8.8.9)' }
     else { Bad "baseline: $($b0 | ConvertTo-Json -Compress)" }
     if (@($o.Values) -contains $true -and $script:switchCalls -eq 0) { Ok 'a PASS returns $true and runs no technology-switch check' } else { Bad "values=$($o.Values -join ',') switch=$script:switchCalls" }
+    $f5Warn = 'No baseline version was given (-VersionsBack or -SpecificVersion) and this run cannot ask for one (an unattended run or a non-interactive host): the Update test uses the previous version (-VersionsBack 1). Pass -VersionsBack or -SpecificVersion to test from another version.'
+    if (@($o.Warnings) -notcontains $f5Warn) { Ok 'an interactive run on an interactive host still shows the picker (no default, no warning)' } else { Bad 'interactive run got the F5 default' }
 
+    # (a1) Test campaign F5: no version given and nobody to ask -> the previous version with one warning, never the picker
+    # (its Read-Host threw under -NonInteractive: no verdict, and packaging went on untested).
+    foreach ($case in @(
+            @{ Label = 'HyperVTestMode=Unattended'; Cfg = 'Unattended'; NonInteractiveHost = $false; Extra = @{} }
+            @{ Label = '-Unattended'; Cfg = 'Interactive'; NonInteractiveHost = $false; Extra = @{ Unattended = $true } }
+            @{ Label = 'a non-interactive host'; Cfg = 'Interactive'; NonInteractiveHost = $true; Extra = @{} }
+            @{ Label = 'a console started with pwsh -NonInteractive'; Cfg = 'Interactive'; NonInteractiveHost = $false; NoniSwitch = $true; Extra = @{} })) {
+        Clear-RunState
+        $script:testModeCfg = $case.Cfg; $script:hostNonInteractive = $case.NonInteractiveHost; $script:noniSwitch = [bool]$case.NoniSwitch
+        $extra = $case.Extra
+        $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update @extra 6>&1 3>&1)
+        $c0 = if ($script:dlCalls.Count) { $script:dlCalls[0] } else { @{} }
+        if ($script:pickerCalls -eq 0 -and @($o.Warnings | Where-Object { $_ -eq $f5Warn }).Count -eq 1 -and $script:dlCalls.Count -eq 1 -and $c0['Version'] -eq '8.8.9' -and @($o.Values) -contains $true) {
+            Ok "F5, $($case.Label): no picker; the previous version (8.8.9) with one warning; a verdict"
+        } else { Bad "F5 $($case.Label): picker=$($script:pickerCalls) version=$($c0['Version']) values=$($o.Values -join ',') warnings=$($o.Warnings -join ' | ')" }
+    }
+    $script:testModeCfg = 'Unattended'; $script:hostNonInteractive = $false; $script:noniSwitch = $false
+    # A prompt the host still refuses (pwsh -NonInteractive under a host the predicates do not recognise): Read-Host's own
+    # InvalidOperation from the picker -> the same warning and the previous version, with a verdict. Any other picker error
+    # is not swallowed (no verdict, as before).
+    $script:testModeCfg = 'Interactive'
+    $pickerShadow = ${function:Show-VersionSelection}
+    ${function:Show-VersionSelection} = {
+        $script:pickerCalls++
+        throw ([System.Management.Automation.ErrorRecord]::new([System.Management.Automation.PSInvalidOperationException]::new('PowerShell is in NonInteractive mode. Read and Prompt functionality is not available.'),
+                'InvalidOperation,Microsoft.PowerShell.Commands.ReadHostCommand', [System.Management.Automation.ErrorCategory]::InvalidOperation, $null))
+    }
+    Clear-RunState
+    $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update 6>&1 3>&1)
+    $c0 = if ($script:dlCalls.Count) { $script:dlCalls[0] } else { @{} }
+    if ($script:pickerCalls -eq 1 -and @($o.Warnings | Where-Object { $_ -eq $f5Warn }).Count -eq 1 -and $c0['Version'] -eq '8.8.9' -and @($o.Values) -contains $true) { Ok 'F5, the picker''s Read-Host refused (NonInteractive mode): one warning, the previous version (8.8.9), a verdict' }
+    else { Bad "F5 refused prompt: picker=$($script:pickerCalls) version=$($c0['Version']) values=$($o.Values -join ',') warnings=$($o.Warnings -join ' | ')" }
+    ${function:Show-VersionSelection} = { $script:pickerCalls++; throw 'picker exploded' }
+    Clear-RunState
+    $errs = @(); $threw = $null
+    try { $null = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -ErrorVariable errs 6>$null 3>$null 2>$null } catch { $threw = $_ }
+    $errText = (@($errs) + @($threw) | Where-Object { $_ } | ForEach-Object { "$_" }) -join ' | '
+    if ($script:dlCalls.Count -eq 0 -and $errText -match 'picker exploded') { Ok 'F5, any other picker error is not swallowed (no download, the error is reported)' } else { Bad "F5 other picker error: calls=$($script:dlCalls.Count) err=$errText" }
+    ${function:Show-VersionSelection} = $pickerShadow
+    $script:testModeCfg = 'Unattended'
+    # Both, unattended, no version: the outer run picks the previous version once; each leg gets it as -SpecificVersion.
+    Clear-RunState
+    $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -BaselineInstallerType Both 6>&1 3>&1)
+    if ($script:pickerCalls -eq 0 -and @($o.Warnings | Where-Object { $_ -eq $f5Warn }).Count -eq 1 -and $script:dlCalls.Count -eq 2 -and
+        @($script:dlCalls | Where-Object { $_['Version'] -eq '8.8.9' }).Count -eq 2) { Ok 'F5, Both: one warning, both runs from the previous version (8.8.9)' }
+    else { Bad "F5 Both: picker=$($script:pickerCalls) calls=$($script:dlCalls | ConvertTo-Json -Compress) warnings=$($o.Warnings -join ' | ')" }
+    # No older version at all: the -VersionsBack 1 error, before any download (never the picker).
+    Clear-RunState
+    ${function:Get-WingetVersions} = { @() }
+    $errs = @(); $threw = $null
+    try { $null = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -ErrorVariable errs 6>$null 3>$null 2>$null } catch { $threw = $_ }
+    $errText = (@($errs) + @($threw) | Where-Object { $_ } | ForEach-Object { "$_" }) -join ' | '
+    if ($script:pickerCalls -eq 0 -and $script:dlCalls.Count -eq 0 -and $errText -match "Requested 1 version\(s\) back but only 0 older version\(s\) are available for 'Notepad\+\+\.Notepad\+\+'") { Ok 'F5, no older version: the -VersionsBack 1 error, no download, no picker' }
+    else { Bad "F5 none: picker=$($script:pickerCalls) calls=$($script:dlCalls.Count) err=$errText" }
+    ${function:Get-WingetVersions} = { @('8.8.9', '8.8.8') }
     # (a2) the sibling lookup could not run (stored Probe Unavailable, e.g. HTTP 429): Auto uses the packaged technology
     # and says so under 'Baseline technology', after one retry of the lookup (never a silent packaged-over-packaged pass).
     $npu = Join-Path $base 'npp-unavailable'
@@ -702,6 +762,15 @@ try {
     else { Bad "sandbox wait: $($script:freeCalls -join ',') info=$(@($o.Info | Where-Object { $_ -like 'Close*' }) -join '|')" }
     if ($script:dlCalls.Count -eq 1 -and $script:outcomes.Count -eq 1 -and $o.Values.Count -eq 0 -and @($o.Warnings | Where-Object { $_ -like '*still open after 10 minutes*' }).Count -eq 1) { Ok 'still busy -> that leg did not run (warning), combined verdict $null' }
     else { Bad "busy: calls=$($script:dlCalls.Count) outcomes=$($script:outcomes.Count) values=$($o.Values -join ',')" }
+    # F5 on the Sandbox backend with SandboxTestMode=Unattended (the campaign's configuration): no version given ->
+    # the previous version with one warning, never the picker, and a verdict.
+    $script:testModeCfg = 'Unattended'
+    Clear-RunState
+    $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update 6>&1 3>&1)
+    $c0 = if ($script:dlCalls.Count) { $script:dlCalls[0] } else { @{} }
+    if ($script:pickerCalls -eq 0 -and @($o.Warnings | Where-Object { $_ -eq $f5Warn }).Count -eq 1 -and $script:dlCalls.Count -eq 1 -and $c0['Version'] -eq '8.8.9' -and @($o.Values) -contains $true -and $script:outcomes.Count -eq 1) {
+        Ok 'F5, Sandbox + SandboxTestMode=Unattended: no picker; the previous version (8.8.9) with one warning; a verdict'
+    } else { Bad "F5 Sandbox: picker=$($script:pickerCalls) version=$($c0['Version']) values=$($o.Values -join ',') warnings=$($o.Warnings -join ' | ')" }
     $script:testBackend = 'HyperV'; $script:testModeCfg = 'Unattended'
 
     # (h) parameter rules

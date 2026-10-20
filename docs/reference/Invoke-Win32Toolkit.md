@@ -241,7 +241,10 @@ Accept wildcard characters: False
 For -RunTest Update: use this exact older version as the update baseline.
 Takes precedence over
 -UpdateVersionsBack when both are supplied.
-Omit both to pick interactively.
+Omit both to pick interactively; an unattended test run
+(the SandboxTestMode / HyperVTestMode config value) or a host that cannot prompt (a service,
+redirected input, or a console started with pwsh -NonInteractive) then uses the previous version,
+with a warning.
 
 ```yaml
 Type: String

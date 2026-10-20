@@ -160,6 +160,38 @@ function Show-Win32ToolkitProjectActions {
                                 if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
                                 Write-SpectreHost "[grey]Baseline technology: not resolved here ($(Get-SpectreEscapedText -Text $_.Exception.Message)); the test resolves it.[/]"
                             }
+
+                            # Baseline VERSION, asked here: the test itself uses the previous version without asking
+                            # when the run is unattended (the Hyper-V 'Unattended' choice, SandboxTestMode / HyperVTestMode;
+                            # test campaign F5), but an operator at this menu can always choose. Newest first.
+                            $olderVersions = @()
+                            $versionError = $null
+                            try {
+                                $yamlInfo = Get-YAMLInstallerInfo -FilesPath (Join-Path $project.Path 'Files')
+                                $packagedVersion = if ($yamlInfo) { [string]$yamlInfo.PackageVersion } else { '' }
+                                $olderVersions = @(Get-WingetVersions -AppId $wingetId -CurrentVersion $packagedVersion | Where-Object { $_ })
+                            }
+                            catch {
+                                if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                                $versionError = $_.Exception.Message
+                            }
+                            if ($olderVersions.Count -gt 0) {
+                                $vmap = [ordered]@{}
+                                $vlabels = for ($vi = 0; $vi -lt $olderVersions.Count; $vi++) {
+                                    $vlabel = Get-SpectreEscapedText -Text ('{0}{1}' -f $olderVersions[$vi], $(if ($vi -eq 0) { '  (previous version)' } else { '' }))
+                                    $vmap[$vlabel] = [string]$olderVersions[$vi]
+                                    $vlabel
+                                }
+                                $vchosen = Read-SpectreSelection -Message 'Baseline version (the OLDER version to upgrade FROM)' -Choices @($vlabels) -Color Blue -EnableSearch -PageSize 15
+                                if ($vmap.Contains([string]$vchosen)) { $testSplat['SpecificVersion'] = $vmap[[string]$vchosen] } else { $abort = $true }
+                            }
+                            else {
+                                $why = if ($versionError) { "Could not list the older winget versions of $wingetId ($versionError)." }
+                                       else { "winget lists no version of $wingetId older than the packaged one." }
+                                Format-SpectrePanel -Data (Get-SpectreEscapedText -Text "$why Use a local packaged project as the baseline, or run Test-Win32ToolkitProject with -SpecificVersion.") -Header 'No baseline version' -Border Rounded -Color Yellow | Out-SpectreHost
+                                Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                                $abort = $true
+                            }
                         }
 
                         if (-not $abort) {

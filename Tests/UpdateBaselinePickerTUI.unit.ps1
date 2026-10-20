@@ -20,12 +20,19 @@
                                                     folder (Sandbox\Logs\Runs\<run>, test campaign F2)
       I. publish                                 -> the advisory panel (red / yellow), printed once: Export
                                                     under the TUI publish action prints no second advisory
+      J. winget baseline                         -> the TUI asks the baseline VERSION itself (previous version
+                                                    first) and passes -SpecificVersion, also for a Hyper-V
+                                                    'Unattended' run (test campaign F5: the test would otherwise
+                                                    use the previous version without asking); no older version or a
+                                                    failed lookup -> a panel, no test. Every Update splat from a winget
+                                                    baseline carries -SpecificVersion or -VersionsBack.
 
     Every Spectre / helper call is shadowed (WP-4's Resolve-Win32ToolkitBaselineFamily and
     Get-Win32ToolkitTechnologySwitch by their spec 2.11 / 2.12 contracts); nothing renders, nothing runs a test.
 
     Run:  pwsh -File Tests\UpdateBaselinePickerTUI.unit.ps1
 #>
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '', Justification = 'Get-WingetVersions is shadowed by its real name')]
 [CmdletBinding()]
 param()
 
@@ -66,6 +73,7 @@ function Read-SpectreSelection {
         if ($m.Count) { return $m[0] }
         return @($Choices)[0]
     }
+    if ($script:pickLabel) { $l = @($Choices | Where-Object { $_ -like $script:pickLabel }); if ($l.Count) { return $l[0] } }   # J: pick a label by pattern
     return @($Choices)[0]   # label-string list -> first
 }
 
@@ -81,11 +89,23 @@ function Get-Win32ToolkitAppConfig { param($ProjectPath) [pscustomobject]@{ App 
 $script:splat   = $null
 $script:called  = 0
 $script:verdict = $true
+$script:updateSplats = New-Object System.Collections.Generic.List[object]   # J: every Update splat the TUI built
 function Test-Win32ToolkitProject {
-    param($ProjectPath, $Scenario, $Backend, $BaselineProjectPath, [switch]$Unattended, [switch]$SkipRequirementCheck, $BaselineInstallerType)
+    param($ProjectPath, $Scenario, $Backend, $BaselineProjectPath, [switch]$Unattended, [switch]$SkipRequirementCheck, $BaselineInstallerType, $SpecificVersion, $VersionsBack)
     $script:called++
     $script:splat = $PSBoundParameters
+    if ($Scenario -eq 'Update') { $h = @{}; foreach ($k in $PSBoundParameters.Keys) { $h[$k] = $PSBoundParameters[$k] }; $script:updateSplats.Add($h) }
     $script:verdict
+}
+# Test campaign F5 (C-9): the TUI asks the baseline version from the winget list (newest first) for a winget baseline.
+$script:wingetVersions = @('1.9', '1.8', '1.7')
+$script:versionCalls = New-Object System.Collections.Generic.List[object]
+function Get-YAMLInstallerInfo { param($FilesPath) $null = $FilesPath; [pscustomobject]@{ PackageVersion = '2.0'; Architecture = 'x64' } }
+function Get-WingetVersions {
+    param($AppId, $CurrentVersion)
+    $script:versionCalls.Add([pscustomobject]@{ AppId = $AppId; CurrentVersion = $CurrentVersion })
+    if ($script:wingetVersions -is [scriptblock]) { return & $script:wingetVersions }
+    $script:wingetVersions
 }
 
 # WP-4 contracts (spec 2.11 / 2.12), shadowed: the baseline legs and the technology switches.
@@ -155,11 +175,57 @@ if ($script:splat -and $script:splat['BaselineProjectPath'] -eq $cand.Path) { Ok
 if ($script:splat['Scenario'] -eq 'Update') { Ok 'scenario forwarded as Update' } else { Bad "scenario=$($script:splat['Scenario'])" }
 
 # ══ B. winget app + winget download (default) ═════════════════════════════════════════════════════
-Write-Host '[B] winget app, choose winget download -> NO BaselineProjectPath (unchanged default)' -ForegroundColor Cyan
+Write-Host '[B] winget app, choose winget download -> NO BaselineProjectPath (unchanged default); [J] the TUI asks the version (-SpecificVersion, F5)' -ForegroundColor Cyan
 $script:projects = @($under, $cand)
 $script:wingetId = 'Publisher.App'
 DriveUpdate @('test', 'Sandbox', 'Update', 'winget', 'back')
 if ($script:called -eq 1 -and -not $script:splat.ContainsKey('BaselineProjectPath')) { Ok 'winget baseline: no BaselineProjectPath passed' } else { Bad "called=$script:called baseline=$($script:splat['BaselineProjectPath'])" }
+
+# J. (test campaign F5) the baseline version is asked here for a winget baseline
+$script:projects = @($under, $cand)
+$script:wingetId = 'Publisher.App'
+$script:legs = @()
+$script:verdict = $true
+$script:prompts.Clear(); $script:versionCalls.Clear()
+DriveUpdate @('test', 'Sandbox', 'Update', 'winget', 'back')
+$vp = @($script:prompts | Where-Object Message -eq 'Baseline version (the OLDER version to upgrade FROM)')
+if ($script:called -eq 1 -and $script:splat['SpecificVersion'] -eq '1.9' -and -not $script:splat.ContainsKey('VersionsBack') -and $vp.Count -eq 1) { Ok 'the default (first) choice is the previous version: -SpecificVersion 1.9' } else { Bad "default -> called=$script:called version=$($script:splat['SpecificVersion']) prompts=$($vp.Count)" }
+if ($vp.Count -eq 1 -and (@($vp[0].Choices) -join '|') -ceq '1.9  (previous version)|1.8|1.7') { Ok "choices: newest first, the first marked '(previous version)'" } else { Bad "choices: $(@($vp[0].Choices) -join '|')" }
+if ($script:versionCalls.Count -eq 1 -and $script:versionCalls[0].AppId -eq 'Publisher.App' -and $script:versionCalls[0].CurrentVersion -eq '2.0') { Ok 'Get-WingetVersions -AppId <id> -CurrentVersion <packaged version from the YAML>' } else { Bad "version calls: $($script:versionCalls | ConvertTo-Json -Compress)" }
+$script:pickLabel = '1.8'
+DriveUpdate @('test', 'Sandbox', 'Update', 'winget', 'back')
+$script:pickLabel = $null
+if ($script:splat['SpecificVersion'] -eq '1.8') { Ok 'picking another version passes it: -SpecificVersion 1.8' } else { Bad "pick 1.8 -> $($script:splat['SpecificVersion'])" }
+# The review case: the Hyper-V 'Unattended' choice (and SandboxTestMode / HyperVTestMode = Unattended) made the test use
+# the previous version without asking; the operator at the TUI is still asked.
+$script:prompts.Clear()
+DriveUpdate @('test', 'HyperV', 'Update', 'unattended', 'winget', 'back')
+if ($script:called -eq 1 -and $script:splat['Unattended'] -eq $true -and $script:splat['SpecificVersion'] -eq '1.9' -and @($script:prompts | Where-Object Message -eq 'Baseline version (the OLDER version to upgrade FROM)').Count -eq 1) {
+    Ok "Hyper-V 'Unattended': the TUI still asks the version and passes -SpecificVersion with -Unattended"
+} else { Bad "hyperv unattended -> called=$script:called unattended=$($script:splat['Unattended']) version=$($script:splat['SpecificVersion'])" }
+# With two technologies the version is asked AFTER the technology (Dv5: the operator knows which technology it must ship).
+$script:legs = $twoLegs
+$script:prompts.Clear()
+DriveUpdate @('test', 'Sandbox', 'Update', 'winget', 'Both', 'back')
+$msgs = @($script:prompts | ForEach-Object Message)
+$iTech = [array]::IndexOf($msgs, 'Baseline installer technology'); $iVer = [array]::IndexOf($msgs, 'Baseline version (the OLDER version to upgrade FROM)')
+if ($iTech -ge 0 -and $iVer -gt $iTech -and $script:splat['BaselineInstallerType'] -eq 'Both' -and $script:splat['SpecificVersion'] -eq '1.9') { Ok 'technology first, then the version; both reach the test' } else { Bad "order: tech=$iTech version=$iVer" }
+$script:legs = @()
+# A local baseline project: no version question.
+$script:prompts.Clear(); $script:versionCalls.Clear()
+DriveUpdate @('test', 'Sandbox', 'Update', 'project', 'back')
+if ($script:versionCalls.Count -eq 0 -and -not $script:splat.ContainsKey('SpecificVersion') -and @($script:prompts | Where-Object Message -like 'Baseline version*').Count -eq 0) { Ok 'a local packaged baseline -> no version lookup, no question' } else { Bad "local -> calls=$($script:versionCalls.Count)" }
+# No older version, or the lookup fails: a panel, the test does not run.
+foreach ($case in @(@{ Label = 'no older version'; Answer = @(); Want = 'winget lists no version of Publisher.App older than the packaged one.' },
+        @{ Label = 'the lookup fails'; Answer = { throw "winget 'show --versions' failed [x]" }; Want = "Could not list the older winget versions of Publisher.App (winget 'show --versions' failed [[x]])." })) {
+    $script:wingetVersions = $case.Answer
+    $script:panels.Clear()
+    DriveUpdate @('test', 'Sandbox', 'Update', 'winget', 'back')
+    $nv = @($script:panels | Where-Object Header -eq 'No baseline version')
+    if ($script:called -eq 0 -and $nv.Count -eq 1 -and $nv[0].Color -eq 'Yellow' -and $nv[0].Data.StartsWith($case.Want)) { Ok "$($case.Label) -> a 'No baseline version' panel (escaped), the test does not run" }
+    else { Bad "$($case.Label) -> called=$script:called panels=$($script:panels | ConvertTo-Json -Compress)" }
+}
+$script:wingetVersions = @('1.9', '1.8', '1.7')
 
 # ══ C. manual app + a candidate -> auto local baseline ════════════════════════════════════════════
 Write-Host '[C] manual (non-winget) app with a candidate -> auto local baseline' -ForegroundColor Cyan
@@ -301,6 +367,11 @@ if (@($w | Where-Object { "$_" -match '^Could not check the Update test and iden
     Ok 'a failing advisory -> one "Could not check ..." warning, the publish still goes ahead'
 } else { Bad "advisory failure: warnings=$(@($w).Count) export=$($script:exportCalls)" }
 $script:advisory = $null
+
+# The invariant over every Update run this suite drove: a winget baseline always carries a version.
+$wingetSplats = @($script:updateSplats | Where-Object { -not $_.ContainsKey('BaselineProjectPath') })
+$noVersion = @($wingetSplats | Where-Object { -not ($_.ContainsKey('SpecificVersion') -or $_.ContainsKey('VersionsBack')) })
+if ($wingetSplats.Count -ge 5 -and $noVersion.Count -eq 0) { Ok "every Update splat from a winget baseline ($($wingetSplats.Count)) carries -SpecificVersion or -VersionsBack" } else { Bad "$($noVersion.Count) of $($wingetSplats.Count) winget Update splat(s) without a version" }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All UpdateBaselinePickerTUI tests passed.' -ForegroundColor Green; exit 0 }
