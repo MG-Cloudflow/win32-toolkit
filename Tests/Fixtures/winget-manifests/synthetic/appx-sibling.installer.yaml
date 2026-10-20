@@ -1,0 +1,21 @@
+# Hand-made test fixture (win32-toolkit): not a real package.
+# An appx item next to an exe item for the same architecture: the appx family (msix) is a testable sibling whose
+# pin value is 'msix' (the -InstallerType ValidateSet has no 'appx').
+PackageIdentifier: Contoso.AppxSibling
+PackageVersion: 3.1.0
+Installers:
+- Architecture: x64
+  InstallerType: exe
+  Scope: machine
+  InstallerUrl: https://example.invalid/contoso-appxsibling-3.1.0-setup.exe
+  InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000004
+  InstallerSwitches:
+    Silent: /quiet
+  ProductCode: Contoso AppxSibling
+- Architecture: x64
+  InstallerType: appx
+  InstallerUrl: https://example.invalid/contoso-appxsibling-3.1.0.appx
+  InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000005
+  PackageFamilyName: Contoso.AppxSibling_0000000000000
+ManifestType: installer
+ManifestVersion: 1.6.0
