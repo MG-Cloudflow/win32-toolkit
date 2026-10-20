@@ -292,6 +292,93 @@ foreach ($rel in @('Private\Get-YAMLInstallerInfo.ps1', 'Private\Get-WingetIdFro
     } else { Bad "$rel : usesHelper=$usesHelper, own '*.yaml' Get-ChildItem call(s)=$($gci.Count)" }
 }
 
+# ══ 7. YAML quotes are stripped from installer facts and ids only (installer-identity PR 1, L8) ═══
+Write-Host '[7] Get-YAMLInstallerInfo: one pair of YAML quotes is stripped from installer facts and ids, not from display strings' -ForegroundColor Cyan
+
+# The assertion oracle only (the strict-GUID check the requirement fallback applies); the stripper itself
+# is a scriptblock inside Get-YAMLInstallerInfo, so no production call edge is added (C-9).
+. (Join-Path $repo 'Private\Test-Win32ToolkitProductCode.ps1')
+
+$quotedInstaller = @'
+PackageIdentifier: 'Contoso.Quoted'
+PackageVersion: "5.1"
+InstallerLocale: 'en-US'
+Installers:
+- Architecture: "x64"
+  InstallerType: "wix"
+  Scope: 'machine'
+  UpgradeBehavior: install
+  ProductCode: '{5C6F8543-7EA8-40B9-B78F-04C78300DE7F}'
+  InstallerSwitches:
+    Silent: '/quiet'
+ManifestType: installer
+ManifestVersion: 1.6.0
+'@
+$quotedLocale = @'
+PackageIdentifier: 'Contoso.Quoted'
+PackageVersion: "5.1"
+PackageLocale: en-US
+Publisher: 'O''Reilly'
+PackageName: "X"
+ShortDescription: 'Quoted ''description'''
+PackageUrl: 'https://package.invalid/quoted'
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
+'@
+$dirQ = Join-Path $tmpRoot 'F_quoted'
+New-Item -ItemType Directory -Path $dirQ -Force | Out-Null
+Write-Manifest (Join-Path $dirQ 'Contoso.Quoted.installer.yaml')    $quotedInstaller
+Write-Manifest (Join-Path $dirQ 'Contoso.Quoted.locale.en-US.yaml') $quotedLocale
+$q = Get-YAMLInstallerInfo -FilesPath $dirQ
+
+if ($q.ProductCode -ceq '{5C6F8543-7EA8-40B9-B78F-04C78300DE7F}') { Ok "ProductCode: '{GUID}' -> bare GUID" } else { Bad "ProductCode = [$($q.ProductCode)]" }
+if (Test-Win32ToolkitProductCode -Value $q.ProductCode) { Ok 'the stripped ProductCode passes Test-Win32ToolkitProductCode (no longer dropped by the requirement fallback)' } else { Bad 'stripped ProductCode fails Test-Win32ToolkitProductCode' }
+if ($q.Scope -ceq 'machine')        { Ok "Scope: 'machine' -> machine" }            else { Bad "Scope = [$($q.Scope)]" }
+if ($q.InstallerType -ceq 'wix')    { Ok 'InstallerType: "wix" -> wix' }            else { Bad "InstallerType = [$($q.InstallerType)]" }
+if ($q.Architecture -ceq 'x64')     { Ok 'Architecture: "x64" -> x64' }             else { Bad "Architecture = [$($q.Architecture)]" }
+if ($q.PackageVersion -ceq '5.1')   { Ok 'PackageVersion: "5.1" -> 5.1' }           else { Bad "PackageVersion = [$($q.PackageVersion)]" }
+if ($q.PackageIdentifier -ceq 'Contoso.Quoted') { Ok "PackageIdentifier: 'Contoso.Quoted' -> Contoso.Quoted" } else { Bad "PackageIdentifier = [$($q.PackageIdentifier)]" }
+if ($q.InstallerLocale -ceq 'en-US') { Ok "InstallerLocale: 'en-US' -> en-US" }     else { Bad "InstallerLocale = [$($q.InstallerLocale)]" }
+if ($q.UpgradeBehavior -ceq 'install') { Ok 'UpgradeBehavior: install is read (new field)' } else { Bad "UpgradeBehavior = [$($q.UpgradeBehavior)]" }
+if ($q.ContainsKey('UpgradeBehavior')) { Ok 'the hashtable carries an UpgradeBehavior key' } else { Bad 'no UpgradeBehavior key' }
+
+# Regression (L8): the display strings that feed App.Vendor / App.DisplayName (the tattoo key) are unchanged.
+if ($q.Publisher -ceq "'O''Reilly'")   { Ok "Publisher: 'O''Reilly' comes back exactly as before (quotes kept)" } else { Bad "Publisher changed: [$($q.Publisher)]" }
+if ($q.PackageName -ceq '"X"')         { Ok 'PackageName: "X" comes back exactly as before (quotes kept)' }     else { Bad "PackageName changed: [$($q.PackageName)]" }
+if ($q.Description -ceq "'Quoted ''description'''") { Ok 'ShortDescription comes back exactly as before (quotes kept)' } else { Bad "Description changed: [$($q.Description)]" }
+if ($q.InformationUrl -ceq "'https://package.invalid/quoted'") { Ok 'PackageUrl comes back exactly as before (quotes kept)' } else { Bad "InformationUrl changed: [$($q.InformationUrl)]" }
+if ($q.SilentArgs -ceq "'/quiet'")     { Ok 'SilentArgs comes back exactly as before (quotes kept)' }           else { Bad "SilentArgs changed: [$($q.SilentArgs)]" }
+
+# Single quotes: one pair only, a doubled '' inside becomes '; an unmatched quote is left alone.
+$edge = @'
+PackageIdentifier: Contoso.Edge
+PackageVersion: '1.0''beta'
+Installers:
+- Architecture: x86
+  InstallerType: 'nullsoft'
+  Scope: "user"
+  UpgradeBehavior: 'uninstallPrevious'
+  ProductCode: "Contoso Edge"
+  InstallerLocale: 'de-DE
+'@
+$dirE = Join-Path $tmpRoot 'G_quote_edges'
+New-Item -ItemType Directory -Path $dirE -Force | Out-Null
+Write-Manifest (Join-Path $dirE 'Contoso.Edge.installer.yaml') $edge
+$e = Get-YAMLInstallerInfo -FilesPath $dirE
+if ($e.PackageVersion -ceq "1.0'beta")         { Ok "PackageVersion: '1.0''beta' -> 1.0'beta ('' unescaped)" } else { Bad "PackageVersion = [$($e.PackageVersion)]" }
+if ($e.InstallerType -ceq 'nullsoft')          { Ok "InstallerType: 'nullsoft' -> nullsoft" }   else { Bad "InstallerType = [$($e.InstallerType)]" }
+if ($e.Scope -ceq 'user')                      { Ok 'Scope: "user" -> user' }                    else { Bad "Scope = [$($e.Scope)]" }
+if ($e.UpgradeBehavior -ceq 'uninstallPrevious') { Ok "UpgradeBehavior: 'uninstallPrevious' -> uninstallPrevious" } else { Bad "UpgradeBehavior = [$($e.UpgradeBehavior)]" }
+if ($e.ProductCode -ceq 'Contoso Edge')        { Ok 'ProductCode: "Contoso Edge" (non-GUID) -> Contoso Edge' } else { Bad "ProductCode = [$($e.ProductCode)]" }
+if (-not (Test-Win32ToolkitProductCode -Value $e.ProductCode)) { Ok 'a non-GUID ProductCode still fails the strict GUID check' } else { Bad 'non-GUID ProductCode passed the GUID check' }
+if ($e.InstallerLocale -ceq "'de-DE")          { Ok 'an unmatched quote is left alone' }        else { Bad "InstallerLocale = [$($e.InstallerLocale)]" }
+
+# Unquoted values are unchanged (the existing fixture A).
+$plain = Get-YAMLInstallerInfo -FilesPath $dirA
+if ($plain.PackageVersion -ceq '2.1.0' -and $plain.InstallerType -ceq 'inno' -and $plain.Scope -ceq 'machine' -and $null -eq $plain.UpgradeBehavior) {
+    Ok 'unquoted manifests read exactly as before (UpgradeBehavior $null when absent)'
+} else { Bad "unquoted fixture changed: version=[$($plain.PackageVersion)] type=[$($plain.InstallerType)] scope=[$($plain.Scope)] upgrade=[$($plain.UpgradeBehavior)]" }
+
 Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''

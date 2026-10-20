@@ -16,6 +16,13 @@ function Get-YAMLInstallerInfo {
     folder holding a single hand-made manifest still parses exactly as before.
 
     Manifests are UTF-8: read with -Encoding UTF8 or non-ASCII publisher/app names get mangled.
+
+    YAML quotes: winget manifests often quote installer facts (ProductCode: '{GUID}', PackageVersion: "5.1").
+    One matching pair of '...' (with '' -> ') or "..." is removed from the installer facts and ids
+    (PackageIdentifier, PackageVersion, Architecture, ProductCode, Scope, InstallerType, InstallerLocale,
+    UpgradeBehavior), so a quoted GUID passes Test-Win32ToolkitProductCode. PackageName, Publisher,
+    Description, the URLs and SilentArgs are returned exactly as written: they feed App.Vendor /
+    App.DisplayName, i.e. the install tattoo key, which must not change for existing packages.
 .OUTPUTS
     Hashtable of the parsed fields, or $null when the folder holds no manifest / cannot be parsed.
 #>
@@ -59,14 +66,26 @@ function Get-YAMLInstallerInfo {
             Scope = $null
             InstallerType = $null
             InstallerLocale = $null
+            UpgradeBehavior = $null
             Description = $null
             InformationUrl = $null
         }
 
+        # Removes ONE matching pair of YAML quotes from an installer fact or id: '...' (a doubled '' inside
+        # becomes ') or "..." (no escape processing). Anything else is returned trimmed and unchanged.
+        # Local on purpose (not a Private\ helper): suites that load this file selectively need no new line.
+        $unquote = {
+            param([string]$Value)
+            $v = $Value.Trim()
+            if ($v.Length -ge 2 -and $v[0] -eq "'" -and $v[-1] -eq "'") { return $v.Substring(1, $v.Length - 2).Replace("''", "'") }
+            if ($v.Length -ge 2 -and $v[0] -eq '"' -and $v[-1] -eq '"') { return $v.Substring(1, $v.Length - 2) }
+            return $v
+        }
+
         # PackageIdentifier appears in EVERY manifest in the set (installer, version and locale), so either
         # source is valid — prefer the installer manifest, fall back to the metadata ones.
-        if     ($yamlContent -match '(?m)^\s*PackageIdentifier:\s*(.+)') { $installerInfo.PackageIdentifier = $matches[1].Trim() }
-        elseif ($metaContent -match '(?m)^\s*PackageIdentifier:\s*(.+)') { $installerInfo.PackageIdentifier = $matches[1].Trim() }
+        if     ($yamlContent -match '(?m)^\s*PackageIdentifier:\s*(.+)') { $installerInfo.PackageIdentifier = & $unquote $matches[1] }
+        elseif ($metaContent -match '(?m)^\s*PackageIdentifier:\s*(.+)') { $installerInfo.PackageIdentifier = & $unquote $matches[1] }
 
         # Parse basic package info
         if ($metaContent -match '(?m)^\s*PackageName:\s*(.+)') {
@@ -76,26 +95,29 @@ function Get-YAMLInstallerInfo {
             $installerInfo.Publisher = $matches[1].Trim()
         }
         if ($metaContent -match '(?m)^\s*PackageVersion:\s*(.+)') {
-            $installerInfo.PackageVersion = $matches[1].Trim()
+            $installerInfo.PackageVersion = & $unquote $matches[1]
         }
         # These live in the INSTALLER manifest, where they are frequently the first key of a YAML list
         # item under `Installers:` — i.e. `  - Architecture: x64`. The anchor must therefore allow an
         # optional list dash between the leading whitespace and the key, or `^\s*Architecture` never matches
         # the dashed form and the field comes back empty.
         if ($yamlContent -match '(?m)^\s*-?\s*Architecture:\s*(.+)') {
-            $installerInfo.Architecture = $matches[1].Trim()
+            $installerInfo.Architecture = & $unquote $matches[1]
         }
         if ($yamlContent -match '(?m)^\s*-?\s*ProductCode:\s*(.+)') {
-            $installerInfo.ProductCode = $matches[1].Trim()
+            $installerInfo.ProductCode = & $unquote $matches[1]
         }
         if ($yamlContent -match '(?m)^\s*-?\s*Scope:\s*(.+)') {
-            $installerInfo.Scope = $matches[1].Trim().ToLowerInvariant()
+            $installerInfo.Scope = (& $unquote $matches[1]).ToLowerInvariant()
         }
         if ($yamlContent -match '(?m)^\s*-?\s*InstallerType:\s*(\S+)') {
-            $installerInfo.InstallerType = $matches[1].Trim().ToLowerInvariant()
+            $installerInfo.InstallerType = (& $unquote $matches[1]).ToLowerInvariant()
         }
         if ($yamlContent -match '(?m)^\s*-?\s*InstallerLocale:\s*(\S+)') {
-            $installerInfo.InstallerLocale = $matches[1].Trim()
+            $installerInfo.InstallerLocale = & $unquote $matches[1]
+        }
+        if ($yamlContent -match '(?m)^\s*-?\s*UpgradeBehavior:\s*(\S+)') {
+            $installerInfo.UpgradeBehavior = & $unquote $matches[1]
         }
 
         # Parse installer switches (Silent: may appear after other keys under InstallerSwitches:)
