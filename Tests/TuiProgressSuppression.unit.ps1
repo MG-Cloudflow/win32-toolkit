@@ -68,7 +68,7 @@ Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
 # ── (b) GUEST guards: each PS-Direct scriptblock self-silences (host preference doesn't cross runspaces) ─
 Write-Host '[b] the guest Invoke-Command scriptblocks set $ProgressPreference = SilentlyContinue' -ForegroundColor Cyan
 $guestGuards = @(
-    @{ File = 'Private\Copy-Win32ToolkitProjectToGuest.ps1'; Param = 'param($zip, $dest)' },
+    @{ File = 'Private\Copy-Win32ToolkitProjectToGuest.ps1'; Param = 'param($zip, $dest, $times)' },
     @{ File = 'Private\Copy-Win32ToolkitResultsFromGuest.ps1'; Param = 'param($globs, $rootPrefix)' }
 )
 foreach ($g in $guestGuards) {

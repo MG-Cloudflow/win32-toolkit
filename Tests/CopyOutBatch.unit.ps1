@@ -10,7 +10,12 @@
       never sends it back and the host never extracts an entry there (a read-only host copy stays untouched).
 
       Shadows: Invoke-Command executes the given scriptblock LOCALLY (so the real guest code runs against
-      a local fixture tree), Copy-Item strips -FromSession. Nothing touches a VM.
+      a local fixture tree), Copy-Item strips -FromSession / -ToSession. Nothing touches a VM.
+
+      (h) re-verification 2026-10-21 (A1/A2/A3 hv#1): the full Hyper-V round trip — the real copy-in
+      (Copy-Win32ToolkitProjectToGuest) then the real copy-back — keeps a file the guest never rewrites at its
+      exact UTC write time, run after run; the copy-in's Times map wins over the zip's stamp. The guest's
+      C:\Windows\Temp is redirected to a temp folder.
 
     Run:  pwsh -File Tests\CopyOutBatch.unit.ps1
 #>
@@ -24,8 +29,18 @@ function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
 . (Join-Path $repo 'Private\Copy-Win32ToolkitResultsFromGuest.ps1')
+. (Join-Path $repo 'Private\New-Win32ToolkitProjectZip.ps1')         # C-9: the copy-in (h) builds its zip
+. (Join-Path $repo 'Private\Copy-Win32ToolkitProjectToGuest.ps1')    # the copy-in half of the round trip (h)
 
 # ── shadows ──────────────────────────────────────────────────────────────────────────────────────
+# (h) plays the guest's C:\Windows\Temp (the copy-in zip lands there); $null = not redirected.
+$script:guestTemp = $null
+function ConvertTo-FakeGuestTemp([object]$Value) {
+    if ($script:guestTemp -and $Value -is [string] -and $Value.StartsWith('C:\Windows\Temp\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return (Join-Path $script:guestTemp (Split-Path -Leaf $Value))
+    }
+    return , $Value
+}
 # Run the "guest" scriptblock locally with its arguments (the fixture tree plays the guest filesystem).
 function Invoke-Command {
     [CmdletBinding()]
@@ -33,12 +48,17 @@ function Invoke-Command {
     if ($script:fakeGuestResult -and "$ScriptBlock" -match 'ZipFile') {
         return $script:fakeGuestResult   # zip-slip case: hand back a crafted result instead of running
     }
+    if ($script:guestTemp) {
+        $mapped = @(foreach ($a in $ArgumentList) { , (ConvertTo-FakeGuestTemp $a) })
+        return (& $ScriptBlock @mapped)
+    }
     & $ScriptBlock @ArgumentList
 }
-# Strip -FromSession and do a plain local copy.
+# Strip -FromSession / -ToSession and do a plain local copy.
 function Copy-Item {
     [CmdletBinding()]
-    param($FromSession, $Path, $Destination, [switch]$Force, [Parameter(ValueFromRemainingArguments)]$Rest)
+    param($FromSession, $ToSession, $Path, $Destination, [switch]$Force, [Parameter(ValueFromRemainingArguments)]$Rest)
+    if ($ToSession) { $Destination = ConvertTo-FakeGuestTemp $Destination }
     Microsoft.PowerShell.Management\Copy-Item -Path $Path -Destination $Destination -Force
 }
 
@@ -188,6 +208,56 @@ try {
     if ($ga -eq $exact -and (Test-Path -LiteralPath $gb) -and [System.IO.File]::GetLastWriteTimeUtc($gb) -ne $exact) { Ok 'the Times map wins over the zip stamp; a non-numeric value is ignored (file still extracted)' } else { Bad "a=$($ga.ToString('o')) b exists=$(Test-Path -LiteralPath $gb)" }
     Remove-Item $guestRoot, $dest -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $tzip -Force -ErrorAction SilentlyContinue
+
+    # ── (h) the whole round trip: copy-in then copy-back, twice (re-verification 2026-10-21, A1/A2/A3 hv#1) ──
+    # A top-level Sandbox\Logs file of an earlier run goes in with the project and comes back with the results
+    # glob although the guest never rewrote it. The copy-in used to leave the zip's local DOS stamp on it (the
+    # guest runs UTC: +offset), and the exact copy-back then carried that shift to the host, once per run.
+    Write-Host '[h] round trip: a file the guest never rewrites keeps its exact UTC write time through copy-in and copy-back, run after run' -ForegroundColor Cyan
+    $proj = New-TempDir; $guestRoot = New-TempDir; $gTemp = New-TempDir; $script:guestTemp = $gTemp
+    New-Item -ItemType Directory -Path (Join-Path $proj 'Sandbox\Logs'), (Join-Path $proj 'Files') -Force | Out-Null
+    $icon = Join-Path $proj 'Sandbox\Logs\AppIcon_Captured.png'
+    [System.IO.File]::WriteAllBytes($icon, [byte[]](1..64))
+    $exactIn = [datetime]::new(2026, 10, 21, 11, 13, 41, [System.DateTimeKind]::Utc).AddTicks(6143251)   # odd seconds + sub-seconds
+    [System.IO.File]::SetLastWriteTimeUtc($icon, $exactIn)
+    Set-Content -LiteralPath (Join-Path $proj 'Files\setup.exe') 'x'
+    $hashIn = (Get-FileHash -LiteralPath $icon -Algorithm SHA256).Hash
+    $guestDest = Join-Path $guestRoot 'PSADT'
+    $inGuest = @(); $onHost = @(); $runLogOk = $true
+    for ($run = 1; $run -le 2; $run++) {
+        Copy-Win32ToolkitProjectToGuest -Session 'fake' -ProjectPath $proj -GuestPath $guestDest
+        $inGuest += [System.IO.File]::GetLastWriteTimeUtc((Join-Path $guestDest 'Sandbox\Logs\AppIcon_Captured.png'))
+        $runLog = Join-Path $guestDest 'Sandbox\Logs\Run.log'            # this run's own log, written in the guest
+        Set-Content -LiteralPath $runLog "run $run"
+        $runLogUtc = [System.IO.File]::GetLastWriteTimeUtc($runLog)
+        Copy-Win32ToolkitResultsFromGuest -Session 'fake' -GuestPath @((Join-Path $guestDest 'Sandbox\Logs\*')) -Destination $proj -GuestRoot $guestDest 3>$null
+        $onHost += [System.IO.File]::GetLastWriteTimeUtc($icon)
+        if ([System.IO.File]::GetLastWriteTimeUtc((Join-Path $proj 'Sandbox\Logs\Run.log')) -ne $runLogUtc) { $runLogOk = $false }
+    }
+    if (@($inGuest | Where-Object { $_ -ne $exactIn }).Count -eq 0) { Ok "copy-in: the guest copy carries the host's exact UTC time on both runs ($($exactIn.ToString('o')))" } else { Bad "guest times: $(@($inGuest | ForEach-Object { $_.ToString('o') }) -join ', ') (want $($exactIn.ToString('o')))" }
+    if (@($onHost | Where-Object { $_ -ne $exactIn }).Count -eq 0 -and (Get-FileHash -LiteralPath $icon -Algorithm SHA256).Hash -eq $hashIn) { Ok 'copy-back: the untouched file is unchanged on the host after two runs (no drift)' } else { Bad "host times: $(@($onHost | ForEach-Object { $_.ToString('o') }) -join ', ') (want $($exactIn.ToString('o')))" }
+    if ($runLogOk) { Ok "a file the guest wrote still comes back with the guest's exact write time" } else { Bad 'Run.log write time changed on the way back' }
+
+    # A wrong zip stamp (a prebuilt zip, as the thread job builds it) is overridden by the copy-in Times map; an
+    # entry with no host file keeps the zip's stamp (best effort).
+    $wrong = [DateTimeOffset]::new(1999, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
+    $pzip = Join-Path ([System.IO.Path]::GetTempPath()) ('cob_pre_' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.zip')
+    $script:tmp.Add($pzip)
+    $za = [System.IO.Compression.ZipFile]::Open($pzip, 'Create')
+    try {
+        $null = $za.CreateEntry('Sandbox/Logs/')
+        foreach ($n in 'Sandbox/Logs/AppIcon_Captured.png', 'Sandbox/Logs/orphan.log') {
+            $e = $za.CreateEntry($n); $e.LastWriteTime = $wrong
+            $s = $e.Open(); try { $s.Write([byte[]](1..4), 0, 4) } finally { $s.Dispose() }
+        }
+    }
+    finally { $za.Dispose() }
+    Copy-Win32ToolkitProjectToGuest -Session 'fake' -ProjectPath $proj -GuestPath $guestDest -PrebuiltZip $pzip
+    $gi = [System.IO.File]::GetLastWriteTimeUtc((Join-Path $guestDest 'Sandbox\Logs\AppIcon_Captured.png'))
+    $go = [System.IO.File]::GetLastWriteTime((Join-Path $guestDest 'Sandbox\Logs\orphan.log'))
+    if ($gi -eq $exactIn -and $go.Year -eq 1999 -and -not (Test-Path -LiteralPath $pzip)) { Ok 'the Times map wins over a wrong zip stamp; an entry with no host file keeps the zip stamp; the prebuilt zip is consumed' } else { Bad "icon=$($gi.ToString('o')) orphan=$($go.ToString('o')) zip left=$(Test-Path -LiteralPath $pzip)" }
+    $script:guestTemp = $null
+    if (@(Get-ChildItem -LiteralPath $gTemp -Force -ErrorAction SilentlyContinue).Count -eq 0) { Ok "no copy-in zip is left in the guest's temp folder" } else { Bad 'a copy-in zip was left in the guest temp folder' }
 }
 finally { foreach ($tp in $script:tmp) { Remove-Item -LiteralPath $tp -Recurse -Force -ErrorAction SilentlyContinue } }
 
