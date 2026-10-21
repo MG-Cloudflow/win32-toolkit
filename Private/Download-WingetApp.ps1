@@ -78,6 +78,15 @@ function Download-WingetApp {
 
     $label = if ($AppName) { "$AppName ($AppId)" } else { $AppId }
     Write-Verbose "Downloading $label [$Architecture]..."
+    # Download-failure text: the code in decimal (callers match that prefix) AND hex, plus, for winget's source-
+    # authentication codes 0x8A150073-0x8A150078, that a re-run fails the same way (not a transient failure).
+    $authHint = {
+        param([int]$Code)
+        if ($Code -ge -1978335117 -and $Code -le -1978335112) {
+            ' A configured winget source needs a sign-in (winget authentication error): re-running fails the same way until you sign in to that source or it is removed from the search; win32-toolkit never signs in or changes sources.'
+        }
+        else { '' }
+    }
 
     if (-not (Test-Path -LiteralPath $DownloadPath)) {
         New-Item -ItemType Directory -Path $DownloadPath -Force | Out-Null
@@ -112,7 +121,7 @@ function Download-WingetApp {
         # A native command failing does NOT throw ($LASTEXITCODE, returned as ExitCode) — this check is the
         # entire point of the fix.
         if ($code -ne 0) {
-            Write-Error "winget download exited with code $code for $label — no usable installer was downloaded."
+            Write-Error ("winget download exited with code {0} (0x{0:X8}) for {1} — no usable installer was downloaded.{2}" -f $code, $label, (& $authHint $code))
             return $false
         }
     }
@@ -139,7 +148,7 @@ function Download-WingetApp {
             if ($code -eq 0) { $usedType = $t; break }
             if (-not (Test-Win32ToolkitWingetNoApplicableInstaller -ExitCode $code)) {
                 # Any other failure is a plain download failure, exactly as without a pin (V30).
-                Write-Error "winget download exited with code $code for $label — no usable installer was downloaded."
+                Write-Error ("winget download exited with code {0} (0x{0:X8}) for {1} — no usable installer was downloaded.{2}" -f $code, $label, (& $authHint $code))
                 return $false
             }
             # No '$t' installer for this version: remove only what this attempt wrote, then the next type.

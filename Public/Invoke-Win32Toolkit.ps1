@@ -425,7 +425,7 @@ function Invoke-Win32Toolkit {
                 }
 
                 Write-Warning "The project folder was still created: $projectFullPath"
-                Write-Warning "Next: re-run the same command to retry a transient download failure."
+                Write-Warning "Next: if winget reported a transient error (network, timeout), re-run the same command. An authentication or 'no package found' error shown above fails the same way on a re-run."
                 # Do NOT tell the user to drop an installer into Files\ and re-run: Create-PSADTProject removes
                 # and recreates the project directory on every run, so anything placed there by hand is deleted
                 # before the (still failing) download is retried. Supplying your own installer is the MANUAL

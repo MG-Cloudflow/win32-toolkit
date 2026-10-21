@@ -180,8 +180,14 @@ try {
     Reset-Winget -Exits @($AUTH, $NOPKG) -Writers @({}, {})
     $ev = $null
     $r = Download-WingetApp -AppId 'Private.Only' -DownloadPath $dl -Architecture 'x64' -ErrorAction SilentlyContinue -ErrorVariable ev -WarningAction SilentlyContinue 6>$null
-    if ($r -is [bool] -and -not $r -and $script:calls.Count -eq 2 -and "$($ev[0])" -match "^winget download exited with code $NOPKG for Private\.Only") { Ok 'the retry fails (package only in the private source) -> $false, the error names the retry''s code' }
+    if ($r -is [bool] -and -not $r -and $script:calls.Count -eq 2 -and "$($ev[0])" -match "^winget download exited with code $NOPKG \(0x8A150014\) for Private\.Only" -and "$($ev[0])" -notmatch 'sign-in') { Ok 'the retry fails (package only in the private source) -> $false, the error names the retry''s code (decimal and hex), no sign-in hint for 0x8A150014' }
     else { Bad "retry fails: r=$r calls=$($script:calls.Count) err=[$($ev -join ' | ')]" }
+
+    $dl = New-Dl
+    Reset-Winget -Exits @($AUTHI, $AUTHI) -Writers @({}, {})
+    $ev = $null
+    $r = Download-WingetApp -AppId 'Private.Only' -DownloadPath $dl -Architecture 'x64' -ErrorAction SilentlyContinue -ErrorVariable ev -WarningAction SilentlyContinue 6>$null
+    if ($r -eq $false -and "$($ev[0])" -like "winget download exited with code $AUTHI (0x8A150076) for Private.Only — no usable installer was downloaded. A configured winget source needs a sign-in*re-running fails the same way*") { Ok 'Download-WingetApp: 0x8A150076 after the retry -> hex code + "re-running fails the same way" sign-in hint' } else { Bad "auth hint: [$($ev -join ' | ')]" }
 
     $dl = New-Dl
     Reset-Winget -Exits @($DLFAIL, 0) -Writers @({}, {})
@@ -254,7 +260,7 @@ try {
     Reset-Winget -Exits @($AUTH, $DLFAIL)
     $err = $null
     try { $null = Download-OldVersionInstaller -AppId 'Acme.App' -Version '1.0' -ProjectPath $proj -InstallerType nullsoft -FamilyPin -WarningAction SilentlyContinue 6>$null } catch { $err = $_ }
-    if ($err -and $err.FullyQualifiedErrorId -notlike 'W32T.*' -and $err.Exception.Message -eq "winget download exited with code $DLFAIL for 'Acme.App' v1.0." -and $script:calls.Count -eq 2 -and (& $snapshot) -eq $before) { Ok "-FamilyPin, another code on the retry -> the plain error with the retry's code, OldVersion untouched" }
+    if ($err -and $err.FullyQualifiedErrorId -notlike 'W32T.*' -and $err.Exception.Message -eq "winget download exited with code $DLFAIL (0x8A150008) for 'Acme.App' v1.0." -and $script:calls.Count -eq 2 -and (& $snapshot) -eq $before) { Ok "-FamilyPin, another code on the retry -> the plain error with the retry's code, OldVersion untouched" }
     else { Bad "familypin other: $($err.Exception.Message) calls=$($script:calls.Count)" }
 
     # Without -FamilyPin: dependency staging (latest, no pins) and the old variant-pin path.
@@ -276,7 +282,14 @@ try {
     Reset-Winget -Exits @($DLFAIL)
     $err = $null; $wv = $null
     try { $null = Download-OldVersionInstaller -AppId 'Acme.Dep' -ProjectPath $proj -DestinationDir $depDir -WarningVariable wv -WarningAction SilentlyContinue 6>$null } catch { $err = $_ }
-    if ($err -and $err.Exception.Message -eq "winget download exited with code $DLFAIL for 'Acme.Dep' the latest version." -and $script:calls.Count -eq 1 -and @($wv).Count -eq 0) { Ok 'another code without pins -> the plain error after one call (unchanged)' } else { Bad "other: $($err.Exception.Message) calls=$($script:calls.Count)" }
+    if ($err -and $err.Exception.Message -eq "winget download exited with code $DLFAIL (0x8A150008) for 'Acme.Dep' the latest version." -and $script:calls.Count -eq 1 -and @($wv).Count -eq 0) { Ok 'another code without pins -> the plain error after one call (unchanged)' } else { Bad "other: $($err.Exception.Message) calls=$($script:calls.Count)" }
+
+    # An authentication code that survives the retry (the package lives only in the private source) is NOT transient:
+    # the message names the code in hex and says a re-run fails the same way (test campaign 2026-10-21, S7-F2).
+    Reset-Winget -Exits @($AUTH, $AUTHI)
+    $err = $null
+    try { $null = Download-OldVersionInstaller -AppId 'Acme.Dep' -ProjectPath $proj -DestinationDir $depDir -WarningAction SilentlyContinue 6>$null } catch { $err = $_ }
+    if ($err -and $err.Exception.Message -like "winget download exited with code $AUTHI (0x8A150076) for 'Acme.Dep' the latest version. A configured winget source needs a sign-in*re-running fails the same way*never signs in or changes sources.") { Ok 'Download-OldVersionInstaller: 0x8A150076 after the retry -> hex code + sign-in hint' } else { Bad "auth hint (old version): $($err.Exception.Message)" }
 
     # == [5] source hygiene ================================================================================
     Write-Host '[5] Source' -ForegroundColor Cyan

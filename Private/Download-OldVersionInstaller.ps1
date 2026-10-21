@@ -101,6 +101,15 @@ function Download-OldVersionInstaller {
     # that pair, and an Unavailable run must never hide an older FAIL (L21). Without -FamilyPin the download
     # goes straight to $oldVersionDir, as before.
     $downloadDir = if ($FamilyPin) { "$oldVersionDir.attempt" } else { $oldVersionDir }
+    # Download-failure text: the code in decimal (callers match that prefix) AND hex, plus, for winget's source-
+    # authentication codes 0x8A150073-0x8A150078, that a re-run fails the same way (not a transient failure).
+    $authHint = {
+        param([int]$Code)
+        if ($Code -ge -1978335117 -and $Code -le -1978335112) {
+            ' A configured winget source needs a sign-in (winget authentication error): re-running fails the same way until you sign in to that source or it is removed from the search; win32-toolkit never signs in or changes sources.'
+        }
+        else { '' }
+    }
 
     # Always start fresh so we don't accidentally pick up a stale installer. -LiteralPath enumeration
     # (not a wildcard -Path) so files with [ ] etc. are removed too; a survivor is a hard error rather
@@ -265,7 +274,7 @@ function Download-OldVersionInstaller {
                             }
                         }
                         else {
-                            throw "winget download exited with code $code for '$AppId' $verLabel."
+                            throw ("winget download exited with code {0} (0x{0:X8}) for '{1}' {2}.{3}" -f $code, $AppId, $verLabel, (& $authHint $code))
                         }
                     }
                     if ($done) {
@@ -324,7 +333,7 @@ function Download-OldVersionInstaller {
         }
 
         if ($code -ne 0) {
-            throw "winget download exited with code $code for '$AppId' $verLabel."
+            throw ("winget download exited with code {0} (0x{0:X8}) for '{1}' {2}.{3}" -f $code, $AppId, $verLabel, (& $authHint $code))
         }
 
         # Cache the download — but NEVER a fallback result under the pinned key: the unpinned retry can
