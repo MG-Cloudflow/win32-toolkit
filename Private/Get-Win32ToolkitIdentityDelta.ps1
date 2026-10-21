@@ -280,9 +280,11 @@ function Get-Win32ToolkitIdentityDelta {
     # ---- ID-NO-ANCHOR (multi-family apps only, L4/Dv2; and only without an anchored predecessor) ----
     if ($pinnedBy -eq 'winget-default' -and $siblingFamily -and -not $anchor) {
         $pin = if ($typeRow.PinValue) { $typeRow.PinValue } else { $type }
-        $msg = ('winget chose {0} ({1}) and no earlier version of this app in this template was published or pinned, so nothing keeps the ' +
-                'installer technology stable between versions. Pin it with -InstallerType {2} (or choose it in the menu).') -f
-               (& $safe $type 32), (& $safe $typeRow.Label 128), (& $safe $pin 32)
+        # The label already names the type ('wix (MSI)'), so it is printed alone, as ID-SIBLING-FAMILY does (S9-F3).
+        $chosenLabel = if ($typeRow.Label) { $typeRow.Label } else { $type }
+        $msg = ('winget chose {0} and no earlier version of this app in this template was published or pinned, so nothing keeps the ' +
+                'installer technology stable between versions. Pin it with -InstallerType {1} (or choose it in the menu).') -f
+               (& $safe $chosenLabel 128), (& $safe $pin 32)
         & $add 'ID-NO-ANCHOR' 'Warning' $msg @{ InstallerType = $type; PinValue = $pin }
     }
 

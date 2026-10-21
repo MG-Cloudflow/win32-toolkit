@@ -324,7 +324,7 @@ Write-Host '[I] publish: the advisory panel before "Publish which app?", printed
 $script:W32TAdvisoryRun = $null
 $script:advisory = [pscustomobject]@{ Findings = @(
         (F 'UNSAFE-CLEANUP' 'Warning' "UNSAFE-CLEANUP: this project's uninstall would delete 1 folder(s) [C:\Program Files (x86)]"),
-        (F 'ID-NO-ANCHOR' 'Warning' 'winget chose wix (wix (MSI)) ...'),
+        (F 'ID-NO-ANCHOR' 'Warning' 'winget chose wix (MSI) ...'),
         (F 'UPDATE-INCONCLUSIVE' 'Info' 'The latest Update test gave no verdict [x]')) }
 $script:panels.Clear(); $script:hostLines.Clear(); $script:advisoryCalls.Clear(); $script:prompts.Clear(); $script:exportCalls = 0
 DriveUpdate @('publish', 'install', 'back')

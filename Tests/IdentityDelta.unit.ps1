@@ -91,8 +91,8 @@ if ($sf.Severity -eq 'Warning' -and $sf.Message -match '-InstallerType nullsoft;
 } else { Bad "ID-SIBLING-FAMILY = $($sf | ConvertTo-Json -Compress)" }
 if ((@($sf.Data.Families) -join ',') -eq 'exe' -and (@($sf.Data.Types) -join ',') -eq 'nullsoft') { Ok 'Data: Families [exe], Types [nullsoft]' } else { Bad "Data = $($sf.Data | ConvertTo-Json -Compress)" }
 $na = Find $d 'ID-NO-ANCHOR'
-if ($na.Severity -eq 'Warning' -and $na.Message -match '^winget chose wix \(wix \(MSI\)\) and no earlier version' -and $na.Message -match 'Pin it with -InstallerType wix ' -and $na.Data.InstallerType -eq 'wix') {
-    Ok 'ID-NO-ANCHOR (Warning): "winget chose wix ... Pin it with -InstallerType wix"'
+if ($na.Severity -eq 'Warning' -and $na.Message -match '^winget chose wix \(MSI\) and no earlier version' -and $na.Message -match 'Pin it with -InstallerType wix ' -and $na.Data.InstallerType -eq 'wix') {
+    Ok 'ID-NO-ANCHOR (Warning): "winget chose wix (MSI) ... Pin it with -InstallerType wix" (the type is not repeated)'
 } else { Bad "ID-NO-ANCHOR = $($na | ConvertTo-Json -Compress)" }
 if (@($d.Siblings).Count -eq 1 -and @($d.NotRegistering).Count -eq 1 -and $d.Probe.Status -eq 'Ok' -and $d.Probe.TupleCount -eq 7 -and $d.SchemaVersion -eq '1.0') {
     Ok 'Siblings / NotRegistering / Probe summary (TupleCount 7) / SchemaVersion carried into the delta'
