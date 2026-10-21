@@ -7,6 +7,11 @@
     Run:  pwsh -File Tests\DependencyStaging.unit.ps1
     Exits non-zero on any failure.
 #>
+# Test shadows keep the real command names and signatures (C-4: no PSScriptAnalyzer warning in the suites).
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'test shadows mirror the real signatures')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'test helpers (temp folders)')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '', Justification = 'test shadows keep the real command names')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseApprovedVerbs', '', Justification = 'test shadows keep the real command names')]
 [CmdletBinding()]
 param()
 
