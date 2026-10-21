@@ -236,11 +236,14 @@ exit 0
     # a run without a runtime the app declares would test - or worse, capture detection and uninstall data
     # from - a broken install. Nothing partial is left for the guest (no staging folder, no guest script, no
     # reuse marker), and the error names the dependency and the reason. 'intune:' stays a warning (TODO).
+    # -ErrorAction Ignore: an absent file is the normal case here, and SilentlyContinue would still leave a
+    # PathNotFound record in $Error / the caller's -ErrorVariable next to the one real error (re-verification
+    # 2026-10-21, B3 #3).
     $notStaged = {
         param($Dependency, [string]$Why)
-        Remove-Item -LiteralPath $depRoot -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue
-        if ($stagedMark) { Remove-Item -LiteralPath $stagedMark -Force -ErrorAction SilentlyContinue }
+        Remove-Item -LiteralPath $depRoot -Recurse -Force -ErrorAction Ignore
+        Remove-Item -LiteralPath $scriptPath -Force -ErrorAction Ignore
+        if ($stagedMark) { Remove-Item -LiteralPath $stagedMark -Force -ErrorAction Ignore }
         $msg = "Dependency '$($Dependency.Source):$($Dependency.Ref)' could not be staged: $Why The test/capture run would not have it installed, so it is not started. Fix the dependency, or remove it (Set-Win32ToolkitAppDependency -ProjectPath '$ProjectPath' -Clear, then declare the others again), and re-run."
         throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new($msg), 'W32T.DependencyNotStaged',
             [System.Management.Automation.ErrorCategory]::ObjectNotFound, "$($Dependency.Source):$($Dependency.Ref)")
@@ -322,7 +325,7 @@ exit 0
     }
 
     if ($entries.Count -eq 0) {
-        Remove-Item -LiteralPath $depRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $depRoot -Recurse -Force -ErrorAction Ignore
         return 0
     }
 

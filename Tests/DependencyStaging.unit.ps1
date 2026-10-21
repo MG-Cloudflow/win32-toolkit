@@ -310,6 +310,12 @@ exit 0
     $null = Set-Win32ToolkitAppDependency -ProjectPath $p11 -DependsOn 'project:Contoso\DoesNotExist'
     $r = Test-NotStaged $p11 "'project:Contoso\\DoesNotExist' could not be staged: the project was not found"
     if ($r.Ok) { Ok 'missing project: dependency -> W32T.DependencyNotStaged; nothing left staged' } else { Bad "project: $($r.Error) left=$($r.Left)" }
+    # The fail-closed path adds ONE error record - the W32T one - and no PathNotFound noise from its own cleanup of
+    # files that do not exist (re-verification 2026-10-21, B3 #3: NewGlobalErrors was 3 for 1 throw).
+    $Error.Clear(); $ev11 = $null; $e11 = $null
+    try { $null = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p11 -ErrorVariable ev11 6>$null 3>$null } catch { $e11 = $_ }
+    $noise11 = @(@($ev11) + @($Error) | Where-Object { "$($_.FullyQualifiedErrorId)" -like 'PathNotFound*' })
+    if ($e11.FullyQualifiedErrorId -eq 'W32T.DependencyNotStaged' -and $Error.Count -eq 1 -and $noise11.Count -eq 0) { Ok 'the cannot-stage throw leaves exactly one $Error record and no PathNotFound in -ErrorVariable' } else { Bad "`$Error=$($Error.Count) [$(@($Error | ForEach-Object { "$($_.FullyQualifiedErrorId)" }) -join ' | ')] ev=[$(@($ev11 | ForEach-Object { "$($_.FullyQualifiedErrorId)" }) -join ' | ')]" }
     # (c) a reuse marker that recorded fewer dependencies than the stageable set (an older build that warned and went on)
     $p12 = New-Proj
     $null = Set-Win32ToolkitAppDependency -ProjectPath $p12 -DependsOn 'project:Contoso\Tool_x64_1.0', "winget:$VC"
