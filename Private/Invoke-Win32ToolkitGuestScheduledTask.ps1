@@ -20,9 +20,12 @@ function Invoke-Win32ToolkitGuestScheduledTask {
     .PARAMETER Label
         Short label for progress output.
     .PARAMETER TimeoutMinutes
-        How long to wait for the task to finish (default 30).
+        How long to wait for the task to finish (default 30), measured on a monotonic clock in the guest.
+        A task still running then is stopped.
     .OUTPUTS
-        [int] the task's LastTaskResult (0 = success).
+        [int] the task's LastTaskResult (0 = success); 267009 (SCHED_S_TASK_RUNNING) when the task was
+        still running at the timeout and was stopped; 267011 (SCHED_S_TASK_HAS_NOT_RUN) when it never
+        started within 120 s.
     #>
     [CmdletBinding()]
     [OutputType([int])]
@@ -59,13 +62,16 @@ function Invoke-Win32ToolkitGuestScheduledTask {
         $preInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
 
         Start-ScheduledTask -TaskName $taskName
-        $deadline = (Get-Date).AddMinutes($timeoutMin)
+        # Deadlines run on a MONOTONIC clock, never the guest wall clock: reverting the VM to a checkpoint
+        # resets the guest clock to the checkpoint's time, and the Hyper-V time sync then jumps it days
+        # ahead (or back) a few seconds later. A wall-clock deadline then expired at once and a phase that
+        # was still running as SYSTEM was reported done (267009), racing the next phase (test campaign H1).
+        $clock = [System.Diagnostics.Stopwatch]::StartNew()
+        $neverStarted = $false
         if ($preInfo) {
             # A task that NEVER starts (scheduler refuses it, principal problem) must fail fast, not
             # burn the full phase timeout: if nothing has transitioned and it was never seen Running
-            # within 120 s of Start-ScheduledTask, bail — the stale LastTaskResult (267011,
-            # "has not yet run") is returned and surfaces as a failed phase, like the old fast path.
-            $startupDeadline = (Get-Date).AddSeconds(120)
+            # within 120 s of Start-ScheduledTask, bail with 267011 (SCHED_S_TASK_HAS_NOT_RUN).
             $sawRunning = $false
             do {
                 $state = (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State
@@ -73,9 +79,9 @@ function Invoke-Win32ToolkitGuestScheduledTask {
                 $info  = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
                 $ran   = $info -and (($info.LastRunTime -ne $preInfo.LastRunTime) -or ($info.LastTaskResult -ne $preInfo.LastTaskResult))
                 if ($ran -and $state -ne 'Running') { break }
-                if (-not $ran -and -not $sawRunning -and (Get-Date) -gt $startupDeadline) { break }
+                if (-not $ran -and -not $sawRunning -and $clock.Elapsed.TotalSeconds -gt 120) { $neverStarted = $true; break }
                 Start-Sleep -Seconds 1
-            } until ((Get-Date) -gt $deadline)
+            } until ($clock.Elapsed.TotalMinutes -gt $timeoutMin)
         }
         else {
             # No pre-start stamp (abnormal): the transition signal is unavailable, so fall back to the
@@ -83,10 +89,26 @@ function Invoke-Win32ToolkitGuestScheduledTask {
             do {
                 Start-Sleep -Seconds 3
                 $state = (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State
-            } until ($state -ne 'Running' -or (Get-Date) -gt $deadline)
+            } until ($state -ne 'Running' -or $clock.Elapsed.TotalMinutes -gt $timeoutMin)
         }
 
-        $rc = (Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue).LastTaskResult
+        # A phase still Running at the ceiling is STOPPED, so it cannot keep running into the next phase,
+        # and reported as 267009 (SCHED_S_TASK_RUNNING). Its LastTaskResult is not read after the stop:
+        # the stop itself turns it into 0x41306 (terminated by the user).
+        if ((Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State -eq 'Running') {
+            Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+            $stopClock = [System.Diagnostics.Stopwatch]::StartNew()
+            while ((Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State -eq 'Running' -and $stopClock.Elapsed.TotalSeconds -lt 15) {
+                Start-Sleep -Seconds 1
+            }
+            $rc = 267009
+        }
+        elseif ($neverStarted) {
+            $rc = 267011
+        }
+        else {
+            $rc = (Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue).LastTaskResult
+        }
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
         if ($null -ne $rc) { $rc } else { 0 }
     } -ArgumentList $Command, $RunAs, $TimeoutMinutes

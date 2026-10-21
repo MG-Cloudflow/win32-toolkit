@@ -27,6 +27,9 @@ function Invoke-Win32ToolkitHyperVRun {
     .OUTPUTS
         [bool] — $true if the run completed (individual phase failures are warned, not fatal, matching
         the Sandbox fire-and-forget semantics; callers judge results from the copied-back outputs).
+        $false when a step threw, or when a phase did not finish (stopped at its timeout: 267009, or
+        never started: 267011): the remaining phases are then skipped, the logs are still copied back
+        (never an install capture) and the VM is still reverted.
     #>
     [CmdletBinding()]
     [OutputType([bool])]
@@ -158,6 +161,9 @@ function Invoke-Win32ToolkitHyperVRun {
             Start-Process -FilePath 'vmconnect.exe' -ArgumentList 'localhost', $VMName -ErrorAction SilentlyContinue
         }
 
+        # A phase that did not finish (still running at its timeout, or never started) ends the run: the
+        # later phases would overlap it or judge a half-done install, so they are skipped.
+        $incomplete = $false
         foreach ($ph in $Phase) {
             if ($ph.Pause) {
                 Read-Host "  $($ph.Label) — press Enter to continue"
@@ -171,6 +177,14 @@ function Invoke-Win32ToolkitHyperVRun {
             # Intune-parity runner phases, not from this primitive). For an interactive phase PSADT's own
             # deploy mode renders its GUI in the logged-on user's session (a real desktop is ensured above).
             $exit = Invoke-Win32ToolkitGuestPhase -Session $session -Command $ph.Command -Label $ph.Label
+            # 267009 (SCHED_S_TASK_RUNNING: stopped at its timeout) / 267011 (SCHED_S_TASK_HAS_NOT_RUN) are
+            # not exit codes of the phase: it did not finish. Whatever IgnoreExit says, stop here.
+            if ($exit -in 267009, 267011) {
+                $why = if ($exit -eq 267009) { 'was still running at its timeout and was stopped' } else { 'never started' }
+                Write-Warning "Guest phase '$($ph.Label)' did not finish (it $why, code $exit). The remaining phases are skipped so they do not overlap it; this run gives no result."
+                $incomplete = $true
+                break
+            }
             # A phase may declare its success codes (PSADT/Intune: 0, 1707, 3010, 1641); otherwise only 0 is.
             $okExit = if ($ph.SuccessExitCodes) { @($ph.SuccessExitCodes) } else { @(0) }
             if (-not $ph.IgnoreExit -and $okExit -notcontains $exit) {
@@ -197,10 +211,15 @@ function Invoke-Win32ToolkitHyperVRun {
         }
 
         Write-Verbose "Copying results back to the project..."
-        $guestGlobs = $Output | ForEach-Object { Join-Path 'C:\PSADT' $_ }
-        Copy-Win32ToolkitResultsFromGuest -Session $session -GuestPath $guestGlobs -Destination $ProjectPath -GuestRoot 'C:\PSADT'
+        # An incomplete run still brings its logs back for inspection, but never an install capture: the
+        # capture of a phase that did not finish is not trusted.
+        $copyOut = if ($incomplete) { @($Output | Where-Object { $_ -notlike '*InstallationChanges_*' }) } else { @($Output) }
+        if ($copyOut.Count -gt 0) {
+            $guestGlobs = $copyOut | ForEach-Object { Join-Path 'C:\PSADT' $_ }
+            Copy-Win32ToolkitResultsFromGuest -Session $session -GuestPath $guestGlobs -Destination $ProjectPath -GuestRoot 'C:\PSADT'
+        }
 
-        return $true
+        return (-not $incomplete)
     }
     catch {
         Write-Warning "Hyper-V run failed: $($_.Exception.Message)"

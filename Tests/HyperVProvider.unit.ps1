@@ -155,6 +155,40 @@ $threw = $false
 try { $null = Invoke-Win32ToolkitGuestScheduledTask -Session 'S' -Command 'x' -RunAs 'w32admin' } catch { $threw = $true }
 if ($threw) { Ok 'a user RunAs is rejected at binding (no interactive-user principal any more)' } else { Bad 'RunAs w32admin accepted' }
 
+Write-Host '[9] a phase that did not finish (267009 stopped at its timeout / 267011 never started) ends the run' -ForegroundColor Cyan
+function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }
+function Get-Win32ToolkitGuestCredential { [pscredential]::new('w32admin', (New-Object System.Security.SecureString)) }
+function New-Win32ToolkitHyperVSession    { param($VMName, $Credential, $CheckpointName, [switch]$SkipRevert, [switch]$EnsureDesktop) 'SESS' }
+function Copy-Win32ToolkitProjectToGuest  { param($Session, $ProjectPath, $GuestPath) }
+function Copy-Win32ToolkitResultsFromGuest{ param($Session, $GuestPath, $Destination, $GuestRoot) $script:log9 += "copyout:$(@($GuestPath) -join ',')" }
+function Remove-Win32ToolkitHyperVSession { param($Session, $VMName, $CheckpointName, [switch]$Revert) $script:log9 += "teardown:revert=$($Revert.IsPresent)" }
+function Invoke-Win32ToolkitGuestPhase    { param($Session, $Command, $Label) $script:log9 += "phase:$Label"; [int]$Command }
+foreach ($case in @(
+        @{ Code = 267009; At = 'Install'; Ignore = $false; Why = 'still running at its timeout' }
+        @{ Code = 267011; At = 'Install'; Ignore = $false; Why = 'never started' }
+        @{ Code = 267009; At = 'Assert';  Ignore = $true;  Why = 'still running at its timeout' })) {
+    $script:log9 = @()
+    $warn9 = @()
+    $ph9 = @(
+        @{ Label = 'Install';     Command = $(if ($case.At -eq 'Install') { "$($case.Code)" } else { '0' }); SuccessExitCodes = @(0, 3010) }
+        @{ Label = 'Assert';      Command = $(if ($case.At -eq 'Assert') { "$($case.Code)" } else { '0' }); IgnoreExit = $case.Ignore }
+        @{ Label = 'Uninstall';   Command = '0' }
+        @{ Label = 'CollectLogs'; Command = '0'; IgnoreExit = $true }
+    )
+    $r9 = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase $ph9 -Output @('Documentation\InstallationChanges_*.json', 'Sandbox\Logs\*') -WarningVariable warn9 3>$null 6>$null
+    $tag = "$($case.Code) in '$($case.At)'$(if ($case.Ignore) { ' (IgnoreExit)' })"
+    if ($r9 -eq $false) { Ok "${tag}: the run returns `$false" } else { Bad "${tag}: returned $r9" }
+    $ran9 = @($script:log9 | Where-Object { $_ -like 'phase:*' })
+    $expect = if ($case.At -eq 'Install') { 'phase:Install' } else { 'phase:Install phase:Assert' }
+    if (($ran9 -join ' ') -eq $expect) { Ok "${tag}: the later phases are skipped" } else { Bad "${tag}: phases ran: $($ran9 -join ' > ')" }
+    $co = @($script:log9 | Where-Object { $_ -like 'copyout:*' })
+    if ($co.Count -eq 1 -and $co[0] -match 'Sandbox\\Logs' -and $co[0] -notmatch 'InstallationChanges') { Ok "${tag}: logs still copied back, the install capture is not" } else { Bad "${tag}: copy-out: $($co -join ' | ')" }
+    if ($script:log9[-1] -eq 'teardown:revert=True') { Ok "${tag}: the VM is still reverted" } else { Bad "${tag}: log: $($script:log9 -join ' > ')" }
+    $w9 = @($warn9 | ForEach-Object { "$_" } | Where-Object { $_ -match "Guest phase '$($case.At)' did not finish" -and $_ -match $case.Why -and $_ -match 'remaining phases are skipped' })
+    if ($w9.Count -eq 1) { Ok "${tag}: one warning names the phase and why" } else { Bad "${tag}: warnings: $(@($warn9) -join ' | ')" }
+}
+Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential
+
 if ($fail -eq 0) {
     Write-Host "`nAll HyperVProvider tests passed." -ForegroundColor Green
     exit 0

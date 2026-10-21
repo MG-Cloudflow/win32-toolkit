@@ -86,7 +86,8 @@ if ($backend -eq 'Sandbox') {
         # so the churn condition watches BOTH profile roots at the snapshot's own depth ballpark and
         # demands TWO consecutive stable comparisons — the desktop being up alone proves nothing about
         # first-logon profile churn. Earliest exit ~9 s; the 60 s cap keeps the worst case identical.
-        $settleDeadline = (Get-Date).AddSeconds(60)
+        # Monotonic (Stopwatch), never the wall clock: a guest clock can jump while this runs (H1).
+        $settleClock = [System.Diagnostics.Stopwatch]::StartNew()
         $prevCount = -1
         $stableRuns = 0
         do {
@@ -101,7 +102,7 @@ if ($backend -eq 'Sandbox') {
             } catch { $ok = $false }
             if ($ok) { break }
             Start-Sleep -Seconds 3
-        } until ((Get-Date) -gt $settleDeadline)
+        } until ($settleClock.Elapsed.TotalSeconds -gt 60)
     }
     else {
         Write-Host "Please wait 60 seconds..." -ForegroundColor Cyan
@@ -480,8 +481,9 @@ try {
         Write-Host "No registry changes detected — polling the Uninstall hives for late writers (up to 90 s)..." -ForegroundColor Yellow
         Write-Log "Registry diff empty - polling Uninstall hives every 5 s (90 s budget) for delayed writes" "INFO"
         $uninstallHives = @($targetRegistryPaths | Where-Object { $_ -like '*CurrentVersion\Uninstall*' })
-        $retryStart  = Get-Date
-        $retryBudget = $retryStart.AddSeconds(90)
+        # Monotonic (Stopwatch), never the wall clock: after a Hyper-V checkpoint revert the guest clock
+        # jumps days ahead (or back) when time sync catches up - a wall-clock budget then ends at once or never.
+        $retryClock = [System.Diagnostics.Stopwatch]::StartNew()
         do {
             Start-Sleep -Seconds 5
             $probe = @(Get-TargetedRegistrySnapshot -Description "Uninstall-hive probe" -RegistryPaths $uninstallHives)
@@ -490,13 +492,13 @@ try {
                 Write-Log "Uninstall-hive probe detected $($probeNew.Count) new key(s) - running the full rescan" "INFO"
                 break
             }
-        } until ((Get-Date) -gt $retryBudget)
+        } until ($retryClock.Elapsed.TotalSeconds -gt 90)
 
         # The final rescan is a ONE-SHOT diff — never before t=30 s into the budget. The old loop's
         # earliest full rescan was its first 30 s retry; a probe hit at t=6 s must not pull the single
         # rescan earlier than that, or writes landing between the early hit and t=30 (which the old
         # code caught) would be permanently lost.
-        $elapsed = ((Get-Date) - $retryStart).TotalSeconds
+        $elapsed = $retryClock.Elapsed.TotalSeconds
         if ($elapsed -lt 30) { Start-Sleep -Seconds ([int][Math]::Ceiling(30 - $elapsed)) }
 
         # Final full-hive rescan + full diff (runs on probe hit AND on budget exhaustion).
