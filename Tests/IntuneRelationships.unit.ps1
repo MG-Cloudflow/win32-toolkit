@@ -134,7 +134,7 @@ $w9 = $null
 $res = @(Resolve-Win32ToolkitDependencies -ProjectPath 'C:\proj' -WarningVariable w9 -WarningAction SilentlyContinue)
 if ($res.Count -eq 0 -and $script:bpArgs.NonInteractive -and @($w9 | Where-Object { "$_" -match "Dependency 'project:Contoso\\Tool_x64_1\.0' is NOT published" }).Count -eq 1) { Ok 'no base folder -> no prompt (-NonInteractive), one "not published" warning' } else { Bad "res=$($res.Count) args=$($script:bpArgs | ConvertTo-Json -Compress) warn=$($w9 -join ' | ')" }
 $script:pubPath = $null
-$pkg9 = Join-Path ([System.IO.Path]::GetTempPath()) 'w32ir_pkg'
+$pkg9 = Join-Path ([System.IO.Path]::GetTempPath()) ('w32ir_pkg_' + [guid]::NewGuid().ToString('N').Substring(0, 8))   # never created; unique so parallel runs never share it
 $null = @(Resolve-Win32ToolkitDependencies -ProjectPath 'C:\proj' -BasePath $pkg9 -WarningAction SilentlyContinue)
 if ($script:pubPath -eq (Join-Path $pkg9 'Projects\Contoso\Tool_x64_1.0')) { Ok '-BasePath is honoured for the publication lookup' } else { Bad "looked up: $($script:pubPath)" }
 

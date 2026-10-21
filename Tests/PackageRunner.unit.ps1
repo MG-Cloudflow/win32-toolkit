@@ -14,7 +14,9 @@
           'parent=none ... result=Failed' line, the stub never runs
       [5] process isolation: two runs back to back from ONE parent shell -> two distinct child PIDs, both
           different from the parent, both exit codes logged in order
-      [6] timeout: a 1-minute limit kills the stub AND its child (taskkill /T) -> exit 1460, result=Timeout
+      [6] timeout: a 1-minute limit kills the stub AND its child (taskkill /T) -> exit 1460, result=Timeout. The
+          stub processes are recorded as '<pid> <start time>' and checked or stopped only while that very process
+          runs (a PID freed by the kill can be reused by another process within seconds)
 
     Get-Win32ToolkitIntuneCommandLine (WP-C) is shadowed exactly as its contract (spec 2.10) defines it.
     The 5.1 parts are skipped (with a note) only when powershell.exe is absent.
@@ -52,7 +54,19 @@ New-Item -ItemType Directory -Path $root -Force | Out-Null
 $ps51  = Join-Path $env:WinDir 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $ps32  = Join-Path $env:WinDir 'SysWOW64\WindowsPowerShell\v1.0\powershell.exe'
 $has51 = Test-Path -LiteralPath $ps51
-$spawned = New-Object System.Collections.Generic.List[int]   # every stub PID we learn: killed in finally
+$spawned = New-Object System.Collections.Generic.List[string]   # every stub process we learn: stopped in finally
+# A stub process is recorded as '<pid> <start time as FILETIME UTC>' and is OURS only while a process with that PID
+# AND exactly that start time runs: Windows reuses a freed PID within seconds, and with suites running side by side
+# (Run-All in parallel, or two Run-All at once) a bare PID could name someone else's process - never report it
+# alive, never stop it.
+function Get-OwnProcess([string]$Record) {
+    $m = [regex]::Match("$Record", '^\s*(\d+)\s+(\d+)\s*$')
+    if (-not $m.Success) { return $null }
+    $p = Get-Process -Id ([int]$m.Groups[1].Value) -ErrorAction SilentlyContinue
+    if (-not $p) { return $null }
+    try { if ($p.StartTime.ToFileTimeUtc() -eq [long]$m.Groups[2].Value) { return $p } } catch { $null = $_ }   # StartTime unreadable: not one of ours
+    return $null
+}
 
 try {
 # == [1] generation ===============================================================================
@@ -234,10 +248,30 @@ $b = $LASTEXITCODE
     # == [6] timeout =============================================================================
     Write-Host '[6] timeout: the process TREE is killed -> exit 1460, result=Timeout (about 1 minute)' -ForegroundColor Cyan
     $pkgT = NewFakePackage 'hang' 0
+    # The identity record itself, first: a 5.1 process records itself, this pwsh must find exactly that process (and
+    # not with another start time), so a broken comparison can never turn a surviving stub into a PASS below.
+    $probeFile = Join-Path $root 'probe.txt'
+    $env:W32T_PR_PROBE = $probeFile
+    $probe = Start-Process -FilePath $ps51 -ArgumentList '-NoProfile', '-Command', 'Set-Content -LiteralPath $env:W32T_PR_PROBE -Value (''{0} {1}'' -f $PID, (Get-Process -Id $PID).StartTime.ToFileTimeUtc()) -Encoding ASCII; Start-Sleep -Seconds 60' -WindowStyle Hidden -PassThru
+    Remove-Item Env:\W32T_PR_PROBE -ErrorAction SilentlyContinue
+    $probeDeadline = (Get-Date).AddSeconds(30)
+    $probeRec = ''
+    while ($probeRec -notmatch '^\d+ \d+$' -and (Get-Date) -lt $probeDeadline) {
+        Start-Sleep -Milliseconds 200
+        $probeRec = if (Test-Path -LiteralPath $probeFile) { "$(Get-Content -LiteralPath $probeFile -Raw -ErrorAction SilentlyContinue)".Trim() } else { '' }
+    }
+    if ($probeRec) { $spawned.Add($probeRec) }
+    $probeOwn = Get-OwnProcess $probeRec
+    $probeParts = $probeRec -split ' '
+    $probeOther = if ($probeParts.Count -eq 2) { Get-OwnProcess ('{0} {1}' -f $probeParts[0], ([long]$probeParts[1] + 1)) } else { $null }
+    if ($probeOwn -and $probeOwn.Id -eq $probe.Id -and -not $probeOther) { Ok "a process is identified by PID + exact start time across 5.1 and pwsh ('$probeRec'; +1 tick -> not ours)" } else { Bad "identity record '$probeRec': own=$($probeOwn.Id) probe=$($probe.Id) other=$($probeOther.Id)" }
+    Stop-Process -InputObject $probe -Force -ErrorAction SilentlyContinue   # started here: certainly ours
+
     $hang = @'
 param([string]$DeploymentType = 'Install', [string]$DeployMode = '')
 $kid = Start-Process -FilePath (Join-Path $env:WinDir 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 600' -WindowStyle Hidden -PassThru
-Set-Content -LiteralPath (Join-Path $PSScriptRoot 'pids.txt') -Value @($PID, $kid.Id) -Encoding ASCII
+$me = '{0} {1}' -f $PID, (Get-Process -Id $PID).StartTime.ToFileTimeUtc()
+Set-Content -LiteralPath (Join-Path $PSScriptRoot 'pids.txt') -Value @($me, ('{0} {1}' -f $kid.Id, $kid.StartTime.ToFileTimeUtc())) -Encoding ASCII
 Start-Sleep -Seconds 600
 exit 0
 '@
@@ -245,8 +279,8 @@ exit 0
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $rcT = Invoke-Runner $pkgT @('-Path', (Join-Path $pkgT 'Invoke-AppDeployToolkit.ps1'), '-DeployMode', 'Silent', '-Label', 'app', '-TimeoutMinutes', '1')
     $sw.Stop()
-    $pidsT = @()
-    if (Test-Path -LiteralPath (Join-Path $pkgT 'pids.txt')) { $pidsT = @(Get-Content -LiteralPath (Join-Path $pkgT 'pids.txt') | Where-Object { $_ } | ForEach-Object { [int]$_ }) }
+    $pidsT = @()   # '<pid> <start time>' of the stub and of its child
+    if (Test-Path -LiteralPath (Join-Path $pkgT 'pids.txt')) { $pidsT = @(Get-Content -LiteralPath (Join-Path $pkgT 'pids.txt') | Where-Object { $_ -match '^\d+ \d+$' }) }
     foreach ($x in $pidsT) { $spawned.Add($x) }
     if ($rcT -eq 1460) { Ok "runner exit code 1460 after $([math]::Round($sw.Elapsed.TotalSeconds)) s" } else { Bad "rc=$rcT" }
     $logT = @(Get-ExitCodeLogLine $pkgT)
@@ -254,7 +288,7 @@ exit 0
     $alive = @()
     $deadline = (Get-Date).AddSeconds(15)
     do {
-        $alive = @($pidsT | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+        $alive = @($pidsT | Where-Object { Get-OwnProcess $_ })
         if ($alive.Count -eq 0) { break }
         Start-Sleep -Milliseconds 500
     } until ((Get-Date) -gt $deadline)
@@ -262,7 +296,7 @@ exit 0
 }
 }
 finally {
-    foreach ($x in $spawned) { Stop-Process -Id $x -Force -ErrorAction SilentlyContinue }
+    foreach ($x in $spawned) { $own = Get-OwnProcess $x; if ($own) { Stop-Process -InputObject $own -Force -ErrorAction SilentlyContinue } }   # same PID AND start time only
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
 

@@ -37,7 +37,12 @@ function Remove-Win32ToolkitHyperVSession { param($Session, $VMName, $Checkpoint
 $cred = New-Object System.Management.Automation.PSCredential('u', (ConvertTo-SecureString 'p' -AsPlainText -Force))
 $ProgressPreference = 'Continue'   # a distinctive non-default sentinel to prove exact restoration
 
-$result = Invoke-Win32ToolkitHyperVRun -ProjectPath $env:TEMP -Phase @(@{ Label = 'noop'; Command = 'noop' }) `
+# An empty project folder of this run's own: never %TEMP% itself, which other suites (and a second Run-All)
+# write to at the same time - a copy or zip helper reached by mistake would sweep all of it up.
+$proj = Join-Path ([System.IO.Path]::GetTempPath()) ('w32tps_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $proj -Force | Out-Null
+
+$result = Invoke-Win32ToolkitHyperVRun -ProjectPath $proj -Phase @(@{ Label = 'noop'; Command = 'noop' }) `
     -VMName 'no-such-vm' -Credential $cred -CheckpointName 'clean-base' 3>$null
 
 if ($script:insideProgress -eq 'SilentlyContinue') { Ok 'progress is SilentlyContinue INSIDE the run (host copy/checkpoint bars suppressed)' }
@@ -54,10 +59,11 @@ function New-Win32ToolkitHyperVSession { param($VMName, $Credential, $Checkpoint
 function Copy-Win32ToolkitProjectToGuest { param($Session, $ProjectPath, $GuestPath, [switch]$ReadOnly) }
 function Invoke-Win32ToolkitGuestPhase { param($Session, $Command, $Label) 0 }
 function Copy-Win32ToolkitResultsFromGuest { param($Session, $GuestPath, $Destination, $GuestRoot) }
-$okRun = Invoke-Win32ToolkitHyperVRun -ProjectPath $env:TEMP -Phase @(@{ Label = 'noop'; Command = 'noop' }) `
+$okRun = Invoke-Win32ToolkitHyperVRun -ProjectPath $proj -Phase @(@{ Label = 'noop'; Command = 'noop' }) `
     -VMName 'no-such-vm' -Credential $cred -CheckpointName 'clean-base' 3>$null
 if ($okRun -eq $true -and $ProgressPreference -eq 'Continue') { Ok 'restored on the success path too (and the run returns $true)' }
 else { Bad "success path: run=$okRun, ProgressPreference='$ProgressPreference'" }
+Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
 
 # ── (b) GUEST guards: each PS-Direct scriptblock self-silences (host preference doesn't cross runspaces) ─
 Write-Host '[b] the guest Invoke-Command scriptblocks set $ProgressPreference = SilentlyContinue' -ForegroundColor Cyan
