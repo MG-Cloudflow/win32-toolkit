@@ -239,6 +239,29 @@ try {
     $wantIu = 'The InstallUninstall test FAILED its assertions ' + [char]0x2014 + " review $p\Sandbox\Logs\InstallAssertions.log before publishing this package."
     if (@($w | Where-Object { $_ -ceq $wantIu }).Count -eq 1) { Ok 'no recorded run folder -> the top-level Sandbox\Logs log, as before' } else { Bad "warnings: $($w -join ' | ')" }
 
+    # The capture keeps its own logs in Runs\<ts>_Capture, which survive the test run that overwrites the
+    # same top-level file names (test campaign 2026-10-21, H5-F5/H7-F1). Real Initialize/Save/Wait helpers.
+    $pc = MakeProject 'capture'
+    Write-RunLog $pc 'Older_Uninstall.log' 'an earlier run'
+    ${function:New-TargetedDocumentation} = { param($ProjectPath, $ProjectName, $AppInfo, $Backend) (Join-Path $ProjectPath 'Documentation\InstallationChanges_1.json') }
+    function Wait-ForDocumentationAndProcess { param($ProjectPath, $InstallerType, $ExpectedJsonPath)
+        Write-RunLog $ProjectPath 'App_PSAppDeployToolkit_Install.log' 'capture run'; Write-RunLog $ProjectPath 'CollectLogs.done' 'collected=1'; $true }
+    function Get-InstallerFileInfo { param($FilesPath) [pscustomobject]@{ Type = 'exe' } }
+    function Import-Win32ToolkitCapturedIcon { param($ProjectPath) }
+    function Test-Win32ToolkitProject { param($ProjectPath, $Scenario, $SpecificVersion, $VersionsBack, $BaselineInstallerType)
+        Write-RunLog $ProjectPath 'App_PSAppDeployToolkit_Install.log' 'test run'; $true }
+    $hostC = @(Invoke-Win32ToolkitFinalize -ProjectPath $pc -ProjectName 'P' -RunTest InstallUninstall 3>$null 6>&1 | ForEach-Object { "$_" })
+    $capDirs = @(Get-ChildItem -LiteralPath (Join-Path $pc 'Sandbox\Logs\Runs') -Directory -Filter '*_Capture' -ErrorAction SilentlyContinue)
+    $capLog = if ($capDirs.Count -eq 1) { Join-Path $capDirs[0].FullName 'App_PSAppDeployToolkit_Install.log' } else { '' }
+    if ($capDirs.Count -eq 1 -and $capDirs[0].Name -match '^\d{8}-\d{6}_Capture$' -and $capLog -and (Get-Content -LiteralPath $capLog -Raw).Trim() -eq 'capture run') { Ok "the capture's PSADT log is kept in Runs\$($capDirs[0].Name)" } else { Bad "capture folders: $($capDirs.Name -join ', ')" }
+    if ((Get-Content -LiteralPath (Join-Path $pc 'Sandbox\Logs\App_PSAppDeployToolkit_Install.log') -Raw).Trim() -eq 'test run' -and (Get-Content -LiteralPath $capLog -Raw).Trim() -eq 'capture run') { Ok "the test run overwrote the top-level log; the capture's copy survived" } else { Bad 'capture copy lost' }
+    if ($capDirs.Count -eq 1 -and -not (Test-Path -LiteralPath (Join-Path $capDirs[0].FullName 'Older_Uninstall.log'))) { Ok 'only the files the capture wrote are in its folder' } else { Bad 'an earlier run''s file was copied into the capture folder' }
+    $codesC = Join-Path $pc 'Sandbox\Logs\PsadtExitCodes.log'
+    if (-not (Test-Path -LiteralPath $codesC) -or -not ((Get-Content -LiteralPath $codesC -Raw) -match '_Capture')) { Ok 'the capture writes no marker to PsadtExitCodes.log (it never uses the package runner)' } else { Bad 'capture marker written' }
+    if (($hostC -match '^Capture logs\s+: .*_Capture$')) { Ok "the host prints the capture's log folder" } else { Bad "host: $($hostC -join ' | ')" }
+    $cr = Initialize-Win32ToolkitTestRunLog -ProjectPath (MakeProject 'capmarker') -Scenario Capture
+    if ($cr -and $cr.RunName -match '_Capture$' -and $null -eq $cr.Marker) { Ok 'Initialize -Scenario Capture: <ts>_Capture, Marker $null' } else { Bad "capture run: $($cr | ConvertTo-Json -Compress)" }
+
     # --- [8] Source checks ------------------------------------------------------------------------------
     Write-Host '[8] Source checks: ASCII, every catch starts with the C-2 line' -ForegroundColor Cyan
     $c2 = "if (`$_.FullyQualifiedErrorId -like 'W32T.*') { throw }"

@@ -88,6 +88,11 @@ function Invoke-Win32ToolkitFinalize {
     # (revert → copy-in → run over PS Direct → copy-out), then the SAME waiter/consumer processes it.
     $backend = Get-Win32ToolkitTestBackend
     Write-Host "`nGenerating targeted installation documentation ($backend)..." -ForegroundColor Yellow
+    # The capture's own PSADT/MSI logs land in the flat Sandbox\Logs, where the first test run below overwrote
+    # them (same file names): keep them in Sandbox\Logs\Runs\<ts>_Capture (test campaign 2026-10-21, H5-F5 /
+    # H7-F1). Prepared BEFORE New-TargetedDocumentation: under Sandbox the sandbox launches inside it.
+    # Best effort: $null (no per-run folder) never stops the capture.
+    $captureRun = Initialize-Win32ToolkitTestRunLog -ProjectPath $ProjectPath -Scenario Capture
     $docSuccess = New-TargetedDocumentation -ProjectPath $ProjectPath -ProjectName $ProjectName -AppInfo $AppInfo -Backend $backend
 
     $captureReady = [bool]$docSuccess
@@ -102,6 +107,7 @@ function Invoke-Win32ToolkitFinalize {
         }
     }
 
+    $jsonProcessed = $false
     if ($captureReady) {
         Write-Host '✓ Targeted documentation setup completed!' -ForegroundColor Green
         Write-Host "`nWaiting for documentation completion..." -ForegroundColor Yellow
@@ -122,6 +128,23 @@ function Invoke-Win32ToolkitFinalize {
     }
     else {
         Write-Warning 'Documentation generation had issues - please review manually'
+    }
+
+    # Keep the capture's logs in their own folder BEFORE any test run can overwrite them. Under Sandbox the
+    # guest's log collector runs after the capture JSON is written, so wait for it (bounded); a Hyper-V
+    # capture brought its logs back with the copy-out.
+    if ($captureRun -and $docSuccess) {
+        try {
+            if ($backend -eq 'Sandbox' -and $jsonProcessed -and -not (Wait-Win32ToolkitCollectedLog -ProjectPath $ProjectPath -TimeoutSeconds 60)) {
+                Write-Warning "The Sandbox log collector did not finish within 60 s: the capture's log folder may miss its PSADT/MSI logs (see Sandbox\Logs)."
+            }
+            $captureLogs = Save-Win32ToolkitTestRunLog -Run $captureRun
+            if ($captureLogs) { Write-Host "Capture logs     : $(Join-Path $ProjectPath $captureLogs)" -ForegroundColor Gray }
+        }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Warning "The capture's logs could not be kept in their own folder: $($_.Exception.Message)"
+        }
     }
 
     # 3. Optional test scenarios. The Update scenario returns a verdict ($true/$false/$null) —

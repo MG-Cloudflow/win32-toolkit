@@ -5,8 +5,8 @@ function Initialize-Win32ToolkitTestRunLog {
         PsadtExitCodes.log and remembers the Sandbox\Logs files that existed before the run.
     .DESCRIPTION
         Every test run keeps its own evidence in Sandbox\Logs\Runs\<yyyyMMdd-HHmmss>_<Scenario>[_<Family>]\
-        (test campaign F2): an InstallUninstall run, an Update run, and each leg of an Update
-        '-BaselineInstallerType Both' run. The top-level Sandbox\Logs files stay where they are (for
+        (test campaign F2): an InstallUninstall run, an Update run, each leg of an Update
+        '-BaselineInstallerType Both' run, and the documentation capture (<ts>_Capture). The top-level Sandbox\Logs files stay where they are (for
         compatibility: records without a LogFolder and the technology-switch check read the top-level
         UpdateAssertions.log): each run overwrites the files it writes, and files only an earlier run wrote
         (the other scenario's assertion log, a dependency's or an earlier version's log) stay there.
@@ -28,7 +28,9 @@ function Initialize-Win32ToolkitTestRunLog {
     .PARAMETER ProjectPath
         The PSADT project folder under test.
     .PARAMETER Scenario
-        InstallUninstall or Update (part of the folder name).
+        InstallUninstall, Update or Capture (part of the folder name). Capture: the documentation capture run
+        (Invoke-Win32ToolkitFinalize), whose PSADT/MSI logs carry the same names a later test run writes; it
+        appends no marker (Marker is $null) because the capture does not use the package runner.
     .PARAMETER Family
         Update: the installer family of this run's baseline (msi, exe, msix, ...), part of the folder name.
         Characters other than letters and digits are dropped.
@@ -46,7 +48,7 @@ function Initialize-Win32ToolkitTestRunLog {
         [string]$ProjectPath,
 
         [Parameter(Mandatory)]
-        [ValidateSet('InstallUninstall', 'Update')]
+        [ValidateSet('InstallUninstall', 'Update', 'Capture')]
         [string]$Scenario,
 
         [AllowEmptyString()]
@@ -69,15 +71,19 @@ function Initialize-Win32ToolkitTestRunLog {
         # The exit-code log keeps the lines of every run of one outer call; this marker starts this run's lines.
         # UTC with a 'Z', like the guest runner's lines, so they read in order whatever the guest's time zone
         # (the run NAME above stays host local time). Invariant culture: ':' is never localised.
+        # A Capture never uses the package runner (it starts PSADT itself): no marker, no exit-code lines.
         $nowUtc = [datetime]::UtcNow
-        $marker = '[{0}Z] -- test run {1} --' -f $nowUtc.ToString('yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture), $name
-        $codes = Join-Path $logs 'PsadtExitCodes.log'
-        $prefix = ''
-        if (Test-Path -LiteralPath $codes) {
-            $bytes = [System.IO.File]::ReadAllBytes($codes)
-            if ($bytes.Length -gt 0 -and $bytes[-1] -ne 10) { $prefix = "`r`n" }
+        $marker = $null
+        if ($Scenario -ne 'Capture') {
+            $marker = '[{0}Z] -- test run {1} --' -f $nowUtc.ToString('yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture), $name
+            $codes = Join-Path $logs 'PsadtExitCodes.log'
+            $prefix = ''
+            if (Test-Path -LiteralPath $codes) {
+                $bytes = [System.IO.File]::ReadAllBytes($codes)
+                if ($bytes.Length -gt 0 -and $bytes[-1] -ne 10) { $prefix = "`r`n" }
+            }
+            [System.IO.File]::AppendAllText($codes, $prefix + $marker + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
         }
-        [System.IO.File]::AppendAllText($codes, $prefix + $marker + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
 
         # The completion file of an earlier run's log collector would end the wait for this run's logs at once.
         $done = Join-Path $logs 'CollectLogs.done'

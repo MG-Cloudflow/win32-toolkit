@@ -417,6 +417,10 @@ try {
     function Assert-Win32ToolkitPackageReady { param($ProjectPath, $Stage, [switch]$AllowLegacyScript) [pscustomobject]@{ Ready = $true } }
     function Get-Win32ToolkitTestBackend { 'Sandbox' }
     function New-TargetedDocumentation { param($ProjectPath, $ProjectName, $AppInfo, $Backend) $false }
+    # C-9: the capture run-log helpers Finalize calls (H5-F5/H7-F1).
+    function Initialize-Win32ToolkitTestRunLog { param($ProjectPath, $Scenario, $Family) $null }
+    function Save-Win32ToolkitTestRunLog { param($Run) $null }
+    function Wait-Win32ToolkitCollectedLog { param($ProjectPath, $TimeoutSeconds) $true }
     function Export-Win32ToolkitIntuneWin { param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript) }
     $script:testCalls = [System.Collections.Generic.List[hashtable]]::new()
     function Test-Win32ToolkitProject {

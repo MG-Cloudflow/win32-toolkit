@@ -36,6 +36,13 @@ function Invoke-Win32ToolkitHyperVRun {
     return $script:hvReturn
 }
 function Wait-ForDocumentationAndProcess { param($ProjectPath, $InstallerType, $ExpectedJsonPath) $script:log += 'wait'; return $true }
+# C-9: the capture keeps its logs in Sandbox\Logs\Runs\<ts>_Capture (test campaign 2026-10-21, H5-F5/H7-F1). Shadows
+# that touch no disk ('C:\proj' is fake) and stay out of $script:log, so the exact-order assertions hold.
+$script:cap = @{ Scenario = $null; Waits = 0; Saves = 0 }
+function Initialize-Win32ToolkitTestRunLog { param($ProjectPath, $Scenario, $Family) $script:cap.Scenario = $Scenario; [pscustomobject]@{ ProjectPath = $ProjectPath; RunName = 'x_Capture'; RelativePath = 'Sandbox\Logs\Runs\x_Capture'; Marker = $null; Snapshot = @{} } }
+function Save-Win32ToolkitTestRunLog { param($Run) $script:cap.Saves++; [string]$Run.RelativePath }
+function Wait-Win32ToolkitCollectedLog { param($ProjectPath, $TimeoutSeconds) $script:cap.Waits++; $true }
+function Import-Win32ToolkitCapturedIcon { param($ProjectPath) }
 function Get-InstallerFileInfo { param($FilesPath) [pscustomobject]@{ Type = 'exe' } }
 function Export-Win32ToolkitIntuneWin { param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript) $script:exportAllowLegacy = [bool]$AllowLegacyScript }
 # Finalize pre-flight (WP-C contract, spec 2.11): passes unless the case says otherwise.
@@ -58,11 +65,14 @@ Invoke-Win32ToolkitFinalize -ProjectPath 'C:\proj' -ProjectName 'P' 3>$null
 if ($script:genBackend -eq 'Sandbox') { Ok 'New-TargetedDocumentation -Backend Sandbox' } else { Bad "genBackend=$script:genBackend" }
 if ('hv:run' -notin $script:log) { Ok 'Invoke-Win32ToolkitHyperVRun NOT called for Sandbox' } else { Bad 'HyperV run called on Sandbox' }
 if (($script:log -join '>') -eq 'assert:Finalize>gen:Sandbox>wait') { Ok 'order: pre-flight -> generate -> wait' } else { Bad "log=$($script:log -join '>')" }
+if ($script:cap.Scenario -eq 'Capture' -and $script:cap.Waits -eq 1 -and $script:cap.Saves -eq 1) { Ok 'Sandbox: the capture run keeps its logs (Capture run folder; waits for the guest collector first)' } else { Bad "capture logs: $($script:cap | ConvertTo-Json -Compress)" }
 
 # --- HyperV ---------------------------------------------------------------------------------------
 Write-Host '[2] Backend=HyperV: runs the capture in the VM, then the same waiter' -ForegroundColor Cyan
 $script:backend = 'HyperV'; $script:log = @(); $script:hvReturn = $true
+$script:cap = @{ Scenario = $null; Waits = 0; Saves = 0 }
 Invoke-Win32ToolkitFinalize -ProjectPath 'C:\proj' -ProjectName 'P' 3>$null
+if ($script:cap.Scenario -eq 'Capture' -and $script:cap.Waits -eq 0 -and $script:cap.Saves -eq 1) { Ok 'HyperV: the capture logs are kept without a collector wait (they came back with the copy-out)' } else { Bad "capture logs: $($script:cap | ConvertTo-Json -Compress)" }
 if ($script:genBackend -eq 'HyperV') { Ok 'New-TargetedDocumentation -Backend HyperV' } else { Bad "genBackend=$script:genBackend" }
 if (($script:log -join '>') -eq 'assert:Finalize>gen:HyperV>hv:run>wait') { Ok 'order: pre-flight -> generate -> hyperv run -> wait' } else { Bad "log=$($script:log -join '>')" }
 if ($script:hvPhase -and $script:hvPhase[0].Command -like '*TargetedDocumentationScript.ps1*') { Ok 'phase runs the generated doc script' } else { Bad "phase=$($script:hvPhase | Out-String)" }

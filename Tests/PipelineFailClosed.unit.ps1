@@ -155,6 +155,10 @@ function New-TargetedDocumentation { param($ProjectPath, $ProjectName, $AppInfo,
 function Invoke-Win32ToolkitHyperVRun { param($ProjectPath, $Phase, $Output) $true }
 function Wait-ForDocumentationAndProcess { param($ProjectPath, $InstallerType, $ExpectedJsonPath) $true }
 function Import-Win32ToolkitCapturedIcon { param($ProjectPath) }
+# C-9: the capture run-log helpers Finalize calls (test campaign 2026-10-21, H5-F5/H7-F1); no disk writes.
+function Initialize-Win32ToolkitTestRunLog { param($ProjectPath, $Scenario, $Family) $null }
+function Save-Win32ToolkitTestRunLog { param($Run) $null }
+function Wait-Win32ToolkitCollectedLog { param($ProjectPath, $TimeoutSeconds) $true }
 function Test-Win32ToolkitProject { param($ProjectPath, $Scenario, $SpecificVersion, $VersionsBack) $script:Calls.Add('test'); $true }
 function Export-Win32ToolkitIntuneWin { param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript) $script:Calls.Add("export:$([bool]$AllowLegacyScript)") }
 

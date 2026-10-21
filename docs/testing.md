@@ -109,6 +109,9 @@ Sandbox\Logs\Runs\20261020-224100_Update_exe\
 ```
 
 The folder name is the start time, the scenario and, for an Update run, the old version's installer family.
+The documentation capture that `Invoke-Win32Toolkit`, `New-Win32ToolkitManualApp -Continue` and
+`Complete-Win32ToolkitManualApp` run first keeps its logs the same way, in `Sandbox\Logs\Runs\<time>_Capture\`
+(printed as `Capture logs : <folder>`), so the first test run cannot overwrite the capture's PSADT and MSI logs.
 It holds the assertion log, the Add/Remove Programs snapshots, the run's own `PsadtExitCodes.log` lines and
 the PSADT and MSI logs. The host prints it as `Run logs : <folder>`, and the run's record in
 `Documentation\TestResults.json` names it in `LogFolder`. The files directly in `Sandbox\Logs\` gather the
