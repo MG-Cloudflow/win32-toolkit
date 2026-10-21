@@ -354,6 +354,10 @@ Accept wildcard characters: False
 Dependencies to declare: 'winget:\<Id\>', 'project:\<Template\>\\\<Name\>', or 'intune:\<AppGuid\>'
 references.
 Installed first in the test guest and related to the Intune app at publish time.
+The references are checked before anything is created (their form even before any prompt): a
+'project:' reference that is not exactly '\<Template\>\\\<Name\>', an 'intune:' reference that is not a
+GUID, or a reference to the app being built stops the command with the terminating error
+W32T.InvalidDependencyReference.
 
 ```yaml
 Type: String[]

@@ -312,6 +312,10 @@ Dependencies to declare for this app before packaging: 'winget:\<Id\>', 'project
 or 'intune:\<AppGuid\>' references (array).
 Declared dependencies install first in the test guest
 and are related to the Intune app at publish time.
+The references are checked before anything is
+searched, downloaded or created: a 'project:' reference that is not exactly '\<Template\>\\\<Name\>', an
+'intune:' reference that is not a GUID, or a reference to the app being built stops the command
+with the terminating error W32T.InvalidDependencyReference.
 
 ```yaml
 Type: String[]

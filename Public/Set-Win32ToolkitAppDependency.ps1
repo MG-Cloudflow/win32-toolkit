@@ -11,6 +11,11 @@ function Set-Win32ToolkitAppDependency {
         Dependencies are stored as DATA (winget id / project name / Intune app id) and are never spliced
         into a generated script. Nothing is installed or published by this command — it only declares.
 
+        Every reference is checked before anything is written: a 'project:' reference must be exactly
+        '<Template>\<ProjectName>' (no full path, no '..'), an 'intune:' reference must be a GUID, and no
+        reference may name this project itself. A refused reference stops the command with the terminating
+        error W32T.InvalidDependencyReference, and nothing is written.
+
         Because Intune honours the DEPENDENCY app's own detection rule, an already-present dependency is
         skipped on the device automatically; there is no separate "skip if installed" setting.
 
@@ -51,55 +56,35 @@ function Set-Win32ToolkitAppDependency {
 
     if (-not (Test-Path -LiteralPath $ProjectPath)) { throw "Project not found: $ProjectPath" }
     if (-not $Clear -and -not $DependsOn) {
-        throw 'Supply -DependsOn with at least one reference, or -Clear to remove all dependencies.'
+        throw [System.Management.Automation.ErrorRecord]::new(
+            [System.ArgumentException]::new('Supply -DependsOn with at least one reference, or -Clear to remove all dependencies.'),
+            'W32T.InvalidDependencyReference', [System.Management.Automation.ErrorCategory]::InvalidArgument, $ProjectPath)
     }
 
-    # This project's own 'project:' identity — an app cannot depend on itself (Intune rejects it too). Compared as
-    # a normalized full path too, so another spelling of the same folder (a short 8.3 name) is caught as well.
-    $self         = '{0}\{1}' -f (Split-Path -Leaf (Split-Path -Parent $ProjectPath)), (Split-Path -Leaf $ProjectPath)
+    # Every reference is validated before anything is written: the shape ('project:' = exactly
+    # '<Template>\<ProjectName>' under Projects\, an 'intune:' GUID, ...) and never this project itself (by its
+    # '<Template>\<Leaf>' and its normalized full path, so an 8.3 alias too). A refusal is a terminating
+    # W32T.InvalidDependencyReference (re-verification 2026-10-21, B3 r2.1: the same check the pipelines now run
+    # before the download and the scaffold).
+    $added = @(Assert-Win32ToolkitDependencyRef -Reference $DependsOn -DependencyType $DependencyType -ProjectPath $ProjectPath)
+
     $selfFull     = [System.IO.Path]::GetFullPath($PSCmdlet.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ProjectPath)).TrimEnd('\')
     $projectsRoot = Split-Path -Parent (Split-Path -Parent $selfFull)
-
-    $existing = if ($Clear) { @() } else { @(Get-Win32ToolkitDependencies -ProjectPath $ProjectPath) }
-
-    $added = @()
-    foreach ($r in @($DependsOn)) {
-        if ([string]::IsNullOrWhiteSpace($r)) { continue }
-        $parsed = ConvertTo-Win32ToolkitDependencyRef -Reference $r -DependencyType $DependencyType
-        if ($parsed.Source -eq 'project') {
-            # Exactly '<Template>\<ProjectName>' under Projects\: a rooted path, '..' or a third segment would be
-            # joined onto Projects\ and resolve outside it when staged (test campaign 2026-10-21, S11-F5).
-            $ref   = [string]$parsed.Ref
-            $parts = @($ref -split '\\')
-            # A segment ending in '.' or ' ' is refused too: Windows drops it, so 'T.\App' or 'T\App.' names the
-            # folder 'T\App' (re-verification 2026-10-21, B3 #2: a dotted self-reference got through).
-            $bad   = @($parts | Where-Object { [string]::IsNullOrWhiteSpace($_) -or $_ -eq '.' -or $_ -eq '..' -or $_ -match '[. ]$' -or $_.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0 })
-            if ($parts.Count -ne 2 -or $bad.Count -gt 0 -or [System.IO.Path]::IsPathRooted($ref)) {
-                # The parenthetical names the actual reason (re-verification 2026-10-21, B3 r1.3: 'T\App.' was
-                # refused as "not a full path or '..'"); the staging uses the same "a name ends in" wording.
-                $why = if ([System.IO.Path]::IsPathRooted($ref) -or @($parts | Where-Object { $_ -eq '.' -or $_ -eq '..' }).Count -gt 0) { "not a full path or '..'" }
-                       elseif (@($parts | Where-Object { $_ -match '[. ]$' }).Count -gt 0) { "a name ends in '.' or ' '" }
-                       elseif (@($parts | Where-Object { $_.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0 }).Count -gt 0) { 'a name holds a character that is not allowed in a file name' }
-                       else { 'exactly two names, neither empty' }
-                throw "Dependency 'project:$ref' must be '<Template>\<ProjectName>' under Projects\ ($why)."
-            }
-            $refFull = [System.IO.Path]::GetFullPath((Join-Path $projectsRoot $ref)).TrimEnd('\')
-            if ($ref -eq $self -or $refFull.Equals($selfFull, [System.StringComparison]::OrdinalIgnoreCase)) {
-                throw "An app cannot depend on itself ('$self')."
-            }
-            # Declaring a dependency before it is packaged is legitimate: only warn (fail-open check).
-            try {
-                if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $projectsRoot $ref) 'Invoke-AppDeployToolkit.ps1'))) {
-                    Write-Warning "Dependency 'project:$ref' is not packaged yet (no Invoke-AppDeployToolkit.ps1 under $projectsRoot): a test or capture of this app stops until it is."
-                }
-            }
-            catch {
-                if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
-                Write-Verbose "Could not check whether 'project:$ref' is packaged: $($_.Exception.Message)"
+    foreach ($parsed in @($added | Where-Object { $_.Source -eq 'project' })) {
+        $ref = [string]$parsed.Ref
+        # Declaring a dependency before it is packaged is legitimate: only warn (fail-open check).
+        try {
+            if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $projectsRoot $ref) 'Invoke-AppDeployToolkit.ps1'))) {
+                Write-Warning "Dependency 'project:$ref' is not packaged yet (no Invoke-AppDeployToolkit.ps1 under $projectsRoot): a test or capture of this app stops until it is."
             }
         }
-        $added += $parsed
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Verbose "Could not check whether 'project:$ref' is packaged: $($_.Exception.Message)"
+        }
     }
+
+    $existing = if ($Clear) { @() } else { @(Get-Win32ToolkitDependencies -ProjectPath $ProjectPath) }
 
     # Upsert by Source+Ref (the new DependencyType wins on collision), preserving declaration order.
     $merged = [System.Collections.Generic.List[object]]::new()

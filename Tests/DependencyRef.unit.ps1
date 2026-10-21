@@ -17,6 +17,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Get-Win32ToolkitAppConfig.ps1')
 . (Join-Path $repo 'Private\Set-Win32ToolkitAppConfig.ps1')
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitDependencyRef.ps1')
+. (Join-Path $repo 'Private\Assert-Win32ToolkitDependencyRef.ps1')   # C-9: Set-Win32ToolkitAppDependency validates through it (B3 r2.1)
 . (Join-Path $repo 'Private\Get-Win32ToolkitDependencies.ps1')
 . (Join-Path $repo 'Public\Set-Win32ToolkitAppDependency.ps1')
 
@@ -101,6 +102,32 @@ $w6 = $null
 $set6 = @(Set-Win32ToolkitAppDependency -ProjectPath $proj -DependsOn 'project:Contoso\NotPackagedYet' -WarningVariable w6 -WarningAction SilentlyContinue)
 if ($set6.Count -eq 1 -and @($w6 | Where-Object { "$_" -match "'project:Contoso\\NotPackagedYet' is not packaged yet" }).Count -eq 1) { Ok 'a not-yet-packaged project is declared with one warning (declaring first is legitimate)' } else { Bad "declared=$($set6.Count) warn=$($w6 -join ' | ')" }
 $null = Set-Win32ToolkitAppDependency -ProjectPath $proj -Clear
+
+Write-Host '[6c] every refusal is W32T.InvalidDependencyReference (InvalidArgument); Assert-Win32ToolkitDependencyRef is pure (re-verification 2026-10-21, B3 r2.1)' -ForegroundColor Cyan
+function Get-RefusalOf([scriptblock]$Action) { try { $null = & $Action; $null } catch { $_ } }
+$refusals = [ordered]@{
+    "ConvertTo 'intune:not-a-guid'"         = { ConvertTo-Win32ToolkitDependencyRef -Reference 'intune:not-a-guid' }
+    "ConvertTo 'project:NoBackslash'"       = { ConvertTo-Win32ToolkitDependencyRef -Reference 'project:NoBackslash' }
+    "Assert 'C:\abs\Tool' (bare, rooted)"   = { Assert-Win32ToolkitDependencyRef -Reference 'C:\abs\Tool' }
+    "Assert 'project:..\X'"                 = { Assert-Win32ToolkitDependencyRef -Reference 'project:..\X' }
+    "Assert 'project:Contoso\App.'"         = { Assert-Win32ToolkitDependencyRef -Reference 'project:Contoso\App.' }
+    "Assert self (folder not created yet)"  = { Assert-Win32ToolkitDependencyRef -Reference 'project:Contoso\NotYet_x64_1.0' -ProjectPath (Join-Path (Split-Path -Parent $proj) 'NotYet_x64_1.0') }
+    "Set without -DependsOn or -Clear"      = { Set-Win32ToolkitAppDependency -ProjectPath $proj }
+    "Set 'project:..\X'"                    = { Set-Win32ToolkitAppDependency -ProjectPath $proj -DependsOn 'project:..\X' -WarningAction SilentlyContinue }
+    "Set self"                              = { Set-Win32ToolkitAppDependency -ProjectPath $proj -DependsOn 'project:Contoso\Notepad_x64_8.6' }
+}
+foreach ($k in $refusals.Keys) {
+    $e = Get-RefusalOf $refusals[$k]
+    if ($e -and $e.FullyQualifiedErrorId -eq 'W32T.InvalidDependencyReference' -and $e.CategoryInfo.Category -eq 'InvalidArgument' -and $e.Exception -is [System.ArgumentException]) {
+        Ok "$k -> W32T.InvalidDependencyReference / InvalidArgument ($($e.Exception.Message))"
+    } else { Bad "$k -> fqid='$(if ($e) { $e.FullyQualifiedErrorId })' category='$(if ($e) { $e.CategoryInfo.Category })' $e" }
+}
+if (-not (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $proj) 'NotYet_x64_1.0'))) { Ok 'the self check of a project that does not exist yet created nothing' } else { Bad 'the self check created the project folder' }
+$ok6c = @(Assert-Win32ToolkitDependencyRef -Reference "winget:$VC", '', ' ', 'project:Contoso\Other_x64_1.0', 'intune:8d0a1f2c-1111-2222-3333-444455556666' -DependencyType detect -ProjectPath $proj)
+if ($ok6c.Count -eq 3 -and ($ok6c.Source -join ',') -eq 'winget,project,intune' -and @($ok6c | Where-Object DependencyType -ne 'detect').Count -eq 0) { Ok 'valid references come back parsed, in order, blanks skipped, DependencyType stamped' } else { Bad "parsed: $($ok6c | ConvertTo-Json -Compress)" }
+$noSelf = @(Assert-Win32ToolkitDependencyRef -Reference 'project:Contoso\Notepad_x64_8.6')
+if ($noSelf.Count -eq 1) { Ok 'without -ProjectPath only the form is checked (the pipelines run the self check once the project name is known)' } else { Bad 'shape-only check refused a well-formed reference' }
+if (@(Get-Win32ToolkitDependencies -ProjectPath $proj).Count -eq 0) { Ok 'nothing was written by any refusal' } else { Bad 'a refused reference was stored' }
 
 Write-Host '[7] both entry points expose the same declaration surface (winget + custom/manual apps)' -ForegroundColor Cyan
 $surface = @{}

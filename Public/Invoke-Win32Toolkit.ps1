@@ -62,7 +62,10 @@ function Invoke-Win32Toolkit {
 .PARAMETER DependsOn
     Dependencies to declare for this app before packaging: 'winget:<Id>', 'project:<Template>\<Name>',
     or 'intune:<AppGuid>' references (array). Declared dependencies install first in the test guest
-    and are related to the Intune app at publish time.
+    and are related to the Intune app at publish time. The references are checked before anything is
+    searched, downloaded or created: a 'project:' reference that is not exactly '<Template>\<Name>', an
+    'intune:' reference that is not a GUID, or a reference to the app being built stops the command
+    with the terminating error W32T.InvalidDependencyReference.
 .PARAMETER DependencyType
     How Intune should treat the declared dependencies: 'autoInstall' (default) installs them
     automatically; 'detect' only requires their presence.
@@ -175,6 +178,12 @@ function Invoke-Win32Toolkit {
     try {
         Write-Host 'Winget App Downloader + PSADT Project Creator' -ForegroundColor Cyan
         Write-Host '===========================================' -ForegroundColor Cyan
+
+        # -DependsOn is checked before anything is resolved, searched, downloaded or created (re-verification
+        # 2026-10-21, B3 r2.1: a bad reference was refused only after the download and the scaffold, as a
+        # non-terminating error that left a half-configured project). W32T.InvalidDependencyReference is re-thrown by
+        # the catch below; the self-dependency check follows once the project name is known.
+        if ($DependsOn) { $null = Assert-Win32ToolkitDependencyRef -Reference $DependsOn -DependencyType $DependencyType }
 
         # Check if winget is installed
         if (-not (Test-WingetInstalled)) {
@@ -291,6 +300,9 @@ function Invoke-Win32Toolkit {
         $templateSeg = Sanitize-ProjectName -Name $script:OrgTemplate.TemplateName
         if ([string]::IsNullOrWhiteSpace($templateSeg)) { $templateSeg = 'Default' }
         $projectsDir = Join-Path $paths.Projects $templateSeg
+        # A 'project:' dependency on this very app ('<Template>\<ProjectName>' or the same full path) is refused
+        # before the template folder or the project is created (B3 r2.1); the declaration below re-checks it.
+        if ($DependsOn) { $null = Assert-Win32ToolkitDependencyRef -Reference $DependsOn -DependencyType $DependencyType -ProjectPath (Join-Path $projectsDir $projectName) }
         if (-not (Test-Path $projectsDir)) {
             New-Item -Path $projectsDir -ItemType Directory -Force | Out-Null
         }
@@ -383,6 +395,7 @@ function Invoke-Win32Toolkit {
 
                 # Declare Intune app dependencies (data-only). Written AFTER Configure-PSADTForInstaller so
                 # AppConfig.json already exists, and BEFORE finalize so publishing can resolve + attach them.
+                # The references were validated before the download; this re-check is the second line of defence.
                 if ($DependsOn) {
                     $declared = Set-Win32ToolkitAppDependency -ProjectPath $projectFullPath -DependsOn $DependsOn -DependencyType $DependencyType
                     Write-Host "✓ Dependencies   : $((@($declared) | ForEach-Object { "$($_.Source):$($_.Ref)" }) -join ', ')" -ForegroundColor Green

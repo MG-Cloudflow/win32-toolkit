@@ -36,6 +36,9 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 
 # System under test + the one real helper it needs for naming.
 . (Join-Path $repo 'Private\Sanitize-ProjectName.ps1')
+# C-9: a -DependsOn run validates its references before anything is downloaded or created (B3 r2.1; real, pure).
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitDependencyRef.ps1')
+. (Join-Path $repo 'Private\Assert-Win32ToolkitDependencyRef.ps1')
 . (Join-Path $repo 'Public\Invoke-Win32Toolkit.ps1')
 
 # ── shadows: everything that would touch winget / the registry / the disk / Intune ───────────────

@@ -15,6 +15,10 @@ function ConvertTo-Win32ToolkitDependencyRef {
         PURE — no I/O, no Graph. The Ref is preserved VERBATIM: winget ids legitimately contain '.' and
         '+' (Microsoft.VCRedist.2015+.x64) and must never be run through Sanitize-ProjectName, and the
         value is stored as JSON DATA in AppConfig.json — never spliced into a generated script.
+
+        A reference with no value, an 'intune:' id that is not a GUID or a 'project:' reference without '\' throws
+        the terminating error W32T.InvalidDependencyReference. The full 'project:' shape and self-dependency checks
+        are in Assert-Win32ToolkitDependencyRef, which every declaration goes through.
     .PARAMETER Reference
         The reference string, e.g. 'winget:Microsoft.VCRedist.2015+.x64'.
     .PARAMETER DependencyType
@@ -46,14 +50,21 @@ function ConvertTo-Win32ToolkitDependencyRef {
         elseif ($raw -like '*\*')  { $source = 'project'; $ref = $raw }
         else                       { $source = 'winget';  $ref = $raw }
 
+        # Every refusal is a terminating W32T.InvalidDependencyReference (InvalidArgument), so the pipelines that
+        # validate -DependsOn up front stop before anything is created (re-verification 2026-10-21, B3 r2.1).
+        $refuse = {
+            param([string]$Message)
+            throw [System.Management.Automation.ErrorRecord]::new([System.ArgumentException]::new($Message),
+                'W32T.InvalidDependencyReference', [System.Management.Automation.ErrorCategory]::InvalidArgument, $Reference)
+        }
         if ([string]::IsNullOrWhiteSpace($ref)) {
-            throw "Dependency reference '$Reference' has no value after the '<source>:' prefix."
+            & $refuse "Dependency reference '$Reference' has no value after the '<source>:' prefix."
         }
         if ($source -eq 'intune' -and $ref -notmatch $guid) {
-            throw "Dependency 'intune:$ref' is not a valid Intune app id (expected a GUID)."
+            & $refuse "Dependency 'intune:$ref' is not a valid Intune app id (expected a GUID)."
         }
         if ($source -eq 'project' -and $ref -notlike '*\*') {
-            throw "Dependency 'project:$ref' must be '<Template>\<ProjectName>' (as listed by Browse projects)."
+            & $refuse "Dependency 'project:$ref' must be '<Template>\<ProjectName>' (as listed by Browse projects)."
         }
 
         [pscustomobject]@{

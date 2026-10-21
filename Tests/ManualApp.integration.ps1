@@ -31,6 +31,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Set-Win32ToolkitAppConfig.ps1')
 . (Join-Path $repo 'Private\Add-Win32ToolkitInstallerFiles.ps1')
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitDependencyRef.ps1')
+. (Join-Path $repo 'Private\Assert-Win32ToolkitDependencyRef.ps1')   # C-9: -DependsOn pre-flight + Set-Win32ToolkitAppDependency (B3 r2.1)
 . (Join-Path $repo 'Private\Get-Win32ToolkitDependencies.ps1')
 . (Join-Path $repo 'Public\Set-Win32ToolkitAppDependency.ps1')
 . (Join-Path $repo 'Public\New-Win32ToolkitManualApp.ps1')
@@ -43,8 +44,10 @@ $script:applyResult = $true
 function Apply-OrgTemplate { param($ProjectPath, $Template, $BasePath) $script:applyResult }
 
 # A real PSADT scaffold is a network/module dependency — fake the folder shape it produces.
+$script:createCalls = 0
 function Create-PSADTProject {
     param($ProjectPath, $AppName, $AppVersion, $Architecture, $Force)
+    $script:createCalls++
     New-Item -ItemType Directory -Path $ProjectPath -Force | Out-Null
     foreach ($d in 'Files', 'SupportFiles') { New-Item -ItemType Directory -Path (Join-Path $ProjectPath $d) -Force | Out-Null }
     Set-Content -LiteralPath (Join-Path $ProjectPath 'Invoke-AppDeployToolkit.ps1') -Value '## <Perform Installation tasks here>'
@@ -145,6 +148,21 @@ try { $null = New-Win32ToolkitManualApp -Name 'No Apply' -Version '1.0' -Archite
 catch { $threw = $_.FullyQualifiedErrorId }
 $script:applyResult = $true
 if ($threw -eq 'W32T.PipelineAborted' -and -not $script:finalized) { Ok 'Apply-OrgTemplate $false -> W32T.PipelineAborted; the finalize tail never ran' } else { Bad "threw='$threw' finalized=$script:finalized" }
+
+Write-Host '[8] an invalid -DependsOn stops the run before the scaffold (re-verification 2026-10-21, B3 r2.1)' -ForegroundColor Cyan
+# Real Set-Win32ToolkitAppDependency and Assert-Win32ToolkitDependencyRef: the refusal used to come from the
+# declaration AFTER the scaffold, as a non-terminating 'New-Win32ToolkitManualApp failed: ...'.
+foreach ($case in @(@('project:..\EvilB3T', 'Evil_App', "must be '<Template>\<ProjectName>' under Projects\"), @('project:Contoso\Self_App_x64_1.0', 'Self_App', "An app cannot depend on itself ('Contoso\Self_App_x64_1.0')."))) {
+    $script:createCalls = 0; $script:finalized = $false
+    $msi4 = New-Src 'dep4.msi'
+    $e8 = $null
+    try { $null = New-Win32ToolkitManualApp -Name ($case[1] -replace '_', ' ') -Version '1.0' -Architecture x64 -SourcePath $msi4 -TemplateName 'Contoso' -Force -Continue -DependsOn $case[0] 6>$null 3>$null }
+    catch { $e8 = $_ }
+    $p8 = Join-Path $BASE "Projects\Contoso\$($case[1])_x64_1.0"
+    if ($e8 -and $e8.FullyQualifiedErrorId -eq 'W32T.InvalidDependencyReference' -and "$e8".Contains($case[2]) -and $script:createCalls -eq 0 -and -not (Test-Path -LiteralPath $p8) -and -not $script:finalized) {
+        Ok "-DependsOn '$($case[0])' -> W32T.InvalidDependencyReference; Create-PSADTProject never ran, no project folder"
+    } else { Bad "'$($case[0])': fqid='$(if ($e8) { $e8.FullyQualifiedErrorId })' $e8 create=$script:createCalls folder=$(Test-Path -LiteralPath $p8)" }
+}
 
 Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue
 

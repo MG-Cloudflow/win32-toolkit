@@ -47,6 +47,9 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Add-Win32ToolkitInstallerFiles.ps1')
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitFinalize.ps1')
 . (Join-Path $repo 'Private\Configure-PSADTForInstaller.ps1')
+# C-9: the -DependsOn pre-flight of Invoke-Win32Toolkit / New-Win32ToolkitManualApp (B3 r2.1; real, pure).
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitDependencyRef.ps1')
+. (Join-Path $repo 'Private\Assert-Win32ToolkitDependencyRef.ps1')
 . (Join-Path $repo 'Public\Invoke-Win32Toolkit.ps1')
 . (Join-Path $repo 'Public\New-Win32ToolkitManualApp.ps1')
 . (Join-Path $repo 'Public\Complete-Win32ToolkitManualApp.ps1')
@@ -64,14 +67,17 @@ $script:Calls = [System.Collections.Generic.List[string]]::new()
 function Reset-Case([hashtable]$Mode) { $script:Mode = $Mode; $script:Calls.Clear() }
 
 function Test-WingetInstalled { $true }
-function Get-Win32ToolkitBasePath { param($BasePath, [switch]$Reconfigure) $BASE }
+# Counters (not in $script:Calls, whose exact sequences other cases pin): the -DependsOn pre-flight runs before them.
+$script:BaseCalls = 0; $script:ResolveCalls = 0; $script:SetDepSeen = $null
+function Get-Win32ToolkitBasePath { param($BasePath, [switch]$Reconfigure) $script:BaseCalls++; $BASE }
 function Get-OrgTemplate {
     param($TemplateName, $BasePath)
-    $t = [pscustomobject]@{ TemplateName = 'Contoso'; AppScriptAuthor = 'IT' }
+    $name = if ($script:Mode.TemplateName) { $script:Mode.TemplateName } else { 'Contoso' }
+    $t = [pscustomobject]@{ TemplateName = $name; AppScriptAuthor = 'IT' }
     if ($script:Mode.TenantId) { $t | Add-Member -NotePropertyName TenantId -NotePropertyValue $script:Mode.TenantId }
     $t
 }
-function Resolve-Win32ToolkitWingetId { param($Id) [pscustomobject]@{ Name = 'Git'; Id = $Id; Version = '2.45.0'; Source = 'winget' } }
+function Resolve-Win32ToolkitWingetId { param($Id) $script:ResolveCalls++; [pscustomobject]@{ Name = 'Git'; Id = $Id; Version = '2.45.0'; Source = 'winget' } }
 $script:DetailsCalls = 0
 function Get-WingetAppDetails { param($AppId) $script:DetailsCalls++; if ($script:Mode.DetailsThrows) { throw 'winget exploded' }; @('x64') }
 function Select-Architecture { param($Architectures, $AppName, $PreSelected) 'x64' }
@@ -133,7 +139,7 @@ function Get-AppIconFromWinget {
     if ($script:Mode.IconWarns) { Write-Warning 'No WinGet IconUrl found in YAML (test shadow)' }
     $true
 }
-function Set-Win32ToolkitAppDependency { param($ProjectPath, $DependsOn, $DependencyType) }
+function Set-Win32ToolkitAppDependency { param($ProjectPath, $DependsOn, $DependencyType) $script:SetDepSeen = $PSBoundParameters }
 function Get-YAMLInstallerInfo { param($FilesPath) $null }
 function New-Win32ToolkitIntuneDefaults { param($Template) $null }
 function Update-PSADTMsixUninstallLogic { param($ProjectPath) $true }
@@ -389,6 +395,62 @@ $r = Invoke-Case { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -I
 if ($r.Fqid -eq 'W32T.InstallerVariantUnavailable' -and $r.Message.StartsWith('winget offers no vendor EXE installer for Git.Git (x64); tried: nullsoft, burn, inno, exe.')) { Ok 'W32T.InstallerVariantUnavailable reaches the caller unchanged (C-2 re-throw)' } else { Bad "fqid='$($r.Fqid)' message=$($r.Message)" }
 if (($script:Calls -join ',') -eq 'create,download' -and $null -eq $script:IdentitySeen -and (& $downstream $script:Calls).Count -eq 0) { Ok 'nothing after the download ran: no configure, icon, identity checks, finalize, test or export' } else { Bad "calls=[$($script:Calls -join ',')] identity=$($null -ne $script:IdentitySeen)" }
 if ($null -eq $script:OrgTemplate) { Ok '$script:OrgTemplate is cleared by the finally' } else { Bad 'org template leaked' }
+
+# == -DependsOn pre-flight (re-verification 2026-10-21, B3 r2.1) ===================================
+# Live: 'Invoke-Win32Toolkit ... -DependsOn project:..\EvilB3T' downloaded 7-Zip, scaffolded and configured the
+# project, printed SUCCESS, and only then failed with a NON-terminating 'Script execution failed: Dependency ...
+# must be ...', leaving a half-configured project. Now the references are checked first: W32T.InvalidDependencyReference
+# (terminating), and nothing is resolved, created or downloaded. A fresh template folder proves no folder was created.
+Write-Host '[6] An invalid -DependsOn stops Invoke-Win32Toolkit / New-Win32ToolkitManualApp before anything is downloaded or created' -ForegroundColor Cyan
+$fresh = 'FreshB3'
+$freshDir = Join-Path $BASE "Projects\$fresh"
+$shapeCases = @(
+    @("project:..\EvilB3T", "must be '<Template>\<ProjectName>' under Projects\ (not a full path or '..')"),
+    @('intune:notaguid', "Dependency 'intune:notaguid' is not a valid Intune app id (expected a GUID)."),
+    @('project:Contoso\Sub\Tool', '(exactly two names, neither empty)'),
+    @('project:C:\W32T-Test\Projects\CloudFlow\7-Zip_x64_26.04', "(not a full path or '..')")
+)
+foreach ($case in $shapeCases) {
+    Reset-Case @{ TemplateName = $fresh }
+    $script:BaseCalls = 0; $script:ResolveCalls = 0; $script:SetDepSeen = $null
+    $r = Invoke-Case { Invoke-Win32Toolkit -Id '7zip.7zip' -Architecture x64 -Force -InstallerType wix -DependsOn $case[0] -PackageIntune -ErrorAction SilentlyContinue -ErrorVariable ev }
+    if ($r.Fqid -eq 'W32T.InvalidDependencyReference' -and $r.Message.Contains($case[1]) -and $script:Calls.Count -eq 0 -and $script:BaseCalls -eq 0 -and
+        $script:ResolveCalls -eq 0 -and $null -eq $script:SetDepSeen -and -not (Test-Path -LiteralPath $freshDir)) {
+        Ok "Invoke-Win32Toolkit -DependsOn '$($case[0])' -> W32T.InvalidDependencyReference before the base folder, the winget lookup, Create-PSADTProject and Download-WingetApp"
+    } else { Bad "Invoke '$($case[0])': fqid='$($r.Fqid)' msg='$($r.Message)' calls=[$($script:Calls -join ',')] base=$script:BaseCalls resolve=$script:ResolveCalls set=$($null -ne $script:SetDepSeen) folder=$(Test-Path -LiteralPath $freshDir)" }
+}
+# The app itself: refused once the project name is known, before the template folder or the project is created.
+foreach ($selfRef in @("project:$fresh\Git_x64_2.45.0", "project:$($fresh.ToUpperInvariant())\git_x64_2.45.0")) {
+    Reset-Case @{ TemplateName = $fresh }
+    $script:ResolveCalls = 0; $script:SetDepSeen = $null
+    $r = Invoke-Case { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -DependsOn 'winget:Microsoft.VCRedist.2015+.x64', $selfRef -ErrorAction SilentlyContinue -ErrorVariable ev }
+    if ($r.Fqid -eq 'W32T.InvalidDependencyReference' -and $r.Message -ceq "An app cannot depend on itself ('$fresh\Git_x64_2.45.0')." -and $script:ResolveCalls -eq 1 -and
+        $script:Calls.Count -eq 0 -and $null -eq $script:SetDepSeen -and -not (Test-Path -LiteralPath $freshDir)) {
+        Ok "Invoke-Win32Toolkit -DependsOn '$selfRef' (the app itself) -> W32T.InvalidDependencyReference; no template folder, no scaffold, no download"
+    } else { Bad "Invoke self '$selfRef': fqid='$($r.Fqid)' msg='$($r.Message)' calls=[$($script:Calls -join ',')] resolve=$script:ResolveCalls folder=$(Test-Path -LiteralPath $freshDir)" }
+}
+# A valid reference still flows through: the scaffold and the download run, then the declaration.
+Reset-Case @{}
+$script:SetDepSeen = $null
+$r = Invoke-Case { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -DependsOn 'winget:Microsoft.VCRedist.2015+.x64', 'project:Contoso\VCRedist_x64_14.38' -ErrorAction SilentlyContinue -ErrorVariable ev }
+if (-not $r.Fqid -and 'create' -in $script:Calls -and 'download' -in $script:Calls -and $script:SetDepSeen -and @($script:SetDepSeen['DependsOn']).Count -eq 2) { Ok 'valid -DependsOn references pass the pre-flight; the project is built and they are declared after the scaffold' } else { Bad "valid deps: fqid='$($r.Fqid)' $($r.Message) calls=[$($script:Calls -join ',')] declared=$(if ($script:SetDepSeen) { @($script:SetDepSeen['DependsOn']) -join ';' })" }
+
+# New-Win32ToolkitManualApp: the form before any prompt or base folder, the app itself before anything is created.
+$manualDeps = { param($Deps) New-Win32ToolkitManualApp -Name 'Tool' -Version '1.0' -Architecture x64 -SourcePath (Join-Path $src 'tool.msi') -TemplateName 'Contoso' -Force -Continue -PackageIntune -DependsOn $Deps -ErrorAction SilentlyContinue -ErrorVariable ev }
+foreach ($case in $shapeCases) {
+    Reset-Case @{ TemplateName = $fresh }
+    $script:BaseCalls = 0; $script:SetDepSeen = $null
+    $r = Invoke-Case { & $manualDeps $case[0] }
+    if ($r.Fqid -eq 'W32T.InvalidDependencyReference' -and $r.Message.Contains($case[1]) -and $script:Calls.Count -eq 0 -and $script:BaseCalls -eq 0 -and $null -eq $script:SetDepSeen -and -not (Test-Path -LiteralPath $freshDir)) {
+        Ok "New-Win32ToolkitManualApp -DependsOn '$($case[0])' -> W32T.InvalidDependencyReference before the base folder and Create-PSADTProject"
+    } else { Bad "Manual '$($case[0])': fqid='$($r.Fqid)' msg='$($r.Message)' calls=[$($script:Calls -join ',')] base=$script:BaseCalls folder=$(Test-Path -LiteralPath $freshDir)" }
+}
+Reset-Case @{ TemplateName = $fresh }
+$script:SetDepSeen = $null
+$r = Invoke-Case { & $manualDeps "project:$fresh\Tool_x64_1.0" }
+if ($r.Fqid -eq 'W32T.InvalidDependencyReference' -and $r.Message -ceq "An app cannot depend on itself ('$fresh\Tool_x64_1.0')." -and $script:Calls.Count -eq 0 -and $null -eq $script:SetDepSeen -and -not (Test-Path -LiteralPath $freshDir)) {
+    Ok "New-Win32ToolkitManualApp -DependsOn 'project:$fresh\Tool_x64_1.0' (the app itself) -> W32T.InvalidDependencyReference; no template folder, no scaffold"
+} else { Bad "Manual self: fqid='$($r.Fqid)' msg='$($r.Message)' calls=[$($script:Calls -join ',')] folder=$(Test-Path -LiteralPath $freshDir)" }
 
 Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''

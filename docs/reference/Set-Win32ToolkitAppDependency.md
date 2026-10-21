@@ -21,6 +21,12 @@ Dependencies are stored as DATA (winget id / project name / Intune app id) and a
 into a generated script.
 Nothing is installed or published by this command - it only declares.
 
+Every reference is checked before anything is written: a 'project:' reference must be exactly
+'\<Template\>\\\<ProjectName\>' (no full path, no '..'), an 'intune:' reference must be a GUID, and no
+reference may name this project itself.
+A refused reference stops the command with the terminating
+error W32T.InvalidDependencyReference, and nothing is written.
+
 Because Intune honours the DEPENDENCY app's own detection rule, an already-present dependency is
 skipped on the device automatically; there is no separate "skip if installed" setting.
 

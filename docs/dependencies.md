@@ -31,6 +31,16 @@ Set-Win32ToolkitAppDependency -ProjectPath 'C:\Win32Apps\Projects\Arxus\Qastor_x
 Project paths always follow the `<BasePath>\Projects\<Template>\<App>` layout. The examples above assume a
 `C:\Win32Apps` base path and an `Arxus` template.
 
+Every reference is checked **before anything is downloaded or created**. A `project:` reference must be
+exactly `<Template>\<ProjectName>` (no full path, no `..`, no third folder). An `intune:` reference must be an
+app id (a GUID). No reference may name the app itself. A reference that breaks a rule stops the command with
+the terminating error `W32T.InvalidDependencyReference`, which names the reference and the rule:
+
+- `Invoke-Win32Toolkit` stops before it downloads anything or creates a project folder.
+- `New-Win32ToolkitManualApp` stops before it creates a project folder. A malformed reference is refused even
+  before any prompt.
+- `Set-Win32ToolkitAppDependency` writes nothing.
+
 Or in the **TUI**: both wizards ask *"Does this app need another app installed FIRST?"*, and every project
 has a **Dependencies** action.
 

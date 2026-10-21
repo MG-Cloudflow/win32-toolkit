@@ -69,6 +69,10 @@ function New-Win32ToolkitManualApp {
 .PARAMETER DependsOn
     Dependencies to declare: 'winget:<Id>', 'project:<Template>\<Name>', or 'intune:<AppGuid>'
     references. Installed first in the test guest and related to the Intune app at publish time.
+    The references are checked before anything is created (their form even before any prompt): a
+    'project:' reference that is not exactly '<Template>\<Name>', an 'intune:' reference that is not a
+    GUID, or a reference to the app being built stops the command with the terminating error
+    W32T.InvalidDependencyReference.
 .PARAMETER DependencyType
     How Intune treats the declared dependencies: 'autoInstall' (default) or 'detect'.
 .EXAMPLE
@@ -122,6 +126,11 @@ function New-Win32ToolkitManualApp {
         Write-Host 'Manual Win32 App Packager (non-winget)' -ForegroundColor Cyan
         Write-Host '======================================' -ForegroundColor Cyan
 
+        # -DependsOn is checked before any prompt and before anything is created (re-verification 2026-10-21,
+        # B3 r2.1); W32T.InvalidDependencyReference is re-thrown by the catch below. The self-dependency check
+        # follows once the project name is known.
+        if ($DependsOn) { $null = Assert-Win32ToolkitDependencyRef -Reference $DependsOn -DependencyType $DependencyType }
+
         # ── Base folder + hybrid input ────────────────────────────────────────────
         $BasePath = Get-Win32ToolkitBasePath -BasePath $BasePath -Reconfigure:$Reconfigure
         Write-Host "Base folder: $BasePath" -ForegroundColor DarkGray
@@ -153,6 +162,9 @@ function New-Win32ToolkitManualApp {
         $templateSeg = Sanitize-ProjectName -Name $script:OrgTemplate.TemplateName
         if ([string]::IsNullOrWhiteSpace($templateSeg)) { $templateSeg = 'Default' }
         $projectsDir = Join-Path $paths.Projects $templateSeg
+        # A 'project:' dependency on this very app is refused before the template folder or the project is created
+        # (B3 r2.1); the declaration after the scaffold re-checks it.
+        if ($DependsOn) { $null = Assert-Win32ToolkitDependencyRef -Reference $DependsOn -DependencyType $DependencyType -ProjectPath (Join-Path $projectsDir $projectName) }
         if (-not (Test-Path $projectsDir)) { New-Item -Path $projectsDir -ItemType Directory -Force | Out-Null }
 
         Write-Host "Template folder: $templateSeg" -ForegroundColor DarkGray
