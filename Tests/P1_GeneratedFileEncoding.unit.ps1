@@ -110,9 +110,13 @@ $NONASCII_APP     = 'Café Nagüi Player'
 # copy: proves the deploy-script writer keeps operator bytes intact (UTF-8 with BOM, no mojibake).
 $NONASCII_OPERATOR = "    # Operator note: $NONASCII_APP - prüfen Sie die Lizenz"
 
+# Every temp folder is registered here and removed at the end, pass or fail (test campaign 2026-10-21, H7-F12).
+$script:tmp = [System.Collections.Generic.List[string]]::new()
+
 # ── PSADT project fixture: a real PSADT deploy-script golden (no PSAppDeployToolkit dependency) ──
 function New-FixtureProject([string]$Golden = 'psadt-4.1.8') {
     $p = Join-Path ([System.IO.Path]::GetTempPath()) ('w32enc_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $script:tmp.Add($p)
     New-Item -ItemType Directory -Path (Join-Path $p 'Config')       -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $p 'Strings')      -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $p 'Files')        -Force | Out-Null
@@ -207,167 +211,174 @@ exit `$LASTEXITCODE
 "@
     $wp = Join-Path ([System.IO.Path]::GetTempPath()) ('w32req_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
     [System.IO.File]::WriteAllText($wp, $wrapper, (New-Object System.Text.UTF8Encoding($true)))
-    & (Get-Process -Id $PID).Path -NoProfile -File $wp *>$null
-    return $LASTEXITCODE
-}
-
-# ══ ITEM A ═══════════════════════════════════════════════════════════════════════════════════════
-Write-Host '[A] Every file destined for Windows PowerShell 5.1 is written UTF-8 WITH BOM' -ForegroundColor Cyan
-
-$generated = @{}   # label -> path, collected for the parse/5.1-safety sweep below
-
-foreach ($golden in 'psadt-4.1.8', 'psadt-4.2.0-zeroconfig') {
-    Write-Host "  -- deploy script from the $golden golden --" -ForegroundColor DarkCyan
-
-    # 1. Set-PSADTDataDrivenScript -> Invoke-AppDeployToolkit.ps1 (the non-ASCII operator comment must survive)
-    $pA = New-FixtureProject -Golden $golden
-    $depA = Join-Path $pA 'Invoke-AppDeployToolkit.ps1'
-    $null = Set-PSADTDataDrivenScript -ScriptPath $depA -WarningAction SilentlyContinue
-    $generated["Set-PSADTDataDrivenScript ($golden): Invoke-AppDeployToolkit.ps1"] = $depA
-    if (Test-Bom $depA) { Ok "Set-PSADTDataDrivenScript writes Invoke-AppDeployToolkit.ps1 with a BOM ($golden)" }
-    else { Bad "Set-PSADTDataDrivenScript wrote a BOM-LESS Invoke-AppDeployToolkit.ps1 ($golden)" }
-    if (Test-Utf8Contains $depA $NONASCII_OPERATOR) { Ok "non-ASCII operator text round-trips byte-correctly through the generator ($golden)" }
-    else { Bad "non-ASCII operator text did not survive the data-driven patch ($golden)" }
-    $ps51 = @(Test-Win32ToolkitPS51Syntax -Path $depA)
-    if ($ps51.Count -eq 0) { Ok "the patched script parses under real Windows PowerShell 5.1 ($golden)" } else { Bad "5.1 parse errors ($golden): $($ps51 -join '; ')" }
-
-    # …and the loader it emits must tell 5.1 how to decode the (deliberately BOM-less) AppConfig.json.
-    $depAText = Get-Content -LiteralPath $depA -Raw
-    if ($depAText -match 'AppConfig\.json"\s+-Raw\s+-Encoding\s+UTF8') { Ok 'generated AppConfig.json loader reads with -Encoding UTF8 (5.1 would use ANSI otherwise)' }
-    else { Bad 'generated AppConfig.json loader still uses Get-Content with no -Encoding' }
-
-    # 2-4. Set-PSADTDataDrivenScript, THEN Apply-OrgTemplate -> config.psd1, strings.psd1, deploy script, AppConfig.json
-    $pB = New-FixtureProject -Golden $golden
-    $depB = Join-Path $pB 'Invoke-AppDeployToolkit.ps1'
-    $null = Set-PSADTDataDrivenScript -ScriptPath $depB -WarningAction SilentlyContinue
-    $tmpl = [pscustomobject]@{
-        TemplateName           = 'EncTest'
-        CompanyName            = $NONASCII_COMPANY
-        AppScriptAuthor        = $NONASCII_AUTHOR
-        DialogStyle            = 'Fluent'
-        FluentAccentColor      = ''
-        LogPath                = 'C:\Windows\Logs\Software'
-        BalloonComplete        = [pscustomobject]@{ Install = "Installé"; Repair = 'Repair complete.'; Uninstall = 'Uninstallation complete.' }
-        ProgressMessage        = [pscustomobject]@{ Install = "Installation en cours…"; Repair = 'Repairing…'; Uninstall = 'Removing…' }
-        ProgressMessageDetail  = [pscustomobject]@{ Install = "Veuillez patienter"; Repair = 'Please wait'; Uninstall = 'Please wait' }
-        WelcomeDialog          = [pscustomobject]@{ Enabled = $false }
-        UninstallWelcomeDialog = [pscustomobject]@{ Enabled = $false }
-        ProgressDialog         = [pscustomobject]@{ Enabled = $true; StatusMessage = ''; StatusMessageDetail = '' }
-        CompletionPrompt       = [pscustomobject]@{ Enabled = $false }
-    }
-    $applied = Apply-OrgTemplate -ProjectPath $pB -Template $tmpl -WarningAction SilentlyContinue 6>$null
-    if ($applied -eq $true) { Ok "Apply-OrgTemplate applied the template to the generated script ($golden)" } else { Bad "Apply-OrgTemplate returned '$applied' ($golden)" }
-    $cfgB = Join-Path $pB 'Config\config.psd1'
-    $strB = Join-Path $pB 'Strings\strings.psd1'
-    $acB  = Join-Path $pB 'SupportFiles\AppConfig.json'
-    $generated["Apply-OrgTemplate ($golden): Invoke-AppDeployToolkit.ps1"] = $depB
-
-    if (Test-Bom $cfgB) { Ok 'Apply-OrgTemplate writes config.psd1 with a BOM' }   else { Bad 'config.psd1 written BOM-LESS' }
-    if (Test-Bom $strB) { Ok 'Apply-OrgTemplate writes strings.psd1 with a BOM' }  else { Bad 'strings.psd1 written BOM-LESS' }
-    if (Test-Bom $depB) { Ok 'Apply-OrgTemplate keeps Invoke-AppDeployToolkit.ps1 UTF-8 with a BOM' } else { Bad 'org-templated deploy script written BOM-LESS' }
-
-    if (Test-Utf8Contains $cfgB $NONASCII_COMPANY) { Ok "non-ASCII CompanyName round-trips byte-correctly ('$NONASCII_COMPANY')" }
-    else { Bad 'non-ASCII CompanyName mangled in config.psd1' }
-    if (Test-Utf8Contains $strB 'Installation en cours…') { Ok 'non-ASCII dialog strings round-trip byte-correctly' }
-    else { Bad 'non-ASCII strings mangled in strings.psd1' }
-    # The author is DATA now: AppConfig.json App.ScriptAuthor (BOM-less UTF-8), never a literal in the script.
-    if (-not (Test-Bom $acB) -and (Test-Utf8Contains $acB $NONASCII_AUTHOR) -and
-        (Get-Content -LiteralPath $acB -Raw -Encoding UTF8 | ConvertFrom-Json).App.ScriptAuthor -ceq $NONASCII_AUTHOR) {
-        Ok "non-ASCII AppScriptAuthor round-trips byte-correctly as DATA in AppConfig.json (BOM-less UTF-8)"
-    } else { Bad 'non-ASCII AppScriptAuthor missing or mangled in AppConfig.json' }
-    if (-not (Test-Utf8Contains $depB $NONASCII_AUTHOR)) { Ok 'the deploy script does NOT contain the author literal' } else { Bad 'the author literal was spliced into the deploy script' }
-    if (Test-Utf8Contains $depB $NONASCII_OPERATOR) { Ok 'the non-ASCII operator text survives Apply-OrgTemplate byte-correctly' } else { Bad 'operator text mangled by Apply-OrgTemplate' }
-
-    # The BOM must not break the .psd1 consumers (PSADT / Import-PowerShellDataFile tolerate it).
     try {
-        $cfgData = Import-PowerShellDataFile -LiteralPath $cfgB
-        $strData = Import-PowerShellDataFile -LiteralPath $strB
-        if ($cfgData.Toolkit.CompanyName -eq $NONASCII_COMPANY -and $strData.ProgressPrompt.Message.Install -eq 'Installation en cours…') {
-            Ok 'BOM-prefixed .psd1 files still Import-PowerShellDataFile with values intact'
-        } else { Bad "psd1 values did not round-trip: [$($cfgData.Toolkit.CompanyName)]" }
-    } catch { Bad "BOM broke Import-PowerShellDataFile: $($_.Exception.Message)" }
+        & (Get-Process -Id $PID).Path -NoProfile -File $wp *>$null
+        $rc = $LASTEXITCODE
+    }
+    finally { Remove-Item -LiteralPath $wp -Force -ErrorAction SilentlyContinue }   # the wrapper is used once
+    return $rc
 }
 
-# 5. New-CountdownScript -> Sandbox\Countdown.ps1
-$pC = New-FixtureProject
-$cd = New-CountdownScript -ProjectPath $pC
-$generated['New-CountdownScript: Countdown.ps1'] = $cd
-if (Test-Bom $cd) { Ok 'New-CountdownScript writes Countdown.ps1 with a BOM' } else { Bad 'Countdown.ps1 written BOM-LESS' }
+try {
+    # ══ ITEM A ═══════════════════════════════════════════════════════════════════════════════════════
+    Write-Host '[A] Every file destined for Windows PowerShell 5.1 is written UTF-8 WITH BOM' -ForegroundColor Cyan
 
-# 6. New-LogCollectorScript -> Sandbox\CollectLogs.ps1
-$lc = New-LogCollectorScript -ProjectPath $pC
-$generated['New-LogCollectorScript: CollectLogs.ps1'] = $lc
-if (Test-Bom $lc) { Ok 'New-LogCollectorScript writes CollectLogs.ps1 with a BOM' } else { Bad 'CollectLogs.ps1 written BOM-LESS' }
+    $generated = @{}   # label -> path, collected for the parse/5.1-safety sweep below
 
-# 7. New-IntuneRequirementScript -> SupportFiles\RequirementScript.ps1 (non-ASCII DisplayName)
-$reqNonAscii = New-FixtureRequirement -DisplayName $NONASCII_APP -Version '2.1.0'
-$generated['New-IntuneRequirementScript: RequirementScript.ps1'] = $reqNonAscii
-if (Test-Bom $reqNonAscii) { Ok 'New-IntuneRequirementScript writes RequirementScript.ps1 with a BOM' }
-else { Bad 'RequirementScript.ps1 written BOM-LESS (Intune runs it on 5.1 -> ANSI -> the name never matches)' }
-if (Test-Utf8Contains $reqNonAscii $NONASCII_APP) { Ok "non-ASCII DisplayName round-trips byte-correctly ('$NONASCII_APP')" }
-else { Bad 'non-ASCII DisplayName mangled in RequirementScript.ps1' }
+    foreach ($golden in 'psadt-4.1.8', 'psadt-4.2.0-zeroconfig') {
+        Write-Host "  -- deploy script from the $golden golden --" -ForegroundColor DarkCyan
 
-Write-Host ''
-Write-Host '[A] …and every generated script still parses and stays 5.1-safe (no ternary / ?? / ?.)' -ForegroundColor Cyan
-foreach ($k in $generated.Keys | Sort-Object) {
-    $problem = Get-Ps51Problem $generated[$k]
-    if (-not $problem) { Ok "$k -> parses, 5.1-safe" } else { Bad "$k -> $problem" }
+        # 1. Set-PSADTDataDrivenScript -> Invoke-AppDeployToolkit.ps1 (the non-ASCII operator comment must survive)
+        $pA = New-FixtureProject -Golden $golden
+        $depA = Join-Path $pA 'Invoke-AppDeployToolkit.ps1'
+        $null = Set-PSADTDataDrivenScript -ScriptPath $depA -WarningAction SilentlyContinue
+        $generated["Set-PSADTDataDrivenScript ($golden): Invoke-AppDeployToolkit.ps1"] = $depA
+        if (Test-Bom $depA) { Ok "Set-PSADTDataDrivenScript writes Invoke-AppDeployToolkit.ps1 with a BOM ($golden)" }
+        else { Bad "Set-PSADTDataDrivenScript wrote a BOM-LESS Invoke-AppDeployToolkit.ps1 ($golden)" }
+        if (Test-Utf8Contains $depA $NONASCII_OPERATOR) { Ok "non-ASCII operator text round-trips byte-correctly through the generator ($golden)" }
+        else { Bad "non-ASCII operator text did not survive the data-driven patch ($golden)" }
+        $ps51 = @(Test-Win32ToolkitPS51Syntax -Path $depA)
+        if ($ps51.Count -eq 0) { Ok "the patched script parses under real Windows PowerShell 5.1 ($golden)" } else { Bad "5.1 parse errors ($golden): $($ps51 -join '; ')" }
+
+        # …and the loader it emits must tell 5.1 how to decode the (deliberately BOM-less) AppConfig.json.
+        $depAText = Get-Content -LiteralPath $depA -Raw
+        if ($depAText -match 'AppConfig\.json"\s+-Raw\s+-Encoding\s+UTF8') { Ok 'generated AppConfig.json loader reads with -Encoding UTF8 (5.1 would use ANSI otherwise)' }
+        else { Bad 'generated AppConfig.json loader still uses Get-Content with no -Encoding' }
+
+        # 2-4. Set-PSADTDataDrivenScript, THEN Apply-OrgTemplate -> config.psd1, strings.psd1, deploy script, AppConfig.json
+        $pB = New-FixtureProject -Golden $golden
+        $depB = Join-Path $pB 'Invoke-AppDeployToolkit.ps1'
+        $null = Set-PSADTDataDrivenScript -ScriptPath $depB -WarningAction SilentlyContinue
+        $tmpl = [pscustomobject]@{
+            TemplateName           = 'EncTest'
+            CompanyName            = $NONASCII_COMPANY
+            AppScriptAuthor        = $NONASCII_AUTHOR
+            DialogStyle            = 'Fluent'
+            FluentAccentColor      = ''
+            LogPath                = 'C:\Windows\Logs\Software'
+            BalloonComplete        = [pscustomobject]@{ Install = "Installé"; Repair = 'Repair complete.'; Uninstall = 'Uninstallation complete.' }
+            ProgressMessage        = [pscustomobject]@{ Install = "Installation en cours…"; Repair = 'Repairing…'; Uninstall = 'Removing…' }
+            ProgressMessageDetail  = [pscustomobject]@{ Install = "Veuillez patienter"; Repair = 'Please wait'; Uninstall = 'Please wait' }
+            WelcomeDialog          = [pscustomobject]@{ Enabled = $false }
+            UninstallWelcomeDialog = [pscustomobject]@{ Enabled = $false }
+            ProgressDialog         = [pscustomobject]@{ Enabled = $true; StatusMessage = ''; StatusMessageDetail = '' }
+            CompletionPrompt       = [pscustomobject]@{ Enabled = $false }
+        }
+        $applied = Apply-OrgTemplate -ProjectPath $pB -Template $tmpl -WarningAction SilentlyContinue 6>$null
+        if ($applied -eq $true) { Ok "Apply-OrgTemplate applied the template to the generated script ($golden)" } else { Bad "Apply-OrgTemplate returned '$applied' ($golden)" }
+        $cfgB = Join-Path $pB 'Config\config.psd1'
+        $strB = Join-Path $pB 'Strings\strings.psd1'
+        $acB  = Join-Path $pB 'SupportFiles\AppConfig.json'
+        $generated["Apply-OrgTemplate ($golden): Invoke-AppDeployToolkit.ps1"] = $depB
+
+        if (Test-Bom $cfgB) { Ok 'Apply-OrgTemplate writes config.psd1 with a BOM' }   else { Bad 'config.psd1 written BOM-LESS' }
+        if (Test-Bom $strB) { Ok 'Apply-OrgTemplate writes strings.psd1 with a BOM' }  else { Bad 'strings.psd1 written BOM-LESS' }
+        if (Test-Bom $depB) { Ok 'Apply-OrgTemplate keeps Invoke-AppDeployToolkit.ps1 UTF-8 with a BOM' } else { Bad 'org-templated deploy script written BOM-LESS' }
+
+        if (Test-Utf8Contains $cfgB $NONASCII_COMPANY) { Ok "non-ASCII CompanyName round-trips byte-correctly ('$NONASCII_COMPANY')" }
+        else { Bad 'non-ASCII CompanyName mangled in config.psd1' }
+        if (Test-Utf8Contains $strB 'Installation en cours…') { Ok 'non-ASCII dialog strings round-trip byte-correctly' }
+        else { Bad 'non-ASCII strings mangled in strings.psd1' }
+        # The author is DATA now: AppConfig.json App.ScriptAuthor (BOM-less UTF-8), never a literal in the script.
+        if (-not (Test-Bom $acB) -and (Test-Utf8Contains $acB $NONASCII_AUTHOR) -and
+            (Get-Content -LiteralPath $acB -Raw -Encoding UTF8 | ConvertFrom-Json).App.ScriptAuthor -ceq $NONASCII_AUTHOR) {
+            Ok "non-ASCII AppScriptAuthor round-trips byte-correctly as DATA in AppConfig.json (BOM-less UTF-8)"
+        } else { Bad 'non-ASCII AppScriptAuthor missing or mangled in AppConfig.json' }
+        if (-not (Test-Utf8Contains $depB $NONASCII_AUTHOR)) { Ok 'the deploy script does NOT contain the author literal' } else { Bad 'the author literal was spliced into the deploy script' }
+        if (Test-Utf8Contains $depB $NONASCII_OPERATOR) { Ok 'the non-ASCII operator text survives Apply-OrgTemplate byte-correctly' } else { Bad 'operator text mangled by Apply-OrgTemplate' }
+
+        # The BOM must not break the .psd1 consumers (PSADT / Import-PowerShellDataFile tolerate it).
+        try {
+            $cfgData = Import-PowerShellDataFile -LiteralPath $cfgB
+            $strData = Import-PowerShellDataFile -LiteralPath $strB
+            if ($cfgData.Toolkit.CompanyName -eq $NONASCII_COMPANY -and $strData.ProgressPrompt.Message.Install -eq 'Installation en cours…') {
+                Ok 'BOM-prefixed .psd1 files still Import-PowerShellDataFile with values intact'
+            } else { Bad "psd1 values did not round-trip: [$($cfgData.Toolkit.CompanyName)]" }
+        } catch { Bad "BOM broke Import-PowerShellDataFile: $($_.Exception.Message)" }
+    }
+
+    # 5. New-CountdownScript -> Sandbox\Countdown.ps1
+    $pC = New-FixtureProject
+    $cd = New-CountdownScript -ProjectPath $pC
+    $generated['New-CountdownScript: Countdown.ps1'] = $cd
+    if (Test-Bom $cd) { Ok 'New-CountdownScript writes Countdown.ps1 with a BOM' } else { Bad 'Countdown.ps1 written BOM-LESS' }
+
+    # 6. New-LogCollectorScript -> Sandbox\CollectLogs.ps1
+    $lc = New-LogCollectorScript -ProjectPath $pC
+    $generated['New-LogCollectorScript: CollectLogs.ps1'] = $lc
+    if (Test-Bom $lc) { Ok 'New-LogCollectorScript writes CollectLogs.ps1 with a BOM' } else { Bad 'CollectLogs.ps1 written BOM-LESS' }
+
+    # 7. New-IntuneRequirementScript -> SupportFiles\RequirementScript.ps1 (non-ASCII DisplayName)
+    $reqNonAscii = New-FixtureRequirement -DisplayName $NONASCII_APP -Version '2.1.0'
+    $generated['New-IntuneRequirementScript: RequirementScript.ps1'] = $reqNonAscii
+    if (Test-Bom $reqNonAscii) { Ok 'New-IntuneRequirementScript writes RequirementScript.ps1 with a BOM' }
+    else { Bad 'RequirementScript.ps1 written BOM-LESS (Intune runs it on 5.1 -> ANSI -> the name never matches)' }
+    if (Test-Utf8Contains $reqNonAscii $NONASCII_APP) { Ok "non-ASCII DisplayName round-trips byte-correctly ('$NONASCII_APP')" }
+    else { Bad 'non-ASCII DisplayName mangled in RequirementScript.ps1' }
+
+    Write-Host ''
+    Write-Host '[A] …and every generated script still parses and stays 5.1-safe (no ternary / ?? / ?.)' -ForegroundColor Cyan
+    foreach ($k in $generated.Keys | Sort-Object) {
+        $problem = Get-Ps51Problem $generated[$k]
+        if (-not $problem) { Ok "$k -> parses, 5.1-safe" } else { Bad "$k -> $problem" }
+    }
+
+    # ══ ITEM B ═══════════════════════════════════════════════════════════════════════════════════════
+    Write-Host ''
+    Write-Host '[B] RequirementScript.ps1 matches the FULL DisplayName, not its first token' -ForegroundColor Cyan
+
+    $reqTeams = New-FixtureRequirement -DisplayName 'Microsoft Teams' -Version '1.6.0.0'
+    $reqText  = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($reqTeams))
+
+    # Content: the first-token wildcard is gone, the full name is compared with -eq.
+    if ($reqText -notmatch 'DisplayName\s+-like') { Ok 'no `DisplayName -like "*token*"` match remains' }
+    else { Bad 'the generated script still does a substring DisplayName match' }
+    if ($reqText -notmatch "\*Microsoft\*") { Ok 'the first token ("Microsoft") is not used as a wildcard pattern' }
+    else { Bad 'the generated script still wildcard-matches on "*Microsoft*"' }
+    if ($reqText -match [regex]::Escape("`$_.DisplayName -eq 'Microsoft Teams'")) { Ok 'the FULL DisplayName is compared with -eq' }
+    else { Bad 'the full DisplayName equality match is missing' }
+
+    # Behaviour: run the generated script for real against a fixture Add/Remove-Programs.
+    # THE BUG: a device with only "Microsoft Edge" reported "Microsoft Teams" as installed (exit 0).
+    $decoy = @([pscustomobject]@{ DisplayName = 'Microsoft Edge'; DisplayVersion = '120.0.0.0' })
+    $rc = Invoke-GeneratedRequirement -ScriptPath $reqTeams -Arp $decoy
+    if ($rc -eq 1) { Ok 'ARP = {Microsoft Edge} -> NOT met (exit 1). The false positive is gone.' }
+    else { Bad "ARP = {Microsoft Edge} -> exit $rc (expected 1): 'Microsoft Teams' still matches any 'Microsoft *' product" }
+
+    $decoyPlusMore = @(
+        [pscustomobject]@{ DisplayName = 'Microsoft Edge';                DisplayVersion = '120.0.0.0' }
+        [pscustomobject]@{ DisplayName = 'Microsoft Visual C++ 2015-2022 Redistributable (x64)'; DisplayVersion = '14.38.33135' }
+        [pscustomobject]@{ DisplayName = 'Microsoft Teams Classic';       DisplayVersion = '1.5.0.0' }
+    )
+    $rc = Invoke-GeneratedRequirement -ScriptPath $reqTeams -Arp $decoyPlusMore
+    if ($rc -eq 1) { Ok 'ARP = {Edge, VC++ Redist, Teams *Classic*} -> still NOT met (near-miss names do not match)' }
+    else { Bad "near-miss ARP -> exit $rc (expected 1)" }
+
+    # …and the real thing IS still detected (the fix must not under-match).
+    $real = @(
+        [pscustomobject]@{ DisplayName = 'Microsoft Edge';   DisplayVersion = '120.0.0.0' }
+        [pscustomobject]@{ DisplayName = 'Microsoft Teams';  DisplayVersion = '1.6.0.0' }
+    )
+    $rc = Invoke-GeneratedRequirement -ScriptPath $reqTeams -Arp $real
+    if ($rc -eq 0) { Ok 'ARP contains the real "Microsoft Teams" -> requirement MET (exit 0)' }
+    else { Bad "the genuine app is no longer detected -> exit $rc (expected 0)" }
+
+    # An older installed version must still fail the version gate (unchanged behaviour).
+    $older = @([pscustomobject]@{ DisplayName = 'Microsoft Teams'; DisplayVersion = '1.0.0.0' })
+    $rc = Invoke-GeneratedRequirement -ScriptPath $reqTeams -Arp $older
+    if ($rc -eq 1) { Ok 'an OLDER installed version still fails the version comparison (exit 1)' }
+    else { Bad "older version -> exit $rc (expected 1)" }
+
+    Write-Host ''
+    Write-Host '[B] …and the untrusted DisplayName is still escaped as DATA (ConvertTo-PSSingleQuoted)' -ForegroundColor Cyan
+    $reqEvil = New-FixtureRequirement -DisplayName "Evil'App `$(calc)" -Version '1.2.3'
+    $evilText = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($reqEvil))
+    if ($evilText -match [regex]::Escape("-eq 'Evil''App `$(calc)'")) { Ok "the apostrophe is doubled and `$(...) stays inside the literal" }
+    else { Bad 'the DisplayName is no longer escaped into a single-quoted literal' }
+    $problem = Get-Ps51Problem $reqEvil
+    if (-not $problem) { Ok 'the hostile-name requirement script still parses (no injection, no breakage)' } else { Bad "hostile name broke the script: $problem" }
 }
-
-# ══ ITEM B ═══════════════════════════════════════════════════════════════════════════════════════
-Write-Host ''
-Write-Host '[B] RequirementScript.ps1 matches the FULL DisplayName, not its first token' -ForegroundColor Cyan
-
-$reqTeams = New-FixtureRequirement -DisplayName 'Microsoft Teams' -Version '1.6.0.0'
-$reqText  = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($reqTeams))
-
-# Content: the first-token wildcard is gone, the full name is compared with -eq.
-if ($reqText -notmatch 'DisplayName\s+-like') { Ok 'no `DisplayName -like "*token*"` match remains' }
-else { Bad 'the generated script still does a substring DisplayName match' }
-if ($reqText -notmatch "\*Microsoft\*") { Ok 'the first token ("Microsoft") is not used as a wildcard pattern' }
-else { Bad 'the generated script still wildcard-matches on "*Microsoft*"' }
-if ($reqText -match [regex]::Escape("`$_.DisplayName -eq 'Microsoft Teams'")) { Ok 'the FULL DisplayName is compared with -eq' }
-else { Bad 'the full DisplayName equality match is missing' }
-
-# Behaviour: run the generated script for real against a fixture Add/Remove-Programs.
-# THE BUG: a device with only "Microsoft Edge" reported "Microsoft Teams" as installed (exit 0).
-$decoy = @([pscustomobject]@{ DisplayName = 'Microsoft Edge'; DisplayVersion = '120.0.0.0' })
-$rc = Invoke-GeneratedRequirement -ScriptPath $reqTeams -Arp $decoy
-if ($rc -eq 1) { Ok 'ARP = {Microsoft Edge} -> NOT met (exit 1). The false positive is gone.' }
-else { Bad "ARP = {Microsoft Edge} -> exit $rc (expected 1): 'Microsoft Teams' still matches any 'Microsoft *' product" }
-
-$decoyPlusMore = @(
-    [pscustomobject]@{ DisplayName = 'Microsoft Edge';                DisplayVersion = '120.0.0.0' }
-    [pscustomobject]@{ DisplayName = 'Microsoft Visual C++ 2015-2022 Redistributable (x64)'; DisplayVersion = '14.38.33135' }
-    [pscustomobject]@{ DisplayName = 'Microsoft Teams Classic';       DisplayVersion = '1.5.0.0' }
-)
-$rc = Invoke-GeneratedRequirement -ScriptPath $reqTeams -Arp $decoyPlusMore
-if ($rc -eq 1) { Ok 'ARP = {Edge, VC++ Redist, Teams *Classic*} -> still NOT met (near-miss names do not match)' }
-else { Bad "near-miss ARP -> exit $rc (expected 1)" }
-
-# …and the real thing IS still detected (the fix must not under-match).
-$real = @(
-    [pscustomobject]@{ DisplayName = 'Microsoft Edge';   DisplayVersion = '120.0.0.0' }
-    [pscustomobject]@{ DisplayName = 'Microsoft Teams';  DisplayVersion = '1.6.0.0' }
-)
-$rc = Invoke-GeneratedRequirement -ScriptPath $reqTeams -Arp $real
-if ($rc -eq 0) { Ok 'ARP contains the real "Microsoft Teams" -> requirement MET (exit 0)' }
-else { Bad "the genuine app is no longer detected -> exit $rc (expected 0)" }
-
-# An older installed version must still fail the version gate (unchanged behaviour).
-$older = @([pscustomobject]@{ DisplayName = 'Microsoft Teams'; DisplayVersion = '1.0.0.0' })
-$rc = Invoke-GeneratedRequirement -ScriptPath $reqTeams -Arp $older
-if ($rc -eq 1) { Ok 'an OLDER installed version still fails the version comparison (exit 1)' }
-else { Bad "older version -> exit $rc (expected 1)" }
-
-Write-Host ''
-Write-Host '[B] …and the untrusted DisplayName is still escaped as DATA (ConvertTo-PSSingleQuoted)' -ForegroundColor Cyan
-$reqEvil = New-FixtureRequirement -DisplayName "Evil'App `$(calc)" -Version '1.2.3'
-$evilText = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($reqEvil))
-if ($evilText -match [regex]::Escape("-eq 'Evil''App `$(calc)'")) { Ok "the apostrophe is doubled and `$(...) stays inside the literal" }
-else { Bad 'the DisplayName is no longer escaped into a single-quoted literal' }
-$problem = Get-Ps51Problem $reqEvil
-if (-not $problem) { Ok 'the hostile-name requirement script still parses (no injection, no breakage)' } else { Bad "hostile name broke the script: $problem" }
+finally { foreach ($tp in $script:tmp) { Remove-Item -LiteralPath $tp -Recurse -Force -ErrorAction SilentlyContinue } }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'ALL PASS' -ForegroundColor Green; exit 0 }
