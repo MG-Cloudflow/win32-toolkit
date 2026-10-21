@@ -111,7 +111,7 @@ try {
     if ($runCodes.Count -eq 1 -and $runCodes[0] -like '*update Install*exit=0 result=Success') { Ok "the run's PsadtExitCodes.log holds only the lines after its marker" } else { Bad "run codes: $($runCodes -join ' | ')" }
     if ((Get-Content -LiteralPath (Join-Path $dir 'UpdateAssertions.log') -Raw) -match 'OldArpGone-PostUpdate = FAIL') { Ok 'the assertion log is copied byte for byte' } else { Bad 'assertion log content' }
     $after = @(Get-ChildItem -LiteralPath (Join-Path $p 'Sandbox\Logs') -File | ForEach-Object { '{0}={1}' -f $_.Name, (Get-FileHash -LiteralPath $_.FullName).Hash }) -join ';'
-    if ($after -eq $before) { Ok 'the top-level Sandbox\Logs files are left as they were (the latest run)' } else { Bad 'top-level files changed' }
+    if ($after -eq $before) { Ok 'the top-level Sandbox\Logs files are left as they were' } else { Bad 'top-level files changed' }
     $topCodes = @(Get-Content -LiteralPath (Join-Path $p 'Sandbox\Logs\PsadtExitCodes.log'))
     if ($topCodes.Count -eq 3 -and $topCodes[0] -like '*EARLIER-CALL' -and $topCodes[1] -ceq $run.Marker) { Ok 'the top-level PsadtExitCodes.log keeps every line (Save never clears it)' } else { Bad "top codes: $($topCodes -join ' | ')" }
     # Nothing changed and no exit code: no folder.

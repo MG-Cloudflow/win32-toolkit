@@ -43,7 +43,10 @@ logs) in a folder under Sandbox\Logs\Runs named after its start time, its scenar
 run, the old version's installer family, for example Sandbox\Logs\Runs\20261020-221500_Update_exe.
 Its Documentation\TestResults.json record names that folder (LogFolder).
 The files directly in
-Sandbox\Logs are the latest run's.
+Sandbox\Logs gather the logs of every run: each run overwrites the files it writes (and first clears
+its own scenario's assertion log), while files that only another run wrote stay there, for example
+UpdateAssertions.log after an InstallUninstall run, or the log of a dependency or an earlier version.
+A run's exact set of logs is its folder under Sandbox\Logs\Runs.
 
 The function is scenario-driven: new test types can be added as additional switch cases
 without changing the overall structure.

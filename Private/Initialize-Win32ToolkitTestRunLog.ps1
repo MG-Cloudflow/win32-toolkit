@@ -6,8 +6,10 @@ function Initialize-Win32ToolkitTestRunLog {
     .DESCRIPTION
         Every test run keeps its own evidence in Sandbox\Logs\Runs\<yyyyMMdd-HHmmss>_<Scenario>[_<Family>]\
         (test campaign F2): an InstallUninstall run, an Update run, and each leg of an Update
-        '-BaselineInstallerType Both' run. The top-level Sandbox\Logs files stay as they were (the latest
-        run's logs, for compatibility); the next run overwrites them.
+        '-BaselineInstallerType Both' run. The top-level Sandbox\Logs files stay where they are (for
+        compatibility: records without a LogFolder and the technology-switch check read the top-level
+        UpdateAssertions.log): each run overwrites the files it writes, and files only an earlier run wrote
+        (the other scenario's assertion log, a dependency's or an earlier version's log) stay there.
 
         Called right before the guest run starts (both backends). It:
           - picks the run name from the local time, the scenario and the baseline family ('-2', '-3', ...

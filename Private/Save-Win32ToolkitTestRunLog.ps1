@@ -14,7 +14,8 @@ function Save-Win32ToolkitTestRunLog {
             collector brought back. Files of earlier runs that this run did not touch are left out.
           - PsadtExitCodes.log with only this run's lines: the lines after the run's marker, up to the next
             marker.
-        The top-level files are not changed: they remain the latest run's logs.
+        The top-level files are left unchanged. They gather the logs of every run (each run overwrites the
+        files it writes; files only an earlier run wrote stay), so only the run folder is exactly this run's.
 
         Never throws for a file-system problem: a file that cannot be copied is named in one warning, and
         the folder keeps the others. Returns $null (no folder) when the run left no log at all.

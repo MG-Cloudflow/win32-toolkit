@@ -111,9 +111,12 @@ Sandbox\Logs\Runs\20261020-224100_Update_exe\
 The folder name is the start time, the scenario and, for an Update run, the old version's installer family.
 It holds the assertion log, the Add/Remove Programs snapshots, the run's own `PsadtExitCodes.log` lines and
 the PSADT and MSI logs. The host prints it as `Run logs : <folder>`, and the run's record in
-`Documentation\TestResults.json` names it in `LogFolder`. The files directly in `Sandbox\Logs\` are always
-the latest run's. In Windows Sandbox, the toolkit waits up to 60 seconds after the verdict for the guest to
-finish copying its logs; a Hyper-V run copies them back before the verdict. The run folders stay on the host:
+`Documentation\TestResults.json` names it in `LogFolder`. The files directly in `Sandbox\Logs\` gather the
+logs of every run: each run overwrites the files it writes, but a file only an earlier run wrote stays there
+(for example `UpdateAssertions.log` after an InstallUninstall run, or the log of a dependency or an earlier
+version), so only the run folder holds exactly one run's logs. In Windows Sandbox, the toolkit waits up to 60
+seconds after the verdict for the guest to finish copying its logs; a Hyper-V run copies them back before the
+verdict. The run folders stay on the host:
 a Hyper-V run neither copies them into the VM nor brings them back. Like the rest of `Sandbox\`,
 these folders are never packaged.
 

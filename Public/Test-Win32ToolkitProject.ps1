@@ -27,7 +27,10 @@ function Test-Win32ToolkitProject {
     logs) in a folder under Sandbox\Logs\Runs named after its start time, its scenario and, for an Update
     run, the old version's installer family, for example Sandbox\Logs\Runs\20261020-221500_Update_exe.
     Its Documentation\TestResults.json record names that folder (LogFolder). The files directly in
-    Sandbox\Logs are the latest run's.
+    Sandbox\Logs gather the logs of every run: each run overwrites the files it writes (and first clears
+    its own scenario's assertion log), while files that only another run wrote stay there, for example
+    UpdateAssertions.log after an InstallUninstall run, or the log of a dependency or an earlier version.
+    A run's exact set of logs is its folder under Sandbox\Logs\Runs.
 
     The function is scenario-driven: new test types can be added as additional switch cases
     without changing the overall structure.
@@ -351,8 +354,9 @@ function Test-Win32ToolkitProject {
                 }
             }
         }
-        # Keeps the run's logs in its own folder, Sandbox\Logs\Runs\<run>\ (test campaign F2): the top-level
-        # Sandbox\Logs files are overwritten by the next run (the next leg of a Both run). Under Sandbox the guest
+        # Keeps the run's logs in its own folder, Sandbox\Logs\Runs\<run>\ (test campaign F2): the next run (the
+        # next leg of a Both run) overwrites the top-level Sandbox\Logs files it writes, and files only an earlier
+        # run wrote stay there, so only the run folder is exactly this run's. Under Sandbox the guest
         # collects the PSADT/MSI logs AFTER the last assertion, so wait for its collector first (-WaitSeconds).
         # Returns the folder relative to the project for the TestResults.json record ('' when none).
         $saveRunLog = {
