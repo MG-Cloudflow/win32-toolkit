@@ -136,7 +136,9 @@ try {
         'CompletionPrompt.Message', 'CompletionPrompt.ButtonRightText')
 
     # Dollar: '$' + name char / { / ( / : / ?  -> rejected; 'US$ 5' and a trailing '$' are fine.
-    $dollarBad  = @('Contact $Helpdesk', '$5', 'Cost: US$5', '$(Get-Date)', '${C:\x}', '${x}', 'a $_ b', '$:x', '$?', 'Ca$h IT', '$envWinDir')
+    # '$$' / '$^' (S10-F3): automatic variables PSADT expands silently to empty text.
+    $dollarBad  = @('Contact $Helpdesk', '$5', 'Cost: US$5', '$(Get-Date)', '${C:\x}', '${x}', 'a $_ b', '$:x', '$?', 'Ca$h IT', '$envWinDir',
+                    'Contoso $$ IT', 'Contoso $^ IT', 'US$$ 5', 'ends $$')
     $dollarGood = @('US$ 5', 'Price $ 10', 'ends with $', 'Plain text, no dollar', '', 'Smile :-) (ok)')
     foreach ($field in $textFields) {
         $okAll = $true

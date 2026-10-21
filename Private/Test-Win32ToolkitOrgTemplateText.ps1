@@ -14,8 +14,9 @@ function Test-Win32ToolkitOrgTemplateText {
         backtick (impact analysis D9, SCF-04 / ORG-06; SWP-05 for the whitespace and countdown rules).
 
         Rules (one violation per field and rule):
-          Dollar      text fields              '$' followed by a letter, digit, '_', '{', '(', ':' or '?'
-                                               ('US$ 5' and a trailing '$' stay legal)
+          Dollar      text fields              '$' followed by a letter, digit, '_', '{', '(', ':', '?', '$'
+                                               or '^' (the automatic variables $$, $^ and $? expand
+                                               silently); 'US$ 5' and a trailing '$' stay legal
           Backtick    text fields + LogPath    any backtick
           Whitespace  text fields              non-empty but whitespace only (PSADT 4.2 rejects it -
                                                leave the field empty instead)
@@ -149,10 +150,12 @@ function Test-Win32ToolkitOrgTemplateText {
             return
         }
 
-        $m = [regex]::Match($s, '\$[\w{(:?]')
+        # '$' and '^' are in the class too: the automatic variables $$ and $^ expand SILENTLY to empty text on
+        # 4.1.8 and 4.2 (no error, the dialog text just changes) - test campaign 2026-10-21, S10-F3.
+        $m = [regex]::Match($s, '\$[\w{(:?$^]')
         if ($m.Success) {
             $token = [regex]::Match($s.Substring($m.Index), '^\$(\w+|.)').Value
-            Write-Violation $Name 'Dollar' ('{0}: ''{1}'' contains ''{2}'', which PSAppDeployToolkit expands as a variable or expression - the deployment fails. Remove the ''$'' or put a space after it (e.g. ''US$ 5'').' -f $Name, $s, $token)
+            Write-Violation $Name 'Dollar' ('{0}: ''{1}'' contains ''{2}'', which PSAppDeployToolkit expands as a variable or expression - the deployment fails or the text changes. Remove the ''$'' or put a space after it (e.g. ''US$ 5'').' -f $Name, $s, $token)
         }
         if ($s.Length -gt 0 -and [string]::IsNullOrWhiteSpace($s)) {
             Write-Violation $Name 'Whitespace' ('{0}: contains only whitespace, which PSAppDeployToolkit 4.2 rejects - leave the field empty instead.' -f $Name)

@@ -93,7 +93,7 @@ then fail every deployment built from the template (exit code 60001 or 60008). S
 
 | Rule | Applies to | Rejected |
 |---|---|---|
-| Dollar | Company name and every dialog text | a `$` followed by a letter, digit, `_`, `{`, `(`, `:` or `?` (`US$ 5` and a trailing `$` are fine) |
+| Dollar | Company name and every dialog text | a `$` followed by a letter, digit, `_`, `{`, `(`, `:`, `?`, `$` or `^` (`$$` and `$^` silently become empty text) (`US$ 5` and a trailing `$` are fine) |
 | Backtick | the same fields and the log path | any backtick |
 | Whitespace | company name and every dialog text | a value made of spaces only (leave the field empty instead) |
 | Log path | log path | any `$` that is not part of `$envName`, `$env:Name` or `${env:Name}` |

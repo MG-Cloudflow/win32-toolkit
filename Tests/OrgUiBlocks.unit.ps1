@@ -61,7 +61,7 @@ function Get-Win32ToolkitTemplateAssetFolder { param([string]$TemplateName, [str
 function Assert-Win32ToolkitOrgTemplateText {
     param($Template, [string]$Context)
     $fields = @($Template.CompanyName, $Template.ProgressDialog.StatusMessage, $Template.ProgressDialog.StatusMessageDetail, $Template.CompletionPrompt.Message)
-    if (@($fields | Where-Object { "$_" -match '\$[\w{(:?]' }).Count) {
+    if (@($fields | Where-Object { "$_" -match '\$[\w{(:?$^]' }).Count) {
         throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new("Org template text is invalid ($Context)."),
             'W32T.OrgTemplateInvalid', [System.Management.Automation.ErrorCategory]::InvalidData, $Template)
     }
