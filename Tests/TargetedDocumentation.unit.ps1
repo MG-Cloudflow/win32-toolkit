@@ -87,6 +87,33 @@ if (-not (Test-Path -LiteralPath $wsbH)) { Ok 'HyperV: no .wsb built' } else { B
 if ($script:started -eq 0) { Ok 'HyperV: WindowsSandbox.exe never launched' } else { Bad "Start-Process called $script:started time(s)" }
 if ($jsonH -like '*Documentation\InstallationChanges_*.json') { Ok 'HyperV returns expected capture path' } else { Bad "returned: $jsonH" }
 
+# --- capture noise (test campaign 2026-10-21, S7-F7) --------------------------------------------------
+Write-Host '[3] the file snapshots leave out the PSADT run''s own .NET/PowerShell noise (both snapshots alike)' -ForegroundColor Cyan
+if ($text.Contains("Join-Path `$env:ProgramData 'Microsoft\NetFramework\BreadcrumbStore'") -and $text.Contains("Join-Path `$env:LOCALAPPDATA 'Microsoft\Windows\PowerShell'")) { Ok 'the guest script lists the BreadcrumbStore and PowerShell-cache noise (static literals)' } else { Bad 'noise list missing' }
+# Behaviour: run the generated noise list + snapshot function against a fake ProgramData/LOCALAPPDATA tree.
+$ast = [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$null)
+$snapFn = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-TargetedDirectorySnapshot' }, $true))[0]
+$noiseStmts = @($ast.EndBlock.Statements | Where-Object { $_.Extent.Text -match '^\s*(\$snapshotNoise\s*=|if \(\$env:(ProgramData|LOCALAPPDATA)\)\s*\{\s*\$snapshotNoise)' })
+$fake = Join-Path ([System.IO.Path]::GetTempPath()) ('w32noise_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+$pd = Join-Path $fake 'ProgramData'; $la = Join-Path $fake 'LocalAppData'
+foreach ($d in "$pd\Microsoft\NetFramework\BreadcrumbStore", "$pd\Vendor\App", "$la\Microsoft\Windows\PowerShell", "$la\Vendor") { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+foreach ($f in "$pd\Microsoft\NetFramework\BreadcrumbStore\a.crumb", "$pd\Vendor\App\app.exe", "$la\Microsoft\Windows\PowerShell\StartupProfileData-NonInteractive", "$la\Vendor\settings.json") { Set-Content -LiteralPath $f -Value 'x' }
+$savedPd = $env:ProgramData; $savedLa = $env:LOCALAPPDATA
+try {
+    $env:ProgramData = $pd; $env:LOCALAPPDATA = $la
+    function Write-Log { param($Message, $Level) }
+    . ([scriptblock]::Create((@($noiseStmts | ForEach-Object { $_.Extent.Text }) -join "`n") + "`n" + $snapFn.Extent.Text))
+    $snap = @(Get-TargetedDirectorySnapshot -Description 'probe' -Paths @($pd, $la) -Depth 5 6>$null | ForEach-Object { $_.FullName })
+    $hasNoise = @($snap | Where-Object { $_ -like '*BreadcrumbStore*' -or $_ -like '*\Microsoft\Windows\PowerShell*' }).Count
+    if ($noiseStmts.Count -ge 3 -and $hasNoise -eq 0 -and ($snap -contains "$pd\Vendor\App\app.exe") -and ($snap -contains "$la\Vendor\settings.json")) { Ok 'BreadcrumbStore and PowerShell-cache entries are left out; C:\ProgramData\Vendor and LOCALAPPDATA\Vendor files are kept' }
+    else { Bad "snapshot (noise stmts $($noiseStmts.Count)): $($snap -join ' | ')" }
+}
+finally {
+    $env:ProgramData = $savedPd; $env:LOCALAPPDATA = $savedLa
+    Remove-Item -LiteralPath $fake -Recurse -Force -ErrorAction SilentlyContinue
+}
+if ($textH.Contains("Join-Path `$env:ProgramData 'Microsoft\NetFramework\BreadcrumbStore'")) { Ok 'the same filter in the Hyper-V capture script' } else { Bad 'Hyper-V script lacks the noise filter' }
+
 # best-effort cleanup
 Remove-Item -LiteralPath $projS, $projH -Recurse -Force -ErrorAction SilentlyContinue
 

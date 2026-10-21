@@ -164,6 +164,14 @@ function Export-DataSafely {
 }
 
 # Function to scan targeted directories
+# Capture noise left out of BOTH snapshots (so PRE and POST are filtered alike): files the capture's own PSADT
+# child powershell.exe writes, never the app's install - .NET Framework's BreadcrumbStore entries and
+# PowerShell's per-user startup/analysis caches (test campaign 2026-10-21, S7-F7: 8 to 22 of every capture's
+# NewFiles). Static literals only, no host data.
+$snapshotNoise = @()
+if ($env:ProgramData)  { $snapshotNoise += (Join-Path $env:ProgramData 'Microsoft\NetFramework\BreadcrumbStore') }
+if ($env:LOCALAPPDATA) { $snapshotNoise += (Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\PowerShell') }
+
 function Get-TargetedDirectorySnapshot {
     param([string]$Description, [string[]]$Paths, [int]$Depth = 3)
     
@@ -179,8 +187,16 @@ function Get-TargetedDirectorySnapshot {
                 Write-Log "Scanning path: $path" "INFO"
                 $items = @(Get-ChildItem -Path $path -Recurse -Depth $Depth -ErrorAction SilentlyContinue |
                          Select-Object FullName, Name, Length, CreationTime, LastWriteTime, Attributes)
-                foreach ($it in $items) { $results.Add($it) }
-                Write-Log "Found $($items.Count) items in $path" "INFO"
+                $kept = 0
+                foreach ($it in $items) {
+                    $noise = $false
+                    foreach ($n in $snapshotNoise) {
+                        if ([string]::Equals([string]$it.FullName, $n, [System.StringComparison]::OrdinalIgnoreCase) -or
+                            ([string]$it.FullName).StartsWith($n + '\', [System.StringComparison]::OrdinalIgnoreCase)) { $noise = $true; break }
+                    }
+                    if (-not $noise) { $results.Add($it); $kept++ }
+                }
+                Write-Log "Found $($items.Count) items in $path ($($items.Count - $kept) capture-noise items left out)" "INFO"
             } catch {
                 Write-Log "Error scanning $path - $($_.Exception.Message)" "WARNING"
             }
