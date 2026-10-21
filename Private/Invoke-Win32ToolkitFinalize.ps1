@@ -33,6 +33,10 @@ function Invoke-Win32ToolkitFinalize {
     .PARAMETER AllowLegacyScript
         Finalise a deploy script that win32-toolkit never patched (no AppConfig loader) or whose template
         layout this version does not support; the package is built as-is (passed on to the export).
+    .PARAMETER BasePath
+        The run's base folder: 'project:' dependencies are staged from <BasePath>\Projects for the capture and
+        every -RunTest scenario (passed on to New-TargetedDocumentation and Test-Win32ToolkitProject when given).
+        Empty: the configured base folder.
     #>
     [CmdletBinding()]
     param(
@@ -70,7 +74,10 @@ function Invoke-Win32ToolkitFinalize {
         [switch]$PublishUpdate,
 
         # D15 override: package a deploy script without the AppConfig loader / with an unsupported layout as-is.
-        [switch]$AllowLegacyScript
+        [switch]$AllowLegacyScript,
+
+        # The run's base folder for 'project:' dependencies (capture + tests); empty = the configured one.
+        [string]$BasePath
     )
 
     # Pre-flight (D15): never document, test, package or publish a deploy script win32-toolkit cannot
@@ -93,7 +100,11 @@ function Invoke-Win32ToolkitFinalize {
     # H7-F1). Prepared BEFORE New-TargetedDocumentation: under Sandbox the sandbox launches inside it.
     # Best effort: $null (no per-run folder) never stops the capture.
     $captureRun = Initialize-Win32ToolkitTestRunLog -ProjectPath $ProjectPath -Scenario Capture
-    $docSuccess = New-TargetedDocumentation -ProjectPath $ProjectPath -ProjectName $ProjectName -AppInfo $AppInfo -Backend $backend
+    # The run's -BasePath reaches the dependency staging of the capture and of every test below (re-verification
+    # 2026-10-21, B3 #4: they staged 'project:' dependencies from the registry base folder).
+    $docArgs = @{ ProjectPath = $ProjectPath; ProjectName = $ProjectName; AppInfo = $AppInfo; Backend = $backend }
+    if ($BasePath) { $docArgs['BasePath'] = $BasePath }
+    $docSuccess = New-TargetedDocumentation @docArgs
 
     $captureReady = [bool]$docSuccess
     if ($docSuccess -and $backend -eq 'HyperV') {
@@ -152,6 +163,7 @@ function Invoke-Win32ToolkitFinalize {
     if ($RunTest) {
         foreach ($scenario in $RunTest) {
             $testArgs = @{ ProjectPath = $ProjectPath; Scenario = $scenario }
+            if ($BasePath) { $testArgs['BasePath'] = $BasePath }
             if ($scenario -eq 'Update') {
                 # Plumb the baseline choice through so automation never lands on the interactive picker.
                 if ($UpdateSpecificVersion)   { $testArgs['SpecificVersion'] = $UpdateSpecificVersion }

@@ -416,7 +416,12 @@ try {
     . (Join-Path $repo 'Private\Invoke-Win32ToolkitFinalize.ps1')
     function Assert-Win32ToolkitPackageReady { param($ProjectPath, $Stage, [switch]$AllowLegacyScript) [pscustomobject]@{ Ready = $true } }
     function Get-Win32ToolkitTestBackend { 'Sandbox' }
-    function New-TargetedDocumentation { param($ProjectPath, $ProjectName, $AppInfo, $Backend) $false }
+    $script:docCalls = [System.Collections.Generic.List[hashtable]]::new()
+    function New-TargetedDocumentation {
+        param($ProjectPath, $ProjectName, $AppInfo, $Backend, $BasePath)
+        $h = @{}; foreach ($k in $PSBoundParameters.Keys) { $h[$k] = $PSBoundParameters[$k] }
+        $script:docCalls.Add($h); $false
+    }
     # C-9: the capture run-log helpers Finalize calls (H5-F5/H7-F1).
     function Initialize-Win32ToolkitTestRunLog { param($ProjectPath, $Scenario, $Family) $null }
     function Save-Win32ToolkitTestRunLog { param($Run) $null }
@@ -424,7 +429,7 @@ try {
     function Export-Win32ToolkitIntuneWin { param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript) }
     $script:testCalls = [System.Collections.Generic.List[hashtable]]::new()
     function Test-Win32ToolkitProject {
-        param($ProjectPath, $Scenario, $SpecificVersion, $VersionsBack, $BaselineInstallerType)
+        param($ProjectPath, $Scenario, $SpecificVersion, $VersionsBack, $BaselineInstallerType, $BasePath)
         $h = @{}; foreach ($k in $PSBoundParameters.Keys) { $h[$k] = $PSBoundParameters[$k] }
         $script:testCalls.Add($h); $true
     }
@@ -440,6 +445,18 @@ try {
     $threw = $false
     try { Invoke-Win32ToolkitFinalize -ProjectPath $proj -ProjectName 'P' -RunTest Update -UpdateBaselineInstallerType 'zip' 3>$null 6>$null } catch { $threw = $true }
     if ($threw) { Ok "-UpdateBaselineInstallerType has the ValidateSet ('zip' rejected)" } else { Bad "'zip' accepted" }
+
+    # The run's -BasePath reaches the capture and every test, where 'project:' dependencies are staged
+    # (re-verification 2026-10-21, B3 #4: Finalize had no -BasePath, so both used the registry base folder).
+    Write-Host '[3b] Invoke-Win32ToolkitFinalize -BasePath reaches New-TargetedDocumentation and Test-Win32ToolkitProject' -ForegroundColor Cyan
+    $script:testCalls.Clear(); $script:docCalls.Clear()
+    $baseB = Join-Path $tmpRoot 'BaseB'
+    Invoke-Win32ToolkitFinalize -ProjectPath $proj -ProjectName 'P' -RunTest InstallUninstall, Update -UpdateVersionsBack 1 -BasePath $baseB 3>$null 6>$null
+    if ($script:docCalls.Count -eq 1 -and $script:docCalls[0]['BasePath'] -eq $baseB) { Ok 'New-TargetedDocumentation gets -BasePath (the capture stages dependencies from it)' } else { Bad "capture args: $($script:docCalls | ConvertTo-Json -Compress)" }
+    if ($script:testCalls.Count -eq 2 -and @($script:testCalls | Where-Object { $_['BasePath'] -eq $baseB }).Count -eq 2) { Ok 'both test scenarios get -BasePath' } else { Bad "test args: $($script:testCalls | ConvertTo-Json -Compress)" }
+    $script:testCalls.Clear(); $script:docCalls.Clear()
+    Invoke-Win32ToolkitFinalize -ProjectPath $proj -ProjectName 'P' -RunTest InstallUninstall 3>$null 6>$null
+    if (-not $script:docCalls[0].ContainsKey('BasePath') -and -not $script:testCalls[0].ContainsKey('BasePath')) { Ok 'no -BasePath -> none passed (the callee resolves the configured base folder)' } else { Bad "unbound: $($script:docCalls | ConvertTo-Json -Compress) / $($script:testCalls | ConvertTo-Json -Compress)" }
 }
 finally {
     Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue

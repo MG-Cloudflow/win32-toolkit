@@ -87,7 +87,7 @@ function Download-WingetApp { param($AppId, $AppName, $DownloadPath, $Architectu
 # Anything downstream of the download must never run on this path — if it does, the test explodes loudly.
 function Invoke-Win32ToolkitFinalize {
     param($ProjectPath, $ProjectName, $AppInfo, $RunTest, $UpdateVersionsBack, $UpdateSpecificVersion, $UpdateBaselineInstallerType,
-        [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate)
+        [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate, $BasePath)
     throw 'Invoke-Win32ToolkitFinalize ran even though the download failed'
 }
 function Write-Win32ToolkitIdentityDelta {

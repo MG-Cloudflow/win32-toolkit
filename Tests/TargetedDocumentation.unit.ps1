@@ -149,6 +149,17 @@ $retP = New-TargetedDocumentation -ProjectPath $projD -ProjectName 'Test_x64_1.0
 if ($retP -eq $false -and @($wP | Where-Object { "$_" -like 'Failed to create targeted documentation: disk full*' }).Count -eq 1) { Ok 'a plain error keeps the warning + $false (unchanged)' } else { Bad "plain: returned='$retP' warnings=[$(@($wP) -join ' | ')]" }
 ${function:Initialize-Win32ToolkitDependencyStaging} = $savedStaging4
 
+# The run's -BasePath reaches the capture's dependency staging (re-verification 2026-10-21, B3 #4).
+Write-Host '[5] -BasePath reaches Initialize-Win32ToolkitDependencyStaging (only when given)' -ForegroundColor Cyan
+$script:stageArgs = $null
+function Initialize-Win32ToolkitDependencyStaging { param($ProjectPath, $BasePath) $script:stageArgs = @{ ProjectPath = $ProjectPath }; if ($PSBoundParameters.ContainsKey('BasePath')) { $script:stageArgs['BasePath'] = $BasePath }; return 0 }
+$null = New-TargetedDocumentation -ProjectPath $projD -ProjectName 'Test_x64_1.0' -Backend HyperV -BasePath 'D:\OtherBase' 6>$null
+if ($script:stageArgs -and $script:stageArgs['BasePath'] -eq 'D:\OtherBase') { Ok '-BasePath reaches Initialize-Win32ToolkitDependencyStaging' } else { Bad "staging args: $(if ($script:stageArgs) { ($script:stageArgs.Keys | ForEach-Object { "$_=$($script:stageArgs[$_])" }) -join '; ' })" }
+$script:stageArgs = $null
+$null = New-TargetedDocumentation -ProjectPath $projD -ProjectName 'Test_x64_1.0' -Backend HyperV 6>$null
+if ($script:stageArgs -and -not $script:stageArgs.ContainsKey('BasePath')) { Ok 'no -BasePath -> none passed (the staging resolves the configured base folder)' } else { Bad 'BasePath passed although none was given' }
+${function:Initialize-Win32ToolkitDependencyStaging} = $savedStaging4
+
 # best-effort cleanup
 Remove-Item -LiteralPath $projS, $projH, $projD -Recurse -Force -ErrorAction SilentlyContinue
 

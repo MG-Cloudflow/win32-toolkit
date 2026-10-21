@@ -390,7 +390,8 @@ function Invoke-Win32Toolkit {
 
                 # Documentation capture, uninstall automation, and optional test/package/publish
                 # (shared with the manual-app flow — see Invoke-Win32ToolkitFinalize).
-                $finalize = @{ ProjectPath = $projectFullPath; ProjectName = $projectName; AppInfo = $selectedApp }
+                # BasePath: the capture and every test stage 'project:' dependencies from this run's base folder.
+                $finalize = @{ ProjectPath = $projectFullPath; ProjectName = $projectName; AppInfo = $selectedApp; BasePath = $BasePath }
                 if ($RunTest) { $finalize['RunTest'] = $RunTest }   # omit when null (ValidateSet rejects $null)
                 if ($UpdateVersionsBack)    { $finalize['UpdateVersionsBack']    = $UpdateVersionsBack }
                 if ($UpdateSpecificVersion) { $finalize['UpdateSpecificVersion'] = $UpdateSpecificVersion }

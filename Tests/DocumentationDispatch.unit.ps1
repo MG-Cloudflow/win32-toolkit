@@ -26,8 +26,8 @@ $script:hvReturn = $true
 
 function Get-Win32ToolkitTestBackend { return $script:backend }
 function New-TargetedDocumentation {
-    param($ProjectPath, $ProjectName, $AppInfo, $Backend, [switch]$SkipLaunch)
-    $script:genBackend = $Backend; $script:log += "gen:$Backend"
+    param($ProjectPath, $ProjectName, $AppInfo, $Backend, [switch]$SkipLaunch, $BasePath)
+    $script:genBackend = $Backend; $script:genBase = $BasePath; $script:log += "gen:$Backend"
     return 'C:\proj\Documentation\InstallationChanges_x.json'
 }
 function Invoke-Win32ToolkitHyperVRun {

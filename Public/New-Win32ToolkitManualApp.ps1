@@ -285,7 +285,8 @@ function New-Win32ToolkitManualApp {
 
         # ── Easy app: finalise inline if asked ────────────────────────────────────
         if ($Continue -or $RunTest -or $PackageIntune -or $PublishIntune -or $PublishUpdate) {
-            $finalize = @{ ProjectPath = $projectFullPath; ProjectName = $projectName; AppInfo = $appInfo }
+            # BasePath: the capture and every test stage 'project:' dependencies from this run's base folder.
+            $finalize = @{ ProjectPath = $projectFullPath; ProjectName = $projectName; AppInfo = $appInfo; BasePath = $BasePath }
             if ($RunTest) { $finalize['RunTest'] = $RunTest }   # omit when null (ValidateSet rejects $null)
             Invoke-Win32ToolkitFinalize @finalize -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune -PublishUpdate:$PublishUpdate
         }

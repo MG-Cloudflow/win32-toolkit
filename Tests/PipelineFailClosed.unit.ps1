@@ -156,7 +156,7 @@ function Assert-Win32ToolkitPackageReady {
     [pscustomobject]@{ Ready = $true; Shape = 'Psadt41'; VersionText = '4.1.8'; Warnings = @() }
 }
 function Get-Win32ToolkitTestBackend { if ($script:Mode.BackendThrows) { throw 'backend exploded' }; 'Sandbox' }
-function New-TargetedDocumentation { param($ProjectPath, $ProjectName, $AppInfo, $Backend) $script:Calls.Add('document'); return $false }
+function New-TargetedDocumentation { param($ProjectPath, $ProjectName, $AppInfo, $Backend, $BasePath) $script:Calls.Add('document'); $script:DocBase = $BasePath; return $false }
 function Invoke-Win32ToolkitHyperVRun { param($ProjectPath, $Phase, $Output) $true }
 function Wait-ForDocumentationAndProcess { param($ProjectPath, $InstallerType, $ExpectedJsonPath) $true }
 function Import-Win32ToolkitCapturedIcon { param($ProjectPath) }
@@ -164,7 +164,7 @@ function Import-Win32ToolkitCapturedIcon { param($ProjectPath) }
 function Initialize-Win32ToolkitTestRunLog { param($ProjectPath, $Scenario, $Family) $null }
 function Save-Win32ToolkitTestRunLog { param($Run) $null }
 function Wait-Win32ToolkitCollectedLog { param($ProjectPath, $TimeoutSeconds) $true }
-function Test-Win32ToolkitProject { param($ProjectPath, $Scenario, $SpecificVersion, $VersionsBack) $script:Calls.Add('test'); $true }
+function Test-Win32ToolkitProject { param($ProjectPath, $Scenario, $SpecificVersion, $VersionsBack, $BasePath) $script:Calls.Add('test'); $true }
 function Export-Win32ToolkitIntuneWin { param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript) $script:Calls.Add("export:$([bool]$AllowLegacyScript)") }
 
 # Runs an action; returns @{ Fqid; Message; Errors (non-terminating) }.
@@ -244,6 +244,12 @@ if ($r.Fqid -eq 'W32T.PipelineAborted' -and (& $downstream $script:Calls).Count 
 Reset-Case @{ GeneratorThrows = $true }
 $r = Invoke-Case $runManual
 if ($r.Fqid -eq 'W32T.UnsupportedTemplateShape' -and 'apply' -notin $script:Calls -and (& $downstream $script:Calls).Count -eq 0) { Ok 'a W32T generator error propagates; no org template, no Finalize' } else { Bad "fqid='$($r.Fqid)' calls=[$($script:Calls -join ',')]" }
+
+# The manual app's base folder reaches the real Finalize and its capture (re-verification 2026-10-21, B3 #4).
+Reset-Case @{}
+$script:DocBase = $null
+$r = Invoke-Case $runManual
+if (-not $r.Fqid -and 'document' -in $script:Calls -and $script:DocBase -eq $BASE) { Ok 'New-Win32ToolkitManualApp -Continue passes its -BasePath through Finalize to the capture' } else { Bad "fqid='$($r.Fqid)' capture BasePath='$script:DocBase' calls=[$($script:Calls -join ',')]" }
 
 Reset-Case @{ GeneratorFalse = $true }
 $r = Invoke-Case $runManual
@@ -359,7 +365,7 @@ $finalizeRun = {
     param([hashtable]$Extra)
     function Invoke-Win32ToolkitFinalize {
         param($ProjectPath, $ProjectName, $AppInfo, $RunTest, $UpdateVersionsBack, $UpdateSpecificVersion, $UpdateBaselineInstallerType,
-            [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate)
+            [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate, $BasePath)
         $script:FinalizeSeen = $PSBoundParameters
     }
     $script:FinalizeSeen = $null
@@ -371,6 +377,9 @@ $fs = & $finalizeRun @{ RunTest = @('Update'); UpdateVersionsBack = 1; UpdateBas
 if ($fs -and $fs['UpdateBaselineInstallerType'] -eq 'Both' -and $fs['RunTest'] -eq 'Update' -and $fs['UpdateVersionsBack'] -eq 1) { Ok '-UpdateBaselineInstallerType Both reaches Invoke-Win32ToolkitFinalize' } else { Bad "finalize args: $(if ($fs) { ($fs.Keys | ForEach-Object { "$_=$($fs[$_])" }) -join '; ' })" }
 $fs = & $finalizeRun @{ RunTest = @('Update') }
 if ($fs -and -not $fs.ContainsKey('UpdateBaselineInstallerType')) { Ok 'not bound -> not passed (Finalize and Test keep their own default)' } else { Bad "finalize args: $(if ($fs) { ($fs.Keys | ForEach-Object { "$_=$($fs[$_])" }) -join '; ' })" }
+# The run's base folder reaches Finalize (re-verification 2026-10-21, B3 #4): its capture and tests stage
+# 'project:' dependencies from it, not from the registry base folder.
+if ($fs -and $fs['BasePath'] -eq $BASE) { Ok 'Invoke-Win32Toolkit passes its resolved -BasePath to Invoke-Win32ToolkitFinalize' } else { Bad "finalize BasePath: '$(if ($fs) { $fs['BasePath'] })'" }
 
 # W32T.InstallerVariantUnavailable from the download passes Invoke unchanged; nothing downstream runs.
 Reset-Case @{ DownloadUnavailable = $true }

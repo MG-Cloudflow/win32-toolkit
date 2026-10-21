@@ -215,7 +215,7 @@ try {
     function Export-Win32ToolkitIntuneWin { param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript) }
     $script:legFolders = @()
     function Test-Win32ToolkitProject {
-        param($ProjectPath, $Scenario, $SpecificVersion, $VersionsBack, $BaselineInstallerType)
+        param($ProjectPath, $Scenario, $SpecificVersion, $VersionsBack, $BaselineInstallerType, $BasePath)
         foreach ($leg in $script:legFolders) {
             $null = Add-Win32ToolkitTestResult -ProjectPath $ProjectPath -Scenario $Scenario -Backend Sandbox -Verdict $leg.Verdict -LogFolder $leg.Folder
         }
@@ -248,7 +248,7 @@ try {
         Write-RunLog $ProjectPath 'App_PSAppDeployToolkit_Install.log' 'capture run'; Write-RunLog $ProjectPath 'CollectLogs.done' 'collected=1'; $true }
     function Get-InstallerFileInfo { param($FilesPath) [pscustomobject]@{ Type = 'exe' } }
     function Import-Win32ToolkitCapturedIcon { param($ProjectPath) }
-    function Test-Win32ToolkitProject { param($ProjectPath, $Scenario, $SpecificVersion, $VersionsBack, $BaselineInstallerType)
+    function Test-Win32ToolkitProject { param($ProjectPath, $Scenario, $SpecificVersion, $VersionsBack, $BaselineInstallerType, $BasePath)
         Write-RunLog $ProjectPath 'App_PSAppDeployToolkit_Install.log' 'test run'; $true }
     $hostC = @(Invoke-Win32ToolkitFinalize -ProjectPath $pc -ProjectName 'P' -RunTest InstallUninstall 3>$null 6>&1 | ForEach-Object { "$_" })
     $capDirs = @(Get-ChildItem -LiteralPath (Join-Path $pc 'Sandbox\Logs\Runs') -Directory -Filter '*_Capture' -ErrorAction SilentlyContinue)

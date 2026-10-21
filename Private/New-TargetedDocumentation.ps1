@@ -14,7 +14,10 @@ function New-TargetedDocumentation {
         [string]$Backend = 'Sandbox',
 
         # Tests only: prepare everything (incl. clearing stale captures) but do not launch the sandbox.
-        [switch]$SkipLaunch
+        [switch]$SkipLaunch,
+
+        # The base folder a 'project:' dependency is staged from (the run's -BasePath); empty = the configured one.
+        [string]$BasePath
     )
 
     try {
@@ -1009,7 +1012,11 @@ if ($backend -eq 'Sandbox') {
         # Stage declared dependencies into Sandbox\Dependencies\ so the guest can install them BEFORE the
         # baseline. Without this the capture runs on a machine missing the app's runtime, and the detection
         # / uninstall rules would be derived from a broken install. No-op when none are declared.
-        $null = Initialize-Win32ToolkitDependencyStaging -ProjectPath $ProjectPath
+        # A 'project:' dependency resolves against the run's -BasePath when one was passed (re-verification
+        # 2026-10-21, B3 #4); a dependency that cannot be staged throws W32T.DependencyNotStaged (re-thrown below).
+        $depArgs = @{ ProjectPath = $ProjectPath }
+        if ($BasePath) { $depArgs['BasePath'] = $BasePath }
+        $null = Initialize-Win32ToolkitDependencyStaging @depArgs
 
         # Create the sandbox configuration (Sandbox backend only — Hyper-V runs the same generated script
         # over PowerShell Direct with no .wsb). Built via the shared .wsb builder (test-backend seam, Phase 0).
