@@ -54,9 +54,11 @@ absent, Intune will not even attempt your app. Use it deliberately.
 
 Before a Sandbox / Hyper-V run starts, every declared `winget:` and `project:` dependency is **staged into
 the guest** (under the project's `Sandbox\Dependencies\` folder) and **installed before your app**: the
-same order the Intune Management Extension uses on a real device. An `intune:` dependency cannot be staged
-(the toolkit has no package for it); it is warned about and skipped in the guest, but the Intune
-relationship is still created at publish time.
+same order the Intune Management Extension uses on a real device. A `winget:` or `project:` dependency that
+**cannot be staged** (its download fails, the project or the base folder is missing) **stops the test or
+capture** with an error naming the dependency and the reason, instead of running without it. An `intune:`
+dependency cannot be staged (the toolkit has no package for it); it is warned about and skipped in the guest,
+but the Intune relationship is still created at publish time.
 
 Each `project:` dependency runs its PSADT package in a **separate** Windows PowerShell process, as does
 your app: PSAppDeployToolkit 4.2 refuses to load a second copy of itself into one process, and a

@@ -1124,6 +1124,10 @@ if ($backend -eq 'Sandbox') {
         return $expectedJson
     }
     catch {
+        # Fail closed (C-2): a W32T.* error (a declared dependency that cannot be staged: W32T.DependencyNotStaged)
+        # stops Invoke-Win32Toolkit / the manual-app flow instead of a warning and a skipped capture
+        # (re-verification 2026-10-21, B3 #1).
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
         Write-Warning "Failed to create targeted documentation: $($_.Exception.Message)"
         return $false
     }

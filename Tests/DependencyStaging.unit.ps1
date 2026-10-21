@@ -277,11 +277,56 @@ if ($n9 -eq 1 -and (Get-Content -LiteralPath $staged9 -Raw) -match ([regex]::Esc
 $n9 = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p9 6>$null
 if ($n9 -eq 1 -and (Get-Content -LiteralPath $staged9 -Raw) -match ([regex]::Escape((Split-Path -Leaf $baseA)))) { Ok 'no -BasePath -> the registry base' } else { Bad "n=$n9 staged: $(if (Test-Path $staged9) { Get-Content $staged9 -Raw })" }
 $script:regBase = $null
-$w9 = $null
-$n9 = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p9 -WarningVariable w9 -WarningAction SilentlyContinue 6>$null
-if ($n9 -eq 0 -and -not $script:prompted -and @($w9 | Where-Object { "$_" -match "Dependency project 'Contoso\\Tool_x64_1\.0' cannot be resolved: no base folder is configured" }).Count -eq 1) { Ok 'no base folder anywhere -> one warning, nothing staged, never a prompt' } else { Bad "n=$n9 prompted=$($script:prompted) warn=$($w9 -join ' | ')" }
+$e9 = $null
+try { $null = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p9 6>$null } catch { $e9 = $_ }
+if ($e9 -and $e9.FullyQualifiedErrorId -eq 'W32T.DependencyNotStaged' -and -not $script:prompted -and "$e9" -match "'project:Contoso\\Tool_x64_1\.0' could not be staged: no base folder is configured") { Ok 'no base folder anywhere -> W32T.DependencyNotStaged (S11-F4), never a prompt' } else { Bad "prompted=$($script:prompted) err=$($e9.FullyQualifiedErrorId) $e9" }
 $src9 = Get-Content -LiteralPath (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1') -Raw
 if ($src9 -match "\`$depArgs\['BasePath'\] = \`$BasePath" -and $src9 -match 'Initialize-Win32ToolkitDependencyStaging @depArgs') { Ok 'Test-Win32ToolkitProject passes its -BasePath to the staging (only when bound)' } else { Bad 'Test-Win32ToolkitProject does not pass -BasePath' }
+
+Write-Host '[10] a winget: or project: dependency that cannot be staged fails closed (test campaign 2026-10-21, S11-F4)' -ForegroundColor Cyan
+$cache10 = Join-Path ([System.IO.Path]::GetTempPath()) ('w32dsC_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+New-Item -ItemType Directory -Path $cache10 -Force | Out-Null
+function Get-Win32ToolkitPipelineCacheRoot { $cache10 }
+$script:regBase = $baseA
+function Test-NotStaged([string]$Project, [string]$Pattern) {
+    $e = $null
+    try { $null = Initialize-Win32ToolkitDependencyStaging -ProjectPath $Project 6>$null 3>$null } catch { $e = $_ }
+    $left = (Test-Path -LiteralPath (Join-Path $Project 'Sandbox\Dependencies')) -or (Test-Path -LiteralPath (Join-Path $Project 'Sandbox\InstallDependencies.ps1')) -or @(Get-ChildItem -LiteralPath (Join-Path $cache10 'staging') -File -ErrorAction SilentlyContinue).Count -gt 0
+    [pscustomobject]@{ Ok = ($e -and $e.FullyQualifiedErrorId -eq 'W32T.DependencyNotStaged' -and "$e" -match $Pattern -and -not $left); Error = "$($e.FullyQualifiedErrorId) $e"; Left = $left }
+}
+# (a) the winget download fails -> no staging, no marker, no dependencies.json
+$p10 = New-Proj
+$null = Set-Win32ToolkitAppDependency -ProjectPath $p10 -DependsOn 'project:Contoso\Tool_x64_1.0', "winget:$VC"
+$dlSaved = ${function:Download-OldVersionInstaller}
+${function:Download-OldVersionInstaller} = { param($AppId, $Version, $ProjectPath, $Architecture, $Scope, $InstallerType, $Locale, $DestinationDir) throw 'winget download exited with code -1978335114 (0x8A150076)' }
+$r = Test-NotStaged $p10 "'winget:Microsoft\.VCRedist\.2015\+\.x64' could not be staged: the winget download failed \(winget download exited with code -1978335114"
+if ($r.Ok) { Ok 'winget download failure -> W32T.DependencyNotStaged naming the dependency and the reason; nothing left staged, no marker' } else { Bad "winget: $($r.Error) left=$($r.Left)" }
+${function:Download-OldVersionInstaller} = $dlSaved
+# (b) a project: dependency that does not exist
+$p11 = New-Proj
+$null = Set-Win32ToolkitAppDependency -ProjectPath $p11 -DependsOn 'project:Contoso\DoesNotExist'
+$r = Test-NotStaged $p11 "'project:Contoso\\DoesNotExist' could not be staged: the project was not found"
+if ($r.Ok) { Ok 'missing project: dependency -> W32T.DependencyNotStaged; nothing left staged' } else { Bad "project: $($r.Error) left=$($r.Left)" }
+# (c) a reuse marker that recorded fewer dependencies than the stageable set (an older build that warned and went on)
+$p12 = New-Proj
+$null = Set-Win32ToolkitAppDependency -ProjectPath $p12 -DependsOn 'project:Contoso\Tool_x64_1.0', "winget:$VC"
+$script:downloaded = @()
+$n12 = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p12 6>$null
+$mk = @(Get-ChildItem -LiteralPath (Join-Path $cache10 'staging') -File)[0]
+$m = Get-Content -LiteralPath $mk.FullName -Raw | ConvertFrom-Json
+$m.Count = 1
+[System.IO.File]::WriteAllText($mk.FullName, (ConvertTo-Json -InputObject $m -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+$n12b = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p12 6>$null
+if ($n12 -eq 2 -and $n12b -eq 2 -and $script:downloaded.Count -eq 2) { Ok 'a marker with Count 1 for 2 stageable dependencies is not reused (restaged)' } else { Bad "n=$n12/$n12b downloads=$($script:downloaded.Count)" }
+$n12c = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p12 6>$null
+if ($n12c -eq 2 -and $script:downloaded.Count -eq 2) { Ok 'a complete marker is reused as before' } else { Bad "reuse: n=$n12c downloads=$($script:downloaded.Count)" }
+# (d) intune: stays a warning
+$p13 = New-Proj
+$null = Set-Win32ToolkitAppDependency -ProjectPath $p13 -DependsOn 'intune:8d0a1f2c-1111-2222-3333-444455556666'
+$e13 = $null; try { $n13 = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p13 -WarningAction SilentlyContinue 6>$null } catch { $e13 = $_ }
+if (-not $e13 -and $n13 -eq 0) { Ok 'intune: is still only warned about (no package to stage; TODO)' } else { Bad "intune threw: $e13" }
+foreach ($pp in $p10, $p11, $p12, $p13) { Remove-Item -LiteralPath (Split-Path -Parent (Split-Path -Parent $pp)) -Recurse -Force -ErrorAction SilentlyContinue }
+Remove-Item -LiteralPath $cache10 -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $baseA, $baseB, (Split-Path -Parent (Split-Path -Parent $p9)) -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''

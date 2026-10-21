@@ -36,7 +36,9 @@ function Initialize-Win32ToolkitDependencyStaging {
         Empty: the configured base folder (Get-Win32ToolkitBasePath -NonInteractive, never a prompt); when none is
         configured, such a dependency cannot be resolved and is warned about.
     .OUTPUTS
-        [int] the number of dependencies staged (0 when none are declared / none could be staged).
+        [int] the number of dependencies staged (0 when none are declared). A 'winget:' or 'project:' dependency
+        that cannot be staged (download failed, project or base folder missing, copy failed) throws
+        W32T.DependencyNotStaged and leaves nothing staged; an 'intune:' one is only warned about.
     #>
     [CmdletBinding()]
     [OutputType([int])]
@@ -191,7 +193,10 @@ exit 0
     if ($deps.Count -gt 0 -and $stagedMark -and (Test-Path -LiteralPath $stagedMark)) {
         try {
             $mark = Get-Content -LiteralPath $stagedMark -Raw | ConvertFrom-Json
-            $fresh = $mark.DeclaredHash -eq $declaredHash -and
+            # A marker an older build wrote after staging only SOME dependencies (it warned and went on) holds a
+            # lower Count than the stageable set: never reuse that (S11-F4).
+            $stageableCount = @($deps | Where-Object { $_.Source -ne 'intune' }).Count
+            $fresh = $mark.DeclaredHash -eq $declaredHash -and [int]$mark.Count -eq $stageableCount -and
                      $mark.StagedAt -and (((Get-Date) - [datetime]$mark.StagedAt).TotalHours -lt 6)
             if ($fresh) {
                 # Property 4: the staged guest script must be what THIS generator writes.
@@ -227,6 +232,20 @@ exit 0
     New-Item -ItemType Directory -Path $depRoot -Force | Out-Null
     Write-Verbose "Staging $($deps.Count) dependency(ies) for the test/capture run..."
 
+    # A 'winget:' or 'project:' dependency that cannot be staged FAILS CLOSED (test campaign 2026-10-21, S11-F4):
+    # a run without a runtime the app declares would test - or worse, capture detection and uninstall data
+    # from - a broken install. Nothing partial is left for the guest (no staging folder, no guest script, no
+    # reuse marker), and the error names the dependency and the reason. 'intune:' stays a warning (TODO).
+    $notStaged = {
+        param($Dependency, [string]$Why)
+        Remove-Item -LiteralPath $depRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue
+        if ($stagedMark) { Remove-Item -LiteralPath $stagedMark -Force -ErrorAction SilentlyContinue }
+        $msg = "Dependency '$($Dependency.Source):$($Dependency.Ref)' could not be staged: $Why The test/capture run would not have it installed, so it is not started. Fix the dependency, or remove it (Set-Win32ToolkitAppDependency -ProjectPath '$ProjectPath' -Clear, then declare the others again), and re-run."
+        throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new($msg), 'W32T.DependencyNotStaged',
+            [System.Management.Automation.ErrorCategory]::ObjectNotFound, "$($Dependency.Source):$($Dependency.Ref)")
+    }
+
     $entries = [System.Collections.Generic.List[object]]::new()
 
     foreach ($d in $deps) {
@@ -247,7 +266,8 @@ exit 0
                     })
                 }
                 catch {
-                    Write-Warning "Could not stage the winget dependency '$($d.Ref)': $($_.Exception.Message). The test/capture run will NOT have it installed."
+                    if ($_.FullyQualifiedErrorId -like 'W32T.*') { & $notStaged $d "the winget download failed ($($_.FullyQualifiedErrorId): $($_.Exception.Message))." }
+                    & $notStaged $d "the winget download failed ($($_.Exception.Message))."
                 }
             }
 
@@ -258,19 +278,21 @@ exit 0
                 # the lookup never prompts: no base folder at all means the dependency cannot be resolved.
                 $base = Get-Win32ToolkitBasePath -BasePath $BasePath -NonInteractive
                 if ([string]::IsNullOrWhiteSpace($base)) {
-                    Write-Warning "Dependency project '$($d.Ref)' cannot be resolved: no base folder is configured (pass -BasePath, or set the base folder). The test/capture run will NOT have it installed."
-                    break
+                    & $notStaged $d 'no base folder is configured to resolve it against (pass -BasePath, or set the base folder).'
                 }
                 $src  = Join-Path (Get-Win32ToolkitPaths -BasePath $base).Projects $d.Ref
                 if (-not (Test-Path -LiteralPath (Join-Path $src 'Invoke-AppDeployToolkit.ps1'))) {
-                    Write-Warning "Dependency project '$($d.Ref)' was not found (no Invoke-AppDeployToolkit.ps1 at $src). The test/capture run will NOT have it installed."
-                    break
+                    & $notStaged $d "the project was not found (no Invoke-AppDeployToolkit.ps1 at $src)."
                 }
                 $destDir = Join-Path $depRoot $leaf
                 New-Item -ItemType Directory -Path $destDir -Force | Out-Null
                 # Copy CONTENTS so the PSADT script sits directly under the dependency folder. Its own
                 # Sandbox\ artifacts are excluded — we only need it to be installable.
-                Copy-Item -Path (Join-Path $src '*') -Destination $destDir -Recurse -Force -Exclude 'Sandbox' -ErrorAction Stop
+                try { Copy-Item -Path (Join-Path $src '*') -Destination $destDir -Recurse -Force -Exclude 'Sandbox' -ErrorAction Stop }
+                catch {
+                    if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                    & $notStaged $d "copying the project failed ($($_.Exception.Message))."
+                }
                 $entries.Add([pscustomobject]@{
                     Name       = $d.Ref
                     Type       = 'psadt'

@@ -131,8 +131,26 @@ finally {
 }
 if ($textH.Contains("Join-Path `$env:ProgramData 'Microsoft\NetFramework\BreadcrumbStore'")) { Ok 'the same filter in the Hyper-V capture script' } else { Bad 'Hyper-V script lacks the noise filter' }
 
+# A capture whose declared dependency cannot be staged STOPS (re-verification 2026-10-21, B3 #1): the W32T error
+# reaches the caller (Finalize has no try, so Invoke-Win32Toolkit / the manual flow re-throw it) instead of a
+# warning and $false.
+Write-Host '[4] dependency staging: W32T.DependencyNotStaged propagates (C-2); a plain error keeps the warning' -ForegroundColor Cyan
+$projD = New-Proj
+$savedStaging4 = ${function:Initialize-Win32ToolkitDependencyStaging}
+function Initialize-Win32ToolkitDependencyStaging { param($ProjectPath)
+    throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new("Dependency 'project:Contoso\Missing' of $ProjectPath could not be staged: the project was not found."), 'W32T.DependencyNotStaged', [System.Management.Automation.ErrorCategory]::ObjectNotFound, 'project:Contoso\Missing')
+}
+$retD = 'not-set'; $eD = $null; $wD = $null
+try { $retD = New-TargetedDocumentation -ProjectPath $projD -ProjectName 'Test_x64_1.0' -Backend HyperV -WarningVariable wD -WarningAction SilentlyContinue 6>$null } catch { $eD = $_ }
+if ($eD -and $eD.FullyQualifiedErrorId -eq 'W32T.DependencyNotStaged' -and $retD -eq 'not-set' -and @($wD | Where-Object { "$_" -like 'Failed to create targeted documentation*' }).Count -eq 0) { Ok 'W32T.DependencyNotStaged is re-thrown (no "Failed to create targeted documentation" warning, no $false)' } else { Bad "caught='$($eD.FullyQualifiedErrorId)' returned='$retD' warnings=[$(@($wD) -join ' | ')]" }
+function Initialize-Win32ToolkitDependencyStaging { param($ProjectPath) throw "disk full (plain error) for $ProjectPath" }
+$retP = $null; $wP = $null
+$retP = New-TargetedDocumentation -ProjectPath $projD -ProjectName 'Test_x64_1.0' -Backend HyperV -WarningVariable wP -WarningAction SilentlyContinue 6>$null
+if ($retP -eq $false -and @($wP | Where-Object { "$_" -like 'Failed to create targeted documentation: disk full*' }).Count -eq 1) { Ok 'a plain error keeps the warning + $false (unchanged)' } else { Bad "plain: returned='$retP' warnings=[$(@($wP) -join ' | ')]" }
+${function:Initialize-Win32ToolkitDependencyStaging} = $savedStaging4
+
 # best-effort cleanup
-Remove-Item -LiteralPath $projS, $projH -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $projS, $projH, $projD -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All TargetedDocumentation tests passed.' -ForegroundColor Green; exit 0 }

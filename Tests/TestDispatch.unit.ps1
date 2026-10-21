@@ -395,6 +395,31 @@ Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
 if (@($script:collectWaits).Count -eq 0) { Ok 'Sandbox did not launch -> no wait for a collector' } else { Bad "not launched: waits=$($script:collectWaits -join ',')" }
 Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
 
+# A W32T.* error inside the command (a declared dependency that cannot be staged) reaches the caller as a
+# TERMINATING error with its own id - not a non-terminating Write-Error and a $null verdict that Finalize would
+# package anyway (re-verification 2026-10-21, B3 #1). Nothing reaches a guest.
+Write-Host '[14] W32T.DependencyNotStaged from the staging stops the call as a terminating W32T error (C-2)' -ForegroundColor Cyan
+$savedStaging14 = ${function:Initialize-Win32ToolkitDependencyStaging}
+foreach ($be in 'HyperV', 'Sandbox') {
+    $script:backend = $be; $script:procs = @(); $script:testMode = 'Unattended'; $script:hvCalled = 0; $script:launched = 0
+    function Initialize-Win32ToolkitDependencyStaging { param($ProjectPath)
+        throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new("Dependency 'project:Contoso\Missing' of $ProjectPath could not be staged: the project was not found."), 'W32T.DependencyNotStaged', [System.Management.Automation.ErrorCategory]::ObjectNotFound, 'project:Contoso\Missing')
+    }
+    $out14 = 'not-set'; $e14 = $null; $ev14 = $null
+    try { $out14 = Test-Win32ToolkitProject -ProjectPath $proj -Scenario InstallUninstall -ErrorAction Continue -ErrorVariable ev14 *>$null } catch { $e14 = $_ }
+    $nonTerm14 = @($ev14 | Where-Object { "$($_.FullyQualifiedErrorId)" -like '*WriteErrorException*' })
+    if ($e14 -and $e14.FullyQualifiedErrorId -eq 'W32T.DependencyNotStaged' -and $out14 -eq 'not-set' -and $nonTerm14.Count -eq 0 -and $script:hvCalled -eq 0 -and $script:launched -eq 0) {
+        Ok "$be`: terminating W32T.DependencyNotStaged (no Write-Error, no verdict returned), no guest started"
+    } else { Bad "$be`: caught='$($e14.FullyQualifiedErrorId)' out='$out14' writeErrors=$($nonTerm14.Count) hv=$script:hvCalled launched=$script:launched" }
+}
+# A non-W32T error keeps the Write-Error behaviour (non-terminating under -ErrorAction Continue).
+$script:backend = 'HyperV'
+function Initialize-Win32ToolkitDependencyStaging { param($ProjectPath) throw "disk full (plain error) for $ProjectPath" }
+$e14b = $null; $ev14b = $null
+try { $null = Test-Win32ToolkitProject -ProjectPath $proj -Scenario InstallUninstall -ErrorAction SilentlyContinue -ErrorVariable ev14b *>$null } catch { $e14b = $_ }
+if (-not $e14b -and @($ev14b | Where-Object { "$_" -match 'Test-Win32ToolkitProject failed: disk full' }).Count -ge 1) { Ok 'a plain error is still a non-terminating "Test-Win32ToolkitProject failed: ..." (unchanged)' } else { Bad "plain: caught='$e14b' ev=[$(@($ev14b) -join ' | ')]" }
+${function:Initialize-Win32ToolkitDependencyStaging} = $savedStaging14
+
 Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''

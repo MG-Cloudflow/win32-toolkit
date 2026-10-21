@@ -1137,6 +1137,10 @@ function Test-Win32ToolkitProject {
         }
     }
     catch {
+        # Fail closed (C-2): a W32T.* error (e.g. W32T.DependencyNotStaged) reaches the caller as a terminating
+        # error, never as a non-terminating Write-Error and a $null verdict that Finalize would package anyway
+        # (re-verification 2026-10-21, B3 #1).
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
         Write-Error "Test-Win32ToolkitProject failed: $($_.Exception.Message)"
     }
 }
