@@ -54,8 +54,11 @@ function Set-Win32ToolkitAppDependency {
         throw 'Supply -DependsOn with at least one reference, or -Clear to remove all dependencies.'
     }
 
-    # This project's own 'project:' identity — an app cannot depend on itself (Intune rejects it too).
-    $self = '{0}\{1}' -f (Split-Path -Leaf (Split-Path -Parent $ProjectPath)), (Split-Path -Leaf $ProjectPath)
+    # This project's own 'project:' identity — an app cannot depend on itself (Intune rejects it too). Compared as
+    # a normalized full path too, so another spelling of the same folder (a short 8.3 name) is caught as well.
+    $self         = '{0}\{1}' -f (Split-Path -Leaf (Split-Path -Parent $ProjectPath)), (Split-Path -Leaf $ProjectPath)
+    $selfFull     = [System.IO.Path]::GetFullPath($PSCmdlet.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ProjectPath)).TrimEnd('\')
+    $projectsRoot = Split-Path -Parent (Split-Path -Parent $selfFull)
 
     $existing = if ($Clear) { @() } else { @(Get-Win32ToolkitDependencies -ProjectPath $ProjectPath) }
 
@@ -68,14 +71,18 @@ function Set-Win32ToolkitAppDependency {
             # joined onto Projects\ and resolve outside it when staged (test campaign 2026-10-21, S11-F5).
             $ref   = [string]$parsed.Ref
             $parts = @($ref -split '\\')
-            $bad   = @($parts | Where-Object { [string]::IsNullOrWhiteSpace($_) -or $_ -eq '.' -or $_ -eq '..' -or $_.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0 })
+            # A segment ending in '.' or ' ' is refused too: Windows drops it, so 'T.\App' or 'T\App.' names the
+            # folder 'T\App' (re-verification 2026-10-21, B3 #2: a dotted self-reference got through).
+            $bad   = @($parts | Where-Object { [string]::IsNullOrWhiteSpace($_) -or $_ -eq '.' -or $_ -eq '..' -or $_ -match '[. ]$' -or $_.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0 })
             if ($parts.Count -ne 2 -or $bad.Count -gt 0 -or [System.IO.Path]::IsPathRooted($ref)) {
                 throw "Dependency 'project:$ref' must be '<Template>\<ProjectName>' under Projects\ (not a full path or '..')."
             }
-            if ($ref -eq $self) { throw "An app cannot depend on itself ('$self')." }
+            $refFull = [System.IO.Path]::GetFullPath((Join-Path $projectsRoot $ref)).TrimEnd('\')
+            if ($ref -eq $self -or $refFull.Equals($selfFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "An app cannot depend on itself ('$self')."
+            }
             # Declaring a dependency before it is packaged is legitimate: only warn (fail-open check).
             try {
-                $projectsRoot = Split-Path -Parent (Split-Path -Parent $ProjectPath)
                 if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $projectsRoot $ref) 'Invoke-AppDeployToolkit.ps1'))) {
                     Write-Warning "Dependency 'project:$ref' is not packaged yet (no Invoke-AppDeployToolkit.ps1 under $projectsRoot): a test or capture of this app stops until it is."
                 }
@@ -84,9 +91,6 @@ function Set-Win32ToolkitAppDependency {
                 if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
                 Write-Verbose "Could not check whether 'project:$ref' is packaged: $($_.Exception.Message)"
             }
-        }
-        if ($parsed.Source -eq 'project' -and $parsed.Ref -eq $self) {
-            throw "An app cannot depend on itself ('$self')."
         }
         $added += $parsed
     }

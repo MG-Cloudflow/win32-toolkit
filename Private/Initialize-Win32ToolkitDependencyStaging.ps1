@@ -295,6 +295,18 @@ exit 0
                 if (-not $src -or -not $src.StartsWith($projectsFull + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
                     & $notStaged $d "its reference is not '<Template>\<ProjectName>' inside $projectsFull."
                 }
+                # A segment ending in '.' or ' ' is dropped by Windows ('T.\App' is 'T\App'), and an app never
+                # depends on itself - compared as a normalized full path (the raw Projects\ copy or whichever path
+                # the caller passes) and as its '<Template>\<ProjectName>' identity (re-verification 2026-10-21, B3 #2).
+                if (@($refParts | Where-Object { $_ -match '[. ]$' }).Count -gt 0) {
+                    & $notStaged $d "its reference is not '<Template>\<ProjectName>' inside $projectsFull (a name ends in '.' or ' ')."
+                }
+                $selfFull = [System.IO.Path]::GetFullPath($ProjectPath).TrimEnd('\')
+                $selfId   = (Split-Path -Leaf (Split-Path -Parent $selfFull)) + '\' + (Split-Path -Leaf $selfFull)
+                if ($src.TrimEnd('\').Equals($selfFull, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    ([string]$d.Ref).Equals($selfId, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    & $notStaged $d 'an app cannot depend on itself.'
+                }
                 if (-not (Test-Path -LiteralPath (Join-Path $src 'Invoke-AppDeployToolkit.ps1'))) {
                     & $notStaged $d "the project was not found (no Invoke-AppDeployToolkit.ps1 at $src)."
                 }

@@ -70,13 +70,24 @@ try { Set-Win32ToolkitAppDependency -ProjectPath $proj -DependsOn 'project:Conto
 if ($threw) { Ok 'self-reference rejected (Intune rejects it too)' } else { Bad 'self-reference accepted' }
 
 Write-Host '[6b] project: refs must be <Template>\<ProjectName> under Projects\ (test campaign 2026-10-21, S11-F5)' -ForegroundColor Cyan
+# A segment ending in '.' or ' ' (re-verification 2026-10-21, B3 #2): Windows drops it, so these name the project
+# itself ('Contoso\Notepad_x64_8.6') and were accepted without even the 'not packaged yet' warning.
 foreach ($badRef in @('project:C:\W32T-Test42\Projects\CLoudFlow\7-Zip_x64_26.04', 'project:..\..\W32T-Test42\Projects\CLoudFlow\7-Zip_x64_26.04',
-                      'project:Contoso\Sub\Tool', 'project:\Tool', 'C:\abs\Tool', 'project:Contoso\..', 'project:Contoso\To:ol', 'project:Contoso\To/ol')) {
+                      'project:Contoso\Sub\Tool', 'project:\Tool', 'C:\abs\Tool', 'project:Contoso\..', 'project:Contoso\To:ol', 'project:Contoso\To/ol',
+                      'project:Contoso\Notepad_x64_8.6.', 'project:Contoso.\Notepad_x64_8.6', 'project:Contoso \Notepad_x64_8.6')) {
     $e = $null
     try { $null = Set-Win32ToolkitAppDependency -ProjectPath $proj -DependsOn $badRef -WarningAction SilentlyContinue } catch { $e = $_ }
     if ($e -and "$e" -match "must be '<Template>\\<ProjectName>' under Projects\\ \(not a full path or '\.\.'\)") { Ok "rejects '$badRef'" } else { Bad "accepted '$badRef' ($e)" }
 }
 if (@(Get-Win32ToolkitDependencies -ProjectPath $proj).Count -eq 0) { Ok 'nothing was written for a rejected reference' } else { Bad 'a rejected reference was stored' }
+# Self by another spelling of the same folder (a short 8.3 name) is caught by the normalized full-path compare.
+$shortLeaf = $null
+try { $shortLeaf = Split-Path -Leaf ((New-Object -ComObject Scripting.FileSystemObject).GetFolder($proj).ShortPath) } catch { $shortLeaf = $null }
+if ($shortLeaf -and $shortLeaf -ne (Split-Path -Leaf $proj)) {
+    $e = $null
+    try { $null = Set-Win32ToolkitAppDependency -ProjectPath $proj -DependsOn "project:Contoso\$shortLeaf" -WarningAction SilentlyContinue } catch { $e = $_ }
+    if ($e -and "$e" -match 'An app cannot depend on itself' -and @(Get-Win32ToolkitDependencies -ProjectPath $proj).Count -eq 0) { Ok "self by its 8.3 name 'Contoso\$shortLeaf' rejected, nothing written" } else { Bad "8.3 self-reference: $e" }
+} else { Write-Host '  SKIP: no 8.3 short name on this volume (the full-path self check is still covered by the exact spelling)' -ForegroundColor DarkGray }
 $w6 = $null
 $set6 = @(Set-Win32ToolkitAppDependency -ProjectPath $proj -DependsOn 'project:Contoso\NotPackagedYet' -WarningVariable w6 -WarningAction SilentlyContinue)
 if ($set6.Count -eq 1 -and @($w6 | Where-Object { "$_" -match "'project:Contoso\\NotPackagedYet' is not packaged yet" }).Count -eq 1) { Ok 'a not-yet-packaged project is declared with one warning (declaring first is legitimate)' } else { Bad "declared=$($set6.Count) warn=$($w6 -join ' | ')" }

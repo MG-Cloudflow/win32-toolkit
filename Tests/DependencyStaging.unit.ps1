@@ -358,6 +358,32 @@ exit 0
     $c2 = Get-Content -LiteralPath (Join-Path $p15 'Sandbox\Dependencies\Other_Tool_x64_1.0\Invoke-AppDeployToolkit.ps1') -Raw -ErrorAction SilentlyContinue
     if ($n15 -eq 2 -and $e15[0].Path -eq 'C:\PSADT\Sandbox\Dependencies\Tool_x64_1.0\Invoke-AppDeployToolkit.ps1' -and $e15[1].Path -eq 'C:\PSADT\Sandbox\Dependencies\Other_Tool_x64_1.0\Invoke-AppDeployToolkit.ps1' -and
         $c1 -match 'Contoso' -and $c2 -match 'Other') { Ok 'Contoso\Tool and Other\Tool get separate folders (Tool_x64_1.0, Other_Tool_x64_1.0) and guest paths' } else { Bad "collision: n=$n15 paths=$(@($e15 | ForEach-Object Path) -join ' | ')" }
+
+    # A hand-edited self-reference, plain or with a trailing '.'/' ' that Windows drops, fails closed and stages
+    # nothing (re-verification 2026-10-21, B3 #2: 'Dependencies staged: CLoudFlow\NppB3_x64_8.9.8.1' - the guest
+    # would install the app's own package as its dependency). Also from a Staging\ copy (same identity).
+    $selfP = Join-Path $baseA 'Projects\Contoso\Self_x64_1.0'
+    $stageP = Join-Path $baseA 'Staging\Contoso\Self_x64_1.0'
+    foreach ($sp in $selfP, $stageP) {
+        New-Item -ItemType Directory -Path (Join-Path $sp 'SupportFiles') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $sp 'Invoke-AppDeployToolkit.ps1') -Value '# psadt self'
+    }
+    foreach ($case in @(@{ P = $selfP; Ref = 'Contoso\Self_x64_1.0'; Why = 'an app cannot depend on itself' },
+                        @{ P = $selfP; Ref = 'contoso\SELF_x64_1.0'; Why = 'an app cannot depend on itself' },
+                        @{ P = $selfP; Ref = 'Contoso\Self_x64_1.0.'; Why = "a name ends in '\.' or ' '" },
+                        @{ P = $selfP; Ref = 'Contoso.\Self_x64_1.0'; Why = "a name ends in '\.' or ' '" },
+                        @{ P = $selfP; Ref = 'Contoso \Self_x64_1.0'; Why = "a name ends in '\.' or ' '" },
+                        @{ P = $stageP; Ref = 'Contoso\Self_x64_1.0'; Why = 'an app cannot depend on itself' })) {
+        $cfgS = Get-Win32ToolkitAppConfig -ProjectPath $case.P
+        $cfgS | Add-Member -NotePropertyName Dependencies -NotePropertyValue @([pscustomobject]@{ Source = 'project'; Ref = $case.Ref; DependencyType = 'autoInstall' }) -Force
+        $null = Set-Win32ToolkitAppConfig -ProjectPath $case.P -Config $cfgS
+        $eS = $null; $nS = $null
+        try { $nS = Initialize-Win32ToolkitDependencyStaging -ProjectPath $case.P -BasePath $baseA 6>$null } catch { $eS = $_ }
+        $where = if ($case.P -eq $stageP) { 'Staging\' } else { 'Projects\' }
+        if ($eS -and $eS.FullyQualifiedErrorId -eq 'W32T.DependencyNotStaged' -and "$eS" -match $case.Why -and -not (Test-Path -LiteralPath (Join-Path $case.P 'Sandbox\Dependencies')) -and -not (Test-Path -LiteralPath (Join-Path $case.P 'Sandbox\InstallDependencies.ps1'))) {
+            Ok "self-reference '$($case.Ref)' from the $where copy -> W32T.DependencyNotStaged ($($case.Why -replace '\\', '')), nothing staged"
+        } else { Bad "self '$($case.Ref)' ($where): n=$nS err=$($eS.FullyQualifiedErrorId) $eS" }
+    }
 }
 finally { foreach ($tp in $script:tmp) { Remove-Item -LiteralPath $tp -Recurse -Force -ErrorAction SilentlyContinue } }
 
