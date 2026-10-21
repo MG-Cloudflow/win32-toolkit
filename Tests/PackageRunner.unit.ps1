@@ -81,6 +81,11 @@ $null = New-Win32ToolkitPackageRunnerScript -ProjectPath $projB
 $runnerB = Join-Path $projB 'Sandbox\Invoke-PsadtPackage.ps1'
 if ([System.IO.File]::ReadAllText($runnerB) -ceq $runnerText) { Ok 'VALUE-FREE: identical runner for two different projects' } else { Bad 'runner text depends on the project' }
 if ($runnerText -notmatch [regex]::Escape("O'Brien") -and $runnerText -notmatch [regex]::Escape($root)) { Ok 'no project name or host path spliced into the runner' } else { Bad 'project value spliced into the runner' }
+# No SysWOW64\cmd.exe: the fallback System32\cmd.exe is labelled 'native-cmd', never 'x86-cmd' (no 32-bit parent
+# ran, so the run is not IME parity). Static: a live case would need a fake %WinDir% (test campaign 2026-10-21).
+$fallback = [regex]::Match($runnerText, "(?s)if \(-not \(Test-Path -LiteralPath \`$exe\)\) \{(.*?)\n    \}")
+if ($fallback.Success -and $fallback.Groups[1].Value -match "System32\\cmd\.exe" -and $fallback.Groups[1].Value -match "\`$parent = 'native-cmd'" -and
+    $runnerText.IndexOf("`$parent = 'x86-cmd'") -lt $fallback.Index) { Ok "64-bit cmd.exe fallback -> parent=native-cmd (x86-cmd is set before the check)" } else { Bad 'the cmd.exe fallback keeps the x86-cmd label' }
 $dataB = [System.IO.File]::ReadAllText((Join-Path $projB 'Sandbox\IntuneCommandLine.json'))
 if ($dataB -ceq [System.IO.File]::ReadAllText($jsonA)) { Ok 'data file identical for both projects (constant contract)' } else { Bad 'data file differs per project' }
 

@@ -14,7 +14,8 @@ function New-Win32ToolkitPackageRunnerScript {
             parent), so watched runs still show PSADT's UI.
           - -IntuneParity runs EXACTLY the published Intune command line (read from IntuneCommandLine.json,
             written here from Get-Win32ToolkitIntuneCommandLine) through SysWOW64\cmd.exe - a 32-bit parent,
-            like the Intune Management Extension - from the package folder.
+            like the Intune Management Extension - from the package folder ('parent=x86-cmd'; 'parent=native-cmd'
+            when the guest has no SysWOW64\cmd.exe: then no 32-bit parent ran and the run is not IME parity).
           - The exact PSADT exit code becomes the runner's exit code and is appended to
             Sandbox\Logs\PsadtExitCodes.log ('[<UTC time>Z] <label> <type> parent=<p> exit=<n> result=<r>',
             e.g. '[2026-10-21 02:06:04Z] app Install parent=x86-cmd exit=0 result=Success'), which the host
@@ -75,9 +76,14 @@ if ($IntuneParity) {
         exit 87
     }
     $exe = Join-Path $env:WinDir 'SysWOW64\cmd.exe'
-    if (-not (Test-Path -LiteralPath $exe)) { $exe = Join-Path $env:WinDir 'System32\cmd.exe' }
-    $argList = @('/d', '/c', $cmdLine)
     $parent = 'x86-cmd'
+    if (-not (Test-Path -LiteralPath $exe)) {
+        # No 32-bit cmd.exe (no SysWOW64): the OS's own cmd.exe is the parent, so this run is NOT IME parity.
+        # 'native-cmd', not 'x64-cmd': on a 32-bit OS System32\cmd.exe is itself 32-bit.
+        $exe = Join-Path $env:WinDir 'System32\cmd.exe'
+        $parent = 'native-cmd'
+    }
+    $argList = @('/d', '/c', $cmdLine)
     # The IME resolves the bare 'Invoke-AppDeployToolkit.exe' in the content folder (CreateProcess searches the
     # current directory). Make sure an inherited NoDefaultCurrentDirectoryInExePath cannot change that.
     $env:NoDefaultCurrentDirectoryInExePath = $null
