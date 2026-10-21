@@ -11,7 +11,8 @@ function Assert-Win32ToolkitOrgExtensionModule {
 
           * PSADT 4.2 imports '<Dir>\<Dir>.psd1': the folder must contain that manifest (named exactly like
             the folder) with a RootModule that exists in the folder (a psm1-only folder or a Save-Module
-            '1.0.0\' version-folder layout fails).
+            '1.0.0\' version-folder layout fails on PSADT 4.2 projects; refused for every project because
+            one org template serves PSADT 4.1 and 4.2 projects alike - 4.1 loads a psm1-only folder).
           * A RequiredModules entry (hashtable) naming PSAppDeployToolkit must be a valid module
             specification for Windows PowerShell 5.1 (no prerelease label, not ModuleVersion and
             RequiredVersion together) and must be satisfied by the PSAppDeployToolkit bundled in the project
@@ -70,7 +71,7 @@ function Assert-Win32ToolkitOrgExtensionModule {
         }
         $psd1 = Join-Path $md.FullName "$dir.psd1"
         if (-not (Test-Path -LiteralPath $psd1 -PathType Leaf)) {
-            throw (& $fail "it has no '$dir\$dir.psd1' manifest, and PSADT 4.2 imports extensions by that manifest (a psm1-only folder fails every deployment). Fix: rename/add '$dir.psd1' (named exactly like the folder) with RootModule = '$dir.psm1'. $layoutHint")
+            throw (& $fail "it has no '$dir\$dir.psd1' manifest. PSADT 4.2 imports extensions by that manifest, so a psm1-only folder fails every deployment of a PSADT 4.2 project (PSADT 4.1 still loads it by folder, but an org template must work for both: win32-toolkit builds PSADT 4.1.x and 4.2.x projects side by side). Fix: rename/add '$dir.psd1' (named exactly like the folder) with RootModule = '$dir.psm1'. $layoutHint")
         }
         try { $manifest = Import-PowerShellDataFile -LiteralPath $psd1 -ErrorAction Stop }
         catch { throw (& $fail "its manifest '$dir.psd1' could not be read: $($_.Exception.Message)") }

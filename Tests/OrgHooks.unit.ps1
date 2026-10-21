@@ -169,6 +169,8 @@ function Test-Ext([string]$Name, [string]$Golden, [scriptblock]$Prepare, [bool]$
     }
 }
 Test-Ext 'psm1-only folder' 'psadt-4.2.0-zeroconfig' { param($d) Remove-Item (Join-Path $d 'PSAppDeployToolkit.Contoso.psd1') } $true 'rename/add .PSAppDeployToolkit\.Contoso\.psd1.*Save-Module'
+# The refusal does not claim a PSADT 4.1 project fails (4.1 loads extensions by folder); it says why it is refused anyway (S10-F4).
+Test-Ext 'psm1-only folder (message scope)' 'psadt-4.2.0-zeroconfig' { param($d) Remove-Item (Join-Path $d 'PSAppDeployToolkit.Contoso.psd1') } $true 'fails every deployment of a PSADT 4\.2 project \(PSADT 4\.1 still loads it by folder.*side by side\)'
 Test-Ext 'Save-Module 1.0.0\ layout' 'psadt-4.1.8' { param($d) $v = Join-Path $d '1.0.0'; New-Item -ItemType Directory -Path $v | Out-Null; Move-Item (Join-Path $d '*.ps*1') $v } $true 'Save-Module'
 Test-Ext 'psd1 without RootModule' 'psadt-4.2.0-zeroconfig' { param($d) Set-Content (Join-Path $d 'PSAppDeployToolkit.Contoso.psd1') "@{ ModuleVersion = '1.0.0' }" } $true 'no RootModule'
 Test-Ext 'RootModule file missing' 'psadt-4.2.0-zeroconfig' { param($d) Set-Content (Join-Path $d 'PSAppDeployToolkit.Contoso.psd1') "@{ RootModule = 'Missing.psm1' }" } $true "RootModule 'Missing\.psm1'"
