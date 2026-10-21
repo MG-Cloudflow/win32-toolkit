@@ -72,12 +72,21 @@ if ($threw) { Ok 'self-reference rejected (Intune rejects it too)' } else { Bad 
 Write-Host '[6b] project: refs must be <Template>\<ProjectName> under Projects\ (test campaign 2026-10-21, S11-F5)' -ForegroundColor Cyan
 # A segment ending in '.' or ' ' (re-verification 2026-10-21, B3 #2): Windows drops it, so these name the project
 # itself ('Contoso\Notepad_x64_8.6') and were accepted without even the 'not packaged yet' warning.
-foreach ($badRef in @('project:C:\W32T-Test42\Projects\CLoudFlow\7-Zip_x64_26.04', 'project:..\..\W32T-Test42\Projects\CLoudFlow\7-Zip_x64_26.04',
-                      'project:Contoso\Sub\Tool', 'project:\Tool', 'C:\abs\Tool', 'project:Contoso\..', 'project:Contoso\To:ol', 'project:Contoso\To/ol',
-                      'project:Contoso\Notepad_x64_8.6.', 'project:Contoso.\Notepad_x64_8.6', 'project:Contoso \Notepad_x64_8.6')) {
+# Each refusal shares the prefix and names its own reason (re-verification 2026-10-21, B3 r1.3: a trailing '.'/' '
+# was refused as "not a full path or '..'", which none of those refs is).
+$fullOrDots = "not a full path or '\.\.'"
+$trailing   = "a name ends in '\.' or ' '"
+foreach ($case in @(@('project:C:\W32T-Test42\Projects\CLoudFlow\7-Zip_x64_26.04', $fullOrDots), @('project:..\..\W32T-Test42\Projects\CLoudFlow\7-Zip_x64_26.04', $fullOrDots),
+                    @('project:Contoso\Sub\Tool', 'exactly two names, neither empty'), @('project:\Tool', $fullOrDots), @('C:\abs\Tool', $fullOrDots), @('project:Contoso\..', $fullOrDots),
+                    @('project:Contoso\To:ol', 'a name holds a character that is not allowed in a file name'), @('project:Contoso\To/ol', 'a name holds a character that is not allowed in a file name'),
+                    @('project:Contoso\Notepad_x64_8.6.', $trailing), @('project:Contoso.\Notepad_x64_8.6', $trailing), @('project:Contoso \Notepad_x64_8.6', $trailing),
+                    @('project:Contoso\Other_x64_1.0.', $trailing))) {
+    $badRef = $case[0]
     $e = $null
     try { $null = Set-Win32ToolkitAppDependency -ProjectPath $proj -DependsOn $badRef -WarningAction SilentlyContinue } catch { $e = $_ }
-    if ($e -and "$e" -match "must be '<Template>\\<ProjectName>' under Projects\\ \(not a full path or '\.\.'\)") { Ok "rejects '$badRef'" } else { Bad "accepted '$badRef' ($e)" }
+    if ($e -and "$e" -match "^Dependency '.+' must be '<Template>\\<ProjectName>' under Projects\\ \(") {
+        if ("$e" -match "under Projects\\ \($($case[1])\)\.$") { Ok "rejects '$badRef' ($($case[1] -replace '\\', ''))" } else { Bad "'$badRef' rejected with the wrong reason: $e" }
+    } else { Bad "accepted '$badRef' ($e)" }
 }
 if (@(Get-Win32ToolkitDependencies -ProjectPath $proj).Count -eq 0) { Ok 'nothing was written for a rejected reference' } else { Bad 'a rejected reference was stored' }
 # Self by another spelling of the same folder (a short 8.3 name) is caught by the normalized full-path compare.

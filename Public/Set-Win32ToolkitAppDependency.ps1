@@ -75,7 +75,13 @@ function Set-Win32ToolkitAppDependency {
             # folder 'T\App' (re-verification 2026-10-21, B3 #2: a dotted self-reference got through).
             $bad   = @($parts | Where-Object { [string]::IsNullOrWhiteSpace($_) -or $_ -eq '.' -or $_ -eq '..' -or $_ -match '[. ]$' -or $_.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0 })
             if ($parts.Count -ne 2 -or $bad.Count -gt 0 -or [System.IO.Path]::IsPathRooted($ref)) {
-                throw "Dependency 'project:$ref' must be '<Template>\<ProjectName>' under Projects\ (not a full path or '..')."
+                # The parenthetical names the actual reason (re-verification 2026-10-21, B3 r1.3: 'T\App.' was
+                # refused as "not a full path or '..'"); the staging uses the same "a name ends in" wording.
+                $why = if ([System.IO.Path]::IsPathRooted($ref) -or @($parts | Where-Object { $_ -eq '.' -or $_ -eq '..' }).Count -gt 0) { "not a full path or '..'" }
+                       elseif (@($parts | Where-Object { $_ -match '[. ]$' }).Count -gt 0) { "a name ends in '.' or ' '" }
+                       elseif (@($parts | Where-Object { $_.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0 }).Count -gt 0) { 'a name holds a character that is not allowed in a file name' }
+                       else { 'exactly two names, neither empty' }
+                throw "Dependency 'project:$ref' must be '<Template>\<ProjectName>' under Projects\ ($why)."
             }
             $refFull = [System.IO.Path]::GetFullPath((Join-Path $projectsRoot $ref)).TrimEnd('\')
             if ($ref -eq $self -or $refFull.Equals($selfFull, [System.StringComparison]::OrdinalIgnoreCase)) {
