@@ -1101,6 +1101,14 @@ if ($backend -eq 'Sandbox') {
             return $expectedJson
         }
 
+        # Only one Windows Sandbox may run. A test sandbox that is still shutting down (or was left open to
+        # watch) made this launch race it, and a refused launch left the caller waiting 30 min for a capture
+        # that never comes (test campaign 2026-10-21, S8-F4). Wait like the test runs do, then fail fast.
+        if (-not (Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90)) {
+            Write-Warning "Another Windows Sandbox is still running after waiting 90 s (only one instance is allowed) - the documentation capture was NOT launched. Close it (for example a test sandbox left open for verification) and re-run, or start the capture manually: $sandboxConfigFile"
+            return $false
+        }
+
         # Stale captures were just cleared, so nothing will satisfy the wait until a capture from THIS
         # run appears — if the operator doesn't launch manually, the wait times out (30 min).
         if ((Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched) {

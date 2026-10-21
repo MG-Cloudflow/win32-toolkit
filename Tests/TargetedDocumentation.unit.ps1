@@ -87,6 +87,23 @@ if (-not (Test-Path -LiteralPath $wsbH)) { Ok 'HyperV: no .wsb built' } else { B
 if ($script:started -eq 0) { Ok 'HyperV: WindowsSandbox.exe never launched' } else { Bad "Start-Process called $script:started time(s)" }
 if ($jsonH -like '*Documentation\InstallationChanges_*.json') { Ok 'HyperV returns expected capture path' } else { Bad "returned: $jsonH" }
 
+# --- single-instance guard before the capture launch (test campaign 2026-10-21, S8-F4) ----------------
+Write-Host '[2b] Sandbox launch waits for a free Sandbox; still busy after 90 s -> $false, no launch' -ForegroundColor Cyan
+$projW = New-Proj
+$script:waitArgs = $null; $script:launches = 0
+function Wait-Win32ToolkitSandboxFree { param([int]$TimeoutSeconds) $script:waitArgs = $TimeoutSeconds; $script:sandboxFree }
+function Invoke-Win32ToolkitTestRun { param($Backend, $SandboxConfigPath) $script:launches++; [pscustomobject]@{ Launched = $true } }
+$script:sandboxFree = $false
+$wW = $null
+
+$retW = New-TargetedDocumentation -ProjectPath $projW -ProjectName 'Busy_x64_1.0' -Backend Sandbox -WarningVariable wW -WarningAction SilentlyContinue 6>$null
+if ($retW -eq $false -and $script:launches -eq 0 -and $script:waitArgs -eq 90 -and @($wW | Where-Object { "$_" -match 'Another Windows Sandbox is still running after waiting 90 s' -and "$_" -match 'NOT launched' }).Count -eq 1) { Ok 'busy Sandbox: waited 90 s, never launched, warned, returned $false (no 30-min wait)' } else { Bad "busy: ret=$retW launches=$($script:launches) wait=$($script:waitArgs) warn=$($wW -join ' | ')" }
+$script:sandboxFree = $true
+$retF = New-TargetedDocumentation -ProjectPath $projW -ProjectName 'Busy_x64_1.0' -Backend Sandbox -WarningAction SilentlyContinue 6>$null
+if ($retF -like '*Documentation\InstallationChanges_*.json' -and $script:launches -eq 1) { Ok 'free Sandbox: launched once, returns the expected capture path' } else { Bad "free: ret=$retF launches=$($script:launches)" }
+Remove-Item Function:\Wait-Win32ToolkitSandboxFree, Function:\Invoke-Win32ToolkitTestRun
+Remove-Item -LiteralPath $projW -Recurse -Force -ErrorAction SilentlyContinue
+
 # --- capture noise (test campaign 2026-10-21, S7-F7) --------------------------------------------------
 Write-Host '[3] the file snapshots leave out the PSADT run''s own .NET/PowerShell noise (both snapshots alike)' -ForegroundColor Cyan
 if ($text.Contains("Join-Path `$env:ProgramData 'Microsoft\NetFramework\BreadcrumbStore'") -and $text.Contains("Join-Path `$env:LOCALAPPDATA 'Microsoft\Windows\PowerShell'")) { Ok 'the guest script lists the BreadcrumbStore and PowerShell-cache noise (static literals)' } else { Bad 'noise list missing' }

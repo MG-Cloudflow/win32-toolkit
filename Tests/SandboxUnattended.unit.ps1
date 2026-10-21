@@ -124,6 +124,10 @@ if ($src -match 'Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90') { Ok 'single-
 # -BaselineInstallerType Both on watched Sandbox (installer-identity PR 1): the next leg waits for the operator to close
 # the previous leg's sandbox, up to the helper's 600 s maximum.
 if ($src -match 'Wait-Win32ToolkitSandboxFree -TimeoutSeconds 600') { Ok 'a Both leg on watched Sandbox waits up to 600 s for the previous sandbox' } else { Bad 'no 600 s wait between Both legs' }
+# The documentation capture waits for a free Sandbox too, BEFORE it launches (test campaign 2026-10-21, S8-F4).
+$ntdSrc = Get-Content -LiteralPath (Join-Path $repo 'Private\New-TargetedDocumentation.ps1') -Raw
+$wIdx = $ntdSrc.IndexOf('Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90'); $lIdx = $ntdSrc.IndexOf('Invoke-Win32ToolkitTestRun -Backend Sandbox')
+if ($wIdx -ge 0 -and $lIdx -gt $wIdx) { Ok 'the capture waits for a free Sandbox (90 s) before Invoke-Win32ToolkitTestRun' } else { Bad "capture wait at $wIdx, launch at $lIdx" }
 
 # ── (e) capture auto-close is mode-gated ───────────────────────────────────────────────────────────
 # The duration now flows through the SHARED resolver (Get-Win32ToolkitTestMode), so -Unattended/config/
