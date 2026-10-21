@@ -126,7 +126,9 @@ function Invoke-Win32ToolkitHyperVRun {
         }
         catch {
             Write-Verbose "Zip prebuild '$key' failed ($($_.Exception.Message)) — building inline."
-            Remove-Item -LiteralPath $zipJobs[$key].Path -Force -ErrorAction SilentlyContinue
+            # The failed job may never have written the zip: only an existing one is removed, so an
+            # absent file leaves no PathNotFound record in the caller's -ErrorVariable / $Error.
+            if (Test-Path -LiteralPath $zipJobs[$key].Path) { Remove-Item -LiteralPath $zipJobs[$key].Path -Force -ErrorAction SilentlyContinue }
             return $null
         }
     }
@@ -235,10 +237,13 @@ function Invoke-Win32ToolkitHyperVRun {
         # TTL. Never presume clean after an interactive run; unattended runs (no console, no operator)
         # keep the single-revert skip.
         if ($needsDesktop) { $script:HyperVCleanMarker = $null }
-        # Any unconsumed prebuild zips (job failed, run threw before the join) are cleaned here.
+        # Any unconsumed prebuild zips (job failed, run threw before the join) are cleaned here. The copy
+        # helper normally consumed (deleted) the zip already, so only an existing one is removed: an absent
+        # file must leave no PathNotFound record in $Error / a caller's -ErrorVariable (test campaign
+        # 2026-10-21), while a real delete failure (a locked file) is still recorded.
         foreach ($k in $zipJobs.Keys) {
             if ($zipJobs[$k].Job) { Remove-Job -Job $zipJobs[$k].Job -Force -ErrorAction SilentlyContinue }
-            Remove-Item -LiteralPath $zipJobs[$k].Path -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $zipJobs[$k].Path) { Remove-Item -LiteralPath $zipJobs[$k].Path -Force -ErrorAction SilentlyContinue }
         }
         # Restore the caller's preference (the teardown Restore-VMCheckpoint above stays silenced), so this
         # never leaks to a later Publish/Azure-upload bar. Runs on both the return and the catch paths.

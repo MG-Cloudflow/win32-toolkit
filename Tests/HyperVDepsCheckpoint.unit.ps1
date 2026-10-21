@@ -164,6 +164,22 @@ $projCopy = @($script:copyCalls | Where-Object { $_.Guest -eq 'C:\PSADT' })[0]
 if ($projCopy -and $projCopy.Zip -and $projCopy.ZipExists) { Ok 'copy-in received a prebuilt zip (built during the revert)' } else { Bad "copy call: $($projCopy | Out-String)" }
 if ($projCopy -and -not (Test-Path -LiteralPath $projCopy.Zip)) { Ok 'prebuilt zip cleaned up after the run' } else { Bad 'zip leaked' }
 
+# c1b (test campaign 2026-10-21): the REAL copy helper consumes (deletes) the prebuilt zip; the teardown
+#      must then not try to delete it again and leave a PathNotFound record in the caller's -ErrorVariable.
+${function:Copy-Win32ToolkitProjectToGuest_Recording} = ${function:Copy-Win32ToolkitProjectToGuest}
+function Copy-Win32ToolkitProjectToGuest { param($Session, $ProjectPath, $GuestPath, [switch]$ReadOnly, $PrebuiltZip)
+    Copy-Win32ToolkitProjectToGuest_Recording -Session $Session -ProjectPath $ProjectPath -GuestPath $GuestPath -ReadOnly:$ReadOnly -PrebuiltZip $PrebuiltZip
+    if ($PrebuiltZip -and (Test-Path -LiteralPath $PrebuiltZip)) { Remove-Item -LiteralPath $PrebuiltZip -Force }
+}
+Reset-Run
+$Error.Clear()
+$evZ = $null
+$r = Invoke-Win32ToolkitHyperVRun -ProjectPath $projD -Phase @(@{ Label = 'x'; Command = 'y' }) -ErrorVariable evZ 3>$null 6>$null
+$pathNotFound = @(@($evZ) + @($Error) | Where-Object { "$_" -match 'w32proj_.*\.zip' })
+if ($r -eq $true -and $pathNotFound.Count -eq 0) { Ok 'consumed prebuilt zip: no PathNotFound record in -ErrorVariable / $Error' } else { Bad "zip cleanup records: $(@($pathNotFound | ForEach-Object { "$_" }) -join ' | ')" }
+${function:Copy-Win32ToolkitProjectToGuest} = ${function:Copy-Win32ToolkitProjectToGuest_Recording}
+Remove-Item Function:\Copy-Win32ToolkitProjectToGuest_Recording
+
 # c2 (test campaign F2): the host's run logs (Sandbox\Logs\Runs\) never go into the guest; everything else does.
 Add-Type -AssemblyName 'System.IO.Compression.FileSystem'
 $projR = New-Proj
