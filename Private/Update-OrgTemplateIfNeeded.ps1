@@ -11,14 +11,39 @@ function Update-OrgTemplateIfNeeded {
 
     if (-not $needsUpdate) { return $Template }
 
-    Write-Host ''
-    Write-Host "  Template '$($Template.TemplateName)' uses schema v$schemaVer, current is v$currentVer." -ForegroundColor Yellow
-    Write-Host '  New options are available. Would you like to update the template now?' -ForegroundColor Yellow
-    $ans = Read-Host '  Update template? (y/n) [y]'
-    if ($ans.Trim() -in @('','y','Y','yes','Yes','1','true')) {
-        Write-Host '  Opening template wizard with existing values pre-filled...' -ForegroundColor Cyan
-        $updated = New-OrgTemplate -ExistingTemplate $Template
-        return $updated
+    # Nobody can answer the upgrade prompt on a non-interactive host (service, CI, redirected input) or in a
+    # 'pwsh -NonInteractive' console: the Read-Host threw there and aborted the whole pipeline, even with an
+    # explicit -TemplateName (test campaign 2026-10-21, S12-F1). Such a run takes the decline path below: the
+    # missing options use their defaults for THIS run only and the template file is not changed.
+    $noPrompt = "Template '$($Template.TemplateName)' uses schema v$schemaVer, current is v$currentVer; this run cannot prompt, so the missing options use their defaults for this run only (the template file is unchanged). Update it interactively with Show-Win32Toolkit, or Invoke-Win32Toolkit -NewTemplate -TemplateName '$($Template.TemplateName)'."
+    $cannotPrompt = $false
+    try { $cannotPrompt = [bool](Test-Win32ToolkitHostNonInteractive) -or [bool](Test-Win32ToolkitNonInteractiveSwitch) }
+    catch {
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+        $cannotPrompt = $false
+    }
+    if ($cannotPrompt) {
+        Write-Warning $noPrompt
+    }
+    else {
+        Write-Host ''
+        Write-Host "  Template '$($Template.TemplateName)' uses schema v$schemaVer, current is v$currentVer." -ForegroundColor Yellow
+        Write-Host '  New options are available. Would you like to update the template now?' -ForegroundColor Yellow
+        $ans = 'n'
+        try { $ans = Read-Host '  Update template? (y/n) [y]' }
+        catch {
+            # A host the checks above did not recognise still refuses the prompt: same fallback. Anything else
+            # is a real error.
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            if ($_.FullyQualifiedErrorId -notlike '*,Microsoft.PowerShell.Commands.ReadHostCommand') { throw }
+            Write-Warning $noPrompt
+            $ans = 'n'
+        }
+        if ("$ans".Trim() -in @('','y','Y','yes','Yes','1','true')) {
+            Write-Host '  Opening template wizard with existing values pre-filled...' -ForegroundColor Cyan
+            $updated = New-OrgTemplate -ExistingTemplate $Template
+            return $updated
+        }
     }
 
     # User skipped — patch missing fields silently with defaults so Apply-OrgTemplate won't fail

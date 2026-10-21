@@ -71,6 +71,12 @@ function Use-ScriptedAnswer {
     $script:promptLog.Clear()
 }
 function Get-PromptCount { param([string]$Prefix) @($script:promptLog | Where-Object { $_.StartsWith($Prefix) }).Count }
+# C-9 (test campaign 2026-10-21, S12-F1): Update-OrgTemplateIfNeeded asks whether anybody can answer a prompt.
+# Shadowed - the real probes depend on the host this suite runs under (CI may run it -NonInteractive) - and
+# interactive unless a case says otherwise.
+$script:nonInteractiveHost = $false; $script:nonInteractiveSwitch = $false
+function Test-Win32ToolkitHostNonInteractive { $script:nonInteractiveHost }
+function Test-Win32ToolkitNonInteractiveSwitch { $script:nonInteractiveSwitch }
 function Get-Prompt { param([string]$Prefix) @($script:promptLog | Where-Object { $_.StartsWith($Prefix) }) }
 
 # WP-A's selector is not part of this suite: report "no PSADT".
@@ -586,6 +592,42 @@ try {
     if ($res -and $res.TenantId -eq 'contoso.onmicrosoft.com') { Ok 'connection result returned' } else { Bad 'no connection result' }
     $connSrc = Get-Content -LiteralPath (Join-Path $repo 'Public\Connect-Win32ToolkitIntune.ps1') -Raw
     if ($connSrc -match 'Get-OrgTemplate[^\r\n]*-SkipTextValidation') { Ok 'Connect-Win32ToolkitIntune passes -SkipTextValidation (source)' } else { Bad 'switch not passed in source' }
+
+    # =============================================================================================
+    Write-Host "`n[7] an older-schema template when nobody can answer the upgrade prompt (S12-F1)" -ForegroundColor Cyan
+    $v2 = { [pscustomobject]@{ TemplateSchemaVersion = '2.0'; TemplateName = 'Arxus'; CompanyName = 'Arxus' } }
+    $script:wizardCalls = 0
+    $wizardSaved = ${function:New-OrgTemplate}
+    ${function:New-OrgTemplate} = { param($ExistingTemplate, $TemplateName, $BasePath) $script:wizardCalls++; $ExistingTemplate }
+    foreach ($case in @(@{ Host = $true; Switch = $false; Tag = 'non-interactive host' }, @{ Host = $false; Switch = $true; Tag = 'pwsh -NonInteractive console' })) {
+        $script:nonInteractiveHost = $case.Host; $script:nonInteractiveSwitch = $case.Switch
+        Use-ScriptedAnswer @{}
+        $w7 = $null
+        $t7 = Update-OrgTemplateIfNeeded -Template (& $v2) -FilePath 'X:\never-written.json' -WarningVariable w7 -WarningAction SilentlyContinue 6>$null
+        if ((Get-PromptCount '  Update template?') -eq 0 -and @($w7 | Where-Object { "$_" -match "Template 'Arxus' uses schema v2\.0, current is v4\.0; this run cannot prompt" -and "$_" -match 'file is unchanged' }).Count -eq 1) { Ok "$($case.Tag): no prompt, one warning" } else { Bad "$($case.Tag): prompts=$(Get-PromptCount '  Update template?') warn=$($w7 -join ' | ')" }
+        if ($t7.DialogStyle -eq 'Fluent' -and $t7.Hooks -and $t7.TemplateSchemaVersion -eq '2.0' -and $script:wizardCalls -eq 0) { Ok "$($case.Tag): the missing options get their defaults for this run; schema stays 2.0; no wizard" } else { Bad "$($case.Tag): $($t7 | ConvertTo-Json -Compress -Depth 3)" }
+    }
+    # A host the checks do not recognise still refuses Read-Host: the same fallback, not an abort.
+    $script:nonInteractiveHost = $false; $script:nonInteractiveSwitch = $false
+    $rhSaved = (Get-Item function:Read-Host).ScriptBlock
+    Set-Item -Path 'function:script:Read-Host' -Value {
+        param($Prompt)
+        throw [System.Management.Automation.ErrorRecord]::new([System.Management.Automation.PSInvalidOperationException]::new('PowerShell is in NonInteractive mode. Read and Prompt functionality is not available.'),
+            'InvalidOperation,Microsoft.PowerShell.Commands.ReadHostCommand', [System.Management.Automation.ErrorCategory]::InvalidOperation, $null)
+    }
+    $w7 = $null; $e7 = $null; $t7 = $null
+    try { $t7 = Update-OrgTemplateIfNeeded -Template (& $v2) -FilePath 'X:\never-written.json' -WarningVariable w7 -WarningAction SilentlyContinue 6>$null } catch { $e7 = $_ }
+    Set-Item -Path 'function:script:Read-Host' -Value $rhSaved
+    if (-not $e7 -and $t7.DialogStyle -eq 'Fluent' -and @($w7 | Where-Object { "$_" -match 'this run cannot prompt' }).Count -eq 1) { Ok 'Read-Host refused (ReadHostCommand error) -> the same default fallback, no abort' } else { Bad "refused prompt: err=$($e7.FullyQualifiedErrorId) warn=$($w7 -join ' | ')" }
+    # Interactive answers still work.
+    Use-ScriptedAnswer @{ '  Update template?' = 'n' }
+    $w7 = $null
+    $t7 = Update-OrgTemplateIfNeeded -Template (& $v2) -WarningVariable w7 -WarningAction SilentlyContinue 6>$null
+    if ((Get-PromptCount '  Update template?') -eq 1 -and @($w7).Count -eq 0 -and $t7.DialogStyle -eq 'Fluent' -and $script:wizardCalls -eq 0) { Ok "interactive 'n': asked once, defaults patched, no warning" } else { Bad "interactive n: prompts=$(Get-PromptCount '  Update template?') warn=$($w7 -join ' | ')" }
+    Use-ScriptedAnswer @{ '  Update template?' = 'y' }
+    $null = Update-OrgTemplateIfNeeded -Template (& $v2) 6>$null
+    if ($script:wizardCalls -eq 1) { Ok "interactive 'y': opens the template wizard" } else { Bad "wizard calls: $($script:wizardCalls)" }
+    ${function:New-OrgTemplate} = $wizardSaved
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
