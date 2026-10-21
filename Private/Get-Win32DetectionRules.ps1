@@ -17,6 +17,7 @@ function Get-Win32DetectionRules {
     # DisplayName is the tattoo/detection name (populated even for MSI Zero-Config, where Name is empty);
     # fall back to Name for projects generated before DisplayName existed.
     $detName = if ($app) { if ($app.PSObject.Properties['DisplayName'] -and $app.DisplayName) { $app.DisplayName } else { $app.Name } } else { $null }
+    $tattooReason = $null   # why the tattoo rule is unavailable (warned below, once the capture is known)
     if ($app -and $app.ScriptAuthor -and $app.Vendor -and $detName -and $app.Version) {
         # Only emit the tattoo rule if the deploy script actually writes the tattoo — otherwise Intune
         # would detect on a key the device never creates. Projects generated before the tattoo (no
@@ -39,7 +40,7 @@ function Get-Win32DetectionRules {
                 }
             )
         }
-        Write-Warning '  Tattoo values are present but the deploy script has no install tattoo — regenerate this project to enable version detection. Falling back to capture-based rules.'
+        $tattooReason = 'Tattoo values are present but the deploy script has no install tattoo — regenerate this project to enable version detection.'
     }
     elseif ($app) {
         $missing = @()
@@ -48,18 +49,22 @@ function Get-Win32DetectionRules {
         if (-not $detName)          { $missing += 'App.DisplayName/Name (regenerate to populate)' }
         if (-not $app.Version)      { $missing += 'App.Version' }
         if ($missing.Count) {
-            Write-Warning "  Tattoo/version detection unavailable — missing $($missing -join ', '). Using capture-based detection."
+            $tattooReason = "Tattoo/version detection unavailable — missing $($missing -join ', ')."
         }
     }
 
     # ── Capture-based fallback (MSI Zero-Config / apps without a tattoo) ────────────
     # Newest capture wins (shared selector) — the old first-in-name-order pick could build the
     # detection rule from a STALE capture of a previous version.
+    # The tattoo reason is reported once the capture is known, so it never promises a capture fallback that
+    # does not exist (test campaign 2026-10-21, S9-F4).
     $jsonFile = Get-LatestInstallationCapture -ProjectPath $ProjectPath
     if (-not $jsonFile) {
-        Write-Warning '  No InstallationChanges_*.json capture found — no detection rules generated.'
+        if ($tattooReason) { Write-Warning $tattooReason }
+        Write-Warning 'No InstallationChanges_*.json capture found — no detection rules generated.'
         return @()
     }
+    if ($tattooReason) { Write-Warning "$tattooReason Using the newest install capture instead ($($jsonFile.Name))." }
 
     try {
         $data = Get-Content $jsonFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -161,6 +166,6 @@ function Get-Win32DetectionRules {
         )
     }
 
-    Write-Warning '  No suitable detection rule candidates found.'
+    Write-Warning 'No suitable detection rule candidates found.'
     return @()
 }

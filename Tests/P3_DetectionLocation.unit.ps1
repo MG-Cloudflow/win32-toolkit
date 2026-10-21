@@ -49,6 +49,24 @@ function New-Capture($obj) {
     $script:captureFile = Get-Item -LiteralPath $p
 }
 
+# ══ Case 0: warnings (test campaign 2026-10-21, S9-F4) ═════════════════════════════════════════════
+# No leading spaces; the tattoo reason never promises a capture fallback that does not exist.
+Write-Host '[0] tattoo-unavailable warning follows what the capture really allows' -ForegroundColor Cyan
+$script:appConfig = [pscustomobject]@{ App = [pscustomobject]@{ Name = 'Tool'; Vendor = 'Acme'; Version = '1.0'; ScriptAuthor = '' } }
+$script:captureFile = $null
+$w0 = $null
+$null = @(Get-Win32DetectionRules -ProjectPath 'X' -WarningVariable w0 -WarningAction SilentlyContinue)
+$w0s = @($w0 | ForEach-Object { "$_" })
+if ($w0s.Count -eq 2 -and $w0s[0] -like 'Tattoo/version detection unavailable — missing App.ScriptAuthor*' -and $w0s[0] -notmatch 'capture' -and $w0s[1] -like 'No InstallationChanges_*.json capture found*') { Ok 'no capture: the reason, then "No InstallationChanges_*.json capture found" (no promised fallback, no leading spaces)' } else { Bad "no-capture warnings: $($w0s -join ' | ')" }
+New-Capture ([pscustomobject]@{ NewRegistryKeys = @(); NewFiles = @('C:\Tools\Widget\widget.exe') })
+$w0 = $null
+$null = @(Get-Win32DetectionRules -ProjectPath 'X' -WarningVariable w0 -WarningAction SilentlyContinue)
+$w0s = @($w0 | ForEach-Object { "$_" })
+if ($w0s.Count -ge 1 -and $w0s[0] -like 'Tattoo/version detection unavailable — missing App.ScriptAuthor*Using the newest install capture instead (w32cap_*.json).' -and @($w0s | Where-Object { $_ -match '^\s' }).Count -eq 0) { Ok 'with a capture: one warning naming the capture it falls back to' } else { Bad "capture warnings: $($w0s -join ' | ')" }
+Remove-Item -LiteralPath $script:captureFile.FullName -Force -ErrorAction SilentlyContinue
+$script:appConfig = [pscustomobject]@{ SchemaVersion = '1.0' }
+$script:captureFile = $null
+
 # ══ Case 1a ═════════════════════════════════════════════════════════════════════════════════════
 Write-Host '[1a] NewFiles under a MACHINE-WIDE non-Program-Files path -> a file rule is produced (was: @())' -ForegroundColor Cyan
 
