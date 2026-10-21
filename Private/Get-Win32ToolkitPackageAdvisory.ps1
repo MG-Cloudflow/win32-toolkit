@@ -219,7 +219,9 @@ function Get-Win32ToolkitPackageAdvisory {
         $at = if ($where.Count) { ' ({0})' -f ($where -join ', ') } else { '' }
         "The latest Update test$with$at"
     }
-    $continues = if ($Context -eq 'Export') { 'the package is still packaged' } else { 'publishing continues' }
+    # Export: worded so it holds for a real build and for Export -WhatIf, which builds nothing (re-verification
+    # 2026-10-21, A2 sb#1: 'the package is still packaged' printed right after 'nothing was staged or packaged').
+    $continues = if ($Context -eq 'Export') { 'it does not stop packaging' } else { 'publishing continues' }
     foreach ($entry in $latest.Values) {
         if ($entry.Verdict -eq 'Failed') {
             $names = if ($entry.FailedAssertions.Count) { $entry.FailedAssertions -join ', ' } else { 'no failed assertion was recorded' }

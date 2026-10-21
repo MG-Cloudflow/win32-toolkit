@@ -36,6 +36,10 @@ function Export-Win32ToolkitIntuneWin {
        identity checks found something (for example winget also ships another installer technology
        for this app that no Update test has covered). Shown once per run, also when Export publishes.
 
+    -WhatIf is a dry run: the gate (step 1) and the warnings (6b) run, nothing is downloaded, staged,
+    optimised or built (steps 2-6), an older .intunewin is not reported as created, and a requested
+    publish is only announced. -Confirm asks once for the whole package build.
+
 .PARAMETER ProjectPath
     Full path to the raw PSADT project folder under Projects\.
     If omitted, an interactive numbered list is shown.
@@ -193,13 +197,24 @@ function Export-Win32ToolkitIntuneWin {
 
         $paths = Get-Win32ToolkitPaths -BasePath $resolvedBase
 
+        # Where this run writes, and the ONE ShouldProcess for the whole package build (test campaign 2026-10-21,
+        # S9-F1): under -WhatIf (or a declined -Confirm) nothing is downloaded, staged, optimised or built, and a
+        # stale .intunewin from an earlier run is never reported as created.
+        $stagingDir   = Join-Path $paths.Staging $templateSeg
+        $stagingPath  = Join-Path $stagingDir $projectName
+        $intuneWinDir = Join-Path $paths.IntuneWin $templateSeg
+        $doPackage    = $PSCmdlet.ShouldProcess($projectName, "Package to '$intuneWinDir' via Staging '$stagingPath'")
+
         # ── Step 1: Locate IntuneWinAppUtil.exe ──────────────────────────────────
         # Module root is one level up from this Public\ script
         $moduleRoot  = Split-Path $PSScriptRoot -Parent
         $toolsFolder = Join-Path $moduleRoot 'Tools'
         $utilPath    = Join-Path $toolsFolder 'IntuneWinAppUtil.exe'
 
-        if (-not (Test-Path $utilPath)) {
+        if (-not (Test-Path $utilPath) -and -not $doPackage) {
+            Write-Host "WhatIf: would download IntuneWinAppUtil.exe to $toolsFolder (and verify its Microsoft signature)." -ForegroundColor Yellow
+        }
+        elseif (-not (Test-Path $utilPath)) {
             Write-Verbose 'IntuneWinAppUtil.exe not found — downloading from Microsoft GitHub...'
 
             if (-not (Test-Path $toolsFolder)) {
@@ -247,53 +262,50 @@ function Export-Win32ToolkitIntuneWin {
             Write-Host "✓ Using IntuneWinAppUtil.exe from: $toolsFolder (Authenticode verified)" -ForegroundColor Gray
         }
 
-        # ── Step 2: Copy raw project → Staging\<Template>\ ───────────────────────
-        $stagingDir  = Join-Path $paths.Staging $templateSeg
-        $stagingPath = Join-Path $stagingDir $projectName
-
-        if (-not (Test-Path $stagingDir)) {
-            New-Item -Path $stagingDir -ItemType Directory -Force | Out-Null
-        }
-
-        # Always refresh the Staging copy so it matches the current raw project. A previous copy can hold
-        # freshly-written PSADT modules that AV briefly locks, so remove with retry and fail loudly rather
-        # than build the package on top of a stale, half-deleted Staging copy.
-        if (Test-Path $stagingPath) {
-            if (-not (Remove-Win32ToolkitPathWithRetry -Path $stagingPath)) {
-                throw "Could not clear the previous Staging copy at '$stagingPath' — a file is locked (close any process using it) and retry."
+        $intuneWinFile = $null
+        if ($doPackage) {
+            # ── Step 2: Copy raw project → Staging\<Template>\ ───────────────────────
+            if (-not (Test-Path $stagingDir)) {
+                New-Item -Path $stagingDir -ItemType Directory -Force | Out-Null
             }
-        }
 
-        # Copy ONLY what ships. Excluding the non-shipping folders (test scaffolding + Intune\ secrets) up
-        # front — rather than copying everything and stripping afterwards — means there is no freshly-written,
-        # AV-locked file for a later Remove-Item to choke on, the copy is smaller/faster, and the Intune\
-        # Publications.json (tenant + app ids) can never leak into the package even if a strip were to fail.
-        Write-Verbose 'Copying project to Staging (excluding non-shipping folders)...'
-        $excludeFolders = Get-Win32ToolkitNonShippingFolders
-        New-Item -Path $stagingPath -ItemType Directory -Force | Out-Null
-        Get-ChildItem -LiteralPath $ProjectPath -Force |
-            Where-Object { -not ($_.PSIsContainer -and $_.Name -in $excludeFolders) } |
-            ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $stagingPath $_.Name) -Recurse -Force }
-        Write-Host "✓ Staging copy     : $stagingPath" -ForegroundColor Green
+            # Always refresh the Staging copy so it matches the current raw project. A previous copy can hold
+            # freshly-written PSADT modules that AV briefly locks, so remove with retry and fail loudly rather
+            # than build the package on top of a stale, half-deleted Staging copy.
+            if (Test-Path $stagingPath) {
+                if (-not (Remove-Win32ToolkitPathWithRetry -Path $stagingPath)) {
+                    throw "Could not clear the previous Staging copy at '$stagingPath' — a file is locked (close any process using it) and retry."
+                }
+            }
 
-        # ── Step 3: Clean up the Staging copy ────────────────────────────────────
-        Optimize-Win32ToolkitProject -ProjectPath $stagingPath
+            # Copy ONLY what ships. Excluding the non-shipping folders (test scaffolding + Intune\ secrets) up
+            # front — rather than copying everything and stripping afterwards — means there is no freshly-written,
+            # AV-locked file for a later Remove-Item to choke on, the copy is smaller/faster, and the Intune\
+            # Publications.json (tenant + app ids) can never leak into the package even if a strip were to fail.
+            Write-Verbose 'Copying project to Staging (excluding non-shipping folders)...'
+            $excludeFolders = Get-Win32ToolkitNonShippingFolders
+            New-Item -Path $stagingPath -ItemType Directory -Force | Out-Null
+            Get-ChildItem -LiteralPath $ProjectPath -Force |
+                Where-Object { -not ($_.PSIsContainer -and $_.Name -in $excludeFolders) } |
+                ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $stagingPath $_.Name) -Recurse -Force }
+            Write-Host "✓ Staging copy     : $stagingPath" -ForegroundColor Green
 
-        # ── Step 4: Ensure output folder exists (IntuneWin\<Template>\) ───────────
-        $intuneWinDir = Join-Path $paths.IntuneWin $templateSeg
-        if (-not (Test-Path $intuneWinDir)) {
-            New-Item -Path $intuneWinDir -ItemType Directory -Force | Out-Null
-        }
+            # ── Step 3: Clean up the Staging copy ────────────────────────────────────
+            Optimize-Win32ToolkitProject -ProjectPath $stagingPath
 
-        # ── Step 5: Run IntuneWinAppUtil.exe ─────────────────────────────────────
-        Write-Host ''
-        Write-Host "Packaging project  : $projectName" -ForegroundColor Cyan
-        Write-Host "  Raw project      : $ProjectPath" -ForegroundColor Gray
-        Write-Host "  Staging copy     : $stagingPath" -ForegroundColor Gray
-        Write-Host "  Output folder    : $intuneWinDir" -ForegroundColor Gray
-        Write-Host ''
+            # ── Step 4: Ensure output folder exists (IntuneWin\<Template>\) ───────────
+            if (-not (Test-Path $intuneWinDir)) {
+                New-Item -Path $intuneWinDir -ItemType Directory -Force | Out-Null
+            }
 
-        if ($PSCmdlet.ShouldProcess($projectName, 'Build .intunewin package')) {
+            # ── Step 5: Run IntuneWinAppUtil.exe ─────────────────────────────────────
+            Write-Host ''
+            Write-Host "Packaging project  : $projectName" -ForegroundColor Cyan
+            Write-Host "  Raw project      : $ProjectPath" -ForegroundColor Gray
+            Write-Host "  Staging copy     : $stagingPath" -ForegroundColor Gray
+            Write-Host "  Output folder    : $intuneWinDir" -ForegroundColor Gray
+            Write-Host ''
+
             $process = Start-Process -FilePath $utilPath `
                 -ArgumentList "-c `"$stagingPath`" -s `"Invoke-AppDeployToolkit.ps1`" -o `"$intuneWinDir`" -q" `
                 -Wait -PassThru -NoNewWindow
@@ -301,26 +313,29 @@ function Export-Win32ToolkitIntuneWin {
             if ($process.ExitCode -ne 0) {
                 throw "IntuneWinAppUtil.exe exited with code $($process.ExitCode). Check the output above for details."
             }
-        }
 
-        # ── Step 6: Rename output to <ProjectName>.intunewin ─────────────────────
-        $defaultName  = Join-Path $intuneWinDir 'Invoke-AppDeployToolkit.intunewin'
-        $renamedFile  = Join-Path $intuneWinDir "$projectName.intunewin"
+            # ── Step 6: Rename output to <ProjectName>.intunewin ─────────────────────
+            $defaultName  = Join-Path $intuneWinDir 'Invoke-AppDeployToolkit.intunewin'
+            $renamedFile  = Join-Path $intuneWinDir "$projectName.intunewin"
 
-        if (Test-Path $defaultName) {
-            if (Test-Path $renamedFile) {
-                Remove-Item -Path $renamedFile -Force
+            if (Test-Path $defaultName) {
+                if (Test-Path $renamedFile) {
+                    Remove-Item -Path $renamedFile -Force
+                }
+                Rename-Item -Path $defaultName -NewName "$projectName.intunewin"
             }
-            Rename-Item -Path $defaultName -NewName "$projectName.intunewin"
-        }
 
-        $intuneWinFile = Get-Item -Path $renamedFile -ErrorAction SilentlyContinue
-        if ($intuneWinFile) {
-            $sizeMB = [math]::Round($intuneWinFile.Length / 1MB, 1)
-            Write-Host "✓ Package created  : $($intuneWinFile.FullName)  ($sizeMB MB)" -ForegroundColor Green
+            $intuneWinFile = Get-Item -Path $renamedFile -ErrorAction SilentlyContinue
+            if ($intuneWinFile) {
+                $sizeMB = [math]::Round($intuneWinFile.Length / 1MB, 1)
+                Write-Host "✓ Package created  : $($intuneWinFile.FullName)  ($sizeMB MB)" -ForegroundColor Green
+            }
+            else {
+                Write-Warning 'IntuneWinAppUtil.exe completed but the expected .intunewin file was not found.'
+            }
         }
         else {
-            Write-Warning 'IntuneWinAppUtil.exe completed but the expected .intunewin file was not found.'
+            Write-Host "WhatIf: would refresh Staging $stagingPath, optimize it and build $(Join-Path $intuneWinDir "$projectName.intunewin") (nothing was staged or packaged)." -ForegroundColor Yellow
         }
 
         # ── Step 6b: Package advisory (D1: warn, never block) ───────────────────
@@ -373,6 +388,9 @@ function Export-Win32ToolkitIntuneWin {
                     Write-Warning 'Skipped the update app: this project has no reliable "already installed" signal (no install tattoo, MSI UpgradeCode, or app name). Publish the install app, or use supersedence.'
                 }
             }
+        }
+        elseif (-not $doPackage -and ($PublishIntune -or $PublishUpdate)) {
+            Write-Host "WhatIf: would publish to Intune after packaging ($(@($(if ($PublishIntune) { 'install app' }), $(if ($PublishUpdate) { 'update app' }) | Where-Object { $_ }) -join ' and '))." -ForegroundColor Yellow
         }
     }
     catch {

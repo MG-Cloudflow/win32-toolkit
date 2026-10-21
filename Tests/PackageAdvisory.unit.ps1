@@ -162,7 +162,9 @@ try {
     if ($script:switchArgs.PackageType -eq 'wix' -and $script:switchArgs.PackageFamily -eq 'msi' -and $script:switchArgs.ProjectPath -eq $npp) { Ok 'Get-Win32ToolkitTechnologySwitch gets the project and the packaged type/family' } else { Bad "switch args $($script:switchArgs | ConvertTo-Json -Compress)" }
     if ($script:gets -eq 0) { Ok 'the stored probe is reused: no request' } else { Bad "$($script:gets) request(s)" }
     $ae = Get-Advisory $npp -Context Export
-    if ((Find $ae 'UPDATE-FAILED').Message -match 'This only warns: the package is still packaged\.') { Ok "-Context Export words it 'the package is still packaged'" } else { Bad "Export wording: $((Find $ae 'UPDATE-FAILED').Message)" }
+    # Worded so it also holds for Export -WhatIf, which packages nothing (re-verification 2026-10-21, A2 sb#1).
+    $aeMsg = (Find $ae 'UPDATE-FAILED').Message
+    if ($aeMsg -match 'This only warns: it does not stop packaging\.' -and $aeMsg -notmatch 'is still packaged') { Ok "-Context Export words it 'it does not stop packaging' (no claim that a package was built)" } else { Bad "Export wording: $aeMsg" }
 
     Write-Host '[2] Passed / Inconclusive / two families (Both) / Unavailable records' -ForegroundColor Cyan
     Set-TestResultFile $npp @(New-Record -Verdict Passed -Fail @())

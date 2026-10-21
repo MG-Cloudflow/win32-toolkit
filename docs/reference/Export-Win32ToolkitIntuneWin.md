@@ -56,6 +56,11 @@ Warns (never stops) when the latest Update test failed, a technology switch was 
    for this app that no Update test has covered).
 Shown once per run, also when Export publishes.
 
+-WhatIf is a dry run: the gate (step 1) and the warnings (6b) run, nothing is downloaded, staged,
+optimised or built (steps 2-6), an older .intunewin is not reported as created, and a requested
+publish is only announced.
+-Confirm asks once for the whole package build.
+
 ## EXAMPLES
 
 ### EXAMPLE 1
