@@ -97,7 +97,11 @@ if (Test-Path -LiteralPath (Join-Path $cacheDir 'app.msi')) { Ok 'the whole down
 
 # c2: same pinned request again -> served from cache, ZERO winget calls.
 $script:wingetCalls = @()
-$r2 = Download-OldVersionInstaller -AppId 'Acme.App' -Version '1.2.3' -ProjectPath $proj -Scope machine -InstallerType msi 6>$null 3>$null
+$host2 = @(Download-OldVersionInstaller -AppId 'Acme.App' -Version '1.2.3' -ProjectPath $proj -Scope machine -InstallerType msi 6>&1 3>$null)
+$r2 = @($host2 | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] })[-1]
+$info2 = @($host2 | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$_" })
+# The summary line says where the baseline came from (H6-F6): a cache hit is never 'Downloaded'.
+if (($info2 -match '^✓ From cache    : app\.msi$') -and -not ($info2 -match '^✓ Downloaded')) { Ok "hit: summary line says 'From cache', not 'Downloaded'" } else { Bad "hit summary: $($info2 -join ' | ')" }
 if (@($script:wingetCalls).Count -eq 0) { Ok 'hit: winget never invoked (the re-download is gone)' } else { Bad "winget called $(@($script:wingetCalls).Count)x on a hit" }
 if ($r2.InstallerName -eq 'app.msi' -and $r2.SilentArgs -match 'qn' -and (Test-Path -LiteralPath $r2.InstallerPath)) { Ok 'hit: identical result contract (installer present in the project)' } else { Bad "r2: $($r2 | Out-String)" }
 

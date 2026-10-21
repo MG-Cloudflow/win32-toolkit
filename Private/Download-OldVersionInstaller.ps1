@@ -152,7 +152,9 @@ function Download-OldVersionInstaller {
     }
 
     # Copies a hash-validated cache entry into the download folder. FAIL OPEN: a cache-layer copy failure
-    # must fall through to the real download, never abort it.
+    # must fall through to the real download, never abort it. $cacheState (a hashtable: the scriptblock runs in
+    # a child scope) remembers a hit for the summary line, which then says 'From cache', not 'Downloaded' (H6-F6).
+    $cacheState = @{ Hit = $false }
     $useCache = {
         param($Dir)
         if (-not $Dir -or -not (Test-Win32ToolkitCachedInstaller -Path $Dir)) { return $false }
@@ -160,6 +162,7 @@ function Download-OldVersionInstaller {
             Get-ChildItem -LiteralPath $Dir -Force -ErrorAction Stop |
                 Copy-Item -Destination $downloadDir -Recurse -Force -ErrorAction Stop
             Write-Host "✓ Using the cached download for '$AppId' $verLabel (SHA256-validated against its manifest)." -ForegroundColor Green
+            $cacheState.Hit = $true
             return $true
         }
         catch {
@@ -377,7 +380,8 @@ function Download-OldVersionInstaller {
         Write-Warning "No silent switches found in the winget manifest for '$($installer.Name)' — guessing '/S'. If the baseline install shows UI or hangs in the sandbox, the update run will be INCONCLUSIVE; use -SpecificVersion for a version whose manifest has silent switches, or watch the sandbox."
     }
 
-    Write-Host "✓ Downloaded    : $($installer.Name)"  -ForegroundColor Green
+    $what = if ($cacheState.Hit) { 'From cache    ' } else { 'Downloaded    ' }
+    Write-Host "✓ ${what}: $($installer.Name)"  -ForegroundColor Green
     Write-Host "  Installer type: $installerTypeName"  -ForegroundColor Gray
     Write-Host "  Silent args   : $silentArgs"         -ForegroundColor Gray
 
