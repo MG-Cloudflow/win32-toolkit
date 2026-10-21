@@ -672,6 +672,9 @@ try {
     ${function:Get-WingetVersions} = $versionsShadowE
     if (@($o.Values).Count -eq 1 -and $o.Values[0] -eq $false -and $script:switchCalls -eq 1) { Ok 'combined verdict: a failed leg -> $false (and its technology switch is checked)' } else { Bad "combined: $($o.Values -join ',')" }
     if (@($o.Info | Where-Object { $_ -like '  1. wix (MSI) (packaged technology): PASSED' }).Count -eq 1 -and @($o.Info | Where-Object { $_ -like '  2. nullsoft*: FAILED' }).Count -eq 1) { Ok 'one summary line per leg' } else { Bad 'summary lines missing' }
+    # The scenario header is mode-neutral and printed once, not once per leg (test campaign 2026-10-21).
+    $scE = @($o.Info | Where-Object { "$_" -like '*Scenario:*' })
+    if ($scE.Count -eq 1 -and "$($scE[0])".Trim() -eq 'Scenario: Install Old Version → Run PSADT Update') { Ok 'Both: one mode-neutral scenario header (no countdown claimed, not repeated per leg)' } else { Bad "scenario headers: $($scE -join ' | ')" }
     # Test campaign F2: each leg keeps its own logs (Sandbox\Logs\Runs\<run>_Update_<family>); the top-level exit-code log
     # is cleared once (by the outer call) and holds both legs.
     $lf = @($script:outcomes | ForEach-Object { [string]$_.LogFolder })

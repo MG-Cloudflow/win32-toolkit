@@ -290,6 +290,9 @@ if ($script:hv12 -and $script:hv12.Phases -ge 4 -and $script:hv12.Output -contai
 if ($script:staleSeen -eq $false) { Ok 'a previous run''s PsadtExitCodes.log is cleared before the run' } else { Bad "stale log seen by the run: $script:staleSeen" }
 if (($out12 -match 'app Install parent=x86-cmd exit=3010 result=SoftReboot') -and ($out12 -match 'app Uninstall parent=x86-cmd exit=60008 result=Failed')) { Ok 'both exit-code lines printed after the Hyper-V run' } else { Bad "output: $($out12 -join ' / ')" }
 if (-not ($out12 -match 'STALE-RUN')) { Ok 'no stale line printed' } else { Bad 'stale line printed' }
+# An unattended run announces no countdown (test campaign 2026-10-21): the scenario header is mode-neutral.
+$sc12 = @($out12 | Where-Object { $_ -like '*Scenario:*' })
+if ($sc12.Count -eq 1 -and $sc12[0].Trim() -eq 'Scenario: Install → Uninstall' -and ($out12 -match 'Running an UNATTENDED Install')) { Ok "unattended header: '$($sc12[0].Trim())' (no countdown claimed)" } else { Bad "scenario header: $($sc12 -join ' | ')" }
 
 Write-Host '[13] each run keeps its own logs in Sandbox\Logs\Runs\<run> (test campaign F2); a Both leg keeps the earlier lines' -ForegroundColor Cyan
 # (a) Hyper-V: the run folder holds this run's two exit-code lines, the record names it, nothing waits for a guest collector.

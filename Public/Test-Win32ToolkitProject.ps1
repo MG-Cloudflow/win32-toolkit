@@ -380,7 +380,10 @@ function Test-Win32ToolkitProject {
         switch ($Scenario) {
 
             'InstallUninstall' {
-                Write-Host "`nScenario: Install → Countdown → Uninstall" -ForegroundColor Cyan
+                # Mode-neutral: the watched countdown / Hyper-V pause (or their absence) is announced once the
+                # mode is resolved below — never by a second Get-Win32ToolkitTestMode call (its non-interactive
+                # warning would print twice).
+                Write-Host "`nScenario: Install → Uninstall" -ForegroundColor Cyan
 
                 # Assertion script: after install it must be DETECTED (Intune's own detection signal — the
                 # install tattoo); after uninstall it must be GONE. Value-free, reads AppConfig in the guest.
@@ -540,7 +543,11 @@ function Test-Win32ToolkitProject {
 
             'Update' {
                 $useBaselineProject = [bool]$BaselineProjectPath
-                Write-Host "`nScenario: Install Old Version → Countdown → Run PSADT Update" -ForegroundColor Cyan
+                # Mode-neutral (the countdown / pause is announced with the steps once the mode is known), and
+                # printed once: the legs of a '-BaselineInstallerType Both' run print their own leg banner.
+                if ($null -eq $script:W32TUpdateLegContext) {
+                    Write-Host "`nScenario: Install Old Version → Run PSADT Update" -ForegroundColor Cyan
+                }
 
                 # Baseline technology (installer-identity PR 1): the canonical -BaselineInstallerType value, and the
                 # leg context a '-BaselineInstallerType Both' run sets for each of its inner runs (L13).
@@ -992,7 +999,8 @@ function Test-Win32ToolkitProject {
                     $hvArgs = @{ ProjectPath = $ProjectPath; Phase = $phases; Output = @('Sandbox\Logs\*') }
                     if ($useBaselineProject) { $hvArgs['BaselineProjectPath'] = $BaselineProjectPath }
 
-                    Write-Host "`nRunning the Update test in the Hyper-V VM..." -ForegroundColor Cyan
+                    if ($interactive) { Write-Host "`nRunning an INTERACTIVE Update test in the Hyper-V VM (verify the old install in the vmconnect window, then press Enter)..." -ForegroundColor Cyan }
+                    else { Write-Host "`nRunning an UNATTENDED Update test in the Hyper-V VM with the Intune command line (32-bit parent, SYSTEM)..." -ForegroundColor Cyan }
                     $runLog = Initialize-Win32ToolkitTestRunLog -ProjectPath $ProjectPath -Scenario 'Update' -Family ([string]$baselineInfo.Family)
                     if (-not (Invoke-Win32ToolkitHyperVRun @hvArgs)) {
                         Write-Warning 'The Hyper-V update run did not complete cleanly — see the warnings above.'
