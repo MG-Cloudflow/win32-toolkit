@@ -254,6 +254,7 @@ try {
     . (Join-Path $repo 'Private\Get-WingetManifestFile.ps1')
     . (Join-Path $repo 'Private\Get-YAMLInstallerInfo.ps1')
     . (Join-Path $repo 'Private\Test-Win32ToolkitCachedInstaller.ps1')
+    . (Join-Path $repo 'Private\Invoke-Win32ToolkitWingetDownload.ps1')   # every winget download runs through it (C-9)
     . (Join-Path $repo 'Private\Download-OldVersionInstaller.ps1')
 
     $script:cacheRoot = $null

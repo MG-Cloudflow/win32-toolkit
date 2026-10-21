@@ -36,7 +36,7 @@ Each step in one honest sentence:
 | 3 | App resolution | Resolves the package interactively from a search, or directly by winget ID. |
 | 4 | Architecture selection | Picks x64/x86/arm64 from a menu, or from the parameter if you passed one. |
 | 5 | PSADT project creation | Scaffolds a fresh PSAppDeployToolkit project under `Projects\` with a supported PSADT version (4.1.x or 4.2.x; see [configuration](configuration.md#psappdeploytoolkit-version-preferredpsadtversion)). |
-| 6 | Download | Runs `winget download` into the project's `Files\` folder, manifest included. |
+| 6 | Download | Runs `winget download` into the project's `Files\` folder, manifest included. When another configured winget source cannot authenticate (winget error `0x8A150075` or `0x8A150076`, for example a private source that needs a sign-in), the download is retried once from the `winget` source only, with a warning. |
 | 7 | File rename | Normalises the installer filename to `AppName_arch_version.ext`. |
 | 8 | PSADT configuration | Detects MSI / EXE / MSIX and writes the matching install logic into `Invoke-AppDeployToolkit.ps1`. |
 | 9 | Org template application | Stamps your branding and dialog preferences into `Config\`, `Strings\`, and the deploy script. |

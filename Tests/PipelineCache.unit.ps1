@@ -28,6 +28,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Get-WingetManifestFile.ps1')
 . (Join-Path $repo 'Private\Resolve-Win32ToolkitBaselineSilentArgs.ps1')
 . (Join-Path $repo 'Private\Get-YAMLInstallerInfo.ps1')
+. (Join-Path $repo 'Private\Invoke-Win32ToolkitWingetDownload.ps1')  # every winget download runs through it (C-9)
 . (Join-Path $repo 'Private\Download-OldVersionInstaller.ps1')
 
 function New-TempDir { $p = Join-Path ([System.IO.Path]::GetTempPath()) ('plc_' + [guid]::NewGuid().ToString('N').Substring(0, 8)); New-Item -ItemType Directory -Path $p -Force | Out-Null; $p }

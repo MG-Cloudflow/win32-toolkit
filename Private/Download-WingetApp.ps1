@@ -29,6 +29,13 @@ function Download-WingetApp {
         nothing is downloaded: winget never silently picks another technology. Without -InstallerType (or
         with '') the winget arguments are exactly the unpinned ones and winget chooses. '--scope' is never
         passed (the manifest scope is only reported, D30).
+
+        A configured source that cannot authenticate (winget exit 0x8A150075 or 0x8A150076, e.g. a private source that needs
+        a Microsoft Entra sign-in) fails every 'winget download' without '--source', although 'winget search' and
+        'winget show' just leave that source out. Each download therefore runs through
+        Invoke-Win32ToolkitWingetDownload, which retries it once with '--source winget' (one warning); the
+        remaining types of a pinned family then ask '--source winget' directly. Every other exit code is handled
+        exactly as described above.
     .PARAMETER AppId
         winget PackageIdentifier (e.g. 'Git.Git'). Passed as an argument, never spliced into a command line.
     .PARAMETER AppName
@@ -92,18 +99,20 @@ function Download-WingetApp {
     if ([string]::IsNullOrWhiteSpace($InstallerType)) {
         # Not pinned: winget chooses the installer (the arguments above, nothing added).
         try {
-            # winget's console lines go to the host: in the output stream they would turn the [bool]
-            # result into an array that is always truthy for the caller. $LASTEXITCODE is still set.
-            & winget @wingetArgs | Out-Host
+            # Invoke-Win32ToolkitWingetDownload sends winget's console lines to the host (in the output stream
+            # they would turn the [bool] result into an array that is always truthy for the caller) and retries
+            # once with '--source winget' when another configured source cannot authenticate (0x8A150075/76).
+            $code = (Invoke-Win32ToolkitWingetDownload -ArgumentList $wingetArgs -Label $label).ExitCode
         }
         catch {
             Write-Error "Failed to run winget for $label : $($_.Exception.Message)"
             return $false
         }
 
-        # A native command failing does NOT throw — this check is the entire point of the fix.
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "winget download exited with code $LASTEXITCODE for $label — no usable installer was downloaded."
+        # A native command failing does NOT throw ($LASTEXITCODE, returned as ExitCode) — this check is the
+        # entire point of the fix.
+        if ($code -ne 0) {
+            Write-Error "winget download exited with code $code for $label — no usable installer was downloaded."
             return $false
         }
     }
@@ -117,14 +126,16 @@ function Download-WingetApp {
             $t = $types[$i]
             $before = @(Get-ChildItem -LiteralPath $DownloadPath -File -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
             try {
-                & winget @wingetArgs '--installer-type' $t | Out-Host
+                $attempt = Invoke-Win32ToolkitWingetDownload -ArgumentList ($wingetArgs + @('--installer-type', $t)) -Label $label
             }
             catch {
                 if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
                 Write-Error "Failed to run winget for $label : $($_.Exception.Message)"
                 return $false
             }
-            $code = $LASTEXITCODE
+            # A source that could not authenticate was left out by the retry: the next types ask 'winget' directly.
+            if ($attempt.SourceFallback) { $wingetArgs += @('--source', 'winget') }
+            $code = $attempt.ExitCode
             if ($code -eq 0) { $usedType = $t; break }
             if (-not (Test-Win32ToolkitWingetNoApplicableInstaller -ExitCode $code)) {
                 # Any other failure is a plain download failure, exactly as without a pin (V30).

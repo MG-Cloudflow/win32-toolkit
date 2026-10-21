@@ -27,6 +27,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Get-Win32ToolkitBaselineInstallCommand.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitInstallerExtension.ps1')  # installer-extension source of truth (bundle support)
 . (Join-Path $repo 'Private\Resolve-Win32ToolkitBaselineSilentArgs.ps1')
+. (Join-Path $repo 'Private\Invoke-Win32ToolkitWingetDownload.ps1')  # C-9: every winget download runs through it
 . (Join-Path $repo 'Private\Download-OldVersionInstaller.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitTestMode.ps1')  # mode resolver (Interactive/Unattended)
 . (Join-Path $repo 'Private\Wait-Win32ToolkitSandboxFree.ps1')

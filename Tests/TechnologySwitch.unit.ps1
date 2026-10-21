@@ -230,6 +230,7 @@ try {
     # End to end with the real -FamilyPin download (winget shadowed: no type of the family is offered): the
     # Unavailable run leaves Sandbox\OldVersion paired with UpdateAssertions.ps1, so the legacy FAIL is still judged (L21).
     . (Join-Path $repo 'Private\Test-Win32ToolkitWingetNoApplicableInstaller.ps1')
+    . (Join-Path $repo 'Private\Invoke-Win32ToolkitWingetDownload.ps1')   # every winget download runs through it (C-9)
     . (Join-Path $repo 'Private\Download-OldVersionInstaller.ps1')
     function Get-Win32ToolkitPipelineCacheRoot { $null }
     $script:wingetCalls = 0

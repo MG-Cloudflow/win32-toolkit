@@ -18,6 +18,11 @@ function Download-OldVersionInstaller {
     staging folder next to the destination ('<destination>.attempt'); the destination is replaced only after a
     successful download or cache hit and is left untouched when the call fails, so Sandbox\OldVersion stays
     paired with the last generated Sandbox\UpdateAssertions.ps1 (spec 2.12 legacy rule, L21).
+
+    Every winget call runs through Invoke-Win32ToolkitWingetDownload: winget's console lines go to the host
+    (never into the returned object), and when a configured source cannot authenticate (exit 0x8A150075 or 0x8A150076) the
+    same download is retried once with '--source winget' (one warning); later attempts of this call then ask
+    '--source winget' directly. The retry's exit code is classified exactly like a first attempt's.
 .OUTPUTS
     PSCustomObject with:
       InstallerPath          — full path to the downloaded installer file
@@ -232,8 +237,10 @@ function Download-OldVersionInstaller {
                         if ($s)      { $attemptArgs += '--scope';  $attemptArgs += $s }
                         $attemptArgs += '--installer-type'; $attemptArgs += $t
                         if ($Locale) { $attemptArgs += '--locale'; $attemptArgs += $Locale }
-                        & winget @downloadArgs @attemptArgs
-                        $code = $LASTEXITCODE
+                        $attempt = Invoke-Win32ToolkitWingetDownload -ArgumentList ($downloadArgs + $attemptArgs) -Label "'$AppId' $verLabel"
+                        # A source that could not authenticate was left out by the retry: later attempts ask 'winget' directly.
+                        if ($attempt.SourceFallback) { $downloadArgs += @('--source', 'winget') }
+                        $code = $attempt.ExitCode
                         if ($code -eq 0) {
                             $done = $true
                             & $storeCache $cacheDir
@@ -302,19 +309,22 @@ function Download-OldVersionInstaller {
         if ($InstallerType)                              { $pinArgs += '--installer-type'; $pinArgs += $InstallerType }
         if ($Locale)                                     { $pinArgs += '--locale';         $pinArgs += $Locale }
 
-        & winget @downloadArgs @pinArgs
+        $attempt = Invoke-Win32ToolkitWingetDownload -ArgumentList ($downloadArgs + $pinArgs) -Label "'$AppId' $verLabel"
+        # A source that could not authenticate was left out by the retry: the unpinned retry asks 'winget' directly.
+        if ($attempt.SourceFallback) { $downloadArgs += @('--source', 'winget') }
+        $code = $attempt.ExitCode
 
-        if ($LASTEXITCODE -ne 0 -and $pinArgs.Count -gt 0) {
+        if ($code -ne 0 -and $pinArgs.Count -gt 0) {
             # The old version may not publish the pinned variant (or the winget build may not support a
             # pin flag) — retry unpinned rather than failing the whole test, but say so clearly.
             Write-Warning "Pinned download (scope/installer-type/locale of the packaged variant) failed for '$AppId' $verLabel — retrying without pins. The baseline may be a DIFFERENT variant than the packaged app; check the installed baseline in the sandbox."
             Get-ChildItem -LiteralPath $oldVersionDir -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-            & winget @downloadArgs
+            $code = (Invoke-Win32ToolkitWingetDownload -ArgumentList $downloadArgs -Label "'$AppId' $verLabel").ExitCode
             $usedFallback = $true
         }
 
-        if ($LASTEXITCODE -ne 0) {
-            throw "winget download exited with code $LASTEXITCODE for '$AppId' $verLabel."
+        if ($code -ne 0) {
+            throw "winget download exited with code $code for '$AppId' $verLabel."
         }
 
         # Cache the download — but NEVER a fallback result under the pinned key: the unpinned retry can
