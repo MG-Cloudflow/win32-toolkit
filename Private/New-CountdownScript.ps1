@@ -25,9 +25,9 @@ function New-CountdownScript {
 
     $countdownScript = @'
 # Verdict of the install that just ran, read from the guest runner's exit-code log
-# (Sandbox\Invoke-PsadtPackage.ps1 appends '[<time>] <label> <type> parent=<p> exit=<n> result=<r>').
+# (Sandbox\Invoke-PsadtPackage.ps1 appends '[<UTC time>Z] <label> <type> parent=<p> exit=<n> result=<r>').
 # The LAST 'Install' line of the current run wins (any label - in the Update scenario that is the baseline):
-# the host starts each run with a '[<time>] -- test run <name> --' line, and the legs of an Update
+# the host starts each run with a '[<UTC time>Z] -- test run <name> --' line, and the legs of an Update
 # '-BaselineInstallerType Both' run share the log, so only the lines after the last such line count.
 # Only the numeric exit code and the one-word result class are taken from the log. Windows PowerShell 5.1-safe.
 function Get-W32tInstallVerdict {

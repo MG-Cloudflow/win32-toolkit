@@ -12,7 +12,8 @@ function Initialize-Win32ToolkitTestRunLog {
         Called right before the guest run starts (both backends). It:
           - picks the run name from the local time, the scenario and the baseline family ('-2', '-3', ...
             when that folder already exists);
-          - appends the marker line '[<time>] -- test run <name> --' to Sandbox\Logs\PsadtExitCodes.log:
+          - appends the marker line '[<UTC time>Z] -- test run <name> --' to Sandbox\Logs\PsadtExitCodes.log
+            (UTC like the guest runner's lines; the run NAME is host local time):
             the guest runner's exit-code lines that follow it belong to this run (the host prints only
             those, Save-Win32ToolkitTestRunLog keeps only those, and the watched countdown reads its verdict
             after the last marker);
@@ -64,7 +65,10 @@ function Initialize-Win32ToolkitTestRunLog {
         for ($n = 2; Test-Path -LiteralPath (Join-Path $runsRoot $name); $n++) { $name = '{0}-{1}' -f $stem, $n }
 
         # The exit-code log keeps the lines of every run of one outer call; this marker starts this run's lines.
-        $marker = '[{0}] -- test run {1} --' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $name
+        # UTC with a 'Z', like the guest runner's lines, so they read in order whatever the guest's time zone
+        # (the run NAME above stays host local time). Invariant culture: ':' is never localised.
+        $nowUtc = [datetime]::UtcNow
+        $marker = '[{0}Z] -- test run {1} --' -f $nowUtc.ToString('yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture), $name
         $codes = Join-Path $logs 'PsadtExitCodes.log'
         $prefix = ''
         if (Test-Path -LiteralPath $codes) {
@@ -96,7 +100,7 @@ function Initialize-Win32ToolkitTestRunLog {
             RelativePath = Join-Path 'Sandbox\Logs\Runs' $name
             Marker       = $marker
             Snapshot     = $snapshot
-            StartedUtc   = [datetime]::UtcNow
+            StartedUtc   = $nowUtc
         }
     }
     catch {

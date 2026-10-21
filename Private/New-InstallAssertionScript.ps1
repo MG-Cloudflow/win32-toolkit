@@ -61,7 +61,8 @@ $logDir = 'C:\PSADT\Sandbox\Logs'
 if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $assertLog = Join-Path $logDir 'InstallAssertions.log'
 function Write-AssertLine([string]$Message) {
-    ('[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message) | Add-Content -Path $assertLog -Encoding UTF8
+    # UTC with a 'Z' (invariant culture), like PsadtExitCodes.log: in order whatever the guest's time zone.
+    ('[{0}] {1}' -f ([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture) + 'Z'), $Message) | Add-Content -Path $assertLog -Encoding UTF8
 }
 
 Write-AssertLine ('=== Phase: {0} ===' -f $Phase)

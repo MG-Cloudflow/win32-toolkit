@@ -16,8 +16,11 @@ function New-Win32ToolkitPackageRunnerScript {
             written here from Get-Win32ToolkitIntuneCommandLine) through SysWOW64\cmd.exe - a 32-bit parent,
             like the Intune Management Extension - from the package folder.
           - The exact PSADT exit code becomes the runner's exit code and is appended to
-            Sandbox\Logs\PsadtExitCodes.log ('[<timestamp>] <label> <type> parent=<p> exit=<n> result=<r>'),
-            which the host prints after each run and the watched countdown reads for its verdict.
+            Sandbox\Logs\PsadtExitCodes.log ('[<UTC time>Z] <label> <type> parent=<p> exit=<n> result=<r>',
+            e.g. '[2026-10-21 02:06:04Z] app Install parent=x86-cmd exit=0 result=Success'), which the host
+            prints after each run and the watched countdown reads for its verdict. Times are UTC with a 'Z'
+            (invariant culture) so guest lines and the host's run marker read in order whatever the guest's
+            time zone.
 
         The runner is VALUE-FREE (no project, app or template value is in it), Windows PowerShell 5.1-safe
         and written UTF-8 with BOM; the data file is BOM-less UTF-8. Both live under Sandbox\, which never
@@ -67,7 +70,7 @@ if ($IntuneParity) {
         if ($DeploymentType -ne 'Repair' -and $cl.PSObject.Properties[$DeploymentType]) { $cmdLine = [string]$cl.$DeploymentType }
     } catch { $cmdLine = '' }
     if ([string]::IsNullOrWhiteSpace($cmdLine)) {
-        ('[{0}] {1} {2} parent=none exit=87 result=Failed (no Intune command line for {2})' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Label, $DeploymentType) |
+        ('[{0}] {1} {2} parent=none exit=87 result=Failed (no Intune command line for {2})' -f ([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture) + 'Z'), $Label, $DeploymentType) |
             Add-Content -LiteralPath $logFile -Encoding UTF8
         exit 87
     }
@@ -93,7 +96,7 @@ else { & (Join-Path $env:WinDir 'System32\taskkill.exe') /PID $p.Id /T /F | Out-
 $class = 'Failed'
 if ($rc -eq 0 -or $rc -eq 1707) { $class = 'Success' } elseif ($rc -eq 3010) { $class = 'SoftReboot' }
 elseif ($rc -eq 1641) { $class = 'HardReboot' } elseif ($rc -eq 1618) { $class = 'Retry' } elseif ($rc -eq 1460) { $class = 'Timeout' }
-('[{0}] {1} {2} parent={3} exit={4} result={5}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Label, $DeploymentType, $parent, $rc, $class) |
+('[{0}] {1} {2} parent={3} exit={4} result={5}' -f ([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture) + 'Z'), $Label, $DeploymentType, $parent, $rc, $class) |
     Add-Content -LiteralPath $logFile -Encoding UTF8
 exit $rc
 '@

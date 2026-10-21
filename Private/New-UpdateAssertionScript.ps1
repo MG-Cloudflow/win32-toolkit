@@ -87,7 +87,7 @@ $logDir = 'C:\PSADT\Sandbox\Logs'
 if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $assertLog = Join-Path $logDir 'UpdateAssertions.log'
 function Write-AssertLine([string]$Message) {
-    ('[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message) | Add-Content -Path $assertLog -Encoding UTF8
+    ('[{0}] {1}' -f ([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture) + 'Z'), $Message) | Add-Content -Path $assertLog -Encoding UTF8
 }
 
 # Loose version equality: tolerate 'v' prefix, component-count drift (2.5 == 2.5.0), and a decorated

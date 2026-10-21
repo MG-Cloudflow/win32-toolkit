@@ -102,6 +102,10 @@ foreach ($v in @($fakeAuthor, $fakeVendor, $fakeDisplay, $fakeVersion)) {
 }
 if ($leaked.Count -eq 0) { Ok 'DisplayName / Vendor / Version / ScriptAuthor literals are absent from the script text' } else { Bad "spliced literal(s) leaked into the script: $($leaked -join ', ')" }
 if ($genText -match '\$cfg\.App|\.App\b|ConvertFrom-Json') { Ok 'the script reads AppConfig.json / $cfg.App at runtime' } else { Bad 'no runtime AppConfig read found' }
+# Log times are UTC with a 'Z', like PsadtExitCodes.log (test campaign 2026-10-21).
+if ($genText.Contains("[DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture) + 'Z'") -and $genText -notmatch "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'") { Ok 'assertion lines are stamped in UTC with a Z' } else { Bad 'assertion log times are not UTC' }
+$updText = Get-Content -LiteralPath (Join-Path $repo 'Private\New-UpdateAssertionScript.ps1') -Raw
+if ($updText.Contains("[DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture) + 'Z'") -and $updText -notmatch "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'") { Ok 'Update assertion lines are stamped in UTC with a Z too' } else { Bad 'Update assertion log times are not UTC' }
 
 # ══ 3. Execute the generated logic against a fake config + stubbed registry ═══════════════════════
 Write-Host '[3] execute: PostInstall PASS/FAIL and PostUninstall RESULT COMPLETE' -ForegroundColor Cyan

@@ -49,7 +49,8 @@ function Write-RunLog([string]$Project, [string]$Name, [string]$Text) {
 function Add-Code([string]$Project, [string]$Line) {
     Add-Content -LiteralPath (Join-Path $Project 'Sandbox\Logs\PsadtExitCodes.log') -Value $Line -Encoding UTF8
 }
-$markerRx = '^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] -- test run (\S+) --$'
+# UTC with a 'Z' (test campaign 2026-10-21): in order with the guest runner's lines whatever the guest's zone.
+$markerRx = '^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})Z\] -- test run (\S+) --$'
 
 try {
     # --- [1] Initialize -------------------------------------------------------------------------------
@@ -63,8 +64,10 @@ try {
     if ($r1 -and $r1.RunName -match '^\d{8}-\d{6}_Update_exe$' -and $r1.RelativePath -eq "Sandbox\Logs\Runs\$($r1.RunName)") { Ok "run name <yyyyMMdd-HHmmss>_Update_<family> ($($r1.RunName)); the family keeps letters and digits only" }
     else { Bad "run: $($r1 | ConvertTo-Json -Compress)" }
     $codes = @(Get-Content -LiteralPath (Join-Path $p 'Sandbox\Logs\PsadtExitCodes.log'))
-    if ($codes.Count -eq 2 -and $codes[0] -like '*exit=0 result=Success' -and $codes[1] -ceq $r1.Marker -and $codes[1] -match $markerRx -and $Matches[1] -eq $r1.RunName) { Ok "the marker '[<time>] -- test run <name> --' is appended on its own line" }
+    if ($codes.Count -eq 2 -and $codes[0] -like '*exit=0 result=Success' -and $codes[1] -ceq $r1.Marker -and $codes[1] -match $markerRx -and $Matches[2] -eq $r1.RunName) { Ok "the marker '[<UTC time>Z] -- test run <name> --' is appended on its own line" }
     else { Bad "codes: $($codes -join ' | ')" }
+    $mt = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)
+    if ([Math]::Abs(([datetime]::UtcNow - $mt).TotalSeconds) -lt 120 -and [Math]::Abs(($r1.StartedUtc - $mt).TotalSeconds) -lt 2) { Ok 'the marker time is UTC (= StartedUtc), not host local time' } else { Bad "marker time $($Matches[1]) vs UtcNow $([datetime]::UtcNow) / StartedUtc $($r1.StartedUtc)" }
     if (-not (Test-Path -LiteralPath (Join-Path $p 'Sandbox\Logs\CollectLogs.done'))) { Ok "an earlier run's CollectLogs.done is removed" } else { Bad 'CollectLogs.done left' }
     if ($r1.Snapshot.Keys.Count -eq 1 -and $r1.Snapshot['Capture_PSAppDeployToolkit_Install.log'] -match '^\d+:[0-9A-F]{64}$' -and -not $r1.Snapshot.ContainsKey('PsadtExitCodes.log')) { Ok 'snapshot: <length>:<sha256> per top-level file, PsadtExitCodes.log left out' }
     else { Bad "snapshot: $($r1.Snapshot | ConvertTo-Json -Compress)" }

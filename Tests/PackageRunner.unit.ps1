@@ -142,7 +142,10 @@ exit __CODE__
     if ($rec.Count -eq 1 -and $rec[0].Type -eq 'Install' -and $rec[0].Mode -eq '') { Ok 'watched default: -DeploymentType Install, no -DeployMode (PSADT Auto)' } else { Bad "args: $($rec | ConvertTo-Json -Compress)" }
     if ($rec.Count -eq 1 -and $rec[0].Cwd.TrimEnd('\') -eq $pkgA.TrimEnd('\')) { Ok 'working directory = the package folder (path with a space, quoted for 5.1)' } else { Bad "cwd=$($rec[0].Cwd)" }
     $log = @(Get-ExitCodeLogLine $pkgA)
-    if ($log.Count -eq 1 -and $log[0] -match '^\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\] app Install parent=x64-direct exit=3010 result=SoftReboot$') { Ok "log: '$($log[0])'" } else { Bad "log: $($log -join ' / ')" }
+    if ($log.Count -eq 1 -and $log[0] -match '^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)Z\] app Install parent=x64-direct exit=3010 result=SoftReboot$') { Ok "log: '$($log[0])'" } else { Bad "log: $($log -join ' / ')" }
+    # UTC with a 'Z' (test campaign 2026-10-21), so the guest lines and the host's run marker read in order.
+    if ($log.Count -eq 1 -and $log[0] -match '^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)Z\]' -and
+        [Math]::Abs(([datetime]::UtcNow - [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)).TotalSeconds) -lt 300) { Ok 'the exit-code line time is UTC' } else { Bad "log time: $($log -join ' / ') vs UtcNow $([datetime]::UtcNow)" }
 
     $rc = Invoke-Runner $pkgA @('-Path', (Join-Path $pkgA 'Invoke-AppDeployToolkit.ps1'), '-DeploymentType', 'Uninstall', '-DeployMode', 'Silent', '-Label', 'app')
     $rec = @(Get-Rec $pkgA)

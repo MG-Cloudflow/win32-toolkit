@@ -84,11 +84,13 @@ the update are started by the guest runner `Sandbox\Invoke-PsadtPackage.ps1`, wh
 exit code of each run in `Sandbox\Logs\PsadtExitCodes.log`, for example:
 
 ```text
-[2026-10-16 10:12:03] app Install parent=x86-cmd exit=0 result=Success
+[2026-10-16 10:12:03Z] app Install parent=x86-cmd exit=0 result=Success
 ```
 
 `parent=x86-cmd` marks an Intune-parity run, `parent=x64-direct` a direct run. Each test run starts its
-lines with a `-- test run <name> --` line. The host prints the lines of the run that just ended, and the
+lines with a `-- test run <name> --` line. The times in this log and in the assertion logs are UTC (the
+trailing `Z`), so the guest's lines and the host's run line read in order whatever time zone the VM or
+Sandbox uses; the run folder names below use the host's local time. The host prints the lines of the run that just ended, and the
 Sandbox countdown banner reports the real install result of the current run (green on success, red with
 the exit code on failure) instead of always claiming success. The file is emptied when a test command
 starts, so after a `-BaselineInstallerType Both` test it holds the lines of every run.
