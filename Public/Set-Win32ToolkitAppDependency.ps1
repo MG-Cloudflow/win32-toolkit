@@ -63,6 +63,28 @@ function Set-Win32ToolkitAppDependency {
     foreach ($r in @($DependsOn)) {
         if ([string]::IsNullOrWhiteSpace($r)) { continue }
         $parsed = ConvertTo-Win32ToolkitDependencyRef -Reference $r -DependencyType $DependencyType
+        if ($parsed.Source -eq 'project') {
+            # Exactly '<Template>\<ProjectName>' under Projects\: a rooted path, '..' or a third segment would be
+            # joined onto Projects\ and resolve outside it when staged (test campaign 2026-10-21, S11-F5).
+            $ref   = [string]$parsed.Ref
+            $parts = @($ref -split '\\')
+            $bad   = @($parts | Where-Object { [string]::IsNullOrWhiteSpace($_) -or $_ -eq '.' -or $_ -eq '..' -or $_.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0 })
+            if ($parts.Count -ne 2 -or $bad.Count -gt 0 -or [System.IO.Path]::IsPathRooted($ref)) {
+                throw "Dependency 'project:$ref' must be '<Template>\<ProjectName>' under Projects\ (not a full path or '..')."
+            }
+            if ($ref -eq $self) { throw "An app cannot depend on itself ('$self')." }
+            # Declaring a dependency before it is packaged is legitimate: only warn (fail-open check).
+            try {
+                $projectsRoot = Split-Path -Parent (Split-Path -Parent $ProjectPath)
+                if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $projectsRoot $ref) 'Invoke-AppDeployToolkit.ps1'))) {
+                    Write-Warning "Dependency 'project:$ref' is not packaged yet (no Invoke-AppDeployToolkit.ps1 under $projectsRoot): a test or capture of this app stops until it is."
+                }
+            }
+            catch {
+                if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                Write-Verbose "Could not check whether 'project:$ref' is packaged: $($_.Exception.Message)"
+            }
+        }
         if ($parsed.Source -eq 'project' -and $parsed.Ref -eq $self) {
             throw "An app cannot depend on itself ('$self')."
         }

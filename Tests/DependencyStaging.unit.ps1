@@ -326,6 +326,31 @@ $null = Set-Win32ToolkitAppDependency -ProjectPath $p13 -DependsOn 'intune:8d0a1
 $e13 = $null; try { $n13 = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p13 -WarningAction SilentlyContinue 6>$null } catch { $e13 = $_ }
 if (-not $e13 -and $n13 -eq 0) { Ok 'intune: is still only warned about (no package to stage; TODO)' } else { Bad "intune threw: $e13" }
 foreach ($pp in $p10, $p11, $p12, $p13) { Remove-Item -LiteralPath (Split-Path -Parent (Split-Path -Parent $pp)) -Recurse -Force -ErrorAction SilentlyContinue }
+
+Write-Host '[11] staging defence in depth: only <Template>\<Name> inside Projects\; same-named projects never share a folder (S11-F5)' -ForegroundColor Cyan
+function Get-Win32ToolkitPipelineCacheRoot { $null }
+# A hand-edited / old AppConfig.json reference that escapes Projects\ (Set-Win32ToolkitAppDependency now refuses it).
+$p14 = New-Proj
+$cfg14 = Get-Win32ToolkitAppConfig -ProjectPath $p14
+$cfg14 | Add-Member -NotePropertyName Dependencies -NotePropertyValue @([pscustomobject]@{ Source = 'project'; Ref = '..\..\Elsewhere\Tool'; DependencyType = 'autoInstall' }) -Force
+$null = Set-Win32ToolkitAppConfig -ProjectPath $p14 -Config $cfg14
+$e14 = $null; try { $null = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p14 6>$null } catch { $e14 = $_ }
+if ($e14 -and $e14.FullyQualifiedErrorId -eq 'W32T.DependencyNotStaged' -and "$e14" -match "is not '<Template>\\<ProjectName>' inside" -and -not (Test-Path -LiteralPath (Join-Path $p14 'Sandbox\Dependencies'))) { Ok "'..\..\Elsewhere\Tool' in AppConfig -> W32T.DependencyNotStaged, nothing copied" } else { Bad "traversal: $($e14.FullyQualifiedErrorId) $e14" }
+# Two dependencies whose project folders share a name: the second is staged under '<Template>_<Name>'.
+foreach ($tpl in 'Contoso', 'Other') {
+    $dp = Join-Path $baseA "Projects\$tpl\Tool_x64_1.0"
+    New-Item -ItemType Directory -Path $dp -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $dp 'Invoke-AppDeployToolkit.ps1') -Value "# psadt $tpl"
+}
+$p15 = New-Proj
+$null = Set-Win32ToolkitAppDependency -ProjectPath $p15 -DependsOn 'project:Contoso\Tool_x64_1.0', 'project:Other\Tool_x64_1.0' -WarningAction SilentlyContinue
+$n15 = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p15 -BasePath $baseA 6>$null
+$e15 = @(Get-Content -LiteralPath (Join-Path $p15 'Sandbox\Dependencies\dependencies.json') -Raw | ConvertFrom-Json)
+$c1 = Get-Content -LiteralPath (Join-Path $p15 'Sandbox\Dependencies\Tool_x64_1.0\Invoke-AppDeployToolkit.ps1') -Raw
+$c2 = Get-Content -LiteralPath (Join-Path $p15 'Sandbox\Dependencies\Other_Tool_x64_1.0\Invoke-AppDeployToolkit.ps1') -Raw -ErrorAction SilentlyContinue
+if ($n15 -eq 2 -and $e15[0].Path -eq 'C:\PSADT\Sandbox\Dependencies\Tool_x64_1.0\Invoke-AppDeployToolkit.ps1' -and $e15[1].Path -eq 'C:\PSADT\Sandbox\Dependencies\Other_Tool_x64_1.0\Invoke-AppDeployToolkit.ps1' -and
+    $c1 -match 'Contoso' -and $c2 -match 'Other') { Ok 'Contoso\Tool and Other\Tool get separate folders (Tool_x64_1.0, Other_Tool_x64_1.0) and guest paths' } else { Bad "collision: n=$n15 paths=$(@($e15 | ForEach-Object Path) -join ' | ')" }
+foreach ($pp in $p14, $p15) { Remove-Item -LiteralPath (Split-Path -Parent (Split-Path -Parent $pp)) -Recurse -Force -ErrorAction SilentlyContinue }
 Remove-Item -LiteralPath $cache10 -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $baseA, $baseB, (Split-Path -Parent (Split-Path -Parent $p9)) -Recurse -Force -ErrorAction SilentlyContinue
 

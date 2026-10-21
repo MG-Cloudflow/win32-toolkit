@@ -69,6 +69,19 @@ $threw = $false
 try { Set-Win32ToolkitAppDependency -ProjectPath $proj -DependsOn 'project:Contoso\Notepad_x64_8.6' | Out-Null } catch { $threw = $true }
 if ($threw) { Ok 'self-reference rejected (Intune rejects it too)' } else { Bad 'self-reference accepted' }
 
+Write-Host '[6b] project: refs must be <Template>\<ProjectName> under Projects\ (test campaign 2026-10-21, S11-F5)' -ForegroundColor Cyan
+foreach ($badRef in @('project:C:\W32T-Test42\Projects\CLoudFlow\7-Zip_x64_26.04', 'project:..\..\W32T-Test42\Projects\CLoudFlow\7-Zip_x64_26.04',
+                      'project:Contoso\Sub\Tool', 'project:\Tool', 'C:\abs\Tool', 'project:Contoso\..', 'project:Contoso\To:ol', 'project:Contoso\To/ol')) {
+    $e = $null
+    try { $null = Set-Win32ToolkitAppDependency -ProjectPath $proj -DependsOn $badRef -WarningAction SilentlyContinue } catch { $e = $_ }
+    if ($e -and "$e" -match "must be '<Template>\\<ProjectName>' under Projects\\ \(not a full path or '\.\.'\)") { Ok "rejects '$badRef'" } else { Bad "accepted '$badRef' ($e)" }
+}
+if (@(Get-Win32ToolkitDependencies -ProjectPath $proj).Count -eq 0) { Ok 'nothing was written for a rejected reference' } else { Bad 'a rejected reference was stored' }
+$w6 = $null
+$set6 = @(Set-Win32ToolkitAppDependency -ProjectPath $proj -DependsOn 'project:Contoso\NotPackagedYet' -WarningVariable w6 -WarningAction SilentlyContinue)
+if ($set6.Count -eq 1 -and @($w6 | Where-Object { "$_" -match "'project:Contoso\\NotPackagedYet' is not packaged yet" }).Count -eq 1) { Ok 'a not-yet-packaged project is declared with one warning (declaring first is legitimate)' } else { Bad "declared=$($set6.Count) warn=$($w6 -join ' | ')" }
+$null = Set-Win32ToolkitAppDependency -ProjectPath $proj -Clear
+
 Write-Host '[7] both entry points expose the same declaration surface (winget + custom/manual apps)' -ForegroundColor Cyan
 $surface = @{}
 foreach ($f in @('Public\Invoke-Win32Toolkit.ps1', 'Public\New-Win32ToolkitManualApp.ps1')) {

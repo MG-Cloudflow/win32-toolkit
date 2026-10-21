@@ -247,6 +247,7 @@ exit 0
     }
 
     $entries = [System.Collections.Generic.List[object]]::new()
+    $usedLeaf = @{}   # staged 'project:' folder names (case-insensitive): two dependencies never share one
 
     foreach ($d in $deps) {
         switch ($d.Source) {
@@ -280,10 +281,23 @@ exit 0
                 if ([string]::IsNullOrWhiteSpace($base)) {
                     & $notStaged $d 'no base folder is configured to resolve it against (pass -BasePath, or set the base folder).'
                 }
-                $src  = Join-Path (Get-Win32ToolkitPaths -BasePath $base).Projects $d.Ref
+                # Defence in depth (AppConfig.json can hold an old or hand-edited reference): only
+                # '<Template>\<ProjectName>' that stays inside Projects\ is staged (S11-F5).
+                $projectsFull = [System.IO.Path]::GetFullPath([string](Get-Win32ToolkitPaths -BasePath $base).Projects).TrimEnd('\')
+                $refParts = @(([string]$d.Ref) -split '\\')
+                $src = $null
+                if ($refParts.Count -eq 2 -and -not [System.IO.Path]::IsPathRooted([string]$d.Ref)) {
+                    $src = [System.IO.Path]::GetFullPath((Join-Path $projectsFull $d.Ref))
+                }
+                if (-not $src -or -not $src.StartsWith($projectsFull + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+                    & $notStaged $d "its reference is not '<Template>\<ProjectName>' inside $projectsFull."
+                }
                 if (-not (Test-Path -LiteralPath (Join-Path $src 'Invoke-AppDeployToolkit.ps1'))) {
                     & $notStaged $d "the project was not found (no Invoke-AppDeployToolkit.ps1 at $src)."
                 }
+                # Two dependencies with the same project name (Contoso\Tool, Other\Tool) must not share a folder.
+                if ($usedLeaf.ContainsKey($leaf.ToLowerInvariant())) { $leaf = ($refParts -join '_') }
+                $usedLeaf[$leaf.ToLowerInvariant()] = $true
                 $destDir = Join-Path $depRoot $leaf
                 New-Item -ItemType Directory -Path $destDir -Force | Out-Null
                 # Copy CONTENTS so the PSADT script sits directly under the dependency folder. Its own
