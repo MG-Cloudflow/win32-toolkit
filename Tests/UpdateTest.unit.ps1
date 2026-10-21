@@ -165,12 +165,28 @@ try {
     if ((Wait-Win32ToolkitUpdateAssertion -ProjectPath $pj -TimeoutMinutes 0.04 -PollSeconds 1 6>$null 3>$null) -eq $false) { Ok 'partial run with FAIL -> $false (failures are conclusive)' } else { Bad 'partial FAIL not conclusive' }
 
     Write-Host "`n[4] Get-Win32ToolkitBaselineInstallCommand" -ForegroundColor Cyan
+    # Every form ends in the same FIXED suffix that records the exit code (test campaign 2026-10-21, H6-F7).
+    $blSuffix = '; $w32tCls = ''Failed''; if ($w32tRc -eq 0 -or $w32tRc -eq 1707) { $w32tCls = ''Success'' } elseif ($w32tRc -eq 3010) { $w32tCls = ''SoftReboot'' } elseif ($w32tRc -eq 1641) { $w32tCls = ''HardReboot'' }; (''[{0}] baseline Install parent=vendor exit={1} result={2}'' -f ([DateTime]::UtcNow.ToString(''yyyy-MM-dd HH:mm:ss'', [Globalization.CultureInfo]::InvariantCulture) + ''Z''), $w32tRc, $w32tCls) | Add-Content -LiteralPath ''C:\PSADT\Sandbox\Logs\PsadtExitCodes.log'' -Encoding UTF8 -ErrorAction SilentlyContinue; $global:LASTEXITCODE = $w32tRc'
+    if (-not $blSuffix.Contains('"') -and $blSuffix -notmatch '\bexit\b\s*\$') { Ok 'the recording suffix has no double quote and no exit' } else { Bad 'suffix shape' }
     $c = Get-Win32ToolkitBaselineInstallCommand -InstallerSandboxPath 'C:\PSADT\Sandbox\OldVersion\app.exe' -InstallerType exe -SilentArgs '/S'
-    if ($c -eq "Start-Process 'C:\PSADT\Sandbox\OldVersion\app.exe' -ArgumentList '/S' -Wait") { Ok 'exe + args -> Start-Process -ArgumentList' } else { Bad "exe: [$c]" }
+    if ($c -eq ('$w32tBl = Start-Process ''C:\PSADT\Sandbox\OldVersion\app.exe'' -ArgumentList ''/S'' -Wait -PassThru; $w32tRc = [int]$w32tBl.ExitCode' + $blSuffix)) { Ok 'exe + args -> Start-Process -ArgumentList -Wait -PassThru, exit code recorded' } else { Bad "exe: [$c]" }
     $c = Get-Win32ToolkitBaselineInstallCommand -InstallerSandboxPath 'C:\PSADT\Sandbox\OldVersion\app.exe' -InstallerType exe
-    if ($c -eq "Start-Process 'C:\PSADT\Sandbox\OldVersion\app.exe' -Wait") { Ok 'exe no args -> no -ArgumentList' } else { Bad "exe-noargs: [$c]" }
+    if ($c -eq ('$w32tBl = Start-Process ''C:\PSADT\Sandbox\OldVersion\app.exe'' -Wait -PassThru; $w32tRc = [int]$w32tBl.ExitCode' + $blSuffix)) { Ok 'exe no args -> no -ArgumentList' } else { Bad "exe-noargs: [$c]" }
     $c = Get-Win32ToolkitBaselineInstallCommand -InstallerSandboxPath 'C:\PSADT\Sandbox\OldVersion\app.msix' -InstallerType msix -SilentArgs '/qn'
-    if ($c -eq "Add-AppxPackage -Path 'C:\PSADT\Sandbox\OldVersion\app.msix'") { Ok 'msix -> Add-AppxPackage (no Start-Process, args ignored)' } else { Bad "msix: [$c]" }
+    if ($c -eq ('try { Add-AppxPackage -Path ''C:\PSADT\Sandbox\OldVersion\app.msix'' -ErrorAction Stop; $w32tRc = 0 } catch { $w32tRc = 1 }' + $blSuffix)) { Ok 'msix -> Add-AppxPackage (no Start-Process, args ignored), 0/1 recorded' } else { Bad "msix: [$c]" }
+    # Behaviour under Windows PowerShell 5.1: the vendor exit code becomes $LASTEXITCODE and one log line (H6-F7).
+    $ps51b = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (Test-Path -LiteralPath $ps51b) {
+        $blDir = Join-Path ([System.IO.Path]::GetTempPath()) ('w32bl_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+        New-Item -ItemType Directory -Path $blDir -Force | Out-Null
+        $blLog = Join-Path $blDir 'PsadtExitCodes.log'
+        $cmdB = (Get-Win32ToolkitBaselineInstallCommand -InstallerSandboxPath (Join-Path $env:SystemRoot 'System32\cmd.exe') -InstallerType exe -SilentArgs '/c exit 3010').Replace('C:\PSADT\Sandbox\Logs\PsadtExitCodes.log', $blLog)
+        & $ps51b -NoProfile -ExecutionPolicy Bypass -Command ('& { ' + $cmdB.Replace('\"', '"') + ' }; exit $LASTEXITCODE') | Out-Null
+        $rcB = $LASTEXITCODE
+        $lineB = @(if (Test-Path -LiteralPath $blLog) { Get-Content -LiteralPath $blLog })
+        if ($rcB -eq 3010 -and $lineB.Count -eq 1 -and $lineB[0] -match '^\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ\] baseline Install parent=vendor exit=3010 result=SoftReboot$') { Ok "5.1: vendor exit 3010 -> `$LASTEXITCODE 3010 and '$($lineB[0])'" } else { Bad "5.1 baseline: rc=$rcB log=$($lineB -join ' | ')" }
+        Remove-Item -LiteralPath $blDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
     # Hostile values: apostrophes doubled, double quotes argv-escaped as \"
     $c = Get-Win32ToolkitBaselineInstallCommand -InstallerSandboxPath "C:\PSADT\Sandbox\OldVersion\O'Brien.exe" -InstallerType exe -SilentArgs 'INSTALLDIR="C:\Program Files\App"'
     if ($c -match [regex]::Escape("O''Brien.exe") -and $c -match [regex]::Escape('INSTALLDIR=\"C:\Program Files\App\"')) { Ok 'apostrophes doubled + double quotes argv-escaped' } else { Bad "hostile: [$c]" }
@@ -391,8 +407,9 @@ try {
     ${function:New-UpdateAssertionScript} = { 'assert.ps1' }
     $script:hvRuns = 0
     function Invoke-Win32ToolkitHyperVRun {
-        param($ProjectPath)
+        param($ProjectPath, $Phase, $Output, $BaselineProjectPath)
         $script:hvRuns++
+        $script:lastHvPhase = $Phase
         $ld = Join-Path $ProjectPath 'Sandbox\Logs'
         New-Item -ItemType Directory -Path $ld -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $ld 'UpdateAssertions.log') -Value "[t] ASSERT Tattoo-PostUpdate = PASS (guest run $script:hvRuns)" -Encoding UTF8
@@ -475,6 +492,9 @@ try {
         $b0.Version -eq '8.8.9' -and $b0.UsedFallback -eq $false -and $b0.Source -eq 'winget' -and $b0.Unavailable -eq $false) { Ok 'the outcome is recorded with -Baseline (Mode Auto, Origin Sibling, nullsoft/exe, v8.8.9)' }
     else { Bad "baseline: $($b0 | ConvertTo-Json -Compress)" }
     if (@($o.Values) -contains $true -and $script:switchCalls -eq 0) { Ok 'a PASS returns $true and runs no technology-switch check' } else { Bad "values=$($o.Values -join ',') switch=$script:switchCalls" }
+    # The vendor baseline phase ends with its exact exit code and is judged like a package (H6-F7).
+    $blPh = @($script:lastHvPhase | Where-Object { $_.Label -like 'Install baseline*' })[0]
+    if ($blPh -and ([string]$blPh.Command).EndsWith('$global:LASTEXITCODE = $w32tRc; exit $LASTEXITCODE') -and (@($blPh.SuccessExitCodes) -join ',') -eq '0,1707,3010,1641') { Ok 'Hyper-V vendor baseline phase: exit $LASTEXITCODE + SuccessExitCodes 0/1707/3010/1641 (a failed baseline is warned)' } else { Bad "baseline phase: $($blPh | ConvertTo-Json -Compress)" }
     $f5Warn = 'No baseline version was given (-VersionsBack or -SpecificVersion) and this run cannot ask for one (an unattended run or a non-interactive host): the Update test uses the previous version (-VersionsBack 1). Pass -VersionsBack or -SpecificVersion to test from another version.'
     if (@($o.Warnings) -notcontains $f5Warn) { Ok 'an interactive run on an interactive host still shows the picker (no default, no warning)' } else { Bad 'interactive run got the F5 default' }
 

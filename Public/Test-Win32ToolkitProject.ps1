@@ -990,14 +990,10 @@ function Test-Win32ToolkitProject {
                     $phases = @()
                     if ($depCount -gt 0) { $phases += @{ Label = 'Install dependencies'; Command = (& $depCommandFor 'UpdateAssertions.log'); DepPhase = $true } }
 
-                    # A toolkit-package baseline goes through the runner: end the phase with its exact exit
-                    # code (single-quoted 'exit $LASTEXITCODE', literal for the guest). A vendor baseline
-                    # command is unchanged.
-                    $baselinePhase = @{ Label = "Install baseline v$targetVersion"; Command = $installCmd }
-                    if ($useBaselineProject) {
-                        $baselinePhase['Command']          = $installCmd + '; exit $LASTEXITCODE'
-                        $baselinePhase['SuccessExitCodes'] = $psadtSuccessCodes
-                    }
+                    # Both baselines end the phase with their exact exit code (single-quoted 'exit $LASTEXITCODE',
+                    # literal for the guest): a toolkit-package baseline through the runner, a vendor baseline
+                    # through the command's own $LASTEXITCODE (H6-F7), so the provider warns on a failed baseline.
+                    $baselinePhase = @{ Label = "Install baseline v$targetVersion"; Command = $installCmd + '; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes }
                     $phases += @(
                         @{ Label = 'Assert: PreBaseline';              Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline" }
                         $baselinePhase

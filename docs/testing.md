@@ -87,7 +87,9 @@ exit code of each run in `Sandbox\Logs\PsadtExitCodes.log`, for example:
 [2026-10-16 10:12:03Z] app Install parent=x86-cmd exit=0 result=Success
 ```
 
-`parent=x86-cmd` marks an Intune-parity run, `parent=x64-direct` a direct run. `parent=native-cmd` means the
+`parent=x86-cmd` marks an Intune-parity run, `parent=x64-direct` a direct run. An Update test from a vendor
+installer (a winget version, not a toolkit project) records that baseline install too, as
+`baseline Install parent=vendor exit=<code> result=<class>`; each declared dependency adds a `dep:<name>` line. `parent=native-cmd` means the
 guest had no 32-bit `cmd.exe` (no `SysWOW64`), so no 32-bit parent ran and that run is not true Intune parity. Each test run starts its
 lines with a `-- test run <name> --` line. The times in this log and in the assertion logs are UTC (the
 trailing `Z`), so the guest's lines and the host's run line read in order whatever time zone the VM or
