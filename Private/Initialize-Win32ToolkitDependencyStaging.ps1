@@ -34,7 +34,8 @@ function Initialize-Win32ToolkitDependencyStaging {
     .PARAMETER BasePath
         The base folder a 'project:' dependency is resolved against (<BasePath>\Projects\<Template>\<Name>).
         Empty: the configured base folder (Get-Win32ToolkitBasePath -NonInteractive, never a prompt); when none is
-        configured, such a dependency cannot be resolved and is warned about.
+        configured, such a dependency cannot be resolved (W32T.DependencyNotStaged). The resolved base is part of
+        the staging-reuse identity: a staging copied from another base folder is never reused.
     .OUTPUTS
         [int] the number of dependencies staged (0 when none are declared). A 'winget:' or 'project:' dependency
         that cannot be staged (download failed, project or base folder missing, copy failed) throws
@@ -153,8 +154,23 @@ exit 0
     #   4. the staged Sandbox\InstallDependencies.ps1 must be byte-identical to the script THIS generator
     #      writes — after a toolkit upgrade that changed the template, a staging left by the old build
     #      (e.g. one that ran 'project:' dependencies in-process) is restaged, never reused.
+    # The declared set includes the base folder 'project:' dependencies resolve against: a staging copied from
+    # base A is never reused by a run against -BasePath B, which restages from B and fails closed
+    # (W32T.DependencyNotStaged) when B lacks the dependency (re-verification 2026-10-21, B3 r1.2).
     # Any mismatch or error restages from scratch (today's behavior).
-    $declaredJson = ConvertTo-Json -InputObject @($deps | ForEach-Object { "$($_.Source):$($_.Ref)" }) -Compress
+    # The base is resolved ONCE (the caller's -BasePath wins over the registry value; never a prompt) and only
+    # when a 'project:' dependency needs it; the staging below uses the same value.
+    $resolvedBase = $null
+    if (@($deps | Where-Object { $_.Source -eq 'project' }).Count -gt 0) {
+        $resolvedBase = Get-Win32ToolkitBasePath -BasePath $BasePath -NonInteractive
+    }
+    $baseKey = ''
+    if (-not [string]::IsNullOrWhiteSpace($resolvedBase)) {
+        try { $baseKey = [System.IO.Path]::GetFullPath([string]$resolvedBase).TrimEnd('\').ToLowerInvariant() }
+        catch { $baseKey = ([string]$resolvedBase).TrimEnd('\').ToLowerInvariant() }
+    }
+    # [ordered]: a plain hashtable's key order is not stable across processes (the marker outlives the process).
+    $declaredJson = ConvertTo-Json -InputObject ([ordered]@{ Deps = @($deps | ForEach-Object { "$($_.Source):$($_.Ref)" }); Base = $baseKey }) -Compress
     $declaredHash = $null
     try {
         $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -280,7 +296,8 @@ exit 0
                 # The caller's -BasePath wins over the registry value (test campaign 2026-10-21, S11-F3: a
                 # 'Test-Win32ToolkitProject -BasePath B' run staged the dependency from the registry base A), and
                 # the lookup never prompts: no base folder at all means the dependency cannot be resolved.
-                $base = Get-Win32ToolkitBasePath -BasePath $BasePath -NonInteractive
+                # Resolved once above (it is part of the reuse identity).
+                $base = $resolvedBase
                 if ([string]::IsNullOrWhiteSpace($base)) {
                     & $notStaged $d 'no base folder is configured to resolve it against (pass -BasePath, or set the base folder).'
                 }

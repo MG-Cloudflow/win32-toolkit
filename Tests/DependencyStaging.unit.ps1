@@ -384,6 +384,38 @@ exit 0
             Ok "self-reference '$($case.Ref)' from the $where copy -> W32T.DependencyNotStaged ($($case.Why -replace '\\', '')), nothing staged"
         } else { Bad "self '$($case.Ref)' ($where): n=$nS err=$($eS.FullyQualifiedErrorId) $eS" }
     }
+
+    Write-Host '[12] a staging reuse marker never crosses base folders: -BasePath B restages from B or fails closed (re-verification 2026-10-21, B3 r1.2)' -ForegroundColor Cyan
+    $cache12 = New-TempPath 'w32dsR_'
+    New-Item -ItemType Directory -Path $cache12 -Force | Out-Null
+    function Get-Win32ToolkitPipelineCacheRoot { $cache12 }
+    $script:regBase = $baseA
+    $baseNo = New-TempPath 'w32dsN_'   # a base folder WITHOUT the dependency
+    New-Item -ItemType Directory -Path (Join-Path $baseNo 'Projects\Contoso') -Force | Out-Null
+    $p16 = New-Proj
+    $null = Set-Win32ToolkitAppDependency -ProjectPath $p16 -DependsOn 'project:Contoso\Tool_x64_1.0' -WarningAction SilentlyContinue
+    $staged16 = Join-Path $p16 'Sandbox\Dependencies\Tool_x64_1.0\Invoke-AppDeployToolkit.ps1'
+    function Invoke-Stage16([string]$Base) {
+        $iv = $null; $e = $null; $n = $null
+        try { $n = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p16 -BasePath $Base -InformationVariable iv 6>$null 3>$null } catch { $e = $_ }
+        [pscustomobject]@{ N = $n; Error = $e; Reused = (@($iv | Where-Object { "$($_.MessageData)" -like '*already staged*' }).Count -gt 0)
+                           Staged = $(if (Test-Path -LiteralPath $staged16) { Get-Content -LiteralPath $staged16 -Raw } else { '' })
+                           Marks = @(Get-ChildItem -LiteralPath (Join-Path $cache12 'staging') -File -ErrorAction SilentlyContinue).Count }
+    }
+    $leafA = 'from base A12'; $leafB = 'from base B12'
+    Set-Content -LiteralPath (Join-Path $baseA 'Projects\Contoso\Tool_x64_1.0\Invoke-AppDeployToolkit.ps1') -Value "# psadt $leafA"
+    Set-Content -LiteralPath (Join-Path $baseB 'Projects\Contoso\Tool_x64_1.0\Invoke-AppDeployToolkit.ps1') -Value "# psadt $leafB"
+    $s1 = Invoke-Stage16 $baseA
+    $s2 = Invoke-Stage16 $baseA
+    if ($s1.N -eq 1 -and $s1.Staged -match $leafA -and $s1.Marks -eq 1 -and $s2.N -eq 1 -and $s2.Reused) { Ok 'base A staged once, then reused from its marker (same base)' } else { Bad "A: n=$($s1.N)/$($s2.N) marks=$($s1.Marks) reused=$($s2.Reused) staged=$($s1.Staged)" }
+    $s3 = Invoke-Stage16 $baseB
+    if ($s3.N -eq 1 -and -not $s3.Reused -and $s3.Staged -match $leafB) { Ok "-BasePath B within the marker's 6 h -> restaged from B (B's bytes), no 'already staged'" } else { Bad "B: n=$($s3.N) reused=$($s3.Reused) staged=$($s3.Staged) err=$($s3.Error)" }
+    $s4 = Invoke-Stage16 $baseA
+    $s5 = Invoke-Stage16 $baseNo
+    if ($s4.N -eq 1 -and -not $s4.Reused -and $s4.Staged -match $leafA) { Ok 'back to base A -> restaged from A' } else { Bad "A again: n=$($s4.N) reused=$($s4.Reused) staged=$($s4.Staged)" }
+    if ($s5.Error -and $s5.Error.FullyQualifiedErrorId -eq 'W32T.DependencyNotStaged' -and "$($s5.Error)" -match [regex]::Escape((Join-Path $baseNo 'Projects')) -and -not $s5.Reused -and
+        $s5.Marks -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $p16 'Sandbox\Dependencies'))) { Ok "-BasePath without the dependency after a fresh base-A marker -> W32T.DependencyNotStaged naming that base's Projects\, no reuse, no marker, nothing staged" }
+    else { Bad "missing in base: err=$($s5.Error.FullyQualifiedErrorId) $($s5.Error) reused=$($s5.Reused) marks=$($s5.Marks)" }
 }
 finally { foreach ($tp in $script:tmp) { Remove-Item -LiteralPath $tp -Recurse -Force -ErrorAction SilentlyContinue } }
 
