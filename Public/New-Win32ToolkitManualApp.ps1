@@ -276,8 +276,10 @@ function New-Win32ToolkitManualApp {
             Write-Host "     (under '## MARK: Install' on PSADT 4.2, inside Install-ADTDeployment on 4.1):" -ForegroundColor White
             Write-Host "     $projectFullPath\Invoke-AppDeployToolkit.ps1" -ForegroundColor Gray
             Write-Host "     Fail with 'throw', never 'return'; never assign PSADT variable names." -ForegroundColor Gray
-            Write-Host '  2. Then finalise (auto uninstall + test + package + upload):' -ForegroundColor White
+            # The label says exactly what the printed command does: pasting it never uploads by surprise (S8-F10).
+            Write-Host '  2. Then finalise (auto uninstall + test):' -ForegroundColor White
             Write-Host "     Complete-Win32ToolkitManualApp -ProjectPath '$projectFullPath' -RunTest InstallUninstall" -ForegroundColor Cyan
+            Write-Host '     Add -PackageIntune to build the .intunewin, or -PublishIntune to also upload it to Intune.' -ForegroundColor Gray
             return [pscustomobject]@{ ProjectPath = $projectFullPath; ProjectName = $projectName; Mode = 'Advanced' }
         }
 
@@ -291,6 +293,7 @@ function New-Win32ToolkitManualApp {
             Write-Host "`nEasy app scaffolded. Finalise with:" -ForegroundColor Cyan
             Write-Host "  Complete-Win32ToolkitManualApp -ProjectPath '$projectFullPath' -RunTest InstallUninstall" -ForegroundColor Cyan
             Write-Host '  (or re-run this command with -Continue).' -ForegroundColor Gray
+            Write-Host '  Add -PackageIntune to build the .intunewin, or -PublishIntune to also upload it to Intune.' -ForegroundColor Gray
         }
         return [pscustomobject]@{ ProjectPath = $projectFullPath; ProjectName = $projectName; Mode = 'Easy' }
     }

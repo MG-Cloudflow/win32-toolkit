@@ -87,7 +87,11 @@ if ($cfg2.Installer.SilentArgs -eq '/S /norestart') { Ok 'silent args stored as 
 Write-Host '[3] HARD: an EXE with NO silent args is automatically Advanced' -ForegroundColor Cyan
 $script:patched = $null; $script:finalized = $false
 $exe2 = New-Src 'legacy.exe'
-$r3 = New-Win32ToolkitManualApp -Name 'Legacy CAD' -Version '12.0' -Architecture x64 -SourcePath $exe2 -TemplateName 'Contoso' -Force 6>$null 3>$null
+$host3 = @(New-Win32ToolkitManualApp -Name 'Legacy CAD' -Version '12.0' -Architecture x64 -SourcePath $exe2 -TemplateName 'Contoso' -Force 6>&1 3>$null)
+$r3 = @($host3 | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] })[-1]
+$text3 = @($host3 | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$_" })
+# The next-step label matches the printed command (test, no upload); packaging/upload are named as opt-ins (S8-F10).
+if (($text3 -match '^\s+2\. Then finalise \(auto uninstall \+ test\):$') -and -not ($text3 -match 'package \+ upload') -and ($text3 -match '-PublishIntune to also upload it to Intune')) { Ok 'hard-app step 2 says test only; packaging/upload are named as extra switches' } else { Bad "next steps: $($text3 -join ' | ')" }
 if ($script:patched -eq $true) { Ok 'EXE without silent args => the MANUAL install region (you author it)' } else { Bad "ManualInstall=$script:patched" }
 if (-not $script:finalized) { Ok 'hard app does NOT finalize — deferred to Complete-Win32ToolkitManualApp' } else { Bad 'finalize ran for an advanced app' }
 if ($r3.Mode -eq 'Advanced' -and $r3.ProjectPath) { Ok 'returns { ProjectPath; Mode=Advanced } so the caller can finish later' } else { Bad ($r3 | Out-String) }
