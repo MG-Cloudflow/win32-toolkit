@@ -79,9 +79,12 @@ the failed `InstallationChanges_*.json` from `Documentation\`) before publishing
 Within a single pipeline run, the staging is **reused instead of re-downloaded**: the toolkit keeps a
 hash-validated record of what it staged, and as long as the declared set is unchanged, the staging is
 recent, and every staged file still matches its recorded SHA-256 hash, the next test or capture in the same
-pipeline reuses it. Any mismatch, or anything a guest run added or changed, triggers a full restage from
-scratch. Staged files never ship: they are stripped before packaging and are never part of the
-`.intunewin`.
+pipeline reuses it. A `project:` dependency is only reused while its source is unchanged: the same base
+folder and the same files in its project folder (by size and last-write time; its own `Sandbox\` folder
+does not count). Rebuilding, fixing or deleting the dependency project, or running against another
+`-BasePath`, restages it (or stops the run when the project is gone). Any mismatch, or anything a guest run
+added or changed, triggers a full restage from scratch. Staged files never ship: they are stripped before
+packaging and are never part of the `.intunewin`.
 
 ## What happens at publish
 

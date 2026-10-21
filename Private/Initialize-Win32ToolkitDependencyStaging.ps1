@@ -143,7 +143,7 @@ exit 0
     # A full pipeline stages the SAME dependencies 2-3 times (capture + each test), wiping and
     # re-downloading identical binaries each time. Reuse the existing staging when: the cache is on,
     # the DECLARED set is unchanged, the staging is < 6 h old (deps are unpinned 'latest' — bound the
-    # staleness), and the staged tree matches the marker EXACTLY. Four properties make this safe on
+    # staleness), and the staged tree matches the marker EXACTLY. Five properties make this safe on
     # BOTH backends (under Sandbox the whole project — including this staging — was mounted READ-WRITE
     # into a guest that ran an untrusted installer):
     #   1. the marker lives OUTSIDE the project, under <BasePath>\Cache\winget\staging\ — the guest can
@@ -153,10 +153,15 @@ exit 0
     #   3. the on-disk file SET must equal the recorded set — a guest-ADDED file is a miss, not a ride-along;
     #   4. the staged Sandbox\InstallDependencies.ps1 must be byte-identical to the script THIS generator
     #      writes — after a toolkit upgrade that changed the template, a staging left by the old build
-    #      (e.g. one that ran 'project:' dependencies in-process) is restaged, never reused.
-    # The declared set includes the base folder 'project:' dependencies resolve against: a staging copied from
-    # base A is never reused by a run against -BasePath B, which restages from B and fails closed
-    # (W32T.DependencyNotStaged) when B lacks the dependency (re-verification 2026-10-21, B3 r1.2).
+    #      (e.g. one that ran 'project:' dependencies in-process) is restaged, never reused;
+    #   5. the declared identity covers each 'project:' dependency's SOURCE, not only its reference: the base
+    #      folder it resolves against, the full path of <base>\Projects\<Template>\<Name>, and a metadata
+    #      fingerprint of every file in it except its own top-level Sandbox\ (the folder the copy leaves out):
+    #      relative path, length and last-write time (UTC ticks). A rebuilt (-Force), fixed or deleted dependency
+    #      project, or a run against another -BasePath, gives another identity and is restaged - failing closed
+    #      (W32T.DependencyNotStaged) when the source is gone - never served from a copy of an older or other
+    #      source (re-verification 2026-10-21, B3 r1.1 / r1.2). When a source cannot be identified (no base
+    #      folder, no Invoke-AppDeployToolkit.ps1, a read error) there is no reuse: the staging runs its checks.
     # Any mismatch or error restages from scratch (today's behavior).
     # The base is resolved ONCE (the caller's -BasePath wins over the registry value; never a prompt) and only
     # when a 'project:' dependency needs it; the staging below uses the same value.
@@ -169,20 +174,53 @@ exit 0
         try { $baseKey = [System.IO.Path]::GetFullPath([string]$resolvedBase).TrimEnd('\').ToLowerInvariant() }
         catch { $baseKey = ([string]$resolvedBase).TrimEnd('\').ToLowerInvariant() }
     }
-    # [ordered]: a plain hashtable's key order is not stable across processes (the marker outlives the process).
-    $declaredJson = ConvertTo-Json -InputObject ([ordered]@{ Deps = @($deps | ForEach-Object { "$($_.Source):$($_.Ref)" }); Base = $baseKey }) -Compress
+    # One identity string per dependency: 'winget:'/'intune:' stay 'Source:Ref'; 'project:' adds its source
+    # (property 5). $null = no reuse (a source that cannot be identified, or any error).
     $declaredHash = $null
     try {
-        $sha = [System.Security.Cryptography.SHA256]::Create()
-        try { $declaredHash = ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($declaredJson))) -replace '-', '') }
-        finally { $sha.Dispose() }
-    } catch { $declaredHash = $null }
+        $identity = [System.Collections.Generic.List[string]]::new()
+        $projectsFull = $null
+        $unidentified = $null
+        foreach ($d in $deps) {
+            if ($d.Source -ne 'project') { $identity.Add("$($d.Source):$($d.Ref)"); continue }
+            # An unidentifiable source is not an exception here (the staging below reports it, and an expected miss
+            # must add no record to $Error - B3 #3): it only means no reuse.
+            if (-not $baseKey) { $unidentified = "no base folder to resolve 'project:$($d.Ref)' against"; break }
+            if (-not $projectsFull) { $projectsFull = [System.IO.Path]::GetFullPath([string](Get-Win32ToolkitPaths -BasePath $resolvedBase).Projects).TrimEnd('\') }
+            $src = [System.IO.Path]::GetFullPath((Join-Path $projectsFull ([string]$d.Ref))).TrimEnd('\')
+            if (-not $src.StartsWith($projectsFull + '\', [System.StringComparison]::OrdinalIgnoreCase) -or
+                -not (Test-Path -LiteralPath (Join-Path $src 'Invoke-AppDeployToolkit.ps1') -PathType Leaf)) {
+                $unidentified = "no packaged project at $src"; break
+            }
+            $prints = [string[]]@(Get-ChildItem -LiteralPath $src -Recurse -File -Force -ErrorAction Stop | ForEach-Object {
+                $rel = [System.IO.Path]::GetRelativePath($src, $_.FullName)
+                if (-not $rel.StartsWith('Sandbox\', [System.StringComparison]::OrdinalIgnoreCase)) {
+                    '{0}|{1}|{2}' -f $rel, $_.Length, $_.LastWriteTimeUtc.Ticks
+                }
+            })
+            [System.Array]::Sort($prints, [System.StringComparer]::Ordinal)
+            $identity.Add("project:$($d.Ref)|$($src.ToLowerInvariant())|$($prints -join '/')")
+        }
+        if ($unidentified) { Write-Verbose "Dependency staging is not reused ($unidentified)." }
+        else {
+            # [ordered]: a plain hashtable's key order is not stable across processes (the marker outlives the process).
+            $declaredJson = ConvertTo-Json -InputObject ([ordered]@{ Deps = @($identity); Base = $baseKey }) -Compress
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            try { $declaredHash = ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($declaredJson))) -replace '-', '') }
+            finally { $sha.Dispose() }
+        }
+    }
+    catch {
+        Write-Verbose "Dependency staging identity not computed (no reuse; staging from scratch): $($_.Exception.Message)"
+        $declaredHash = $null
+    }
 
-    # Marker path: host-side cache root, keyed by the (case-normalized) project path.
+    # Marker path: host-side cache root, keyed by the (case-normalized) project path. Set whenever the cache is
+    # on - also without an identity, so the fail-closed path below still removes a marker an earlier run left.
     $stagedMark = $null
     try {
         $cacheRoot = Get-Win32ToolkitPipelineCacheRoot
-        if ($cacheRoot -and $declaredHash) {
+        if ($cacheRoot) {
             $sha = [System.Security.Cryptography.SHA256]::Create()
             try {
                 $projKey = ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($ProjectPath.ToLowerInvariant().TrimEnd('\')))) -replace '-', '').Substring(0, 16)
@@ -206,7 +244,7 @@ exit 0
         })
     }
 
-    if ($deps.Count -gt 0 -and $stagedMark -and (Test-Path -LiteralPath $stagedMark)) {
+    if ($deps.Count -gt 0 -and $declaredHash -and $stagedMark -and (Test-Path -LiteralPath $stagedMark)) {
         try {
             $mark = Get-Content -LiteralPath $stagedMark -Raw | ConvertFrom-Json
             # A marker an older build wrote after staging only SOME dependencies (it warned and went on) holds a
@@ -240,9 +278,11 @@ exit 0
         catch { Write-Verbose "Dependency staging reuse check failed (restaging): $($_.Exception.Message)" }
     }
 
-    # Always start clean: a stale dependency from a previous run would silently install in the guest.
+    # Always start clean: a stale dependency from a previous run would silently install in the guest. The old
+    # marker goes too: it described the tree removed here (a new one is written only after a complete staging).
     if (Test-Path -LiteralPath $depRoot)    { Remove-Item -LiteralPath $depRoot -Recurse -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $scriptPath) { Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue }
+    if ($stagedMark) { Remove-Item -LiteralPath $stagedMark -Force -ErrorAction Ignore }
     if ($deps.Count -eq 0) { return 0 }
 
     New-Item -ItemType Directory -Path $depRoot -Force | Out-Null
@@ -368,8 +408,9 @@ exit 0
 
     # Record what was staged (declared-set hash + per-file SHA256 over EVERYTHING the guest consumes,
     # incl. the generated script) in the HOST-side marker so the next call in this pipeline can REUSE it
-    # instead of wiping + re-downloading. Best-effort: a failure just means the next call restages.
-    if ($stagedMark) {
+    # instead of wiping + re-downloading. Best-effort: a failure just means the next call restages. No identity
+    # (a source that could not be fingerprinted) = no marker = no reuse.
+    if ($stagedMark -and $declaredHash) {
         try {
             $files = @(& $enumerateStaged)
             $markJson = ConvertTo-Json -InputObject @{ DeclaredHash = $declaredHash; StagedAt = (Get-Date).ToString('o'); Count = $entries.Count; Files = $files } -Depth 4

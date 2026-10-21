@@ -87,7 +87,7 @@ These two switches trade a little state on disk (or in the VM) for wall-clock ti
 
 ### `PipelineCache` (default `On`)
 
-Caches update-baseline downloads under `<BasePath>\Cache\winget\` and reuses dependency staging within 6 hours. Every reuse is SHA256-verified against the winget manifest (baselines) or re-hashed (staged files). A tampered or torn entry is re-downloaded, never trusted. Set `Off` to restore the old always-download behavior. Caching also silently disables itself when no `BasePath` is configured yet (a cache lookup never prompts).
+Caches update-baseline downloads under `<BasePath>\Cache\winget\` and reuses dependency staging within 6 hours. Every reuse is SHA256-verified against the winget manifest (baselines) or re-hashed (staged files), and a `project:` dependency is reused only while its source project folder and base folder are unchanged. A tampered or torn entry is re-downloaded, never trusted. Set `Off` to restore the old always-download behavior. Caching also silently disables itself when no `BasePath` is configured yet (a cache lookup never prompts).
 
 ### `HyperVDepsCheckpoint` (default `Off`)
 

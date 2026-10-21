@@ -416,6 +416,45 @@ exit 0
     if ($s5.Error -and $s5.Error.FullyQualifiedErrorId -eq 'W32T.DependencyNotStaged' -and "$($s5.Error)" -match [regex]::Escape((Join-Path $baseNo 'Projects')) -and -not $s5.Reused -and
         $s5.Marks -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $p16 'Sandbox\Dependencies'))) { Ok "-BasePath without the dependency after a fresh base-A marker -> W32T.DependencyNotStaged naming that base's Projects\, no reuse, no marker, nothing staged" }
     else { Bad "missing in base: err=$($s5.Error.FullyQualifiedErrorId) $($s5.Error) reused=$($s5.Reused) marks=$($s5.Marks)" }
+
+    Write-Host '[13] a rebuilt, fixed or deleted project: dependency is restaged, never reused from the old copy (re-verification 2026-10-21, B3 r1.1)' -ForegroundColor Cyan
+    # The live loop: run B fails on a broken dependency, the operator fixes (or rebuilds) the dependency project and
+    # re-tests within 6 h - the guest must install the NEW copy (repro-reuse.json: StagedScript stayed '# DepR v1').
+    $depR = Join-Path $baseA 'Projects\Contoso\DepR_x64_1.0'
+    New-Item -ItemType Directory -Path (Join-Path $depR 'Files'), (Join-Path $depR 'Sandbox\Logs') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $depR 'Invoke-AppDeployToolkit.ps1') -Value '# DepR v1 (original, broken)'
+    Set-Content -LiteralPath (Join-Path $depR 'Files\setup.exe') -Value 'setup v1'
+    $p17 = New-Proj
+    $null = Set-Win32ToolkitAppDependency -ProjectPath $p17 -DependsOn 'project:Contoso\DepR_x64_1.0' -WarningAction SilentlyContinue
+    $stagedR = Join-Path $p17 'Sandbox\Dependencies\DepR_x64_1.0'
+    function Invoke-Stage17 {
+        $iv = $null; $e = $null; $n = $null
+        try { $n = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p17 -BasePath $baseA -InformationVariable iv 6>$null 3>$null } catch { $e = $_ }
+        [pscustomobject]@{ N = $n; Error = $e; Reused = (@($iv | Where-Object { "$($_.MessageData)" -like '*already staged*' }).Count -gt 0)
+                           Script = $(if (Test-Path -LiteralPath (Join-Path $stagedR 'Invoke-AppDeployToolkit.ps1')) { (Get-Content -LiteralPath (Join-Path $stagedR 'Invoke-AppDeployToolkit.ps1') -Raw).Trim() } else { '' })
+                           Setup = $(if (Test-Path -LiteralPath (Join-Path $stagedR 'Files\setup.exe')) { (Get-Content -LiteralPath (Join-Path $stagedR 'Files\setup.exe') -Raw).Trim() } else { '' })
+                           Marks = @(Get-ChildItem -LiteralPath (Join-Path $cache12 'staging') -File -ErrorAction SilentlyContinue | Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match 'DepR_x64_1\.0' }).Count }
+    }
+    $r1 = Invoke-Stage17
+    $r2 = Invoke-Stage17
+    if ($r1.N -eq 1 -and $r1.Script -eq '# DepR v1 (original, broken)' -and -not $r1.Reused -and $r2.N -eq 1 -and $r2.Reused) { Ok 'an unchanged source is staged once, then reused (the reuse still works)' } else { Bad "unchanged: n=$($r1.N)/$($r2.N) reused=$($r1.Reused)/$($r2.Reused) script=$($r1.Script)" }
+    Set-Content -LiteralPath (Join-Path $depR 'Sandbox\Logs\Install.log') -Value 'a test of the dependency project itself'
+    $r3 = Invoke-Stage17
+    if ($r3.Reused) { Ok "a write under the source's own Sandbox\ (not copied) keeps the reuse" } else { Bad 'a Sandbox\ log in the source broke the reuse' }
+    Set-Content -LiteralPath (Join-Path $depR 'Invoke-AppDeployToolkit.ps1') -Value '# DepR v2 (fixed)'
+    $r4 = Invoke-Stage17
+    if ($r4.N -eq 1 -and -not $r4.Reused -and $r4.Script -eq '# DepR v2 (fixed)') { Ok "a rewritten source Invoke-AppDeployToolkit.ps1 -> restaged: the staged copy is v2, no 'already staged'" } else { Bad "rewritten: reused=$($r4.Reused) script=$($r4.Script)" }
+    $setup = Join-Path $depR 'Files\setup.exe'
+    Set-Content -LiteralPath $setup -Value 'setup v2'
+    (Get-Item -LiteralPath $setup).LastWriteTimeUtc = (Get-Item -LiteralPath $setup).LastWriteTimeUtc.AddMinutes(1)
+    $r5 = Invoke-Stage17
+    if (-not $r5.Reused -and $r5.Setup -eq 'setup v2') { Ok 'a changed file under Files\ (same length, newer time) -> restaged' } else { Bad "Files\ change: reused=$($r5.Reused) setup=$($r5.Setup)" }
+    $r6 = Invoke-Stage17
+    Remove-Item -LiteralPath $depR -Recurse -Force
+    $r7 = Invoke-Stage17
+    if ($r6.Reused -and $r7.Error -and $r7.Error.FullyQualifiedErrorId -eq 'W32T.DependencyNotStaged' -and "$($r7.Error)" -match 'the project was not found' -and -not $r7.Reused -and
+        $r7.Marks -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $p17 'Sandbox\Dependencies'))) { Ok 'the source project deleted after a fresh marker -> W32T.DependencyNotStaged, no reuse, no marker, nothing staged' }
+    else { Bad "deleted: reused before=$($r6.Reused) err=$($r7.Error.FullyQualifiedErrorId) $($r7.Error) reused=$($r7.Reused) marks=$($r7.Marks)" }
 }
 finally { foreach ($tp in $script:tmp) { Remove-Item -LiteralPath $tp -Recurse -Force -ErrorAction SilentlyContinue } }
 
