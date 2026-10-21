@@ -121,6 +121,20 @@ try {
     $got6 = @((Get-Win32ToolkitAppConfig -ProjectPath $p4).ProcessesToClose)
     if ($got6 -contains 'pwsh' -and $got6 -contains 'helper') { Ok "captured 'helper' added alongside the manifest apps" } else { Bad "union failed: [$($got6 -join ',')]" }
 
+    Write-Host '[6b] An empty capture warns, except for a PSADT Zero-Config MSI (S7-F6)' -ForegroundColor Cyan
+    # Zero-Config MSI (Installer.Type msi, empty App.Name): PSADT derives the MSI's executables itself -> info, no warning.
+    foreach ($case in @(@{ Type = 'msi'; Name = ''; Warn = $false }, @{ Type = 'exe'; Name = 'Acme'; Warn = $true }, @{ Type = 'msi'; Name = 'Acme'; Warn = $true })) {
+        $pz = Join-Path $base ('zc_' + [guid]::NewGuid().ToString('N').Substring(0,6))
+        New-Item -ItemType Directory -Path (Join-Path $pz 'SupportFiles') -Force | Out-Null
+        Set-Win32ToolkitAppConfig -ProjectPath $pz -Config ([pscustomobject]@{ App = [pscustomobject]@{ Name = $case.Name }; Installer = [pscustomobject]@{ Type = $case.Type } }) | Out-Null
+        $wz = $null
+        $hz = @(Update-PSADTProcessesToClose -ProjectPath $pz -JsonFilePath $emptyCapture -WarningVariable wz -WarningAction SilentlyContinue 6>&1 | ForEach-Object { "$_" })
+        $tag = "$($case.Type)/App.Name='$($case.Name)'"
+        $warned = @($wz | Where-Object { "$_" -match 'no user-launchable processes detected' }).Count -eq 1
+        if ($warned -eq $case.Warn -and ($case.Warn -or ($hz -match 'PSADT Zero-Config adds the MSI'))) { Ok "${tag}: $(if ($case.Warn) { 'warns' } else { 'no warning, an info line instead' })" } else { Bad "${tag}: warned=$warned host=[$($hz -join ' | ')]" }
+        if (@((Get-Win32ToolkitAppConfig -ProjectPath $pz).ProcessesToClose).Count -eq 0) { Ok "${tag}: the data is unchanged (@())" } else { Bad "${tag}: ProcessesToClose changed" }
+    }
+
     Write-Host '[7] A non-MSIX project is untouched by the MSIX writer' -ForegroundColor Cyan
     $pe = Join-Path $base ('exe_' + [guid]::NewGuid().ToString('N').Substring(0,6))
     New-Item -ItemType Directory -Path (Join-Path $pe 'Files') -Force | Out-Null

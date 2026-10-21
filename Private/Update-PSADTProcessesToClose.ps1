@@ -104,6 +104,11 @@ function Update-PSADTProcessesToClose {
         if ($sorted.Count -gt 0) {
             $suffix = if ($existing.Count -gt 0 -and $added.Count -eq 0) { ' (unchanged — the capture added nothing)' } else { '' }
             Write-Host "✓ ProcessesToClose data written: $($sorted -join ', ')$suffix" -ForegroundColor Green
+        } elseif ($cfg.Installer -and [string]$cfg.Installer.Type -eq 'msi' -and [string]::IsNullOrWhiteSpace([string]$cfg.App.Name)) {
+            # PSADT Zero-Config (an MSI with an empty App.Name) adds the MSI's own executables (its File table)
+            # to AppProcessesToClose at run time on 4.1 and 4.2, so an empty list is expected here, not a
+            # problem (test campaign 2026-10-21, S7-F6). No host-side guess is added: it could only be wrong.
+            Write-Host "ProcessesToClose: none captured; PSADT Zero-Config adds the MSI's own executables (File table) at run time" -ForegroundColor Cyan
         } else {
             Write-Warning 'ProcessesToClose: no user-launchable processes detected, wrote @()'
         }
