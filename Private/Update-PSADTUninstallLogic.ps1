@@ -42,6 +42,15 @@ function Update-PSADTUninstallLogic {
         $uninstallers = @()
         $cleanupPaths = @()
 
+        # An EXE uninstaller whose UninstallString carries no switch (Firefox: '"...\uninstall\helper.exe"',
+        # no QuietUninstallString) ran WITH its UI as SYSTEM: helper.exe returned 0 at once and the cleanup
+        # deleted the folder under it (test campaign 2026-10-21, S12-F2). It gets the silent switch of the
+        # package's installer technology - catalog constants only, never text from the capture.
+        $cfg  = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
+        $tech = if ($cfg.Source) { ([string]$cfg.Source.InstallerType).Trim().ToLowerInvariant() } else { '' }
+        $silentByTech = @{ nullsoft = '/S'; inno = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' }
+        $noSwitch = [System.Collections.Generic.List[string]]::new()
+
         if ($data.NewRegistryKeys) {
             foreach ($regKey in $data.NewRegistryKeys) {
                 if ($regKey.Path -notlike '*Uninstall*') { continue }
@@ -51,8 +60,10 @@ function Update-PSADTUninstallLogic {
 
                     # Prefer QuietUninstallString, then UninstallString (exe), then msiexec string.
                     $selected = $null
+                    $fromQuiet = $false
                     if ($regKey.Values.QuietUninstallString -and $regKey.Values.QuietUninstallString -like '*.exe*') {
                         $selected = $regKey.Values.QuietUninstallString
+                        $fromQuiet = $true
                     }
                     elseif ($regKey.Values.UninstallString -and $regKey.Values.UninstallString -like '*.exe*') {
                         $selected = $regKey.Values.UninstallString
@@ -72,6 +83,10 @@ function Update-PSADTUninstallLogic {
                             if ($selected -match '"([^"]*\.exe)"(.*)')      { $exePath = $matches[1]; $exeParams = $matches[2].Trim() }
                             elseif ($selected -match '([^\s]*\.exe)(.*)')   { $exePath = $matches[1]; $exeParams = $matches[2].Trim() }
                             else                                            { $exePath = $selected }
+                            if (-not $fromQuiet -and [string]::IsNullOrWhiteSpace($exeParams)) {
+                                if ($silentByTech.ContainsKey($tech)) { $exeParams = $silentByTech[$tech] }
+                                else { $noSwitch.Add([System.IO.Path]::GetFileName($exePath)) }
+                            }
                             $uninstallers += [pscustomobject]@{ Type = 'exe'; ProductCode = $null; Path = $exePath; Args = $exeParams }
                         }
                     }
@@ -87,9 +102,14 @@ function Update-PSADTUninstallLogic {
             }
         }
 
+        if ($noSwitch.Count -gt 0) {
+            $techText = if ($tech) { $tech } else { 'unknown' }
+            $msg = "Uninstaller(s) $(@($noSwitch) -join ', ') have no silent switch in the capture, and the installer technology ('$techText') has no known default: the uninstall would show its UI as SYSTEM. Set Uninstall.Uninstallers[].Args in SupportFiles\AppConfig.json."
+            Write-Warning ($msg -replace '[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]', '?')
+        }
+
         # Install-folder cleanup paths (V1, S18): only folders the install created inside the app's own
         # install folders, which come from its own uninstall entry (a new folder alone never qualifies).
-        $cfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
         $dn  = if ($cfg.App -and $cfg.App.DisplayName) { [string]$cfg.App.DisplayName } elseif ($cfg.App) { [string]$cfg.App.Name } else { '' }
         $ir  = Get-Win32ToolkitInstallRoot -Capture $data -ProjectPath $ProjectPath -DisplayName $dn
         $keep = @($ir.CreatedDirectories | Where-Object {

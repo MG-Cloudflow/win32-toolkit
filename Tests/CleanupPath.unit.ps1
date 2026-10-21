@@ -371,6 +371,41 @@ try {
             Where-Object { $_ -is [System.Management.Automation.VerboseRecord] } | ForEach-Object { $_.Message })
     if (@($verbose | Where-Object { $_ -match '2 created folder\(s\)' -and $_ -match 'MozillaMaintenanceService \(CoInstalled\)' }).Count -eq 1) { Ok 'the verbose line names the 2 folders not kept and the co-installed key' } else { Bad "verbose: $($verbose -join ' | ') $v" }
 
+    # == [7b] silent switch by installer technology (test campaign 2026-10-21, S12-F2) ==================
+    Write-Host '[7b] an EXE uninstaller with no switch gets its technology''s silent switch (catalog), never captured text' -ForegroundColor Cyan
+    function Invoke-Uninstallers([string]$Tech, [hashtable[]]$Keys) {
+        $p = Build-TempProject -Name ('sw' + [guid]::NewGuid().ToString('N').Substring(0, 6)) -DisplayName 'Mozilla Firefox'
+        if ($Tech) {
+            $c = Get-Win32ToolkitAppConfig -ProjectPath $p
+            $c | Add-Member -NotePropertyName Source -NotePropertyValue ([pscustomobject]@{ InstallerType = $Tech }) -Force
+            $null = Set-Win32ToolkitAppConfig -ProjectPath $p -Config $c
+        }
+        $j = Join-Path $p 'Documentation\InstallationChanges_20260101_120000.json'
+        @{ NewRegistryKeys = @($Keys | ForEach-Object { @{ Path = "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$($_.Key)"; Values = $_.Values } }); NewFiles = @() } |
+            ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $j -Encoding UTF8
+        $w = $null
+        $null = Update-PSADTUninstallLogic -ProjectPath $p -JsonFilePath $j -WarningVariable w -WarningAction SilentlyContinue 6>$null
+        $first = [System.IO.File]::ReadAllText((Join-Path $p 'SupportFiles\AppConfig.json'))
+        $null = Update-PSADTUninstallLogic -ProjectPath $p -JsonFilePath $j -WarningAction SilentlyContinue 6>$null
+        [pscustomobject]@{ Un = @((Get-Win32ToolkitAppConfig -ProjectPath $p).Uninstall.Uninstallers); Warnings = @($w | ForEach-Object { "$_" }); Same = ([System.IO.File]::ReadAllText((Join-Path $p 'SupportFiles\AppConfig.json')) -ceq $first) }
+    }
+    $ffKeys = @(
+        @{ Key = 'Mozilla Firefox'; Values = @{ DisplayName = 'Mozilla Firefox (x64 en-US)'; UninstallString = '"C:\Program Files\Mozilla Firefox\uninstall\helper.exe"' } }
+        @{ Key = 'MozillaMaintenanceService'; Values = @{ DisplayName = 'Mozilla Maintenance Service'; UninstallString = '"C:\Program Files (x86)\Mozilla Maintenance Service\uninstall.exe"' } })
+    $r = Invoke-Uninstallers 'nullsoft' $ffKeys
+    if ($r.Un.Count -eq 2 -and @($r.Un | Where-Object { $_.Args -cne '/S' }).Count -eq 0 -and $r.Warnings.Count -eq 0) { Ok "nullsoft (Firefox): helper.exe and the service uninstaller get '/S'" } else { Bad "nullsoft: $(@($r.Un | ForEach-Object { "$($_.Path) [$($_.Args)]" }) -join ' ; ') warn=$($r.Warnings -join ' | ')" }
+    if ($r.Same) { Ok 'idempotent (the second run writes the same AppConfig.json)' } else { Bad 'not idempotent' }
+    $r = Invoke-Uninstallers 'inno' @(@{ Key = 'Git_is1'; Values = @{ DisplayName = 'Git'; UninstallString = '"C:\Program Files\Git\unins000.exe"' } })
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Args -ceq '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART') { Ok 'inno: the Inno Setup silent switches' } else { Bad "inno: [$($r.Un[0].Args)]" }
+    $r = Invoke-Uninstallers 'nullsoft' @(@{ Key = 'Acme'; Values = @{ DisplayName = 'Acme'; UninstallString = '"C:\Program Files\Acme\uninstall.exe"'; QuietUninstallString = '"C:\Program Files\Acme\uninstall.exe" /S /quietmode' } })
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Args -ceq '/S /quietmode') { Ok 'a QuietUninstallString keeps its own arguments' } else { Bad "quiet: [$($r.Un[0].Args)]" }
+    $r = Invoke-Uninstallers 'nullsoft' @(@{ Key = 'Acme2'; Values = @{ DisplayName = 'Acme'; UninstallString = '"C:\Program Files\Acme\uninstall.exe" /S /D=x' } })
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Args -ceq '/S /D=x') { Ok 'captured arguments are never replaced' } else { Bad "captured args: [$($r.Un[0].Args)]" }
+    foreach ($t in @('', 'burn')) {
+        $r = Invoke-Uninstallers $t $ffKeys[0..0]
+        if ($r.Un.Count -eq 1 -and $r.Un[0].Args -ceq '' -and @($r.Warnings | Where-Object { $_ -match 'helper\.exe have no silent switch' -and $_ -match 'would show its UI as SYSTEM' }).Count -eq 1) { Ok "technology '$t': Args stay empty, one warning names helper.exe" } else { Bad "tech '$t': [$($r.Un[0].Args)] warn=$($r.Warnings -join ' | ')" }
+    }
+
     # == [8] encoding guard ============================================================================
     Write-Host '[8] every Get-Content in Get-Win32ToolkitInstallRoot.ps1 passes -Encoding' -ForegroundColor Cyan
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($rootPath, [ref]$null, [ref]$null)
