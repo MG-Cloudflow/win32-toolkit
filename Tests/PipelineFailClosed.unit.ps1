@@ -127,7 +127,12 @@ function Download-WingetApp {
     Set-Content (Join-Path $DownloadPath 'setup.exe') 'x'; $true
 }
 function Rename-InstallerFile { param($FilesPath, $AppName, $Version, $Architecture) }
-function Get-AppIconFromWinget { param($ProjectPath, $FilesPath) $script:Calls.Add('icon') }
+function Get-AppIconFromWinget {
+    param($ProjectPath, $FilesPath)
+    $script:Calls.Add('icon')
+    if ($script:Mode.IconWarns) { Write-Warning 'No WinGet IconUrl found in YAML (test shadow)' }
+    $true
+}
 function Set-Win32ToolkitAppDependency { param($ProjectPath, $DependsOn, $DependencyType) }
 function Get-YAMLInstallerInfo { param($FilesPath) $null }
 function New-Win32ToolkitIntuneDefaults { param($Template) $null }
@@ -213,6 +218,15 @@ Reset-Case @{ GeneratorFalse = $true }
 $r = Invoke-Case $runInvoke
 $c = @($script:Calls)
 if (-not $r.Fqid -and ($c -join ',') -match 'generate,apply,icon,assert:Finalize:False,document,export:False') { Ok 'non-critical generator warnings ($false) still configure; Finalize (pre-flight first) and packaging run' } else { Bad "fqid='$($r.Fqid)' $($r.Message) calls=[$($c -join ',')]" }
+
+# The icon step's warning reaches Invoke-Win32Toolkit -WarningVariable (re-verification 2026-10-21, B1 #2: the
+# call was piped to Out-Null, and a warning from a command in a pipeline never reaches the caller's variable).
+Reset-Case @{ IconWarns = $true }
+$wv = $null
+$null = Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -WarningVariable wv -WarningAction SilentlyContinue -ErrorAction SilentlyContinue 6>$null
+$iconW = @($wv | Where-Object { "$_" -like 'No WinGet IconUrl found in YAML*' })
+if ('icon' -in $script:Calls -and $iconW.Count -eq 1) { Ok "the icon step's warning is in Invoke-Win32Toolkit -WarningVariable ($(@($wv).Count) warning(s))" } else { Bad "icon warnings in -WarningVariable: $($iconW.Count); all: [$(@($wv) -join ' | ')] calls=[$($script:Calls -join ',')]" }
+if (@(Select-String -LiteralPath (Join-Path $repo 'Public\Invoke-Win32Toolkit.ps1') -Pattern 'Get-AppIconFromWinget[^#]*\|\s*Out-Null').Count -eq 0) { Ok 'Invoke-Win32Toolkit never pipes Get-AppIconFromWinget to Out-Null' } else { Bad 'Get-AppIconFromWinget is piped to Out-Null' }
 
 # == New-Win32ToolkitManualApp =====================================================================
 Write-Host '[2] New-Win32ToolkitManualApp fails closed' -ForegroundColor Cyan

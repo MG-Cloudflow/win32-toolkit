@@ -368,7 +368,9 @@ function Invoke-Win32Toolkit {
 
                 # Download and apply the app-specific icon from WinGet YAML
                 Write-Verbose 'Downloading app icon from WinGet...'
-                Get-AppIconFromWinget -ProjectPath $projectFullPath -FilesPath $downloadPath | Out-Null
+                # '$null =', never '| Out-Null': a warning from a command in a pipeline does not reach this
+                # command's -WarningVariable (re-verification 2026-10-21, B1 #2).
+                $null = Get-AppIconFromWinget -ProjectPath $projectFullPath -FilesPath $downloadPath
 
                 # Installer identity checks (other technologies winget ships, the earlier versions in this
                 # template): warnings only, written to Documentation\IdentityDelta.json; never blocks (fail-open).
