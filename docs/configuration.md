@@ -62,7 +62,7 @@ Set-ItemProperty -Path 'HKCU:\Software\CloudFlow\win32-toolkit' -Name 'Preferred
 $env:W32T_PSADT_VERSION = '4.2.0-rc2'
 ```
 
-The value is an exact version as PowerShellGet shows it (`4.1.8`, `4.2.0-rc2`, case-insensitive) or `Major.Minor` (`4.1` = the newest installed 4.1.x). A pinned version must already be installed: when it is not installed, or is outside the supported range, project creation stops with a warning instead of falling back to another version, and nothing is installed. A pin also turns off the update offer.
+The value is an exact version as PowerShellGet shows it (`4.1.8`, `4.2.0-rc2`, case-insensitive) or `Major.Minor` (`4.1` = the newest installed 4.1.x). A pinned version must already be installed: when it is not installed, or is outside the supported range, project creation stops with a warning instead of falling back to another version, and nothing is installed (the warning and the health screen name the pin to clear: the environment variable or the registry value). A pin also turns off the update offer; while a pin is active the health screen says so (for example `v4.1.8; pinned by PreferredPsadtVersion (registry); 4.2.0-rc2 also installed`).
 
 Existing projects are not affected: each project keeps the PSAppDeployToolkit copy it was built with (the TUI's **Browse projects** shows it per project).
 

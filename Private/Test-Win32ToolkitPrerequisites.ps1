@@ -48,9 +48,23 @@ function Test-Win32ToolkitPrerequisites {
             $psadtDetail = "v$($sel.VersionText)"
             if ($sel.IsPrerelease) { $psadtDetail += ' (prerelease - testing only)'; $psadtWarn = $true }
             if (-not $sel.NewestInstalledInRange) { $psadtDetail += "; $($sel.NewestInstalledText) installed but unsupported"; $psadtWarn = $true }
+            # A pin is a deliberate choice (no Warn), but say it is active - a session env pin is easy to forget
+            # - and name a newer supported copy it hides (test campaign 2026-10-21, S6-F2).
+            if ($sel.IsPinned) {
+                $pinBy = switch ($sel.PreferredSource) {
+                    'Environment' { '$env:W32T_PSADT_VERSION (this session)' }
+                    'Registry'    { 'PreferredPsadtVersion (registry)' }
+                    default       { '-PreferredVersion' }
+                }
+                $psadtDetail += "; pinned by $pinBy"
+                $top = @($sel.Candidates | Where-Object { $_.InRange }) | Select-Object -First 1
+                if ($top -and $top.VersionText -ne $sel.VersionText) { $psadtDetail += "; $($top.VersionText) also installed" }
+            }
         }
         else { $psadtDetail = $sel.Reason }
-        Add-Check $psadtName $psadtOk $psadtDetail $true 'packaging' $psadtWarn
+        # A pin that is not installed is NOT fixable from Settings or on first use (nothing installs a pinned
+        # version): the Detail (the selector's Reason) names the pin to clear instead (S6-F1).
+        Add-Check $psadtName $psadtOk $psadtDetail ($sel.Status -ne 'PreferredNotFound') 'packaging' $psadtWarn
     }
     catch {
         Add-Check $psadtName $false "could not check: $($_.Exception.Message)" $true 'packaging'

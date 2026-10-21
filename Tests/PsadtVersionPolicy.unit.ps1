@@ -237,6 +237,28 @@ if (-not $row.Ok -and $row.Fixable -and $row.Detail -match '4\.3\.0') { Ok "only
 $allRows = @(Test-Win32ToolkitPrerequisites)
 if (@($allRows | Where-Object { $null -eq $_.PSObject.Properties['Warn'] }).Count -eq 0) { Ok "every row carries a Warn property ($($allRows.Count) rows)" } else { Bad 'a row lacks Warn' }
 
+# Pins (test campaign 2026-10-21, S6-F1/F2). A pin that is not installed is NOT fixable from Settings or on first
+# use (nothing installs a pinned version): the row says which pin to clear. An active pin is named (no Warn).
+$env:PSModulePath = "$rootA;$rootD"   # 4.2.0-rc2 and 4.1.8
+$env:W32T_PSADT_VERSION = '4.3.0'
+$row = PsadtRow
+if (-not $row.Ok -and -not $row.Fixable -and $row.Detail -match [regex]::Escape('clear $env:W32T_PSADT_VERSION')) { Ok "env pin 4.3.0 not installed -> not OK, NOT fixable, names the env pin: '$($row.Detail)'" } else { Bad "env 4.3.0 row: Ok=$($row.Ok) Fixable=$($row.Fixable) Detail='$($row.Detail)'" }
+Remove-Item Env:W32T_PSADT_VERSION
+$script:regPin = '4.1.7'
+$row = PsadtRow
+if (-not $row.Ok -and -not $row.Fixable -and $row.Detail -match 'remove the PreferredPsadtVersion value under HKCU:\\Software\\CloudFlow\\win32-toolkit') { Ok "registry pin 4.1.7 not installed -> NOT fixable, names the registry value: '$($row.Detail)'" } else { Bad "reg 4.1.7 row: Ok=$($row.Ok) Fixable=$($row.Fixable) Detail='$($row.Detail)'" }
+$script:regPin = '4.1.8'
+$row = PsadtRow
+if ($row.Ok -and -not $row.Warn -and $row.Detail -eq 'v4.1.8; pinned by PreferredPsadtVersion (registry); 4.2.0-rc2 also installed') { Ok "registry pin 4.1.8 (rc2 newer) -> plain OK naming the pin and the hidden copy: '$($row.Detail)'" } else { Bad "reg 4.1.8 row: Ok=$($row.Ok) Warn=$($row.Warn) Detail='$($row.Detail)'" }
+$script:regPin = $null
+$env:W32T_PSADT_VERSION = '4.1.8'
+$row = PsadtRow
+if ($row.Ok -and -not $row.Warn -and $row.Detail -eq 'v4.1.8; pinned by $env:W32T_PSADT_VERSION (this session); 4.2.0-rc2 also installed') { Ok "env pin 4.1.8 -> names the session pin: '$($row.Detail)'" } else { Bad "env 4.1.8 row: Ok=$($row.Ok) Warn=$($row.Warn) Detail='$($row.Detail)'" }
+$env:W32T_PSADT_VERSION = '4.2.0-rc2'
+$row = PsadtRow
+if ($row.Ok -and $row.Warn -and $row.Detail -eq 'v4.2.0-rc2 (prerelease - testing only); pinned by $env:W32T_PSADT_VERSION (this session)') { Ok "env pin on the newest copy -> no 'also installed': '$($row.Detail)'" } else { Bad "env rc2 row: Ok=$($row.Ok) Warn=$($row.Warn) Detail='$($row.Detail)'" }
+Remove-Item Env:W32T_PSADT_VERSION
+
 $env:PSModulePath = $savedModulePath
 
 # ===================================================================================================
