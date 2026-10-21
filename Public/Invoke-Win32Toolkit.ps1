@@ -258,8 +258,10 @@ function Invoke-Win32Toolkit {
             Write-Host "`nSelected: $($selectedApp.Name) v$($selectedApp.Version)" -ForegroundColor Cyan
         }
 
-        # Get available architectures for the selected app
-        $availableArchs = Get-WingetAppDetails -AppId $selectedApp.Id
+        # Get available architectures for the selected app. A -Architecture of x64/x86/arm64 never depends on the
+        # detection (Select-Architecture always offers all three), so the 'winget show' scrape - and its misleading
+        # 'No specific architectures detected' warning - is skipped (test campaign 2026-10-21, S7-F5).
+        $availableArchs = if ($Architecture -in @('x64', 'x86', 'arm64')) { @($Architecture) } else { Get-WingetAppDetails -AppId $selectedApp.Id }
 
         # Let user select architecture (single selection for project creation)
         $selectedArch = Select-Architecture -Architectures $availableArchs -AppName $selectedApp.Name -PreSelected $Architecture

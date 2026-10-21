@@ -72,7 +72,8 @@ function Get-OrgTemplate {
     $t
 }
 function Resolve-Win32ToolkitWingetId { param($Id) [pscustomobject]@{ Name = 'Git'; Id = $Id; Version = '2.45.0'; Source = 'winget' } }
-function Get-WingetAppDetails { param($AppId) if ($script:Mode.DetailsThrows) { throw 'winget exploded' }; @('x64') }
+$script:DetailsCalls = 0
+function Get-WingetAppDetails { param($AppId) $script:DetailsCalls++; if ($script:Mode.DetailsThrows) { throw 'winget exploded' }; @('x64') }
 function Select-Architecture { param($Architectures, $AppName, $PreSelected) 'x64' }
 function Get-Win32ToolkitPaths {
     param($BasePath)
@@ -188,9 +189,21 @@ if ($r.Fqid -eq 'W32T.UnsupportedTemplateShape' -and $r.Message.StartsWith('Unsu
     Ok 'a W32T error from the generator propagates unchanged through Configure and Invoke; nothing downstream ran'
 } else { Bad "fqid='$($r.Fqid)' calls=[$($script:Calls -join ',')]" }
 
+# Without -Architecture (the architecture lookup only runs then; Select-Architecture is shadowed to 'x64').
 Reset-Case @{ DetailsThrows = $true }
-$r = Invoke-Case $runInvoke
+$r = Invoke-Case { Invoke-Win32Toolkit -Id 'Git.Git' -Force -PackageIntune -PublishIntune -ErrorAction SilentlyContinue -ErrorVariable ev }
 if (-not $r.Fqid -and ($r.Errors | ForEach-Object { "$_" }) -match 'Script execution failed: winget exploded') { Ok 'a non-W32T error keeps the Write-Error behaviour (non-terminating)' } else { Bad "fqid='$($r.Fqid)' errors=[$($r.Errors -join '; ')]" }
+
+# -Architecture x64 needs no 'winget show' scrape (it only produced a misleading warning; test campaign 2026-10-21).
+Reset-Case @{}
+$script:DetailsCalls = 0
+$null = Invoke-Case $runInvoke
+$withArch = $script:DetailsCalls -gt 0
+Reset-Case @{}
+$script:DetailsCalls = 0
+$null = Invoke-Case { Invoke-Win32Toolkit -Id 'Git.Git' -Force -PackageIntune -PublishIntune -ErrorAction SilentlyContinue -ErrorVariable ev }
+$withoutArch = $script:DetailsCalls -gt 0
+if (-not $withArch -and $withoutArch) { Ok '-Architecture x64 skips the architecture lookup (Get-WingetAppDetails); without it the lookup runs' } else { Bad "details called: with -Architecture=$withArch, without=$withoutArch" }
 
 Reset-Case @{ GeneratorFalse = $true }
 $r = Invoke-Case $runInvoke
