@@ -37,7 +37,9 @@ function Add-Win32ToolkitTemplateAssets {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$ProjectPath,
-        [Parameter(Mandatory)][PSCustomObject]$Template
+        [Parameter(Mandatory)][PSCustomObject]$Template,
+        # The run's base folder (its Templates\<name>\Assets\ is copied); empty = the configured base folder.
+        [string]$BasePath
     )
 
     $customAssets = $false
@@ -48,7 +50,7 @@ function Add-Win32ToolkitTemplateAssets {
     if (-not $tn) { return }
 
     $assetFolder = $null
-    try { $assetFolder = Get-Win32ToolkitTemplateAssetFolder -TemplateName $tn } catch {
+    try { $assetFolder = Get-Win32ToolkitTemplateAssetFolder -TemplateName $tn -BasePath $BasePath } catch {
         Write-Verbose "Template assets: could not resolve asset folder — skipping ($($_.Exception.Message))"
         return
     }

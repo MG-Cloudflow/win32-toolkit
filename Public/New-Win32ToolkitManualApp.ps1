@@ -248,7 +248,7 @@ function New-Win32ToolkitManualApp {
         # ── Org template + optional icon ──────────────────────────────────────────
         if ($script:OrgTemplate) {
             Write-Verbose 'Applying org template...'
-            if (-not (Apply-OrgTemplate -ProjectPath $projectFullPath -Template $script:OrgTemplate)) {
+            if (-not (Apply-OrgTemplate -ProjectPath $projectFullPath -Template $script:OrgTemplate -BasePath $BasePath)) {
                 throw [System.Management.Automation.ErrorRecord]::new(
                     [System.InvalidOperationException]::new('The org template could not be applied - the project was NOT finalised, tested, packaged or published (see the warnings above).'),
                     'W32T.PipelineAborted', [System.Management.Automation.ErrorCategory]::InvalidResult, $projectFullPath)

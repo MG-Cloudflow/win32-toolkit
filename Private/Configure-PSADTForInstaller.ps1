@@ -34,7 +34,9 @@ function Configure-PSADTForInstaller {
         [string]$ProjectPath,
         [PSCustomObject]$AppInfo,
         [string]$Architecture,
-        [PSCustomObject]$InstallerPin
+        [PSCustomObject]$InstallerPin,
+        # The run's base folder, passed on to Apply-OrgTemplate (template assets, hooks, extension module).
+        [string]$BasePath
     )
 
     try {
@@ -165,7 +167,7 @@ function Configure-PSADTForInstaller {
         # ---- Org template branding and dialog settings ----
         if ($script:OrgTemplate) {
             Write-Verbose 'Applying org template...'
-            if (-not (Apply-OrgTemplate -ProjectPath $ProjectPath -Template $script:OrgTemplate)) {
+            if (-not (Apply-OrgTemplate -ProjectPath $ProjectPath -Template $script:OrgTemplate -BasePath $BasePath)) {
                 Write-Warning 'The org template could not be applied (see the warning above) - the project is NOT configured.'
                 return $false
             }

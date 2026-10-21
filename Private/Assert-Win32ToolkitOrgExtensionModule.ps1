@@ -38,7 +38,9 @@ function Assert-Win32ToolkitOrgExtensionModule {
     [OutputType([System.IO.DirectoryInfo])]
     param(
         [Parameter(Mandatory)][string]$ProjectPath,
-        [Parameter(Mandatory)][PSCustomObject]$Template
+        [Parameter(Mandatory)][PSCustomObject]$Template,
+        # The run's base folder (its Templates\<name>\ holds the module); empty = the configured base folder.
+        [string]$BasePath
     )
 
     $extEnabled = $false
@@ -48,7 +50,7 @@ function Assert-Win32ToolkitOrgExtensionModule {
     $assetFolder = $null
     $tn = if ($Template.PSObject.Properties['TemplateName']) { [string]$Template.TemplateName } else { '' }
     if ($tn) {
-        try { $assetFolder = Get-Win32ToolkitTemplateAssetFolder -TemplateName $tn } catch {
+        try { $assetFolder = Get-Win32ToolkitTemplateAssetFolder -TemplateName $tn -BasePath $BasePath } catch {
             Write-Verbose "Org extension module: could not resolve template asset folder - skipping ($($_.Exception.Message))"
         }
     }

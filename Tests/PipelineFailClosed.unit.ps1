@@ -142,7 +142,7 @@ function Set-PSADTDataDrivenScript {
     if ($script:Mode.GeneratorFalse) { Write-Warning 'Data-driven patch anchor not found: AppScriptDate'; return $false }
     return $true
 }
-function Apply-OrgTemplate { param($ProjectPath, $Template) $script:Calls.Add('apply'); return (-not $script:Mode.ApplyFails) }
+function Apply-OrgTemplate { param($ProjectPath, $Template, $BasePath) $script:Calls.Add('apply'); $script:ApplyBase = $BasePath; return (-not $script:Mode.ApplyFails) }
 function Assert-Win32ToolkitPackageReady {
     param($ProjectPath, $Stage, [switch]$AllowLegacyScript)
     $script:Calls.Add("assert:${Stage}:$([bool]$AllowLegacyScript)")

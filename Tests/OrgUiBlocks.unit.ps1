@@ -53,7 +53,7 @@ foreach ($f in 'Get-Win32ToolkitDeployScriptShape', 'Set-Win32ToolkitPhaseBlock'
 }
 
 # -- shadows ---------------------------------------------------------------------------------------
-function Add-Win32ToolkitTemplateAssets { param($ProjectPath, $Template) }
+function Add-Win32ToolkitTemplateAssets { param($ProjectPath, $Template, $BasePath) }
 function New-Win32ToolkitSparseConfig { param($Template) "@{`r`n    Toolkit = @{`r`n        CompanyName = '$(ConvertTo-PSSingleQuoted ([string]$Template.CompanyName))'`r`n    }`r`n}`r`n" }
 $script:ASSET = $null
 function Get-Win32ToolkitTemplateAssetFolder { param([string]$TemplateName, [string]$BasePath) $script:ASSET }

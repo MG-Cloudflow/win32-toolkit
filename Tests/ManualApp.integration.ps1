@@ -40,7 +40,7 @@ $BASE = Join-Path ([System.IO.Path]::GetTempPath()) ('w32ma_' + [guid]::NewGuid(
 function Get-Win32ToolkitBasePath { param($BasePath, [switch]$Reconfigure) $BASE }
 function Get-OrgTemplate { param($BasePath, $TemplateName) [pscustomobject]@{ TemplateName = 'Contoso'; AppScriptAuthor = 'IT' } }
 $script:applyResult = $true
-function Apply-OrgTemplate { param($ProjectPath, $Template) $script:applyResult }
+function Apply-OrgTemplate { param($ProjectPath, $Template, $BasePath) $script:applyResult }
 
 # A real PSADT scaffold is a network/module dependency — fake the folder shape it produces.
 function Create-PSADTProject {

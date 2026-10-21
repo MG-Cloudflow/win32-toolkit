@@ -39,7 +39,11 @@ function Apply-OrgTemplate {
     [CmdletBinding()]
     param(
         [string]$ProjectPath,
-        [PSCustomObject]$Template
+        [PSCustomObject]$Template,
+        # The run's base folder: the template's Templates\<name>\ (assets, hooks, extension module) is read from
+        # it, so a run with -BasePath never mixes in another base folder's files (test campaign 2026-10-21,
+        # S10-F5). Empty = the configured base folder.
+        [string]$BasePath
     )
 
     try {
@@ -73,7 +77,7 @@ function Apply-OrgTemplate {
         #-- Extension-module gate (D11 / ORG-08): BEFORE any write --
         # Add-Win32ToolkitOrgHooks runs last and repeats the check; running it here keeps a broken extension
         # module (W32T.OrgExtensionInvalid) from leaving a half-applied project.
-        $null = Assert-Win32ToolkitOrgExtensionModule -ProjectPath $ProjectPath -Template $Template
+        $null = Assert-Win32ToolkitOrgExtensionModule -ProjectPath $ProjectPath -Template $Template -BasePath $BasePath
 
         #── config.psd1 (data-driven, F1) ──────────────────────────────────
         # REPLACE the scaffolded full config.psd1 with a SPARSE file carrying only the template's deltas.
@@ -204,13 +208,13 @@ function Apply-OrgTemplate {
         #── B1/B7: org branding assets (logo + Classic banner) ──────────────
         # Copies Templates\<name>\Assets\{AppIcon.png, Banner.Classic.png} into the project. The logo is a
         # precedence-respecting base (winget/manual/captured still win); opt-in via CustomAssets.
-        $null = Add-Win32ToolkitTemplateAssets -ProjectPath $ProjectPath -Template $Template
+        $null = Add-Win32ToolkitTemplateAssets -ProjectPath $ProjectPath -Template $Template -BasePath $BasePath
 
         #── A1/A3: org hook scripts + extension module ──────────────────────
         # Copy-not-splice: operator scripts are copied into SupportFiles\OrgHooks\ (and any org PSADT
         # extension module into the project root); only constant 'hook' blocks are placed in the deploy
         # script. Opt-in per template (Hooks.Enabled / ExtensionModule).
-        $null = Add-Win32ToolkitOrgHooks -ProjectPath $ProjectPath -Template $Template
+        $null = Add-Win32ToolkitOrgHooks -ProjectPath $ProjectPath -Template $Template -BasePath $BasePath
 
         Write-Host "✓ Org template '$($Template.TemplateName)' applied to project" -ForegroundColor Green
         return $true

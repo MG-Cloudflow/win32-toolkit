@@ -45,7 +45,9 @@ function Add-Win32ToolkitOrgHooks {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$ProjectPath,
-        [Parameter(Mandatory)][PSCustomObject]$Template
+        [Parameter(Mandatory)][PSCustomObject]$Template,
+        # The run's base folder (its Templates\<name>\ holds hooks and the module); empty = the configured one.
+        [string]$BasePath
     )
 
     $scriptPath = Join-Path $ProjectPath 'Invoke-AppDeployToolkit.ps1'
@@ -62,14 +64,14 @@ function Add-Win32ToolkitOrgHooks {
     }
     # -- D11 / ORG-08: validate the extension module(s) BEFORE any block is placed, any file copied or the
     #    deploy script written (W32T.OrgExtensionInvalid). Nothing to validate when the feature is off.
-    $modDirs = @(Assert-Win32ToolkitOrgExtensionModule -ProjectPath $ProjectPath -Template $Template)
+    $modDirs = @(Assert-Win32ToolkitOrgExtensionModule -ProjectPath $ProjectPath -Template $Template -BasePath $BasePath)
 
     # -- resolve the template's asset folder only when hooks need it --
     $assetFolder = $null
     if ($hooksEnabled) {
         $tn = if ($Template.PSObject.Properties['TemplateName']) { [string]$Template.TemplateName } else { '' }
         if ($tn) {
-            try { $assetFolder = Get-Win32ToolkitTemplateAssetFolder -TemplateName $tn } catch {
+            try { $assetFolder = Get-Win32ToolkitTemplateAssetFolder -TemplateName $tn -BasePath $BasePath } catch {
                 Write-Verbose "Org hooks: could not resolve template asset folder - skipping ($($_.Exception.Message))"
             }
         }

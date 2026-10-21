@@ -62,7 +62,7 @@ foreach ($rel in 'Public\Invoke-Win32Toolkit.ps1', 'Public\New-Win32ToolkitManua
 $BASE = Join-Path ([System.IO.Path]::GetTempPath()) ('w32ot_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 function Get-Win32ToolkitBasePath { param($BasePath, [switch]$Reconfigure) $BASE }
 function Get-OrgTemplate { param($BasePath, $TemplateName) [pscustomobject]@{ TemplateName = 'Contoso'; AppScriptAuthor = 'IT' } }
-function Apply-OrgTemplate { param($ProjectPath, $Template) $true }
+function Apply-OrgTemplate { param($ProjectPath, $Template, $BasePath) $true }
 $script:createFails = $false
 function Create-PSADTProject {
     param($ProjectName, $ProjectPath, $Force)

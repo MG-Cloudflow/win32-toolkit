@@ -359,7 +359,7 @@ function Invoke-Win32Toolkit {
                 Write-Verbose 'Configuring PSADT for installer type...'
                 # Critical generator problems throw W32T.* (propagated by the catch below); $false means
                 # the project is not configured - never document, test, package or publish it then.
-                $psadtConfigured = Configure-PSADTForInstaller -ProjectPath $projectFullPath -AppInfo $selectedApp -Architecture $selectedArch -InstallerPin $pin
+                $psadtConfigured = Configure-PSADTForInstaller -ProjectPath $projectFullPath -AppInfo $selectedApp -Architecture $selectedArch -InstallerPin $pin -BasePath $BasePath
                 if (-not $psadtConfigured) {
                     throw [System.Management.Automation.ErrorRecord]::new(
                         [System.InvalidOperationException]::new('PSADT configuration failed - the project was NOT documented, tested, packaged or published (see the warnings above).'),
