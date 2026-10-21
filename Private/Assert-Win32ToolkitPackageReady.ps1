@@ -26,6 +26,10 @@ function Assert-Win32ToolkitPackageReady {
             uninstall cleanup paths stay inside the app's own install   Export   error (no override)
             folders (AppConfig)
 
+        A missing loader with no SupportFiles\AppConfig.json either is reported as a project whose download
+        or configuration never finished (re-run Invoke-Win32Toolkit / New-Win32ToolkitManualApp), not as a
+        script to re-create with this version.
+
         The shape/version policy itself lives in Get-Win32ToolkitDeployScriptShape (its Support value), so
         this gate and Get-Win32ToolkitProjectPsadtVersion cannot drift apart. A project patched by
         win32-toolkit 1.1.6 or older (Support 'Legacy') passes both stages with exactly one warning and
@@ -128,7 +132,15 @@ function Assert-Win32ToolkitPackageReady {
         if ($projectVersion -and $projectVersion.VersionText) { $versionText = [string]$projectVersion.VersionText }
 
         if (-not $shape.IsPatched) {
-            & $addOverridable "$scriptPath has no AppConfig loader (no '`$appConfig =' line): win32-toolkit never patched it, so none of the configured install, uninstall or tattoo data reaches the device." $recreate
+            if (Test-Path -LiteralPath (Join-Path $ProjectPath 'SupportFiles\AppConfig.json')) {
+                & $addOverridable "$scriptPath has no AppConfig loader (no '`$appConfig =' line): win32-toolkit never patched it, so none of the configured install, uninstall or tattoo data reaches the device." $recreate
+            }
+            else {
+                # No AppConfig.json either: the project was scaffolded but never configured - typically its download
+                # failed seconds earlier. 'Never patched / re-create with this version' would send the operator the
+                # wrong way (test campaign 2026-10-21, S10-F6).
+                & $addOverridable "$scriptPath has no AppConfig loader (no '`$appConfig =' line) and SupportFiles\AppConfig.json is missing too: if win32-toolkit created this project, its download or configuration never finished (for example a failed winget download), and packaging it as-is ships no configured installer." 'Run Invoke-Win32Toolkit for the app again (it re-creates the project), or New-Win32ToolkitManualApp -SourcePath <installer>'
+            }
         }
 
         $support = [string]$shape.Support

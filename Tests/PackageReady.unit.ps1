@@ -182,9 +182,22 @@ try {
         $r = Invoke-Gate -ProjectPath $plain -Stage $stage
         $loader = @($r.Lines | Where-Object { $_ -match 'has no AppConfig loader' })
         if ((Test-NotReady $r) -and $loader.Count -eq 1 -and $loader[0] -match 'or pass -AllowLegacyScript to package it as-is\.$') { Ok "$stage -> error naming -AllowLegacyScript" } else { Bad "$stage -> $($r.Lines -join ' | ')" }
+        # No AppConfig.json either: a project whose download/configuration never finished, not a script to re-create
+        # with 'this version' (S10-F6).
+        if ($loader.Count -eq 1 -and $loader[0] -match 'SupportFiles\\AppConfig\.json is missing too' -and $loader[0] -match 'download or configuration never finished' -and $loader[0] -match 'Run Invoke-Win32Toolkit for the app again' -and $loader[0] -notmatch 'never patched it') { Ok "$stage -> no AppConfig.json: the hint names the unfinished download/configuration" } else { Bad "$stage no-AppConfig hint: $($loader -join ' | ')" }
         $r = Invoke-Gate -ProjectPath $plain -Stage $stage -AllowLegacyScript
         if (-not $r.Error -and $r.Result.Ready -and @($r.Warnings | Where-Object { $_ -match 'has no AppConfig loader' -and $_ -match '-AllowLegacyScript' }).Count -eq 1) { Ok "$stage -AllowLegacyScript -> Ready with the loader warning" } else { Bad "$stage -AllowLegacyScript -> error='$($r.Error)' warnings=$($r.Warnings -join ' | ')" }
     }
+
+    # With AppConfig.json (a project win32-toolkit configured whose script lost or never got the loader): the
+    # 'never patched / re-create' hint stays.
+    $patchedCfg = Build-PkgProject -Name 'UnpatchedWithConfig' -Script "`$adtSession = @{ DeployAppScriptVersion = '4.1.8' }`r`n"
+    New-Item -ItemType Directory -Path (Join-Path $patchedCfg 'SupportFiles') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $patchedCfg 'SupportFiles\AppConfig.json') -Value '{}'
+    Initialize-TestDouble; Use-ShapeResult -IsPatched $false -GeneratorVersion $null -HasTattoo $true
+    $r = Invoke-Gate -ProjectPath $patchedCfg -Stage Export
+    $loader = @($r.Lines | Where-Object { $_ -match 'has no AppConfig loader' })
+    if ((Test-NotReady $r) -and $loader.Count -eq 1 -and $loader[0] -match 'never patched it' -and $loader[0] -match 'Re-create the project with this win32-toolkit version' -and $loader[0] -notmatch 'is missing too') { Ok 'AppConfig.json present -> the "never patched / re-create" hint' } else { Bad "with AppConfig: $($r.Lines -join ' | ')" }
 
     # == [5] unsupported shapes: stable L5 line ========================================================
     Write-Host '[5] unsupported shape -> line starts with "Unsupported PSADT template shape: " (C-1); switch -> warning' -ForegroundColor Cyan
