@@ -114,7 +114,7 @@ The build runs on its own from here. This is what happens, in order:
   your hardware (Windows Sandbox boots a clean Windows every time). You don't need to touch
   anything; go get a coffee. The sandbox closes itself when done.
 - **Results are processed**. From the captured changes the toolkit generates:
-  - `SupportFiles\RequirementScript.ps1`, a ready-to-paste Intune requirement script;
+  - `SupportFiles\RequirementScript.ps1`, a reference detection-style script (not uploaded; do not use it as a requirement of the install app);
   - the **uninstall logic** in the deployment script (for EXE installers, derived from the
     captured uninstall registry entry; you never write it by hand);
   - the list of app processes to close before install/uninstall;

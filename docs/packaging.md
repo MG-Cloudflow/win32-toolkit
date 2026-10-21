@@ -125,7 +125,7 @@ Excluding at copy time (rather than copying everything and deleting afterwards) 
 After the copy, the optimizer runs on the Staging copy anyway. It is normally a no-op for the folders above, but it catches anything that slipped through and additionally removes:
 
 - `*.md` and `*.wsb` files in the project root
-- `SupportFiles\TargetedDocumentationScript*` and its log files (`SupportFiles\RequirementScript.ps1` is **kept**; Intune needs it)
+- `SupportFiles\TargetedDocumentationScript*` and its log files (`SupportFiles\RequirementScript.ps1` is **kept** for reference; nothing uploads it)
 - Any empty subdirectories
 
 If a locked file prevents stripping a bloat folder, you get a warning and a slightly larger package. If the `Intune\` folder itself cannot be removed, packaging **refuses to continue**. A larger package is acceptable, leaked tenant ids are not.

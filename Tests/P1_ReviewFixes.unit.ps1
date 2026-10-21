@@ -146,6 +146,17 @@ foreach ($withVersion in @($true, $false)) {
     }
 }
 
+# ══ [2c] the console never tells the operator to paste the script as a requirement (H5-F7) ═════════════
+Write-Host '[2c] New-IntuneRequirementScript: neutral reference note, no paste-as-requirement steps' -ForegroundColor Cyan
+$p4 = NewTmp
+New-Item -ItemType Directory -Path (Join-Path $p4 'SupportFiles'), (Join-Path $p4 'Files') -Force | Out-Null
+$cap4 = Join-Path $p4 'InstallationChanges_note.json'
+@{ NewRegistryKeys = @(@{ Path = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\7-Zip'; Values = @{ DisplayName = '7-Zip 26.04 (x64)'; DisplayVersion = '26.04' } }) } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $cap4
+$host4 = @(New-IntuneRequirementScript -ProjectPath $p4 -JsonFilePath $cap4 6>&1 3>$null | ForEach-Object { "$_" })
+$ret4 = @($host4 | Where-Object { $_ -eq 'True' })
+if ($ret4.Count -eq 1) { Ok 'still returns $true (callers rely on it)' } else { Bad "return: $($host4 -join ' | ')" }
+if (-not ($host4 -match 'Paste the script|Add requirement rule|SUCCESS: Requirement script') -and ($host4 -match 'not uploaded') -and ($host4 -match 'Do not add it as a requirement of the install app')) { Ok 'a neutral reference note: not uploaded, never a requirement of the install app' } else { Bad "host text: $($host4 -join ' | ')" }
+
 # ══ [5] Get-InstallerFileInfo warns when it is guessing between same-extension files ════════════════
 Write-Host '[5] Get-InstallerFileInfo: an ambiguous installer folder produces a warning, not a silent guess' -ForegroundColor Cyan
 $fx = NewTmp

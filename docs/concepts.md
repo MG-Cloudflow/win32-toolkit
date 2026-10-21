@@ -129,7 +129,7 @@ What each item inside `Projects\<Template>\<AppName_arch_version>\` is for:
 | `Assets\AppIcon.png` | The app's tile icon (see sourcing rules below). `Config\config.psd1` points PSADT's on-device dialogs at it, and it is uploaded to Intune as the app tile at publish time. |
 | `Config\config.psd1` | PSADT configuration: company name, accent colour, log path, and other branding from your org template, plus the paths of the dialog logo and banner. |
 | `Strings\strings.psd1` | PSADT localisation strings: the progress and balloon messages from your org template. |
-| `SupportFiles\RequirementScript.ps1` | A ready-to-paste Intune Win32 requirement script generated from the capture (see next section). |
+| `SupportFiles\RequirementScript.ps1` | A reference detection-style script generated from the capture (see next section). It is not uploaded; do not use it as a requirement of the install app. |
 | `SupportFiles\AppConfig.json` | Data-driven values the deploy script reads instead of hard-coding them into generated code: app identity, install and uninstall settings, processes to close, and the org template's dialog policy. |
 | `Documentation\` | The install-capture output: `InstallationChanges_<timestamp>.json` and its log. This is the raw material the generators work from. |
 | `Sandbox\` | Test artifacts: `.wsb` configs, the countdown script, `Logs\`, and `OldVersion\` baselines for update tests. **Never ships**: stripped from the staging copy before packaging. |
@@ -315,8 +315,11 @@ flowchart LR
     J --> I[Extracted app icon<br/>when winget had none]
 ```
 
-**Detection**: `SupportFiles\RequirementScript.ps1` checks the Uninstall hives for the app's
-**exact `DisplayName`** and, when available, its **MSI product code**, then compares versions.
+**Detection**: `SupportFiles\RequirementScript.ps1` is a reference script (nothing uploads it): it checks the
+Uninstall hives for the app's **exact `DisplayName`** and, when available, its **MSI product code**, then compares
+versions, so it is met only when the app is already installed. Do not add it as a requirement of the install app:
+new devices would never get the app. Publishing sets the detection rule itself (and a presence requirement for an
+Update app).
 Matching is deliberately strict: exact name equality, never a partial or first-word match, so
 "Microsoft Teams" can never be "detected" because Microsoft Edge happens to be installed.
 
