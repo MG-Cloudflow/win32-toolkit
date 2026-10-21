@@ -347,6 +347,8 @@ $caseSpecs = [ordered]@{
     double        = @{ Installed = '4.2.0'; Force = $true; Runs = 2 }
     loadedOther   = @{ Installed = '4.1.8', '4.2.0'; Force = $true; Preload = '4.1.8' }
     loadedOtherRc = @{ Installed = '4.1.8', '4.2.0-rc2'; Force = $true; Preload = '4.1.8' }
+    existingForce = @{ Installed = '4.2.0'; Force = $true; Existing = $true }
+    existingAsk   = @{ Installed = '4.2.0'; Existing = $true; Answer = 'y' }
 }
 
 # Builds a case's folders and case.json; returns what is needed to launch and collect it.
@@ -541,6 +543,22 @@ Write-Host '  -- 4.1.8 already loaded, 4.2.0-rc2 selected -> refused WITHOUT a P
 $r = $caseResults['loadedOtherRc']
 if ((RetIs $r 'False') -and (Lines $r 'WARN: PSAppDeployToolkit 4.1.8 is already loaded').Count -eq 1 -and (Lines $r 'WARN: Using PSAppDeployToolkit').Count -eq 0) { Ok 'refused with one already-loaded warning and no "Using ... a PRERELEASE" warning' } else { Bad "log: $($r.Log -join ' | ')" }
 if ((Lines $r 'IMPORT').Count -eq 0 -and (Lines $r 'NTT').Count -eq 0) { Ok 'no import and no scaffold' } else { Bad "log: $($r.Log -join ' | ')" }
+
+# An intended -Force rebuild is not a warning (re-verification 2026-10-21, A1 sb#3): automation that counts
+# -WarningVariable entries saw one on every rebuild. The interactive prompt keeps its warning.
+Write-Host '  -- existing project + -Force -> one "Overwriting ... (-Force mode): <path>" line, NO warning' -ForegroundColor DarkCyan
+$r = $caseResults['existingForce']
+$ow = Lines $r 'HOST: Overwriting existing project directory'
+if ($ow.Count -eq 1 -and $ow[0] -like '*(-Force mode): *App1') { Ok "one host line naming the path: $($ow[0])" } else { Bad "log: $($r.Log -join ' | ')" }
+HasNo $r 'WARN: Project directory already exists' '"Project directory already exists" warning on a -Force rebuild'
+if ((RetIs $r 'True') -and -not (Test-Path -LiteralPath (Join-Path $r.Proj 'App1\keep.txt')) -and (Lines $r 'NTT 4.2.0').Count -eq 1) { Ok 'the old project was replaced and scaffolded again' } else { Bad "returns $($r.Returns -join ',') / log: $($r.Log -join ' | ')" }
+Write-Host '  -- existing project, no -Force -> the warning precedes the overwrite prompt' -ForegroundColor DarkCyan
+$r = $caseResults['existingAsk']
+$iw = [array]::IndexOf(@($r.Log), (Lines $r 'WARN: Project directory already exists')[0])
+$ip = [array]::IndexOf(@($r.Log), (Lines $r 'PROMPT Do you want to overwrite it?')[0])
+if ((Lines $r 'WARN: Project directory already exists').Count -eq 1 -and $iw -ge 0 -and $ip -gt $iw) { Ok 'one warning, then the prompt' } else { Bad "log: $($r.Log -join ' | ')" }
+HasNo $r 'HOST: Overwriting existing project directory' '"-Force mode" line without -Force'
+if (RetIs $r 'True') { Ok 'answered y -> scaffolded' } else { Bad "returns $($r.Returns -join ',') / log: $($r.Log -join ' | ')" }
 
 # -- static acceptance checks (spec 3.1) -----------------------------------------------------------
 Write-Host "`n[5] Create-PSADTProject source: bounded installs only, guarded import by path" -ForegroundColor Cyan

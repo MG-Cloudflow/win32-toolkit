@@ -181,10 +181,12 @@ function Create-PSADTProject {
         }
 
         if (Test-Path $ProjectFullPath) {
-            Write-Warning "Project directory already exists: $ProjectFullPath"
             if ($Force) {
-                Write-Host "Overwriting existing project directory (-Force mode)." -ForegroundColor Yellow
+                # A -Force rebuild is intended: an informational line, not a warning (automation that counts
+                # -WarningVariable entries would see one on every rebuild; re-verification 2026-10-21 A1 sb#3).
+                Write-Host "Overwriting existing project directory (-Force mode): $ProjectFullPath" -ForegroundColor Yellow
             } else {
+                Write-Warning "Project directory already exists: $ProjectFullPath"
                 $overwrite = Read-Host "Do you want to overwrite it? (y/n)"
                 if ($overwrite -notin @('y', 'Y')) {
                     return $false
