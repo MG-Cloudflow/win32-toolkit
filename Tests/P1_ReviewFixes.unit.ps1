@@ -116,6 +116,36 @@ if (Test-Path $req2) {
     else { Bad 'fallback produced a script but without the manifest DisplayName' }
 } else { Bad 'no requirement script written from the manifest fallback (dead fallback regression)' }
 
+# ══ [2b] one product code, every fragment on its own line, parses with and without a version ══════════
+#     (test campaign 2026-10-21, H7-F9: the key path AND the UninstallString name the same GUID; the fragments
+#     were glued: "@(        '{GUID}'" and, with no DisplayVersion, "exit 0                        break" = parse error.)
+Write-Host '[2b] New-IntuneRequirementScript: duplicate product code, glued fragments' -ForegroundColor Cyan
+$guid = '{3B0346D3-155D-43E5-9561-B9BE51CF2EB6}'
+foreach ($withVersion in @($true, $false)) {
+    $p3 = NewTmp
+    New-Item -ItemType Directory -Path (Join-Path $p3 'SupportFiles'), (Join-Path $p3 'Files') -Force | Out-Null
+    $vals = @{ DisplayName = 'PuTTY release 0.85 (64-bit)'; Publisher = 'Simon Tatham'; UninstallString = "MsiExec.exe /X$($guid.ToLowerInvariant())" }
+    if ($withVersion) { $vals.DisplayVersion = '0.85.0.0' }
+    $cap3 = Join-Path $p3 'InstallationChanges_dup.json'
+    @{ NewRegistryKeys = @(@{ Path = "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$guid"; Values = $vals }) } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $cap3
+    $null = New-IntuneRequirementScript -ProjectPath $p3 -JsonFilePath $cap3 6>$null 3>$null
+    $tag = if ($withVersion) { 'with DisplayVersion' } else { 'without DisplayVersion' }
+    $rq = Join-Path $p3 'SupportFiles\RequirementScript.ps1'
+    if (-not (Test-Path -LiteralPath $rq)) { Bad "${tag}: no script"; continue }
+    $t3 = Get-Content -LiteralPath $rq -Raw
+    $perr3 = $null
+    [void][System.Management.Automation.Language.Parser]::ParseInput($t3, [ref]$null, [ref]$perr3)
+    if (-not $perr3 -or $perr3.Count -eq 0) { Ok "${tag}: the generated script parses" } else { Bad "${tag}: parse error: $($perr3[0].Message)" }
+    $hits = ([regex]::Matches($t3, [regex]::Escape($guid), 'IgnoreCase')).Count
+    if ($hits -eq 1) { Ok "${tag}: the product code is listed once (the key path and a lower-case UninstallString name the same GUID)" } else { Bad "${tag}: product code listed $hits times" }
+    if ($t3 -notmatch "exit 0[ \t]+break" -and $t3 -notmatch "@\([ \t]+'\{" -and $t3 -notmatch "\}[ \t]+break" -and $t3 -notmatch '(?m)^ {8}# Check specific') { Ok "${tag}: every fragment starts on its own line" } else { Bad "${tag}: glued fragments left" }
+    $ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (Test-Path -LiteralPath $ps51) {
+        $o51 = & $ps51 -NoProfile -Command "`$e = `$null; [void][System.Management.Automation.Language.Parser]::ParseFile('$rq', [ref]`$null, [ref]`$e); `$e.Count"
+        if ("$o51".Trim() -eq '0') { Ok "${tag}: parses under Windows PowerShell 5.1" } else { Bad "${tag}: 5.1 parse errors: $o51" }
+    }
+}
+
 # ══ [5] Get-InstallerFileInfo warns when it is guessing between same-extension files ════════════════
 Write-Host '[5] Get-InstallerFileInfo: an ambiguous installer folder produces a warning, not a silent guess' -ForegroundColor Cyan
 $fx = NewTmp

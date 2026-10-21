@@ -103,7 +103,10 @@ function New-IntuneRequirementScript {
         # false-positive "installed". Same discipline as Get-Win32ToolkitRequirementRule.
         $appNameSq    = ConvertTo-PSSingleQuoted $appName
         $appVersionSq = ConvertTo-PSSingleQuoted $appVersion
-        $productCodes = @($productCodes | Where-Object { Test-Win32ToolkitProductCode $_ })
+        # One entry per product code, case-insensitively, first occurrence kept: a capture names the same MSI
+        # product code in the key path AND in its UninstallString (Select-Object -Unique is case-sensitive).
+        $seenProductCodes = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $productCodes = @($productCodes | Where-Object { (Test-Win32ToolkitProductCode $_) -and $seenProductCodes.Add([string]$_) })
 
         # A COMMENT is a code context too. ConvertTo-PSSingleQuoted protects a single-quoted LITERAL; it does
         # nothing for text emitted inside <# ... #>. A DisplayName containing '#>' would CLOSE the comment block
@@ -135,16 +138,16 @@ try {
         'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
     )
     
-"@
+"@ + "`r`n"
 
         # Add product code checks if available
         if ($productCodes.Count -gt 0) {
             $requirementScript += @"
     # Check specific product codes first
     `$productCodes = @(
-"@
+"@ + "`r`n"
             foreach ($pc in $productCodes) {
-                $requirementScript += "        '$(ConvertTo-PSSingleQuoted $pc)'`n"
+                $requirementScript += "        '$(ConvertTo-PSSingleQuoted $pc)'`r`n"
             }
             $requirementScript += @"
     )
@@ -164,7 +167,7 @@ try {
         }
     }
     
-"@
+"@ + "`r`n"
         }
 
         # Add registry search for application name
@@ -188,7 +191,7 @@ try {
                         if (`$installedVersion) {
                             Write-Host "Installed Version: `$installedVersion"
                         }
-"@
+"@ + "`r`n"
 
         # Add version comparison logic if we have a version to compare
         if ($appVersion) {
@@ -217,14 +220,14 @@ try {
                             Write-Host "Application found (no version comparison)"
                             exit 0
                         }
-"@
+"@ + "`r`n"
         } else {
             $requirementScript += @"
                         
                         # No specific version required, app is installed
                         Write-Host "Application found"
                         exit 0
-"@
+"@ + "`r`n"
         }
 
         $requirementScript += @"
