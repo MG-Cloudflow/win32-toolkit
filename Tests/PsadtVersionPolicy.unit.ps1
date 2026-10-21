@@ -346,6 +346,7 @@ $caseSpecs = [ordered]@{
     findFailKeep  = @{ Force = $true; FindFails = $true; Existing = $true }
     double        = @{ Installed = '4.2.0'; Force = $true; Runs = 2 }
     loadedOther   = @{ Installed = '4.1.8', '4.2.0'; Force = $true; Preload = '4.1.8' }
+    loadedOtherRc = @{ Installed = '4.1.8', '4.2.0-rc2'; Force = $true; Preload = '4.1.8' }
 }
 
 # Builds a case's folders and case.json; returns what is needed to launch and collect it.
@@ -534,6 +535,12 @@ $w = Lines $r 'WARN: PSAppDeployToolkit 4.1.8 is already loaded'
 if ((RetIs $r 'False') -and $w.Count -eq 1 -and $w[0] -match 'needs 4\.2\.0' -and $w[0] -match 'new PowerShell session') { Ok "refused: $($w[0])" } else { Bad "log: $($r.Log -join ' | ')" }
 if ((Lines $r 'IMPORT').Count -eq 0 -and (Lines $r 'NTT').Count -eq 0) { Ok 'no import and no scaffold' } else { Bad "log: $($r.Log -join ' | ')" }
 HasNo $r 'START-PROCESS' 'process launch'
+
+# A refused run never first announces the prerelease it will not use (test campaign 2026-10-21, S7-F3).
+Write-Host '  -- 4.1.8 already loaded, 4.2.0-rc2 selected -> refused WITHOUT a PRERELEASE notice' -ForegroundColor DarkCyan
+$r = $caseResults['loadedOtherRc']
+if ((RetIs $r 'False') -and (Lines $r 'WARN: PSAppDeployToolkit 4.1.8 is already loaded').Count -eq 1 -and (Lines $r 'WARN: Using PSAppDeployToolkit').Count -eq 0) { Ok 'refused with one already-loaded warning and no "Using ... a PRERELEASE" warning' } else { Bad "log: $($r.Log -join ' | ')" }
+if ((Lines $r 'IMPORT').Count -eq 0 -and (Lines $r 'NTT').Count -eq 0) { Ok 'no import and no scaffold' } else { Bad "log: $($r.Log -join ' | ')" }
 
 # -- static acceptance checks (spec 3.1) -----------------------------------------------------------
 Write-Host "`n[5] Create-PSADTProject source: bounded installs only, guarded import by path" -ForegroundColor Cyan

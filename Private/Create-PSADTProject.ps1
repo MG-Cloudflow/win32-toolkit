@@ -128,14 +128,6 @@ function Create-PSADTProject {
             }
         }
 
-        if ($sel.IsPrerelease) {
-            Write-Warning "Using PSAppDeployToolkit $($sel.VersionText) - a PRERELEASE: fine for testing, not for production packages."
-        }
-        if (-not $sel.NewestInstalledInRange) {
-            Write-Host $sel.Reason -ForegroundColor Yellow
-        }
-        Write-Verbose "Using PSAppDeployToolkit version: $($sel.VersionText) ($($sel.Module.Path))"
-
         # -- Guarded import (SCF-03 / upstream #2371; host-side SCF-07) ------------------------------
         # PSADT 4.2 cannot be re-imported with -Force from a versioned folder, and refuses a second copy
         # from another folder even at the same version. So an already-loaded copy of the SELECTED
@@ -162,6 +154,17 @@ function Create-PSADTProject {
         else {
             Import-Module -Name $sel.Module.Path -ErrorAction Stop   # by PATH, NO -Force
         }
+
+        # Only now - the selected copy is reused or imported - announce which one this run uses: a refused run
+        # ('another version is already loaded') must not first say 'Using ... a PRERELEASE' (test campaign
+        # 2026-10-21, S7-F3).
+        if ($sel.IsPrerelease) {
+            Write-Warning "Using PSAppDeployToolkit $($sel.VersionText) - a PRERELEASE: fine for testing, not for production packages."
+        }
+        if (-not $sel.NewestInstalledInRange) {
+            Write-Host $sel.Reason -ForegroundColor Yellow
+        }
+        Write-Verbose "Using PSAppDeployToolkit version: $($sel.VersionText) ($($sel.Module.Path))"
 
         # -- Scaffold parameters + capability check: everything that can refuse the run happens BEFORE
         #    an existing project folder is removed below (an early 4.2.0 prerelease is "in range" but may
