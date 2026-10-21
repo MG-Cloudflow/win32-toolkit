@@ -62,7 +62,9 @@ Each `project:` dependency runs its PSADT package in a **separate** Windows Powe
 your app: PSAppDeployToolkit 4.2 refuses to load a second copy of itself into one process, and a
 dependency built with PSADT 4.1 and an app built with 4.2 (or the other way round) could not share one.
 The dependency step stops at the **first** dependency that fails (any exit code other than 0, 1707,
-3010 or 1641) and reports its exit code. In a documentation capture, a failed dependency means no
+3010 or 1641) and reports its exit code. In a test run (InstallUninstall or Update), a failed dependency
+**stops the test before your app is installed**, as Intune would not install it either, and the test reports
+**Failed** with the assertion `DependenciesInstalled = FAIL (exit <code>)`. In a documentation capture, a failed dependency means no
 requirement script, uninstall or processes-to-close data is generated from that run: the toolkit warns
 and you re-run the capture once the dependency installs. A project without an install tattoo gets its
 detection rule from the newest capture at publish time, so re-run the capture successfully (or remove

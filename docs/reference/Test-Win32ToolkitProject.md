@@ -33,6 +33,9 @@ refuses a second copy of its module in one process, and 4.1 and 4.2 cannot share
 Each
 declared 'project:' dependency is started by Sandbox\InstallDependencies.ps1, which stops at the
 first failing dependency and exits with its exit code.
+A failed dependency stops the test and it
+reports Failed (assertion DependenciesInstalled): the app is not installed, as Intune would not
+install it either.
 The app, an Update baseline project and the
 update run through the guest runner Sandbox\Invoke-PsadtPackage.ps1, which appends the exact exit
 code of each of its runs to Sandbox\Logs\PsadtExitCodes.log; those codes are printed after the run.

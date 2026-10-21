@@ -16,7 +16,8 @@ function Invoke-Win32ToolkitHyperVRun {
     .PARAMETER Phase
         Ordered phases to run, each an object with: Label, Command (a 5.1-safe guest command string),
         and optional IgnoreExit ([bool], default $false) and SuccessExitCodes ([int[]], default @(0): a
-        warning is printed only for an exit code outside them).
+        warning is printed only for an exit code outside them). A DepPhase that fails skips every later
+        phase except those with Always = $true (log collection).
     .PARAMETER Output
         Project-relative globs to copy back from the guest after the phases (default the capture JSON +
         Sandbox\Logs).
@@ -166,7 +167,14 @@ function Invoke-Win32ToolkitHyperVRun {
         # A phase that did not finish (still running at its timeout, or never started) ends the run: the
         # later phases would overlap it or judge a half-done install, so they are skipped.
         $incomplete = $false
+        # A failed dependency phase skips every later phase except those marked Always (log collection): the
+        # app is not installed when a dependency failed, as on a device (test campaign 2026-10-21, S11-F1).
+        $depFailed = $false
         foreach ($ph in $Phase) {
+            if ($depFailed -and -not $ph.Always) {
+                Write-Verbose "  Skipping '$($ph.Label)' — a declared dependency failed to install."
+                continue
+            }
             if ($ph.Pause) {
                 Read-Host "  $($ph.Label) — press Enter to continue"
                 continue
@@ -191,6 +199,10 @@ function Invoke-Win32ToolkitHyperVRun {
             $okExit = if ($ph.SuccessExitCodes) { @($ph.SuccessExitCodes) } else { @(0) }
             if (-not $ph.IgnoreExit -and $okExit -notcontains $exit) {
                 Write-Warning "Guest phase '$($ph.Label)' exited with code $exit."
+                if ($ph.DepPhase) {
+                    Write-Warning 'A declared dependency failed to install: the app phases are skipped (Intune would not install the app either).'
+                    $depFailed = $true
+                }
             }
             # A SUCCESSFUL dep install is the moment to freeze the deps checkpoint (opt-in feature): the
             # image now equals clean-base + this exact dependency set. Only one clean-base+deps-* is kept.

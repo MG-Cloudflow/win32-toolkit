@@ -192,13 +192,43 @@ $script:depCount = 1
 $script:backend = 'HyperV'; $script:procs = @(); $script:testMode = 'Interactive'
 Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
 if (@($script:hvPhase)[0].Label -eq 'Install dependencies') { Ok 'InstallUninstall: dependency is the FIRST phase' } else { Bad "first=$(@($script:hvPhase)[0].Label)" }
-if (@($script:hvPhase)[0].Command -eq '& ''C:\PSADT\Sandbox\InstallDependencies.ps1''; exit $LASTEXITCODE') { Ok 'dependency phase passes the script''s exact exit code (exit $LASTEXITCODE)' } else { Bad "dep cmd=$(@($script:hvPhase)[0].Command)" }
+$depCmdIu = [string]@($script:hvPhase)[0].Command
+if ($depCmdIu.StartsWith('& ''C:\PSADT\Sandbox\InstallDependencies.ps1''; $w32tDepRc = $LASTEXITCODE;') -and $depCmdIu.EndsWith('exit $w32tDepRc')) { Ok 'dependency phase passes the script''s exact exit code (exit $w32tDepRc)' } else { Bad "dep cmd=$depCmdIu" }
+if ($depCmdIu -match [regex]::Escape('C:\PSADT\Sandbox\Logs\InstallAssertions.log') -and $depCmdIu -match 'DependenciesInstalled = FAIL' -and $depCmdIu -match 'RESULT COMPLETE') { Ok 'a failed dependency writes ASSERT DependenciesInstalled = FAIL + RESULT COMPLETE to InstallAssertions.log (S11-F1)' } else { Bad "dep cmd=$depCmdIu" }
+if (@($script:hvPhase | Where-Object { $_.Label -eq 'CollectLogs' -and $_.Always }).Count -eq 1) { Ok 'CollectLogs is marked Always (it still runs after a failed dependency)' } else { Bad 'CollectLogs not Always' }
+# Behaviour (S11-F1): run the generated phase command under Windows PowerShell 5.1 against a fake C:\PSADT whose
+# InstallDependencies.ps1 fails with 60001 -> the exact code comes back and the assertion log says FAIL + COMPLETE.
+$ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+if (Test-Path -LiteralPath $ps51) {
+    $fakeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('w32dep_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    New-Item -ItemType Directory -Path (Join-Path $fakeRoot 'Sandbox') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $fakeRoot 'Sandbox\InstallDependencies.ps1') -Value 'exit 60001' -Encoding ASCII
+    $cmd = $depCmdIu.Replace('C:\PSADT', $fakeRoot)
+    & $ps51 -NoProfile -ExecutionPolicy Bypass -Command $cmd | Out-Null
+    $rcDep = $LASTEXITCODE
+    $alog = Join-Path $fakeRoot 'Sandbox\Logs\InstallAssertions.log'
+    $alines = if (Test-Path -LiteralPath $alog) { @(Get-Content -LiteralPath $alog) } else { @() }
+    # Every line carries the '[yyyy-MM-dd HH:mm:ssZ] ' UTC prefix of the other assertion lines (re-verification
+    # 2026-10-21, B3 #6: these two had none).
+    $tsOk = $false
+    if ($alines.Count -eq 2 -and $alines[0] -match '^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)Z\] ASSERT DependenciesInstalled = FAIL \(exit 60001\)$') {
+        $tsAt = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]'AssumeUniversal, AdjustToUniversal')
+        $tsOk = [math]::Abs(([datetime]::UtcNow - $tsAt).TotalSeconds) -lt 60 -and $alines[1] -match '^\[[^\]]+Z\] RESULT COMPLETE$'
+    }
+    if ($rcDep -eq 60001 -and $tsOk) { Ok 'Windows PowerShell 5.1: exit 60001 passed through; [<UTC>Z] FAIL + RESULT COMPLETE written (time within a minute of now)' } else { Bad "5.1 run: rc=$rcDep log=$($alines -join ' | ')" }
+    Set-Content -LiteralPath (Join-Path $fakeRoot 'Sandbox\InstallDependencies.ps1') -Value 'exit 0' -Encoding ASCII
+    Remove-Item -LiteralPath $alog -Force -ErrorAction SilentlyContinue
+    & $ps51 -NoProfile -ExecutionPolicy Bypass -Command $cmd | Out-Null
+    if ($LASTEXITCODE -eq 0 -and -not (Test-Path -LiteralPath $alog)) { Ok 'Windows PowerShell 5.1: a successful dependency writes nothing' } else { Bad "5.1 ok run: rc=$LASTEXITCODE log=$(Test-Path -LiteralPath $alog)" }
+    Remove-Item -LiteralPath $fakeRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 Run @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProjectPath = $base; Unattended = $true }
 $lbl = @($script:hvPhase | ForEach-Object { $_.Label })
 if ($lbl[0] -eq 'Install dependencies' -and $lbl[1] -eq 'Assert: PreBaseline') {
     Ok 'Update: dependency runs BEFORE the PreBaseline snapshot (its ARP entry belongs to the baseline)'
 } else { Bad "order=$($lbl -join ' > ')" }
+if ([string]@($script:hvPhase)[0].Command -match [regex]::Escape('C:\PSADT\Sandbox\Logs\UpdateAssertions.log') -and @($script:hvPhase | Where-Object { $_.Label -eq 'CollectLogs' -and $_.Always }).Count -eq 1) { Ok 'Update: a failed dependency writes to UpdateAssertions.log; CollectLogs is Always' } else { Bad "update dep cmd=$(@($script:hvPhase)[0].Command)" }
 
 $script:depCount = 0
 Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
@@ -218,6 +248,37 @@ Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
 $di = $script:logon.IndexOf('InstallDependencies.ps1')
 $ai = $script:logon.IndexOf('Invoke-PsadtPackage.ps1')
 if ($di -ge 0 -and $ai -gt $di) { Ok 'Sandbox InstallUninstall: dependencies before the app install (runner)' } else { Bad "logon=$script:logon" }
+# A failed dependency stops the run before the app (S11-F1): the $LASTEXITCODE check sits between the two.
+function Test-DepGuard([string]$Logon, [string]$LogName, [string]$Before) {
+    $d = $Logon.IndexOf('InstallDependencies.ps1'); $g = $Logon.IndexOf('if ($LASTEXITCODE -ne 0)'); $r = $Logon.IndexOf('return }'); $b = $Logon.IndexOf($Before)
+    $d -ge 0 -and $g -gt $d -and $r -gt $g -and $b -gt $r -and $Logon.Contains("C:\PSADT\Sandbox\Logs\$LogName") -and $Logon.Contains('DependenciesInstalled = FAIL') -and $Logon.Contains('RESULT COMPLETE')
+}
+if (Test-DepGuard $script:logon 'InstallAssertions.log' 'Invoke-PsadtPackage.ps1') { Ok 'Sandbox IU watched: a failed dependency writes FAIL + COMPLETE and returns before the app install' } else { Bad "logon=$script:logon" }
+Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall'; Unattended = $true }
+if ((Test-DepGuard $script:logon 'InstallAssertions.log' 'Invoke-PsadtPackage.ps1') -and $script:logon -match 'finally \{ C:\\PSADT\\Sandbox\\CollectLogs\.ps1; Start-Sleep -Seconds 5; Stop-Computer -Force') { Ok 'Sandbox IU unattended: the same guard; the finally still collects logs and shuts down' } else { Bad "logon=$script:logon" }
+# The guarded step parses under Windows PowerShell 5.1 once the XML entities are decoded.
+$step = $script:logon.Substring($script:logon.IndexOf('&amp; ''C:\PSADT\Sandbox\InstallDependencies.ps1'''))
+$step = $step.Substring(0, $step.IndexOf('return };') + 'return };'.Length).Replace('&amp;', '&')
+$pe = $null; [void][System.Management.Automation.Language.Parser]::ParseInput("& { try { $step } finally { } }", [ref]$null, [ref]$pe)
+if (-not $pe -or $pe.Count -eq 0) { Ok 'the guarded dependency step parses' } else { Bad "parse: $($pe[0].Message)" }
+# ...and, run under Windows PowerShell 5.1 against a fake C:\PSADT whose dependency fails, writes both lines with the
+# UTC prefix (re-verification 2026-10-21, B3 #6) and returns before anything after it.
+if (Test-Path -LiteralPath $ps51) {
+    $fakeSb = Join-Path ([System.IO.Path]::GetTempPath()) ('w32depsb_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    try {
+        New-Item -ItemType Directory -Path (Join-Path $fakeSb 'Sandbox') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $fakeSb 'Sandbox\InstallDependencies.ps1') -Value 'exit 60001' -Encoding ASCII
+        $sbScript = Join-Path $fakeSb 'step.ps1'
+        Set-Content -LiteralPath $sbScript -Encoding UTF8 -Value ("& { try { " + $step.Replace('C:\PSADT', $fakeSb) + " 'AFTER' | Set-Content -LiteralPath '" + (Join-Path $fakeSb 'after.txt') + "' } finally { } }")
+        & $ps51 -NoProfile -ExecutionPolicy Bypass -File $sbScript | Out-Null
+        $sbLines = @(Get-Content -LiteralPath (Join-Path $fakeSb 'Sandbox\Logs\InstallAssertions.log') -ErrorAction SilentlyContinue)
+        if ($sbLines.Count -eq 2 -and $sbLines[0] -match '^\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ\] ASSERT DependenciesInstalled = FAIL \(exit 60001\)$' -and $sbLines[1] -match '^\[[^\]]+Z\] RESULT COMPLETE$' -and -not (Test-Path -LiteralPath (Join-Path $fakeSb 'after.txt'))) {
+            Ok 'Sandbox step under Windows PowerShell 5.1: [<UTC>Z] FAIL + RESULT COMPLETE written, nothing after it ran'
+        } else { Bad "Sandbox 5.1 step: lines=$($sbLines -join ' | ') after=$(Test-Path -LiteralPath (Join-Path $fakeSb 'after.txt'))" }
+    }
+    finally { Remove-Item -LiteralPath $fakeSb -Recurse -Force -ErrorAction SilentlyContinue }
+}
+Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }   # back to the watched LogonCommand for the checks below
 # Process isolation (TST-01): the app's install and uninstall each go through the runner (own process),
 # watched = Auto (no -DeployMode); the deploy script is never called directly in the LogonCommand process.
 if ($script:logon -match [regex]::Escape('C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1 -DeploymentType Install -Label app;') -and
@@ -228,6 +289,7 @@ Run @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProjectPath = $base }
 $di = $script:logon.IndexOf('InstallDependencies.ps1')
 $pb = $script:logon.IndexOf('PreBaseline')
 if ($di -ge 0 -and $pb -gt $di) { Ok 'Sandbox Update: dependencies before the PreBaseline snapshot' } else { Bad "logon=$script:logon" }
+if (Test-DepGuard $script:logon 'UpdateAssertions.log' 'PreBaseline') { Ok 'Sandbox Update: a failed dependency writes FAIL + COMPLETE to UpdateAssertions.log and returns before PreBaseline' } else { Bad "logon=$script:logon" }
 
 # The baseline project chain (analysis 9.10): baseline and update each run in their OWN process through the
 # runner; neither the old nor the new deploy script is dot-called in the LogonCommand process.

@@ -18,7 +18,9 @@ function Test-Win32ToolkitProject {
     Process isolation: every PSADT package runs in its OWN Windows PowerShell process (PSADT 4.2
     refuses a second copy of its module in one process, and 4.1 and 4.2 cannot share one). Each
     declared 'project:' dependency is started by Sandbox\InstallDependencies.ps1, which stops at the
-    first failing dependency and exits with its exit code. The app, an Update baseline project and the
+    first failing dependency and exits with its exit code. A failed dependency stops the test and it
+    reports Failed (assertion DependenciesInstalled): the app is not installed, as Intune would not
+    install it either. The app, an Update baseline project and the
     update run through the guest runner Sandbox\Invoke-PsadtPackage.ps1, which appends the exact exit
     code of each of its runs to Sandbox\Logs\PsadtExitCodes.log; those codes are printed after the run.
 
@@ -376,7 +378,24 @@ function Test-Win32ToolkitProject {
         # The phase command ends in 'exit $LASTEXITCODE' so the dependency script's exact code (not the
         # -Command 0/1 collapse) reaches the Hyper-V provider.
         $depCount   = Initialize-Win32ToolkitDependencyStaging -ProjectPath $ProjectPath
-        $depCommand = '& ''C:\PSADT\Sandbox\InstallDependencies.ps1''; exit $LASTEXITCODE'
+        # A dependency that fails STOPS the run, as Intune would not install the app either (test campaign
+        # 2026-10-21, S11-F1: a broken 'project:' dependency failed with 60001, the app still installed and the
+        # test said PASSED). The guest writes '[<UTC>Z] ASSERT DependenciesInstalled = FAIL (exit <n>)' and
+        # '[<UTC>Z] RESULT COMPLETE' (the clock rule of every assertion line) to the scenario's assertion log,
+        # so the verdict is Failed at once, and the app steps are
+        # skipped. Static, value-free text: the only value is the guest's own exit code; $LogName is a host
+        # constant. Hyper-V phase command (ends in 'exit <code>': the provider sees the exact code, and skips
+        # the app phases):
+        $depCommandFor = {
+            param([string]$LogName)
+            '& ''C:\PSADT\Sandbox\InstallDependencies.ps1''; $w32tDepRc = $LASTEXITCODE; if ($w32tDepRc -ne 0) { $w32tTs = ''['' + [DateTime]::UtcNow.ToString(''yyyy-MM-dd HH:mm:ss'', [Globalization.CultureInfo]::InvariantCulture) + ''Z] ''; New-Item -ItemType Directory -Path C:\PSADT\Sandbox\Logs -Force | Out-Null; Add-Content -LiteralPath C:\PSADT\Sandbox\Logs\' + $LogName + ' -Value ($w32tTs + ''ASSERT DependenciesInstalled = FAIL (exit '' + $w32tDepRc + '')''), ($w32tTs + ''RESULT COMPLETE'') }; exit $w32tDepRc'
+        }
+        # ...and the Sandbox LogonCommand step ('return' leaves the try block, so the log collector and the
+        # unattended shutdown in its finally still run).
+        $depStepXmlFor = {
+            param([string]$LogName)
+            '&amp; ''C:\PSADT\Sandbox\InstallDependencies.ps1''; if ($LASTEXITCODE -ne 0) { $w32tDepRc = $LASTEXITCODE; $w32tTs = ''['' + [DateTime]::UtcNow.ToString(''yyyy-MM-dd HH:mm:ss'', [Globalization.CultureInfo]::InvariantCulture) + ''Z] ''; New-Item -ItemType Directory -Path C:\PSADT\Sandbox\Logs -Force | Out-Null; Add-Content -LiteralPath C:\PSADT\Sandbox\Logs\' + $LogName + ' -Value ($w32tTs + ''ASSERT DependenciesInstalled = FAIL (exit '' + $w32tDepRc + '')''), ($w32tTs + ''RESULT COMPLETE''); return }; '
+        }
         if ($depCount -gt 0) {
             Write-Host "Dependencies     : $depCount (installed in the guest before the app)" -ForegroundColor Cyan
         }
@@ -409,7 +428,7 @@ function Test-Win32ToolkitProject {
 
                     # Dependencies go in FIRST (silently), exactly as Intune installs them on a device.
                     $phases = @()
-                    if ($depCount -gt 0) { $phases += @{ Label = 'Install dependencies'; Command = $depCommand; DepPhase = $true } }
+                    if ($depCount -gt 0) { $phases += @{ Label = 'Install dependencies'; Command = (& $depCommandFor 'InstallAssertions.log'); DepPhase = $true } }
 
                     # Every package run goes through the guest runner (own process) and ends in
                     # 'exit $LASTEXITCODE' (single-quoted: literal for the guest), so the provider sees the
@@ -422,7 +441,7 @@ function Test-Win32ToolkitProject {
                             @{ Label = 'Test the app in the VM window';   Pause = $true }
                             @{ Label = 'Uninstall (GUI)';                 Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -DeploymentType Uninstall -DeployMode Interactive -Label app; exit $LASTEXITCODE'; Interactive = $true; SuccessExitCodes = $psadtSuccessCodes }
                             @{ Label = 'Assert: uninstalled';             Command = "$assertCmd -Phase PostUninstall"; IgnoreExit = $true }
-                            @{ Label = 'CollectLogs';                     Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
+                            @{ Label = 'CollectLogs';                     Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true; Always = $true }
                         )
                         Write-Host 'Running an INTERACTIVE Install → test → Uninstall in the Hyper-V VM (watch the vmconnect window)...' -ForegroundColor Cyan
                     }
@@ -436,7 +455,7 @@ function Test-Win32ToolkitProject {
                             @{ Label = 'Assert: installed';         Command = "$assertCmd -Phase PostInstall"; IgnoreExit = $true }
                             @{ Label = 'Uninstall (Intune parity)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Uninstall -Label app; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes }
                             @{ Label = 'Assert: uninstalled';       Command = "$assertCmd -Phase PostUninstall"; IgnoreExit = $true }
-                            @{ Label = 'CollectLogs';               Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
+                            @{ Label = 'CollectLogs';               Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true; Always = $true }
                         )
                         Write-Host 'Running an UNATTENDED Install → Uninstall in the Hyper-V VM with the Intune command line (32-bit parent, SYSTEM)...' -ForegroundColor Cyan
                     }
@@ -488,7 +507,7 @@ function Test-Win32ToolkitProject {
                 # the untrusted installer args live in Sandbox\Dependencies\dependencies.json as DATA).
                 # The app's install and uninstall each run in their OWN process via the guest runner (a
                 # 'project:' dependency would otherwise already have loaded PSADT into this process).
-                $depPrefixXml = if ($depCount -gt 0) { 'C:\PSADT\Sandbox\InstallDependencies.ps1; ' } else { '' }
+                $depPrefixXml = if ($depCount -gt 0) { & $depStepXmlFor 'InstallAssertions.log' } else { '' }
                 if ($sbInteractive) {
                     # Watched: PSADT's Auto mode (no -DeployMode), as before.
                     $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1 -DeploymentType Install -Label app; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostInstall; C:\PSADT\Sandbox\Countdown.ps1; C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1 -DeploymentType Uninstall -Label app; C:\PSADT\Sandbox\InstallAssertions.ps1 -Phase PostUninstall } finally { C:\PSADT\Sandbox\CollectLogs.ps1 } }&quot;"
@@ -966,7 +985,7 @@ function Test-Win32ToolkitProject {
                     # Add/Remove-Programs entry is part of the baseline rather than looking like something
                     # the app under test installed (which would confuse the OldArpGone assertion).
                     $phases = @()
-                    if ($depCount -gt 0) { $phases += @{ Label = 'Install dependencies'; Command = $depCommand; DepPhase = $true } }
+                    if ($depCount -gt 0) { $phases += @{ Label = 'Install dependencies'; Command = (& $depCommandFor 'UpdateAssertions.log'); DepPhase = $true } }
 
                     # A toolkit-package baseline goes through the runner: end the phase with its exact exit
                     # code (single-quoted 'exit $LASTEXITCODE', literal for the guest). A vendor baseline
@@ -997,7 +1016,7 @@ function Test-Win32ToolkitProject {
                     }
                     $phases += @(
                         @{ Label = 'Assert: PostUpdate'; Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate" }
-                        @{ Label = 'CollectLogs';        Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true }
+                        @{ Label = 'CollectLogs';        Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true; Always = $true }
                     )
 
                     $hvArgs = @{ ProjectPath = $ProjectPath; Phase = $phases; Output = @('Sandbox\Logs\*') }
@@ -1046,7 +1065,7 @@ function Test-Win32ToolkitProject {
                 # entry belongs to the baseline instead of looking like something the app under test added.
                 # The update itself runs through the guest runner in its OWN process (a baseline project
                 # or a 'project:' dependency would otherwise already have loaded PSADT into this one).
-                $depPrefixXml = if ($depCount -gt 0) { "&amp; 'C:\PSADT\Sandbox\InstallDependencies.ps1'; " } else { '' }
+                $depPrefixXml = if ($depCount -gt 0) { & $depStepXmlFor 'UpdateAssertions.log' } else { '' }
                 if ($sbInteractive) {
                     $logonCommandXml = "powershell.exe -NoExit -ExecutionPolicy Bypass -Command &quot;&amp; { try { ${depPrefixXml}&amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreBaseline; $installCmdXml; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PreUpdate; &amp; 'C:\PSADT\Sandbox\Countdown.ps1'; &amp; 'C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1' -DeploymentType Install -Label update; &amp; 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate } finally { &amp; 'C:\PSADT\Sandbox\CollectLogs.ps1' } }&quot;"
                 }

@@ -187,6 +187,28 @@ foreach ($case in @(
     $w9 = @($warn9 | ForEach-Object { "$_" } | Where-Object { $_ -match "Guest phase '$($case.At)' did not finish" -and $_ -match $case.Why -and $_ -match 'remaining phases are skipped' })
     if ($w9.Count -eq 1) { Ok "${tag}: one warning names the phase and why" } else { Bad "${tag}: warnings: $(@($warn9) -join ' | ')" }
 }
+
+Write-Host '[10] a failed dependency phase skips the app phases; Always phases (log collection) still run (S11-F1)' -ForegroundColor Cyan
+$script:log9 = @()
+$warn10 = @()
+$r10 = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(
+    @{ Label = 'Install dependencies'; Command = '60001'; DepPhase = $true }
+    @{ Label = 'Install';     Command = '0'; SuccessExitCodes = @(0, 3010) }
+    @{ Label = 'Assert';      Command = '0'; IgnoreExit = $true }
+    @{ Label = 'Test pause';  Pause = $true }
+    @{ Label = 'CollectLogs'; Command = '0'; IgnoreExit = $true; Always = $true }
+) -Output @('Sandbox\Logs\*') -WarningVariable warn10 3>$null 6>$null
+$ran10 = @($script:log9 | Where-Object { $_ -like 'phase:*' })
+if (($ran10 -join ' ') -eq 'phase:Install dependencies phase:CollectLogs') { Ok 'only the dependency phase and CollectLogs ran (no install, assert or pause)' } else { Bad "phases: $($ran10 -join ' > ')" }
+if ($r10 -eq $true -and @($script:log9 | Where-Object { $_ -like 'copyout:*' }).Count -eq 1 -and $script:log9[-1] -eq 'teardown:revert=True') { Ok 'the run still completes: logs copied back, VM reverted, $true (the verdict comes from the FAIL line in the log)' } else { Bad "log: $($script:log9 -join ' > ') r=$r10" }
+if (@($warn10 | Where-Object { "$_" -match 'dependency failed to install: the app phases are skipped' }).Count -eq 1) { Ok 'one warning says the app phases were skipped' } else { Bad "warnings: $($warn10 -join ' | ')" }
+$script:log9 = @()
+$null = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(
+    @{ Label = 'Install dependencies'; Command = '0'; DepPhase = $true }
+    @{ Label = 'Install'; Command = '0' }
+    @{ Label = 'CollectLogs'; Command = '0'; IgnoreExit = $true; Always = $true }
+) -Output @('Sandbox\Logs\*') 3>$null 6>$null
+if ((@($script:log9 | Where-Object { $_ -like 'phase:*' }) -join ' ') -eq 'phase:Install dependencies phase:Install phase:CollectLogs') { Ok 'a successful dependency phase changes nothing' } else { Bad "phases: $($script:log9 -join ' > ')" }
 Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential
 
 if ($fail -eq 0) {
