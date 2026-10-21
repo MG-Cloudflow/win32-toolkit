@@ -284,7 +284,7 @@ foreach ($k in 'psadt-4.1.8-auto', 'psadt-4.2.0-zeroconfig-auto') {
     else { Bad "$k : zc=$($zc.Count) blocks=[$($blocks -join ',')]" }
     if (([regex]::Matches($t, '(?m)^\s*ExitWithMsiCodes = \$true')).Count -eq 1) { Ok "$k : ExitWithMsiCodes = `$true exactly once" } else { Bad "$k : ExitWithMsiCodes count wrong" }
     if ($t.Contains('AppScriptAuthor = $appConfig.App.ScriptAuthor') -and -not $t.Contains('<author name>')) { Ok "$k : AppScriptAuthor is data (no template value left)" } else { Bad "$k : AppScriptAuthor not data-driven" }
-    if ($t.Contains('win32-toolkit install tattoo - records') -and $t.Contains('-Wow6432Node -Recurse')) { Ok "$k : tattoo + legacy WOW6432Node cleanup" } else { Bad "$k : tattoo blocks missing" }
+    if ($t.Contains('win32-toolkit install tattoo - records') -and $t.Contains('-Wow6432Node -Recurse') -and $t.Contains('(Test-Path -LiteralPath $w32tLegacyKey)')) { Ok "$k : tattoo + legacy WOW6432Node cleanup (only when that key exists)" } else { Bad "$k : tattoo blocks missing" }
 }
 
 # -- [10] value-free -------------------------------------------------------------------------------

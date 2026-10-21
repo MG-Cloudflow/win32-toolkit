@@ -289,8 +289,11 @@ New-Variable -Name Post-Uninstall -Force -Value {
         $w32tTattooKey = "HKLM:\SOFTWARE\$($appConfig.App.ScriptAuthor)\$($appConfig.App.Vendor)\$w32tName"
         Remove-ADTRegistryKey -Key $w32tTattooKey -Recurse
         ## Legacy cleanup: packages published with the old 'powershell.exe -File' command line ran 32-bit under
-        ## the Intune Management Extension and wrote the tattoo under WOW6432Node. Remove that copy too.
-        if ([System.Environment]::Is64BitProcess) {
+        ## the Intune Management Extension and wrote the tattoo under WOW6432Node. Remove that copy too - only
+        ## when it exists: Remove-ADTRegistryKey logs a warning for an absent key, the normal case since the
+        ## exe launcher.
+        $w32tLegacyKey = "HKLM:\SOFTWARE\WOW6432Node\$($appConfig.App.ScriptAuthor)\$($appConfig.App.Vendor)\$w32tName"
+        if ([System.Environment]::Is64BitProcess -and (Test-Path -LiteralPath $w32tLegacyKey)) {
             Remove-ADTRegistryKey -Key $w32tTattooKey -Wow6432Node -Recurse
         }
     }

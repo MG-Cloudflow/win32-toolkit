@@ -190,8 +190,8 @@ InstallerSwitches:
         if ($postUninstall.Contains('## win32-toolkit:Post-Uninstall:tattoo (begin)') -and
             $postUninstall.Contains('Remove-ADTRegistryKey -Key $w32tTattooKey -Recurse') -and
             $postUninstall.Contains('Remove-ADTRegistryKey -Key $w32tTattooKey -Wow6432Node -Recurse') -and
-            $postUninstall.Contains('[System.Environment]::Is64BitProcess')) {
-            Ok 'Post-Uninstall tattoo block removes the key in both registry views (5.5, D5 legacy cleanup)'
+            $postUninstall.Contains('[System.Environment]::Is64BitProcess -and (Test-Path -LiteralPath $w32tLegacyKey)')) {
+            Ok 'Post-Uninstall tattoo block removes the key in both registry views (5.5, D5 legacy cleanup; the WOW6432Node copy only when present)'
         } else { Bad 'Post-Uninstall tattoo block missing or changed' }
         $msp = $installText.Contains('## win32-toolkit:Install:msp (begin)')
         if ($msp -eq $is42) { Ok "msp block present iff PSADT 4.2 (present: $msp)" } else { Bad "msp block present=$msp on $($sel.VersionText)" }
