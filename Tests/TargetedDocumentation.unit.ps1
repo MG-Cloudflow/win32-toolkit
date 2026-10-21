@@ -54,7 +54,7 @@ $perr = $null; [void][System.Management.Automation.Language.Parser]::ParseInput(
 if ($hasBom) { Ok 'script written UTF-8 with BOM' } else { Bad 'no UTF-8 BOM on generated script' }
 if (-not $perr) { Ok 'generated script parses (5.1-safe syntax)' } else { Bad "parse errors: $($perr[0].Message)" }
 if ($text.Contains("`$backend = 'Sandbox'")) { Ok 'backend literal baked = Sandbox' } else { Bad 'backend not baked to Sandbox' }
-if ((GuardCount $text $sandGuard) -eq 2) { Ok 'two Sandbox-only guards (init wait + auto-close/Stop-Computer)' } else { Bad "sandbox guards = $(GuardCount $text $sandGuard)" }
+if ((GuardCount $text $sandGuard) -eq 3) { Ok 'three Sandbox-only guards (init wait + its capture-log line + auto-close/Stop-Computer)' } else { Bad "sandbox guards = $(GuardCount $text $sandGuard)" }
 if ((GuardCount $text $hvGuard) -eq 1) { Ok 'one HyperV guard (ProgressPreference)' } else { Bad "hyperv guards = $(GuardCount $text $hvGuard)" }
 # Test campaign F1: a bare Stop-Computer left the Windows Sandbox 0.8 client window open after the capture.
 $stops = @([System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$null).FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Stop-Computer' }, $true))

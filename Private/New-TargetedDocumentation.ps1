@@ -70,7 +70,10 @@ Write-Host "======================================"
 
 # The settle wait is a Windows Sandbox artifact (services still coming up at logon). Under Hyper-V
 # the provider already gated readiness (heartbeat + PS Direct) before this script runs, so skip it.
+# The log then records what really happened (no settle wait under Hyper-V) and how long it took.
+$settleSeconds = $null
 if ($backend -eq 'Sandbox') {
+    $settleTotal = [System.Diagnostics.Stopwatch]::StartNew()
     Write-Host "`nWaiting for Windows Sandbox to fully initialize..." -ForegroundColor Yellow
     Write-Host "This ensures all system services are ready before documentation begins." -ForegroundColor Gray
 
@@ -113,6 +116,7 @@ if ($backend -eq 'Sandbox') {
         Write-Progress -Activity "Initializing Windows Sandbox" -Completed
     }
     Write-Host "Sandbox initialization complete!" -ForegroundColor Green
+    $settleSeconds = [int]$settleTotal.Elapsed.TotalSeconds
 }
 
 # Create documentation output folder
@@ -133,9 +137,12 @@ Write-Log "Project: $projectName" "INFO"
 Write-Log "Timestamp: $timestamp" "INFO"
 Write-Log "Output Path: $outputPath" "INFO"
 Write-Log "Log Path: $logPath" "INFO"
-Write-Log "Windows Sandbox initialization wait started (60 seconds)" "INFO"
-Write-Log "Waiting for system services to stabilize before baseline capture" "INFO"
-Write-Log "Windows Sandbox initialization completed successfully" "INFO"
+if ($backend -eq 'Sandbox') {
+    Write-Log "Windows Sandbox settle wait completed after $settleSeconds s (scope: $installerScope; machine scope probes readiness, capped at 60 s)" "INFO"
+}
+else {
+    Write-Log "Hyper-V backend: guest readiness already gated by the host (heartbeat + PowerShell Direct); no settle wait" "INFO"
+}
 Write-Log "========================================" "INFO"
 
 # Function to export data with error handling and proper formatting
@@ -981,7 +988,7 @@ if ($backend -eq 'Sandbox') {
         # Create the log collector used inside the sandbox (Sandbox\CollectLogs.ps1),
         # so the documentation run's PSADT/MSI install logs are copied back to the project.
         $null = New-LogCollectorScript -ProjectPath $ProjectPath
-        Write-Verbose "Log collector created for documentation sandbox"
+        Write-Verbose "Log collector created for the documentation capture ($Backend)"
 
         # Stage declared dependencies into Sandbox\Dependencies\ so the guest can install them BEFORE the
         # baseline. Without this the capture runs on a machine missing the app's runtime, and the detection

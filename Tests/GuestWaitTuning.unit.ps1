@@ -147,6 +147,9 @@ if ($hs -notmatch 'retry \$retryCount/\$maxRetries') { Ok 'the 3x30 s blind coun
 if ($hs -match "(?s)if \(\`$installerScope -eq 'machine'\) \{.*?settleClock\.Elapsed\.TotalSeconds -gt 60") { Ok 'machine scope: readiness probe capped at the old 60 s' } else { Bad 'settle probe missing/ungated' }
 if ($hs -match '(?s)else \{\s*Write-Host "Please wait 60 seconds\.\.\."') { Ok 'user/unknown scope: fixed 60 s kept (WDAG first-logon churn lands in the scanned profile)' } else { Bad 'user-scope fixed settle lost' }
 if ($hs -match 'Abs\(\$count - \$prevCount\)') { Ok 'probe includes the profile-churn stability condition' } else { Bad 'churn condition missing' }
+# The capture log records the settle wait that really happened (H7-F7): measured under Sandbox, none under Hyper-V.
+if ($hs -notmatch 'initialization wait started \(60 seconds\)' -and $hs -notmatch 'initialization completed successfully' -and
+    $hs -match 'settle wait completed after \$settleSeconds s' -and $hs -match 'Hyper-V backend: guest readiness already gated by the host') { Ok 'capture log: measured Sandbox settle time; Hyper-V logs that there is no settle wait' } else { Bad 'capture log still claims a fixed 60 s Sandbox wait' }
 
 # List[object] accumulators + the raw template still parses (5.1 safety).
 # Guest waits never time out on the wall clock (a Hyper-V guest clock jumps after a checkpoint revert, H1).
