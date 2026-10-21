@@ -21,6 +21,44 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Get-Win32ToolkitGuestCredential.ps1')
 . (Join-Path $repo 'Private\Test-Win32ToolkitHyperVReady.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitTestBackend.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitBasePath.ps1')
+
+Write-Host '[0] an absent optional config value leaves no error record (test campaign 2026-10-21)' -ForegroundColor Cyan
+# READ-ONLY against the real HKCU key: on a host with the key this is the absent-VALUE path, on a clean
+# CI runner the absent-KEY path. Nothing is written. The reads run inside an advanced function so its
+# -ErrorVariable sees what a caller would.
+function Invoke-CfgProbe { [CmdletBinding()] param([string]$Name) Get-Win32ToolkitConfigValue -Name $Name -Default 'dflt' }
+$absent = 'W32T_NoSuch_' + [guid]::NewGuid().ToString('N')
+$Error.Clear()
+$ev = $null
+$r0 = Invoke-CfgProbe -Name $absent -ErrorVariable ev
+if ($r0 -eq 'dflt') { Ok 'absent value -> -Default' } else { Bad "returned '$r0'" }
+if (@($ev).Count -eq 0) { Ok 'the caller''s -ErrorVariable stays empty' } else { Bad "ErrorVariable: $(@($ev | ForEach-Object { "$_" }) -join ' | ')" }
+if ($Error.Count -eq 0) { Ok '$Error does not grow (no TerminatingError(Get-ItemProperty) in a transcript)' } else { Bad "`$Error: $(@($Error | ForEach-Object { "$_" }) -join ' | ')" }
+
+# The value read itself, against a fake key (no registry writes): present / DWORD / blank / unreadable.
+$script:fakeVals = @{ Str = 'C:\Packaging'; Dword = 5; Blank = '  ' }
+function Get-Item { param([string]$LiteralPath, $ErrorAction)
+    $o = [pscustomobject]@{}
+    $o | Add-Member -MemberType ScriptMethod -Name GetValue -Value { param($n) if ($n -eq 'Boom') { throw [System.Security.SecurityException]::new('denied') }; $script:fakeVals[$n] }
+    $o | Add-Member -MemberType ScriptMethod -Name Close -Value { $script:closed++ }
+    $o
+}
+$script:closed = 0
+if ((Get-Win32ToolkitConfigValue -Name 'Str' -Default 'd') -eq 'C:\Packaging') { Ok 'present value round-trips' } else { Bad 'present value lost' }
+if ((Get-Win32ToolkitConfigValue -Name 'Dword' -Default 'd') -eq '5') { Ok 'DWORD value comes back as a string' } else { Bad 'DWORD value lost' }
+if ((Get-Win32ToolkitConfigValue -Name 'Blank' -Default 'd') -eq 'd') { Ok 'blank value -> -Default' } else { Bad 'blank value not defaulted' }
+if ((Get-Win32ToolkitConfigValue -Name 'Boom' -Default 'd') -eq 'd') { Ok 'unreadable value -> -Default (fail-open)' } else { Bad 'unreadable value not defaulted' }
+if ($script:closed -eq 4) { Ok 'the key handle is closed after every read' } else { Bad "closed $($script:closed) of 4" }
+$script:fakeVals = @{ BasePath = 'D:\W32' }
+if ((Get-Win32ToolkitBasePath -NonInteractive) -eq 'D:\W32') { Ok 'BasePath: stored value read the same way' } else { Bad 'BasePath stored value lost' }
+$script:fakeVals = @{}
+$Error.Clear()
+function Invoke-BaseProbe { [CmdletBinding()] param() Get-Win32ToolkitBasePath -NonInteractive }
+$ev = $null
+$rb = Invoke-BaseProbe -ErrorVariable ev
+if ($null -eq $rb -and @($ev).Count -eq 0 -and $Error.Count -eq 0) { Ok 'BasePath: absent value -> $null with no error record' } else { Bad "BasePath absent: '$rb' ev=$(@($ev).Count) err=$($Error.Count)" }
+Remove-Item Function:\Get-Item
 
 Write-Host '[1] Get-Win32ToolkitTestBackend resolution' -ForegroundColor Cyan
 # Shadow the config read + readiness so resolution is deterministic.
