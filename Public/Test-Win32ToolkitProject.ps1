@@ -377,7 +377,10 @@ function Test-Win32ToolkitProject {
         # (and generates nothing) when the project declares none, so behaviour is unchanged for those.
         # The phase command ends in 'exit $LASTEXITCODE' so the dependency script's exact code (not the
         # -Command 0/1 collapse) reaches the Hyper-V provider.
-        $depCount   = Initialize-Win32ToolkitDependencyStaging -ProjectPath $ProjectPath
+        # A 'project:' dependency resolves against the caller's -BasePath when one was passed (S11-F3).
+        $depArgs = @{ ProjectPath = $ProjectPath }
+        if ($PSBoundParameters.ContainsKey('BasePath') -and $BasePath) { $depArgs['BasePath'] = $BasePath }
+        $depCount   = Initialize-Win32ToolkitDependencyStaging @depArgs
         # A dependency that fails STOPS the run, as Intune would not install the app either (test campaign
         # 2026-10-21, S11-F1: a broken 'project:' dependency failed with 60001, the app still installed and the
         # test said PASSED). The guest writes '[<UTC>Z] ASSERT DependenciesInstalled = FAIL (exit <n>)' and

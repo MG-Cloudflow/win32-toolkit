@@ -123,6 +123,21 @@ $res = $null
 try { $res = @(Resolve-Win32ToolkitDependencies -ProjectPath 'C:\proj' -WarningAction SilentlyContinue) } catch { $threw = $true }
 if (-not $threw -and $res.Count -eq 0) { Ok 'Graph failure is warned about and skipped — the app still publishes' } else { Bad "threw=$threw count=$($res.Count)" }
 
+Write-Host '[9] a project: dependency with no base folder: never a prompt, the "not published" warning (S11-F3)' -ForegroundColor Cyan
+function Get-Win32ToolkitDependencies { param($ProjectPath) @([pscustomobject]@{ Source = 'project'; Ref = 'Contoso\Tool_x64_1.0'; DependencyType = 'autoInstall' }) }
+$script:bpArgs = $null
+function Get-Win32ToolkitBasePath { param($BasePath, [switch]$NonInteractive) $script:bpArgs = @{ BasePath = $BasePath; NonInteractive = [bool]$NonInteractive }; if ($BasePath) { $BasePath } else { $null } }
+function Get-Win32ToolkitPaths { param($BasePath) [pscustomobject]@{ Projects = (Join-Path $BasePath 'Projects') } }
+function Get-Win32ToolkitPublication { param($ProjectPath, $TenantId) $script:pubPath = $ProjectPath; @() }
+function Find-Win32ToolkitIntuneApp { param($DisplayName, $WingetId, [switch]$All, $BaseUri) @() }
+$w9 = $null
+$res = @(Resolve-Win32ToolkitDependencies -ProjectPath 'C:\proj' -WarningVariable w9 -WarningAction SilentlyContinue)
+if ($res.Count -eq 0 -and $script:bpArgs.NonInteractive -and @($w9 | Where-Object { "$_" -match "Dependency 'project:Contoso\\Tool_x64_1\.0' is NOT published" }).Count -eq 1) { Ok 'no base folder -> no prompt (-NonInteractive), one "not published" warning' } else { Bad "res=$($res.Count) args=$($script:bpArgs | ConvertTo-Json -Compress) warn=$($w9 -join ' | ')" }
+$script:pubPath = $null
+$pkg9 = Join-Path ([System.IO.Path]::GetTempPath()) 'w32ir_pkg'
+$null = @(Resolve-Win32ToolkitDependencies -ProjectPath 'C:\proj' -BasePath $pkg9 -WarningAction SilentlyContinue)
+if ($script:pubPath -eq (Join-Path $pkg9 'Projects\Contoso\Tool_x64_1.0')) { Ok '-BasePath is honoured for the publication lookup' } else { Bad "looked up: $($script:pubPath)" }
+
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All IntuneRelationships tests passed.' -ForegroundColor Green; exit 0 }
 else { Write-Host "$fail IntuneRelationships test(s) FAILED." -ForegroundColor Red; exit 1 }

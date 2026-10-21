@@ -31,6 +31,10 @@ function Initialize-Win32ToolkitDependencyStaging {
         is appended to Sandbox\Logs\PsadtExitCodes.log in the runner's format with the label 'dep:<name>'.
     .PARAMETER ProjectPath
         The project whose dependencies should be staged.
+    .PARAMETER BasePath
+        The base folder a 'project:' dependency is resolved against (<BasePath>\Projects\<Template>\<Name>).
+        Empty: the configured base folder (Get-Win32ToolkitBasePath -NonInteractive, never a prompt); when none is
+        configured, such a dependency cannot be resolved and is warned about.
     .OUTPUTS
         [int] the number of dependencies staged (0 when none are declared / none could be staged).
     #>
@@ -39,7 +43,9 @@ function Initialize-Win32ToolkitDependencyStaging {
     param(
         [Parameter(Mandatory)]
         [ValidateNotNullOrEmpty()]
-        [string]$ProjectPath
+        [string]$ProjectPath,
+
+        [string]$BasePath
     )
 
     $deps = @(Get-Win32ToolkitDependencies -ProjectPath $ProjectPath)
@@ -247,7 +253,15 @@ exit 0
 
             'project' {
                 $leaf = Split-Path -Leaf $d.Ref
-                $src  = Join-Path (Get-Win32ToolkitPaths -BasePath (Get-Win32ToolkitBasePath)).Projects $d.Ref
+                # The caller's -BasePath wins over the registry value (test campaign 2026-10-21, S11-F3: a
+                # 'Test-Win32ToolkitProject -BasePath B' run staged the dependency from the registry base A), and
+                # the lookup never prompts: no base folder at all means the dependency cannot be resolved.
+                $base = Get-Win32ToolkitBasePath -BasePath $BasePath -NonInteractive
+                if ([string]::IsNullOrWhiteSpace($base)) {
+                    Write-Warning "Dependency project '$($d.Ref)' cannot be resolved: no base folder is configured (pass -BasePath, or set the base folder). The test/capture run will NOT have it installed."
+                    break
+                }
+                $src  = Join-Path (Get-Win32ToolkitPaths -BasePath $base).Projects $d.Ref
                 if (-not (Test-Path -LiteralPath (Join-Path $src 'Invoke-AppDeployToolkit.ps1'))) {
                     Write-Warning "Dependency project '$($d.Ref)' was not found (no Invoke-AppDeployToolkit.ps1 at $src). The test/capture run will NOT have it installed."
                     break

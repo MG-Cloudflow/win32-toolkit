@@ -78,7 +78,7 @@ $projectsRoot = Split-Path -Parent (Split-Path -Parent $p2)
 $depProj = Join-Path $projectsRoot 'Contoso\VCRedist_x64_14.38'
 New-Item -ItemType Directory -Path $depProj -Force | Out-Null
 Set-Content -LiteralPath (Join-Path $depProj 'Invoke-AppDeployToolkit.ps1') -Value '# psadt'
-function Get-Win32ToolkitBasePath { param($BasePath) 'IGNORED' }
+function Get-Win32ToolkitBasePath { param($BasePath, [switch]$NonInteractive) 'IGNORED' }
 function Get-Win32ToolkitPaths { param($BasePath) [pscustomobject]@{ Projects = $projectsRoot } }
 
 $null = Set-Win32ToolkitAppDependency -ProjectPath $p2 -DependsOn 'project:Contoso\VCRedist_x64_14.38'
@@ -250,6 +250,39 @@ if ($t8 -notmatch '& \$d\.Path' -and $t8 -match '\$okCodes = @\(0, 1707, 3010, 1
 $n8 = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p8 6>$null
 if ($n8 -eq 1 -and $script:downloaded.Count -eq 2) { Ok 'the restaged tree is reused again by the next call' } else { Bad "n=$n8 downloads=$($script:downloaded.Count)" }
 Remove-Item -LiteralPath $cache8 -Recurse -Force -ErrorAction SilentlyContinue
+
+Write-Host '[9] a project: dependency resolves against the caller''s -BasePath, never a prompt (test campaign 2026-10-21, S11-F3)' -ForegroundColor Cyan
+function Get-Win32ToolkitPipelineCacheRoot { $null }   # no reuse marker in this section
+$baseA = Join-Path ([System.IO.Path]::GetTempPath()) ('w32dsA_' + [guid]::NewGuid().ToString('N').Substring(0, 6))   # the registry base
+$baseB = Join-Path ([System.IO.Path]::GetTempPath()) ('w32dsB_' + [guid]::NewGuid().ToString('N').Substring(0, 6))   # the caller's -BasePath
+foreach ($b in $baseA, $baseB) {
+    $dp = Join-Path $b 'Projects\Contoso\Tool_x64_1.0'
+    New-Item -ItemType Directory -Path $dp -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $dp 'Invoke-AppDeployToolkit.ps1') -Value "# psadt from $(Split-Path -Leaf $b)"
+}
+$script:regBase = $baseA
+$script:prompted = $false
+function Get-Win32ToolkitBasePath { param($BasePath, [switch]$NonInteractive)
+    if ($BasePath) { return $BasePath }
+    if ($script:regBase) { return $script:regBase }
+    if ($NonInteractive) { return $null }
+    $script:prompted = $true; 'C:\Win32Apps'
+}
+function Get-Win32ToolkitPaths { param($BasePath) [pscustomobject]@{ Projects = (Join-Path $BasePath 'Projects') } }
+$p9 = New-Proj
+$null = Set-Win32ToolkitAppDependency -ProjectPath $p9 -DependsOn 'project:Contoso\Tool_x64_1.0'
+$staged9 = Join-Path $p9 'Sandbox\Dependencies\Tool_x64_1.0\Invoke-AppDeployToolkit.ps1'
+$n9 = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p9 -BasePath $baseB 6>$null
+if ($n9 -eq 1 -and (Get-Content -LiteralPath $staged9 -Raw) -match ([regex]::Escape((Split-Path -Leaf $baseB)))) { Ok '-BasePath B stages B\Projects\<ref> although the registry says A' } else { Bad "n=$n9 staged: $(if (Test-Path $staged9) { Get-Content $staged9 -Raw })" }
+$n9 = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p9 6>$null
+if ($n9 -eq 1 -and (Get-Content -LiteralPath $staged9 -Raw) -match ([regex]::Escape((Split-Path -Leaf $baseA)))) { Ok 'no -BasePath -> the registry base' } else { Bad "n=$n9 staged: $(if (Test-Path $staged9) { Get-Content $staged9 -Raw })" }
+$script:regBase = $null
+$w9 = $null
+$n9 = Initialize-Win32ToolkitDependencyStaging -ProjectPath $p9 -WarningVariable w9 -WarningAction SilentlyContinue 6>$null
+if ($n9 -eq 0 -and -not $script:prompted -and @($w9 | Where-Object { "$_" -match "Dependency project 'Contoso\\Tool_x64_1\.0' cannot be resolved: no base folder is configured" }).Count -eq 1) { Ok 'no base folder anywhere -> one warning, nothing staged, never a prompt' } else { Bad "n=$n9 prompted=$($script:prompted) warn=$($w9 -join ' | ')" }
+$src9 = Get-Content -LiteralPath (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1') -Raw
+if ($src9 -match "\`$depArgs\['BasePath'\] = \`$BasePath" -and $src9 -match 'Initialize-Win32ToolkitDependencyStaging @depArgs') { Ok 'Test-Win32ToolkitProject passes its -BasePath to the staging (only when bound)' } else { Bad 'Test-Win32ToolkitProject does not pass -BasePath' }
+Remove-Item -LiteralPath $baseA, $baseB, (Split-Path -Parent (Split-Path -Parent $p9)) -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All DependencyStaging tests passed.' -ForegroundColor Green; exit 0 }
