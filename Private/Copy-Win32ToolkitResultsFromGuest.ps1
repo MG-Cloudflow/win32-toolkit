@@ -14,7 +14,9 @@ function Copy-Win32ToolkitResultsFromGuest {
         same failure mode the copy-IN zip already avoids). Entries are added PER FILE with try/catch so
         one locked/unreadable guest file loses only itself — and, unlike the old per-file
         -ErrorAction SilentlyContinue loop, every skipped file is now REPORTED instead of vanishing.
-        A guest-vs-host entry-count check makes a torn transfer loud.
+        A guest-vs-host entry-count check makes a torn transfer loud. Each extracted file gets the guest's exact
+        UTC LastWriteTime back (the zip only stores local DOS time, which shifted copied-back files by the UTC
+        offset between guest and host).
 
         Sandbox\Logs\Runs\ is never brought back: it is the host's own copy of earlier runs' logs (test campaign
         F2), never copied in (New-Win32ToolkitProjectZip), so a guest file there is not a result. The guest skips
@@ -49,12 +51,15 @@ function Copy-Win32ToolkitResultsFromGuest {
             $files += @(Get-ChildItem -Path $g -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
         }
         $files = @($files | Sort-Object -Unique)
-        if ($files.Count -eq 0) { return @{ Zip = $null; Count = 0; Failed = @() } }
+        if ($files.Count -eq 0) { return @{ Zip = $null; Count = 0; Failed = @(); Times = @{} } }
 
         Add-Type -AssemblyName 'System.IO.Compression.FileSystem' -ErrorAction SilentlyContinue
         $zipPath = 'C:\Windows\Temp\w32results_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.zip'
         $failed  = @()
         $added   = 0
+        # Exact UTC write time per entry: a zip entry stores local DOS time (2 s resolution), so the host's
+        # extract would shift every file by the guest-vs-host UTC offset.
+        $times   = @{}
         $archive = [System.IO.Compression.ZipFile]::Open($zipPath, 'Create')
         try {
             foreach ($f in $files) {
@@ -64,10 +69,13 @@ function Copy-Win32ToolkitResultsFromGuest {
                 } else { Split-Path -Leaf $f }
                 # The host's earlier run logs (Sandbox\Logs\Runs\) are never a guest result: never sent back.
                 if ($rel.StartsWith('Sandbox\Logs\Runs\', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+                $entryName = $rel -replace '\\', '/'
                 try {
                     $null = [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
-                        $archive, $f, ($rel -replace '\\', '/'), [System.IO.Compression.CompressionLevel]::NoCompression)
+                        $archive, $f, $entryName, [System.IO.Compression.CompressionLevel]::NoCompression)
                     $added++
+                    # Best effort: with no recorded time the host keeps the zip's own stamp for this entry.
+                    try { $times[$entryName] = [System.IO.File]::GetLastWriteTimeUtc($f).Ticks } catch { $times.Remove($entryName) }
                 }
                 catch {
                     # One locked file must lose only itself (parity with the old per-file loop) — but
@@ -80,9 +88,9 @@ function Copy-Win32ToolkitResultsFromGuest {
 
         if ($added -eq 0) {
             Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
-            return @{ Zip = $null; Count = 0; Failed = $failed }
+            return @{ Zip = $null; Count = 0; Failed = $failed; Times = @{} }
         }
-        return @{ Zip = $zipPath; Count = $added; Failed = $failed }
+        return @{ Zip = $zipPath; Count = $added; Failed = $failed; Times = $times }
     } -ArgumentList (, $GuestPath), ($GuestRoot.TrimEnd('\') + '\')
 
     foreach ($miss in @($guestResult.Failed)) {
@@ -122,6 +130,20 @@ function Copy-Win32ToolkitResultsFromGuest {
                 }
                 [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $true)
                 $extracted++
+                # Restore the guest's exact UTC write time (test campaign 2026-10-21, H7-F4; TODO F-15): the zip's
+                # local DOS time shifted every file by the host's UTC offset (the guest runs UTC). The value is
+                # guest data, but only a bounded timestamp on a file the guest wrote anyway; best effort.
+                $guestTicks = $null
+                if ($guestResult.Times -is [System.Collections.IDictionary]) { $guestTicks = $guestResult.Times[$entry.FullName] }
+                $ticks = 0L
+                if ($null -ne $guestTicks -and [long]::TryParse("$guestTicks", [ref]$ticks) -and
+                    $ticks -ge [datetime]::MinValue.Ticks -and $ticks -le [datetime]::MaxValue.Ticks) {
+                    try { [System.IO.File]::SetLastWriteTimeUtc($target, [datetime]::new($ticks, [System.DateTimeKind]::Utc)) }
+                    catch {
+                        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                        Write-Verbose "Could not set the write time of '$($entry.FullName)': $($_.Exception.Message)"
+                    }
+                }
             }
         }
         finally { $archive.Dispose() }

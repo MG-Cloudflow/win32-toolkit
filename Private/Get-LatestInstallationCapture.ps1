@@ -7,7 +7,8 @@ function Get-LatestInstallationCapture {
         drift: newest by LastWriteTime, name-descending as the deterministic tie-break (both files
         of a fast re-run can share a timestamp resolution). LastWriteTime is reliable here because
         the capture JSON is written by the sandbox directly into the host-backed mapped folder
-        (host clock, no copy-back step); filename parsing would break on non-conforming names.
+        (host clock, no copy-back step), and a Hyper-V copy-back restores the guest's exact UTC write
+        time (Copy-Win32ToolkitResultsFromGuest); filename parsing would break on non-conforming names.
 
         Replaces the old first-in-filesystem-order selection ($jsonFiles[0] / Select-Object -First 1),
         which could pick a STALE capture from a previous run and let it drive uninstall logic,

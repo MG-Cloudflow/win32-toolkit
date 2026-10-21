@@ -155,6 +155,34 @@ if ("$warnings" -match 'inside Sandbox\\Logs\\Runs') { Ok 'the refused entry is 
 Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $evilZip -Force -ErrorAction SilentlyContinue
 
+# ── (g) the guest's exact UTC write time survives the zip (test campaign 2026-10-21, H7-F4; TODO F-15) ──
+Write-Host '[g] copied-back files keep the guest''s exact UTC LastWriteTime (not the zip''s local DOS time)' -ForegroundColor Cyan
+$guestRoot = New-TempDir; $dest = New-TempDir
+New-Item -ItemType Directory -Path (Join-Path $guestRoot 'Sandbox\Logs') -Force | Out-Null
+$gf = Join-Path $guestRoot 'Sandbox\Logs\App_Install.log'
+Set-Content -LiteralPath $gf 'log'
+$exact = [datetime]::new(2026, 1, 2, 3, 4, 5, [System.DateTimeKind]::Utc).AddTicks(1234567)   # odd seconds + sub-seconds: a DOS stamp cannot hold it
+[System.IO.File]::SetLastWriteTimeUtc($gf, $exact)
+Copy-Win32ToolkitResultsFromGuest -Session 'fake' -GuestPath @((Join-Path $guestRoot 'Sandbox\Logs\*')) -Destination $dest -GuestRoot $guestRoot 3>$null
+$got = [System.IO.File]::GetLastWriteTimeUtc((Join-Path $dest 'Sandbox\Logs\App_Install.log'))
+if ($got -eq $exact) { Ok "exact UTC write time restored ($($exact.ToString('o')))" } else { Bad "write time $($got.ToString('o')) != $($exact.ToString('o'))" }
+Remove-Item $guestRoot, $dest -Recurse -Force -ErrorAction SilentlyContinue
+# A guest value that is not a valid tick count is ignored (bounded, best effort): the zip's own time stays.
+$guestRoot = New-TempDir; $dest = New-TempDir
+$tzip = Join-Path ([System.IO.Path]::GetTempPath()) ('cob_t_' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.zip')
+Add-Type -AssemblyName 'System.IO.Compression.FileSystem'
+$za = [System.IO.Compression.ZipFile]::Open($tzip, 'Create')
+try { $e1 = $za.CreateEntry('Sandbox/Logs/a.log'); $sw = [System.IO.StreamWriter]::new($e1.Open()); $sw.Write('a'); $sw.Dispose()
+      $e2 = $za.CreateEntry('Sandbox/Logs/b.log'); $sw = [System.IO.StreamWriter]::new($e2.Open()); $sw.Write('b'); $sw.Dispose() }
+finally { $za.Dispose() }
+$script:fakeGuestResult = @{ Zip = $tzip; Count = 2; Failed = @(); Times = @{ 'Sandbox/Logs/a.log' = $exact.Ticks; 'Sandbox/Logs/b.log' = 'not-ticks; Remove-Item C:\' } }
+Copy-Win32ToolkitResultsFromGuest -Session 'fake' -GuestPath @('C:\PSADT\Sandbox\Logs\*') -Destination $dest -GuestRoot 'C:\PSADT' 3>$null
+$script:fakeGuestResult = $null
+$ga = [System.IO.File]::GetLastWriteTimeUtc((Join-Path $dest 'Sandbox\Logs\a.log')); $gb = Join-Path $dest 'Sandbox\Logs\b.log'
+if ($ga -eq $exact -and (Test-Path -LiteralPath $gb) -and [System.IO.File]::GetLastWriteTimeUtc($gb) -ne $exact) { Ok 'the Times map wins over the zip stamp; a non-numeric value is ignored (file still extracted)' } else { Bad "a=$($ga.ToString('o')) b exists=$(Test-Path -LiteralPath $gb)" }
+Remove-Item $guestRoot, $dest -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item $tzip -Force -ErrorAction SilentlyContinue
+
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'ALL PASS' -ForegroundColor Green; exit 0 }
 else { Write-Host "$fail FAILED" -ForegroundColor Red; exit 1 }
