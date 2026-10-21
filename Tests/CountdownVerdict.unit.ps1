@@ -82,6 +82,10 @@ else {
         'marker-resets'    = @{ Lines = @("$ts update Install parent=x64-direct exit=0 result=Success", "$ts -- test run 20261020-100000_Update_exe --"); Expect = 'False|False||' + '|INSTALLATION FINISHED (no exit code recorded)' }
         'after-marker'     = @{ Lines = @("$ts update Install parent=x64-direct exit=1603 result=Failed", "$ts -- test run 20261020-100000_Update_exe --", "$ts baseline Install parent=x64-direct exit=0 result=Success"); Expect = 'True|True|0|Success|INSTALLATION COMPLETED SUCCESSFULLY!' }
         'no-log'           = @{ Lines = $null; Expect = 'False|False||' + '|INSTALLATION FINISHED (no exit code recorded)' }
+        # 'dep:<name>' lines (InstallDependencies.ps1, S11-F2) are never the install under test: a vendor Update
+        # baseline writes no runner line, so a dependency line must not stand in for it.
+        'dep-only'         = @{ Lines = @("$ts dep:Contoso_Runtime_x64_1.0 Install parent=x64-direct exit=0 result=Success"); Expect = 'False|False||' + '|INSTALLATION FINISHED (no exit code recorded)' }
+        'dep-then-app'     = @{ Lines = @("$ts dep:Contoso_Runtime_x64_1.0 Install parent=direct exit=0 result=Success", "$ts app Install parent=x64-direct exit=1603 result=Failed"); Expect = 'True|False|1603|Failed|INSTALLATION FAILED (exit 1603, Failed) - see C:\PSADT\Sandbox\Logs' }
     }
     $harness = $fn.Extent.Text + "`r`n" + @'
 foreach ($f in $args) {

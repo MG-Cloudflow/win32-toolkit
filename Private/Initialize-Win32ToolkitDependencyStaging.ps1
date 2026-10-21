@@ -26,7 +26,9 @@ function Initialize-Win32ToolkitDependencyStaging {
         as PARAMETERS read from JSON — they are never spliced into a code position. Same contract as
         designs/data-driven-generation.md. Each packaged ('project:') dependency runs in its OWN Windows
         PowerShell process (PSADT 4.2 refuses a second module copy per process), and the script exits with
-        the first failing dependency's exact code (success = 0, 1707, 3010, 1641).
+        the first failing dependency's exact code (success = 0, 1707, 3010, 1641). Each dependency gets the
+        guest runner's 25-minute limit (a hung installer is stopped and ends as 1460, Timeout), and each result
+        is appended to Sandbox\Logs\PsadtExitCodes.log in the runner's format with the label 'dep:<name>'.
     .PARAMETER ProjectPath
         The project whose dependencies should be staged.
     .OUTPUTS
@@ -59,33 +61,52 @@ if (-not (Test-Path -LiteralPath $manifest)) { Write-Host 'No dependencies to in
 $deps = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
 # Success = 0 / 1707 (success), 3010 (soft reboot), 1641 (hard reboot) - the codes Intune treats as installed.
 $okCodes = @(0, 1707, 3010, 1641)
+# Each result is appended to the guest runner's exit-code log (Sandbox\Logs\PsadtExitCodes.log, the runner's line
+# format with the label 'dep:<name>'), so the host prints it with the run's other codes and the run folder keeps it.
+# A dependency gets the runner's 25-minute limit: a hung installer is stopped and ends as 1460 (Timeout).
+$logDir = Join-Path $PSScriptRoot 'Logs'
+$timeoutMs = 25 * 60000
 foreach ($d in @($deps)) {
     Write-Host ("Installing dependency: " + $d.Name) -ForegroundColor Cyan
     $rc = 0
+    $parent = 'direct'
+    $p = $null
     if ($d.Type -eq 'psadt') {
         # ONE PSADT PACKAGE = ONE PROCESS: PSADT 4.2 refuses a second copy of its module in a process (even
         # the same version from another folder), and 4.1/4.2 cannot share one - so a packaged dependency
         # never runs inside this script's (or the next dependency's / the app's) process. The path is
         # quoted because Windows PowerShell 5.1 does not quote ArgumentList elements.
         $ps = Join-Path $env:WinDir 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        $p = Start-Process -FilePath $ps -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $d.Path + '"'), '-DeploymentType', 'Install', '-DeployMode', 'Silent') -WorkingDirectory (Split-Path -Parent $d.Path) -Wait -PassThru
-        $rc = $p.ExitCode
-        Write-Host ("  exit code: " + $rc)
+        $p = Start-Process -FilePath $ps -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $d.Path + '"'), '-DeploymentType', 'Install', '-DeployMode', 'Silent') -WorkingDirectory (Split-Path -Parent $d.Path) -PassThru
+        $parent = 'x64-direct'
     }
     elseif ($d.Type -eq 'msix' -or $d.Type -eq 'appx') {
-        # Start-Process on a msix opens the App Installer GUI and blocks forever.
-        Add-AppxPackage -Path $d.Path
+        # Start-Process on a msix opens the App Installer GUI and blocks forever. A failure is exit 1, never a throw.
+        try { Add-AppxPackage -Path $d.Path -ErrorAction Stop; $rc = 0 }
+        catch { Write-Host ("  " + $_.Exception.Message); $rc = 1 }
     }
     elseif ($d.SilentArgs) {
-        $p = Start-Process -FilePath $d.Path -ArgumentList $d.SilentArgs -Wait -PassThru
-        $rc = $p.ExitCode
-        Write-Host ("  exit code: " + $rc)
+        $p = Start-Process -FilePath $d.Path -ArgumentList $d.SilentArgs -PassThru
     }
     else {
-        $p = Start-Process -FilePath $d.Path -Wait -PassThru
-        $rc = $p.ExitCode
+        $p = Start-Process -FilePath $d.Path -PassThru
+    }
+    if ($p) {
+        $null = $p.Handle   # 5.1: cache the handle so ExitCode is available after WaitForExit
+        if ($p.WaitForExit($timeoutMs)) { $rc = $p.ExitCode }
+        else { & (Join-Path $env:WinDir 'System32\taskkill.exe') /PID $p.Id /T /F | Out-Null; $rc = 1460 }
         Write-Host ("  exit code: " + $rc)
     }
+    $class = 'Failed'
+    if ($rc -eq 0 -or $rc -eq 1707) { $class = 'Success' } elseif ($rc -eq 3010) { $class = 'SoftReboot' }
+    elseif ($rc -eq 1641) { $class = 'HardReboot' } elseif ($rc -eq 1618) { $class = 'Retry' } elseif ($rc -eq 1460) { $class = 'Timeout' }
+    try {
+        if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+        $label = 'dep:' + ([string]$d.Name -replace '[^A-Za-z0-9._+-]', '_')
+        ('[{0}] {1} Install parent={2} exit={3} result={4}' -f ([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture) + 'Z'), $label, $parent, $rc, $class) |
+            Add-Content -LiteralPath (Join-Path $logDir 'PsadtExitCodes.log') -Encoding UTF8
+    }
+    catch { Write-Host ("  could not record the exit code: " + $_.Exception.Message) }
     # PROPAGATE failure (Intune installs dependencies first and a failed dependency blocks the app).
     # Exiting non-zero here is what stops the Hyper-V dep phase from reporting success — and, with the
     # deps-checkpoint feature, from FREEZING a broken image that every later run of the project would

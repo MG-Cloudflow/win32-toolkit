@@ -37,7 +37,8 @@ function Get-W32tInstallVerdict {
     $last = $null
     foreach ($line in @(Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue)) {
         if ("$line" -match '^\[[^\]]*\]\s+-- test run ') { $last = $null; continue }
-        if ("$line" -match '^\[[^\]]*\]\s+\S+\s+Install\s') { $last = "$line" }
+        # 'dep:<name>' lines are dependency installs (InstallDependencies.ps1), never the install under test.
+        if ("$line" -match '^\[[^\]]*\]\s+(?!dep:)\S+\s+Install\s') { $last = "$line" }
     }
     if (-not $last) { return $verdict }
     if ($last -match 'exit=(-?\d+)') { $verdict.Exit = [long]$Matches[1] }

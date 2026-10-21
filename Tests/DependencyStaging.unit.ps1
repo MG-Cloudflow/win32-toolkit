@@ -104,7 +104,7 @@ if ($n -eq 0) { Ok 'intune-only dep is not stageable (warned)' } else { Bad "n=$
 Write-Host '[6] the guest script runs each packaged dependency in its OWN Windows PowerShell process' -ForegroundColor Cyan
 # (source checks on the generated, value-free script; [7] executes it)
 $g6 = $guest
-if ($g6 -match "Start-Process -FilePath \`$ps -ArgumentList @\('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', \('""' \+ \`$d\.Path \+ '""'\), '-DeploymentType', 'Install', '-DeployMode', 'Silent'\) -WorkingDirectory \(Split-Path -Parent \`$d\.Path\) -Wait -PassThru") { Ok 'psadt dependency = Start-Process powershell.exe -File "<quoted path>" -DeploymentType Install -DeployMode Silent, cwd = its folder' } else { Bad 'Start-Process child launch not found' }
+if ($g6 -match "Start-Process -FilePath \`$ps -ArgumentList @\('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', \('""' \+ \`$d\.Path \+ '""'\), '-DeploymentType', 'Install', '-DeployMode', 'Silent'\) -WorkingDirectory \(Split-Path -Parent \`$d\.Path\) -PassThru") { Ok 'psadt dependency = Start-Process powershell.exe -File "<quoted path>" -DeploymentType Install -DeployMode Silent, cwd = its folder (bounded wait below)' } else { Bad 'Start-Process child launch not found' }
 if ($g6 -match [regex]::Escape("Join-Path `$env:WinDir 'System32\WindowsPowerShell\v1.0\powershell.exe'")) { Ok 'child = the System32 Windows PowerShell (full path)' } else { Bad 'powershell.exe path not absolute' }
 if ($g6 -notmatch '& \$d\.Path') { Ok 'no in-process "& $d.Path" call left' } else { Bad 'dependency still dot-called in-process' }
 if ($g6 -match '\$okCodes = @\(0, 1707, 3010, 1641\)' -and $g6 -match '\$okCodes -notcontains \$rc') { Ok 'success = 0, 1707, 3010, 1641' } else { Bad 'success codes wrong' }
@@ -155,7 +155,10 @@ exit __CODE__
     if ($manLine.Success -and $diffLines.Count -eq 2) { Ok 'test copy differs from the generated script ONLY in the $manifest line' } else { Bad "manifest line edit: success=$($manLine.Success) diff=$($diffLines.Count)" }
     $copyPath = Join-Path $p7 'Sandbox\InstallDependencies.test.ps1'
     [System.IO.File]::WriteAllText($copyPath, $copyText, (New-Object System.Text.UTF8Encoding($true)))
+    $depLog = Join-Path $p7 'Sandbox\Logs\PsadtExitCodes.log'
+    function Get-DepLine { if (Test-Path -LiteralPath $depLog) { @(Get-Content -LiteralPath $depLog | Where-Object { $_ }) } else { @() } }
     function Invoke-Guest {
+        Remove-Item -LiteralPath $depLog -Force -ErrorAction SilentlyContinue
         $o = Join-Path $spRoot 'guest.out.txt'
         $gp = Start-Process -FilePath $ps51 -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $copyPath + '"')) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o
         [pscustomobject]@{ Pid = $gp.Id; Exit = $gp.ExitCode }
@@ -173,6 +176,10 @@ exit __CODE__
         if ($f1[1] -eq 'Install' -and $f1[2] -eq 'Silent' -and $f2[1] -eq 'Install' -and $f2[2] -eq 'Silent') { Ok 'each child got -DeploymentType Install -DeployMode Silent' } else { Bad "args: $($r1[0]) / $($r2[0])" }
         if ($f1[3].TrimEnd('\') -eq $stage['DepOne_x64_1.0'] -and $f2[3].TrimEnd('\') -eq $stage['DepTwo_x64_2.0']) { Ok 'working directory = each dependency''s own folder (path with a space)' } else { Bad "cwd: $($f1[3]) / $($f2[3])" }
     } else { Bad "stub records: one=$($r1.Count) two=$($r2.Count)" }
+    # Each result lands in Sandbox\Logs\PsadtExitCodes.log in the runner's format (test campaign 2026-10-21, S11-F2).
+    $dl = @(Get-DepLine)
+    if ($dl.Count -eq 2 -and $dl[0] -match '^\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ\] dep:Contoso_DepOne_x64_1\.0 Install parent=x64-direct exit=0 result=Success$' -and
+        $dl[1] -match '^\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ\] dep:Contoso_DepTwo_x64_2\.0 Install parent=x64-direct exit=3010 result=SoftReboot$') { Ok "exit codes logged: '$($dl[0])' / '$($dl[1])'" } else { Bad "dep lines: $($dl -join ' | ')" }
 
     SetStub $stage['DepOne_x64_1.0'] 0
     SetStub $stage['DepTwo_x64_2.0'] 60008
@@ -180,11 +187,17 @@ exit __CODE__
     $r1 = @(Get-StubRec $stage['DepOne_x64_1.0']); $r2 = @(Get-StubRec $stage['DepTwo_x64_2.0'])
     if ($g.Exit -eq 60008) { Ok 'second dependency exits 60008 -> guest exits 60008 (exact code propagated)' } else { Bad "guest exit=$($g.Exit)" }
     if ($r1.Count -eq 1 -and $r2.Count -eq 1) { Ok 'the first dependency ran before the failing second one' } else { Bad "records one=$($r1.Count) two=$($r2.Count)" }
+    $dl = @(Get-DepLine)
+    if ($dl.Count -eq 2 -and $dl[1] -match 'dep:Contoso_DepTwo_x64_2\.0 Install parent=x64-direct exit=60008 result=Failed$') { Ok 'the failing dependency is logged with exit=60008 result=Failed' } else { Bad "dep lines: $($dl -join ' | ')" }
 
     SetStub $stage['DepOne_x64_1.0'] 1603
     SetStub $stage['DepTwo_x64_2.0'] 0
     $g = Invoke-Guest
     if ($g.Exit -eq 1603 -and @(Get-StubRec $stage['DepTwo_x64_2.0']).Count -eq 0) { Ok 'a failing first dependency stops the chain with its code (1603); the second never runs' } else { Bad "guest exit=$($g.Exit)" }
+    $dl = @(Get-DepLine)
+    if ($dl.Count -eq 1 -and $dl[0] -match 'dep:Contoso_DepOne_x64_1\.0 Install parent=x64-direct exit=1603 result=Failed$') { Ok 'only the failing first dependency is logged (1603)' } else { Bad "dep lines: $($dl -join ' | ')" }
+    $genNow = [System.IO.File]::ReadAllText((Join-Path $p7 'Sandbox\InstallDependencies.ps1'))
+    if ($genNow -match 'WaitForExit\(\$timeoutMs\)' -and $genNow -match '\$timeoutMs = 25 \* 60000' -and $genNow -match '\$rc = 1460' -and $genNow -notmatch '-Wait -PassThru') { Ok 'each dependency is bounded by the runner''s 25-minute limit (1460 = Timeout); no unbounded -Wait' } else { Bad 'dependency installs are not bounded' }
 }
 Remove-Item -LiteralPath $spRoot -Recurse -Force -ErrorAction SilentlyContinue
 
