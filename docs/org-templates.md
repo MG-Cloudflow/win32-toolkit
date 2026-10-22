@@ -61,7 +61,7 @@ Every prompt shows a default in brackets. Press **Enter** to accept it.
 | Org scripts & extension module | **Enable org hook scripts** + on-error policy | Runs your `.ps1` files in each deploy phase (see below) |
 | | **Ship an org PSADT extension module** | Copies `PSAppDeployToolkit.<Org>\` into every project |
 | | **Ship org branding assets** | Copies your logo/banner into every project |
-| Intune publish defaults | **Minimum Windows release / restart behavior / max run time** | The Intune install experience. Keep the maximum run time above 30 minutes (default 60): the uninstall stops an EXE uninstaller at 30 minutes, and a lower Intune limit would stop it first, without the toolkit's exit code |
+| Intune publish defaults | **Minimum Windows release / restart behavior / max run time** | The Intune install experience. Keep the maximum run time above 30 minutes (default 60): the uninstall stops an EXE uninstaller at 30 minutes, and a lower Intune limit would stop it first, without the toolkit's exit code; Publish warns when it is 30 minutes or less |
 | | **Description boilerplate / privacy URL** | Appended to every published app |
 | | **Customer-doc footer line** | Footer on the generated customer documentation |
 

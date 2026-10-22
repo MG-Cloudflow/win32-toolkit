@@ -25,6 +25,10 @@
     blocks the publish. The fixtures carry no winget manifest, so the sibling probe is Skipped and the
     throwing Invoke-WebRequest shadow is never reached.
 
+    Installer-identity PR 2 follow-up F4: an IntuneDefaults.MaxRuntimeMinutes of 30 or less warns before the
+    -WhatIf gate (the uninstall stops an EXE uninstaller at 30 minutes with exit code 69113; a lower Intune
+    limit stops the deployment first) and never blocks: the value is published as configured.
+
     Run:  pwsh -File Tests\PublishAppBody.unit.ps1
 #>
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidOverwritingBuiltInCmdlets', '', Justification = 'Invoke-WebRequest is shadowed: the suite never touches the network')]
@@ -87,7 +91,7 @@ if (-not (Get-Command -Name Get-Win32ToolkitTechnologySwitch -CommandType Functi
 }
 
 function New-Proj {
-    param([string]$Name, [string]$Arch, [string]$InstallerType, [string]$MinRelease, [switch]$NoTattoo, [hashtable]$Uninstall, [object[]]$TestResults)
+    param([string]$Name, [string]$Arch, [string]$InstallerType, [string]$MinRelease, [int]$MaxRuntime, [switch]$NoTattoo, [hashtable]$Uninstall, [object[]]$TestResults)
     $p = Join-Path $base $Name
     New-Item -ItemType Directory -Path (Join-Path $p 'SupportFiles') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $p 'Files') -Force | Out-Null
@@ -96,6 +100,11 @@ function New-Proj {
         Installer = [ordered]@{ Type=$InstallerType; FileName="App.$InstallerType"; SilentArgs='' }
     }
     if ($MinRelease) { $cfg['IntuneDefaults'] = [ordered]@{ MinimumWindowsRelease = $MinRelease } }
+    # -MaxRuntime writes IntuneDefaults.MaxRuntimeMinutes as given (0 included), merged with -MinRelease when both.
+    if ($PSBoundParameters.ContainsKey('MaxRuntime')) {
+        if (-not $cfg.Contains('IntuneDefaults')) { $cfg['IntuneDefaults'] = [ordered]@{} }
+        $cfg['IntuneDefaults']['MaxRuntimeMinutes'] = $MaxRuntime
+    }
     if ($Uninstall) { $cfg['Uninstall'] = $Uninstall }
     if ($TestResults) {
         New-Item -ItemType Directory -Path (Join-Path $p 'Documentation') -Force | Out-Null
@@ -327,6 +336,70 @@ try {
         Publish-Win32ToolkitIntuneApp -ProjectPath $safeProj.Project -IntuneWinPath $safeProj.IntuneWin -WhatIf -Confirm:$false -ErrorAction Stop -WarningVariable warn 6>$null 3>$null | Out-Null
     } catch { Bad "unexpected error: $($_.Exception.Message)" }
     if (@($warn).Count -eq 0) { Ok 'a project without test results or cleanup paths -> no advisory warning at all' } else { Bad "unexpected warnings: $(@($warn) -join ' | ')" }
+
+    Write-Host '[15] F4: a maximum run time of 30 minutes or less warns before the -WhatIf line and never blocks' -ForegroundColor Cyan
+    # The uninstall stops an EXE uninstaller at 30 minutes (exit code 69113); an Intune limit at or below that stops
+    # the deployment first. Publish warns (also under -WhatIf) and publishes the value as configured.
+    $rt30 = New-Proj -Name 'Runtime30' -Arch 'x64' -InstallerType 'exe' -MaxRuntime 30
+    $script:graphCalls = 0; $err = $null
+    $stream = @(try {
+            Publish-Win32ToolkitIntuneApp -ProjectPath $rt30.Project -IntuneWinPath $rt30.IntuneWin -WhatIf -Confirm:$false -ErrorAction Stop *>&1
+        } catch { $err = $_ })
+    $rtIdx = @(); $wiIdx = -1
+    for ($i = 0; $i -lt $stream.Count; $i++) {
+        if ($stream[$i] -is [System.Management.Automation.WarningRecord] -and "$($stream[$i])" -match 'maximum run time') { $rtIdx += $i }
+        if ($wiIdx -lt 0 -and "$($stream[$i])" -match '^WhatIf: would connect to Microsoft Graph') { $wiIdx = $i }
+    }
+    $rtText = if ($rtIdx.Count -eq 1) { "$($stream[$rtIdx[0]])" } else { '' }
+    if (-not $err -and $rtIdx.Count -eq 1 -and $wiIdx -gt $rtIdx[0] -and $script:graphCalls -eq 0 -and
+        $rtText -match [regex]::Escape("'App' is published with a maximum run time of 30 minutes") -and $rtText -match '69113' -and $rtText -match 'This only warns') {
+        Ok '-WhatIf, 30 minutes: exactly one warning (maximum run time of 30 minutes, 69113, This only warns) before the WhatIf line; no Graph call'
+    }
+    else { Bad "WhatIf 30: err='$err' runtimeWarnings=$($rtIdx.Count) at [$($rtIdx -join ',')] whatIf=$wiIdx graph=$($script:graphCalls) text='$rtText'" }
+    if (@([System.Text.Encoding]::UTF8.GetBytes($rtText) | Where-Object { $_ -gt 127 }).Count -eq 0) { Ok 'the warning is ASCII' } else { Bad 'the warning has non-ASCII characters' }
+
+    $warn = $null; $script:capturedBody = $null; $err = $null
+    try {
+        Publish-Win32ToolkitIntuneApp -ProjectPath $rt30.Project -IntuneWinPath $rt30.IntuneWin -Confirm:$false -ErrorAction Stop -WarningVariable warn 6>$null 3>$null | Out-Null
+    } catch { if ("$($_.Exception.Message)" -notmatch 'W32T_TEST_SENTINEL') { $err = $_ } }
+    if (-not $err -and $script:capturedBody -and $script:capturedBody.installExperience.maxRunTimeInMinutes -eq 30 -and
+        @($warn | Where-Object { "$_" -match 'maximum run time of 30 minutes' }).Count -eq 1) {
+        Ok 'live publish, 30 minutes: one warning, the app shell is still POSTed with maxRunTimeInMinutes 30 (not blocked, not changed)'
+    }
+    else { Bad "live 30 -> err='$err' body=$([bool]$script:capturedBody) maxRunTime=[$($script:capturedBody.installExperience.maxRunTimeInMinutes)] warnings=$(@($warn) -join ' | ')" }
+
+    # The warning names the value as "1 minute" for 1 and "<n> minutes" otherwise; the trailing " (" keeps
+    # 'of 1 minute' from also matching 'of 1 minutes'.
+    foreach ($case in @(
+            @{ Label = '1 minute';                         Max = 1;  Want = 1; Text = 'maximum run time of 1 minute (' }
+            @{ Label = '2 minutes';                        Max = 2;  Want = 1; Text = 'maximum run time of 2 minutes (' }
+            @{ Label = '31 minutes';                       Max = 31; Want = 0 }
+            @{ Label = 'no IntuneDefaults (default 60)';   Max = $null; Want = 0 }
+            @{ Label = '0 minutes (falls back to 60)';     Max = 0;  Want = 0 })) {
+        $projArgs = @{ Name = ('Runtime_' + ($case.Label -replace '[^A-Za-z0-9]', '')); Arch = 'x64'; InstallerType = 'exe' }
+        if ($null -ne $case.Max) { $projArgs['MaxRuntime'] = $case.Max }
+        $rp = New-Proj @projArgs
+        $warn = $null; $err = $null; $script:graphCalls = 0
+        try {
+            Publish-Win32ToolkitIntuneApp -ProjectPath $rp.Project -IntuneWinPath $rp.IntuneWin -WhatIf -Confirm:$false -ErrorAction Stop -WarningVariable warn 6>$null 3>$null | Out-Null
+        } catch { $err = $_ }
+        $rw = @($warn | Where-Object { "$_" -match 'maximum run time' })
+        if (-not $err -and $script:graphCalls -eq 0 -and $rw.Count -eq $case.Want -and ($case.Want -eq 0 -or "$($rw[0])" -match [regex]::Escape($case.Text))) {
+            Ok "$($case.Label) -> $($case.Want) maximum-run-time warning(s)$(if ($case.Text) { " ('$($case.Text)')" }), dry run clean"
+        }
+        else { Bad "$($case.Label) -> err='$err' graph=$($script:graphCalls) warnings=$(@($warn) -join ' | ')" }
+    }
+
+    # B11: the help says the F4 warning repeats per publish, AFTER the advisory's once-per-action statement.
+    $helpText = ((Get-Command -Name Publish-Win32ToolkitIntuneApp).ScriptBlock.ToString()) -replace '\s+', ' '
+    $onceAt = $helpText.IndexOf('prints them once.', [System.StringComparison]::Ordinal)
+    $f4At = $helpText.IndexOf('maximum run time (IntuneDefaults.MaxRuntimeMinutes', [System.StringComparison]::Ordinal)
+    $everyAt = $helpText.IndexOf('on every publish', [System.StringComparison]::Ordinal)
+    $sentenceStart = if ($f4At -ge 0) { $helpText.LastIndexOf('. ', $f4At, [System.StringComparison]::Ordinal) } else { -1 }
+    if ($onceAt -ge 0 -and $f4At -gt $onceAt -and $everyAt -gt $onceAt -and $everyAt -gt $sentenceStart -and $everyAt -lt $f4At) {
+        Ok 'help: the maximum-run-time sentence (with "on every publish") comes after "prints them once."'
+    }
+    else { Bad "help order: once=$onceAt f4=$f4At every=$everyAt sentenceStart=$sentenceStart" }
 }
 finally {
     Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue

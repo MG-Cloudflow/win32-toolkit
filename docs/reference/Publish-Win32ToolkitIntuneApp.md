@@ -51,6 +51,11 @@ uninstall cleanup paths fail the check Export enforces: a package exported befor
 carries them, so re-export packages built before this check, then publish them.
 The warnings are
 shown once per action: Export-Win32ToolkitIntuneWin -PublishIntune -PublishUpdate prints them once.
+Before the -WhatIf gate too, and on every publish (so twice for
+Export-Win32ToolkitIntuneWin -PublishIntune -PublishUpdate, like the prerelease warning), it also
+warns when the app's maximum run time (IntuneDefaults.MaxRuntimeMinutes from the org template) is
+30 minutes or less: the uninstall stops an EXE uninstaller at 30 minutes (exit code 69113), and a
+lower Intune limit stops the deployment first.
 
 Command lines (from Get-Win32ToolkitIntuneCommandLine, the single source; the app runs as SYSTEM):
 

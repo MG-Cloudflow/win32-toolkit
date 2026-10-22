@@ -54,7 +54,8 @@ Everything above can be adjusted in the Intune portal after upload. The org temp
 restart behavior, the maximum run time and the minimum OS for every app it publishes (see
 [Org templates](org-templates.md#intune-publish-defaults)). Keep the maximum run time above 30 minutes
 (default 60): the uninstall stops an EXE uninstaller at 30 minutes, and a lower Intune limit would stop it
-first, without the toolkit's exit code.
+first, without the toolkit's exit code. Publish, and its `-WhatIf` dry run, warns when the maximum run time
+is 30 minutes or less; it never stops the publish.
 
 **Why `Invoke-AppDeployToolkit.exe`.** The Intune Management Extension is a 32-bit process, so a bare
 `powershell.exe` in the command line starts the **32-bit** Windows PowerShell on a 64-bit device.

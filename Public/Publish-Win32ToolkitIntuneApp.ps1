@@ -29,6 +29,11 @@ function Publish-Win32ToolkitIntuneApp {
     uninstall cleanup paths fail the check Export enforces: a package exported before that check still
     carries them, so re-export packages built before this check, then publish them. The warnings are
     shown once per action: Export-Win32ToolkitIntuneWin -PublishIntune -PublishUpdate prints them once.
+    Before the -WhatIf gate too, and on every publish (so twice for
+    Export-Win32ToolkitIntuneWin -PublishIntune -PublishUpdate, like the prerelease warning), it also
+    warns when the app's maximum run time (IntuneDefaults.MaxRuntimeMinutes from the org template) is
+    30 minutes or less: the uninstall stops an EXE uninstaller at 30 minutes (exit code 69113), and a
+    lower Intune limit stops the deployment first.
 
     Command lines (from Get-Win32ToolkitIntuneCommandLine, the single source; the app runs as SYSTEM):
 
@@ -285,6 +290,16 @@ function Publish-Win32ToolkitIntuneApp {
         catch { Write-Verbose "Could not read the bundled PSAppDeployToolkit version: $($_.Exception.Message)" }
         if ($psadtVersion -and -not [string]::IsNullOrWhiteSpace([string]$psadtVersion.Prerelease)) {
             Write-Warning "'$displayName' bundles PSAppDeployToolkit $($psadtVersion.VersionText), a PRERELEASE (for testing only). Rebuild the project on a stable PSAppDeployToolkit before you assign it to production devices."
+        }
+
+        # ── Maximum run time (installer-identity PR 2 follow-up F4, D11) ──────────
+        # Warn only, before the -WhatIf gate so a dry run shows it too: the uninstall stops an EXE uninstaller after
+        # 30 minutes (exit code 69113); an Intune limit at or below that stops the deployment first, without that code.
+        if ($maxRuntime -le 30) {
+            $maxRuntimeText = if ($maxRuntime -eq 1) { '1 minute' } else { "$maxRuntime minutes" }
+            Write-Warning ("'$displayName' is published with a maximum run time of $maxRuntimeText (IntuneDefaults.MaxRuntimeMinutes from the org template, copied into SupportFiles\AppConfig.json when the project was created). " +
+                'The uninstall stops an EXE uninstaller after 30 minutes with exit code 69113; with an Intune limit of 30 minutes or less, Intune stops the deployment first and reports a timeout instead. ' +
+                "Keep it above 30 minutes (default 60): change it in the org template and re-create the project, or change the app's maximum run time in the Intune portal. This only warns.")
         }
 
         # ── Package advisory (D1, L22) ────────────────────────────────────────────
