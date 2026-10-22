@@ -650,6 +650,54 @@ finally { $script:W32TUpdateLegContext = $null }
 if ($r16l.Calls -eq 0 -and $r16l.Warnings.Count -eq 0 -and $r16l.Ran -eq 1) { Ok 'inside a Both leg: no second check, no second warning (the outer call already warned)' } else { Bad "leg: calls=$($r16l.Calls) warnings=$($r16l.Warnings.Count) ran=$($r16l.Ran)" }
 $script:cleanupFindings = @(); $script:backend = 'HyperV'
 
+# Installer-identity PR 2 follow-up F10 (P3-guard-sb r2 #1): an unattended Sandbox test that completed waits for its own
+# sandbox to close (and closes a leftover window by the start-up wait's rule) before it returns; never otherwise.
+Write-Host '[17] unattended Sandbox: the own-sandbox wait (-OwnRun) only after a completed run (F10)' -ForegroundColor Cyan
+$script:freeCalls17 = [System.Collections.Generic.List[object]]::new()
+function Wait-Win32ToolkitSandboxFree {
+    param([int]$TimeoutSeconds, [switch]$OwnRun)
+    $script:freeCalls17.Add([pscustomobject]@{ TimeoutSeconds = $TimeoutSeconds; OwnRun = [bool]$OwnRun; AfterOutcome = $null -ne $script:recorded })
+    $true
+}
+$savedWait17 = ${function:Wait-Win32ToolkitUpdateAssertion}
+$script:verdict17 = $true
+function Wait-Win32ToolkitUpdateAssertion { param($ProjectPath, $Backend, $TimeoutMinutes, $PollSeconds, $LogFileName, $Label) $script:verdict17 }
+$script:launch17 = $true
+function Invoke-Win32ToolkitTestRun { param($Backend, $SandboxConfigPath) $script:launched++; [pscustomobject]@{ Launched = $script:launch17 } }
+$script:depCount = 0; $script:procs = @(); $script:preBlocked = $false
+foreach ($case in @(
+        @{ Tag = 'Sandbox unattended, passed';            Backend = 'Sandbox'; Unattended = $true;  Launch = $true;  Verdict = $true;  Want = 1 }
+        @{ Tag = 'Sandbox unattended, failed';            Backend = 'Sandbox'; Unattended = $true;  Launch = $true;  Verdict = $false; Want = 1 }
+        @{ Tag = 'Sandbox unattended, no verdict';        Backend = 'Sandbox'; Unattended = $true;  Launch = $true;  Verdict = $null;  Want = 0 }
+        @{ Tag = 'Sandbox unattended, did not launch';    Backend = 'Sandbox'; Unattended = $true;  Launch = $false; Verdict = $true;  Want = 0 }
+        @{ Tag = 'Sandbox watched';                       Backend = 'Sandbox'; Unattended = $false; Launch = $true;  Verdict = $true;  Want = 0 }
+        @{ Tag = 'Hyper-V unattended';                    Backend = 'HyperV';  Unattended = $true;  Launch = $true;  Verdict = $true;  Want = 0 })) {
+    $script:backend = $case.Backend; $script:testMode = 'Interactive'
+    $script:launch17 = $case.Launch; $script:verdict17 = $case.Verdict; $script:recorded = $null; $script:freeCalls17.Clear()
+    $p17 = @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
+    if ($case.Unattended) { $p17['Unattended'] = $true }
+    $null = Test-Win32ToolkitProject @p17 3>$null 6>$null
+    $own17 = @($script:freeCalls17 | Where-Object { $_.OwnRun })
+    $guard17 = @($script:freeCalls17 | Where-Object { -not $_.OwnRun })
+    $ok17 = $own17.Count -eq $case.Want -and @($own17 | Where-Object { $_.TimeoutSeconds -ne 90 -or -not $_.AfterOutcome }).Count -eq 0 -and $null -ne $script:recorded
+    $guardOk = if ($case.Backend -eq 'Sandbox') { $guard17.Count -eq 1 -and $guard17[0].TimeoutSeconds -eq 90 } else { $guard17.Count -eq 0 }
+    if ($ok17 -and $guardOk) { Ok "$($case.Tag): $($case.Want) own-sandbox wait(s)$(if ($case.Want) { ' (-TimeoutSeconds 90 -OwnRun, after the outcome is recorded)' })" }
+    else { Bad "$($case.Tag): own=$(@($own17 | ForEach-Object { "$($_.TimeoutSeconds)/after=$($_.AfterOutcome)" }) -join ',') guard=$($guard17.Count) recorded=$($null -ne $script:recorded)" }
+}
+${function:Wait-Win32ToolkitUpdateAssertion} = $savedWait17
+. (Join-Path $repo 'Private\Wait-Win32ToolkitSandboxFree.ps1')   # the real wait again
+# The real wait with -OwnRun returns without a real wait here: no sandbox process of this session ($true, at once; the
+# process shadow is empty), or no wsb answer ($false: at once without wsb.exe; with wsb.exe after one real 2 s poll, the
+# second failed answer in a row) - either way well under 30 s.
+$script:backend = 'Sandbox'; $script:launch17 = $true; $script:verdict17 = $true
+${function:Wait-Win32ToolkitUpdateAssertion} = { param($ProjectPath, $Backend, $TimeoutMinutes, $PollSeconds, $LogFileName, $Label) $script:verdict17 }
+$sw17 = [System.Diagnostics.Stopwatch]::StartNew()
+$v17 = Test-Win32ToolkitProject -ProjectPath $proj -Scenario InstallUninstall -Unattended 3>$null 6>$null
+$sw17.Stop()
+if ($v17 -eq $true -and $sw17.Elapsed.TotalSeconds -lt 30) { Ok "with the real wait the verdict is returned unchanged, without waiting ($([int]$sw17.Elapsed.TotalSeconds) s)" } else { Bad "real wait: verdict=$v17 took $($sw17.Elapsed.TotalSeconds) s" }
+${function:Wait-Win32ToolkitUpdateAssertion} = $savedWait17
+$script:backend = 'HyperV'
+
 Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''

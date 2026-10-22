@@ -14,12 +14,20 @@
           wsb lists a sandbox, never with another sandbox process left, never without wsb (process check as
           before); a window that appears during the grace (a sandbox that is starting) restarts it; another
           session's window (another user's sandbox) is never closed; wsb is asked again right before the
-          close; a window that survives the close keeps the wait going
+          close; a window that survives the close keeps the wait going; one failed wsb answer is tolerated (R1 #2)
+          and restarts the grace, a good answer resets the count, two failed answers in a row fall back to the
+          process check
       [4] Close-Win32ToolkitSandboxClient: CloseMainWindow first, Kill only what is still running after the
           wait, only client-window processes of this session (never WindowsSandboxServer), never throws
       [5] Source checks (and wsb.exe is stopped alone, never with its process tree)
       [6] No error noise: the real Test-Win32ToolkitSandboxRunning and the wait's own process lookup leave
           nothing in $Error or a caller's -ErrorVariable
+      [7] -OwnRun (installer-identity PR 2 follow-up F10, an unattended test's own sandbox): only this session's
+          sandbox processes count as still open; without wsb.exe no wait; the same close rule; its own three lines
+          and a neutral line at the timeout; one failed wsb answer during it no longer skips the close (R1 #2),
+          neither at the first answer (the pre-check right after the sandbox shut down); two in a row there -> no wait
+      [8] R1 #2 end to end (the real parser, a fake 'wsb list --raw'): a non-JSON or truncated answer is a failed
+          answer, never "no sandbox"; one is tolerated, two in a row fall back to the process check
 
     No sandbox is started, stopped or closed.
 
@@ -164,10 +172,10 @@ function Close-Win32ToolkitSandboxClient { param([object[]]$Process, [int]$WaitS
 $script:wsbAsked = 0
 $script:wsbAnswer = { [pscustomobject]@{ Count = 0 } }
 function Get-Win32ToolkitSandboxEnvironment { $script:wsbAsked++; & $script:wsbAnswer }
-function Start-Wait([object[]]$Procs, [scriptblock]$Answer, [int]$Timeout = 90, [scriptblock]$OnTick) {
+function Start-Wait([object[]]$Procs, [scriptblock]$Answer, [int]$Timeout = 90, [scriptblock]$OnTick, [switch]$OwnRun) {
     $script:procs = @($Procs); $script:wsbAnswer = $Answer; $script:wsbAsked = 0; $script:closeCalls.Clear(); $script:onTick = $OnTick
     $script:start = $script:now
-    $out = @(Wait-Win32ToolkitSandboxFree -TimeoutSeconds $Timeout 6>&1)
+    $out = @(Wait-Win32ToolkitSandboxFree -TimeoutSeconds $Timeout -OwnRun:$OwnRun 6>&1)
     $script:onTick = $null
     [pscustomobject]@{
         Result  = @($out | Where-Object { $_ -is [bool] }) | Select-Object -Last 1
@@ -194,10 +202,10 @@ $client = New-FakeProcess 'WindowsSandboxRemoteSession' 22
 $r = Start-Wait @($client) $one
 if ($r.Result -eq $false -and $script:closeCalls.Count -eq 0 -and -not $client.HasExited -and $r.Elapsed -ge 90) { Ok 'wsb lists a sandbox -> nothing is closed; $false at the 90 s timeout' } else { Bad "running: result=$($r.Result) closes=$($script:closeCalls.Count)" }
 
-# (c) no wsb (missing, failed, unexpected output): the process check alone, as before; wsb asked once
+# (c) no wsb (missing, failed, unexpected output): two failed answers in a row, then the process check alone, as before
 $client = New-FakeProcess 'WindowsSandboxRemoteSession' 23
 $r = Start-Wait @($client) $unknown
-if ($r.Result -eq $false -and $script:closeCalls.Count -eq 0 -and $script:wsbAsked -eq 1) { Ok 'wsb unknown -> process check only (no close), wsb not asked again' } else { Bad "unknown: result=$($r.Result) closes=$($script:closeCalls.Count) asked=$($script:wsbAsked)" }
+if ($r.Result -eq $false -and $script:closeCalls.Count -eq 0 -and $script:wsbAsked -eq 2 -and $r.Elapsed -ge 90) { Ok 'wsb unknown -> asked twice (two failed answers in a row), then the process check only (no close), $false at the timeout' } else { Bad "unknown: result=$($r.Result) closes=$($script:closeCalls.Count) asked=$($script:wsbAsked)" }
 $client = New-FakeProcess 'WindowsSandboxRemoteSession' 25
 $script:exitAt = $script:sleeps + 3
 $r = Start-Wait @($client) $unknown -OnTick { if ($script:sleeps -ge $script:exitAt) { $client.HasExited = $true } }
@@ -296,6 +304,169 @@ else { Bad "survivor: result=$($r.Result) closes=$($script:closeCalls.Count) inf
 $opaque = New-FakeProcess 'WindowsSandboxRemoteSession' 71 -StartTimeThrows
 $r = Start-Wait @($opaque) $empty
 if ($r.Result -eq $false -and $script:closeCalls.Count -eq 0) { Ok 'a window whose start time cannot be read -> never closed' } else { Bad "opaque: result=$($r.Result) closes=$($script:closeCalls.Count)" }
+
+# (n) one failed wsb answer is tolerated (R1 #2: one transient non-JSON answer while a sandbox shut down): the next poll
+#     asks again, and a failed answer is never "no sandbox": the grace starts at the first good answer after it.
+#     Before: one failed answer turned wsb off for the rest of the wait (no close, $false at the timeout).
+$at = { ($script:now - $script:start).TotalSeconds }
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 91
+$r = Start-Wait @($client) { if ((& $at) -eq 2) { $null } else { & $empty } }
+$closeAt = if ($script:closeCalls.Count) { ($script:closeCalls[0].At - $script:start).TotalSeconds } else { -1 }
+if ($r.Result -eq $true -and $script:closeCalls.Count -eq 1 -and $script:closeCalls[0].Process[0].Id -eq 91 -and $closeAt -ge 24 -and $closeAt -le 30) { Ok "one failed wsb answer, then good ones -> still closed, 20 s after the first good answer ($closeAt s)" }
+else { Bad "one failure: result=$($r.Result) closes=$($script:closeCalls.Count) at=$closeAt asked=$($script:wsbAsked)" }
+#     a failed answer during the grace restarts it: the window is closed only once good answers say "no sandbox" for 20 s
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 92
+$r = Start-Wait @($client) { if ((& $at) -eq 12) { $null } else { & $empty } }
+$closeAt = if ($script:closeCalls.Count) { ($script:closeCalls[0].At - $script:start).TotalSeconds } else { -1 }
+if ($r.Result -eq $true -and $script:closeCalls.Count -eq 1 -and $closeAt -ge 34) { Ok "a failed answer at 12 s restarts the grace: closed at $closeAt s (not at 22 s)" }
+else { Bad "failure in the grace: result=$($r.Result) closes=$($script:closeCalls.Count) at=$closeAt" }
+#     a failed answer right before the close: not closed then; the next good answers start a new grace
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 93
+$script:lastAskAt = $null; $script:denied = $false
+$r = Start-Wait @($client) {
+    if ($script:lastAskAt -eq $script:now -and -not $script:denied) { $script:denied = $true; $null }
+    else { $script:lastAskAt = $script:now; & $empty }
+}
+$closeAt = if ($script:closeCalls.Count) { ($script:closeCalls[0].At - $script:start).TotalSeconds } else { -1 }
+if ($script:denied -and $r.Result -eq $true -and $script:closeCalls.Count -eq 1 -and $closeAt -ge 44) { Ok "the check right before the close fails once -> not closed then; closed after a new grace ($closeAt s)" }
+else { Bad "recheck failure: denied=$($script:denied) result=$($r.Result) closes=$($script:closeCalls.Count) at=$closeAt" }
+#     a good answer resets the count: failed, good, failed, then good -> never two in a row, still closed
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 94
+$r = Start-Wait @($client) { if ((& $at) -in 2, 6) { $null } else { & $empty } }
+$closeAt = if ($script:closeCalls.Count) { ($script:closeCalls[0].At - $script:start).TotalSeconds } else { -1 }
+if ($r.Result -eq $true -and $script:closeCalls.Count -eq 1 -and $closeAt -ge 28) { Ok "failed / good / failed / good -> not two in a row: closed at $closeAt s" }
+else { Bad "alternating: result=$($r.Result) closes=$($script:closeCalls.Count) at=$closeAt asked=$($script:wsbAsked)" }
+
+# (o) two failed wsb answers in a row: the process check alone for the rest of the wait, as before (nothing closed)
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 95
+$r = Start-Wait @($client) { if ((& $at) -in 6, 8) { $null } else { & $empty } }
+if ($r.Result -eq $false -and $script:closeCalls.Count -eq 0 -and -not $client.HasExited -and $script:wsbAsked -eq 4 -and $r.Elapsed -ge 90) { Ok 'good, good, failed, failed -> wsb not asked again (4 answers), nothing closed, $false at the timeout' }
+else { Bad "two failures: result=$($r.Result) closes=$($script:closeCalls.Count) asked=$($script:wsbAsked)" }
+#     the check right before the close fails, and so does the next poll's answer: two in a row as well
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 96
+$script:lastAskAt = $null; $script:denied = $false
+$r = Start-Wait @($client) {
+    if ($script:denied) { $null }
+    elseif ($script:lastAskAt -eq $script:now) { $script:denied = $true; $null }
+    else { $script:lastAskAt = $script:now; & $empty }
+}
+if ($script:denied -and $r.Result -eq $false -and $script:closeCalls.Count -eq 0 -and $script:wsbAsked -eq 13) { Ok 'a failed check right before the close plus a failed answer at the next poll -> two in a row: not asked again (13 answers), nothing closed' }
+else { Bad "recheck + next failure: denied=$($script:denied) result=$($r.Result) closes=$($script:closeCalls.Count) asked=$($script:wsbAsked)" }
+
+# --- [7] -OwnRun: the returning unattended test's own sandbox (installer-identity PR 2 follow-up F10) --------------------
+Write-Host "[7] Wait-Win32ToolkitSandboxFree -OwnRun: the test's own leftover window, this session only, never without wsb" -ForegroundColor Cyan
+$ownWait = "Waiting up to 90 s for this test's Windows Sandbox to close..."
+$ownClosed = [string][char]0x2713 + " This test's Windows Sandbox closed."
+$ownOpen = 'A Windows Sandbox window of this session is still open after 90 s; the next test waits for it to close.'
+# Is wsb.exe installed? The -OwnRun pre-check looks only after a failed first answer (installed by default here; the
+# real wsb.exe on this host is never asked: Get-Win32ToolkitSandboxEnvironment is shadowed).
+$script:wsbInstalled = $true
+$script:wsbLookups = 0
+function Get-Command {
+    param([string[]]$Name, $CommandType, $ErrorAction)
+    if ($Name -contains 'wsb.exe') { $script:wsbLookups++; if ($script:wsbInstalled) { [pscustomobject]@{ Name = 'wsb.exe'; Source = 'C:\fake\wsb.exe' } }; return }
+    Microsoft.PowerShell.Core\Get-Command @PSBoundParameters
+}
+# (a) nothing of this sandbox is left: $true at once, silent, wsb not asked
+$script:sleeps = 0
+$r = Start-Wait @() $empty -OwnRun
+if ($r.Result -eq $true -and $r.Info.Count -eq 0 -and $script:wsbAsked -eq 0 -and $script:sleeps -eq 0) { Ok 'no sandbox process -> $true at once, no output, wsb not asked, no sleep' } else { Bad "own free: result=$($r.Result) info=$($r.Info -join ' | ') asked=$($script:wsbAsked) sleeps=$($script:sleeps)" }
+# (b) no wsb.exe: nothing can be judged -> $false at once (the next run's wait handles the window), silent, nothing closed (Fd8)
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 81
+$script:sleeps = 0; $script:wsbInstalled = $false
+$r = Start-Wait @($client) $unknown -OwnRun
+$script:wsbInstalled = $true
+if ($r.Result -eq $false -and $script:sleeps -eq 0 -and $r.Info.Count -eq 0 -and $script:closeCalls.Count -eq 0 -and $script:wsbAsked -eq 1 -and -not $client.HasExited) { Ok 'wsb.exe not installed -> $false at once: zero sleeps, no output, nothing closed' }
+else { Bad "own no wsb: result=$($r.Result) sleeps=$($script:sleeps) info=$($r.Info -join ' | ') closes=$($script:closeCalls.Count) asked=$($script:wsbAsked)" }
+# (c) the F10 case: wsb empty, only this session's stale client window -> closed after the 20 s grace, three exact lines
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 82
+$r = Start-Wait @($client) $empty -OwnRun
+$closeAt = if ($script:closeCalls.Count) { ($script:closeCalls[0].At - $script:start).TotalSeconds } else { -1 }
+$want = @($ownWait, 'Windows Sandbox reports no running sandbox, but its window (WindowsSandboxRemoteSession) is still open after 20 s: closing it.', $ownClosed)
+if ($r.Result -eq $true -and $script:closeCalls.Count -eq 1 -and $script:closeCalls[0].Process[0].Id -eq 82 -and $closeAt -ge 20 -and $closeAt -le 26) { Ok "wsb empty + this test's stale window -> closed after the 20 s grace ($closeAt s), `$true" }
+else { Bad "own stale: result=$($r.Result) closes=$($script:closeCalls.Count) at=$closeAt" }
+if (($r.Info -join "`n") -ceq ($want -join "`n")) { Ok "exactly: '$ownWait' / the closing line / '$ownClosed'" } else { Bad "own lines: $($r.Info -join ' | ')" }
+# (d) wsb lists the sandbox the whole time: nothing closed, $false at 90 s, a neutral last line
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 83
+$r = Start-Wait @($client) $one -OwnRun
+if ($r.Result -eq $false -and $script:closeCalls.Count -eq 0 -and -not $client.HasExited -and $r.Elapsed -ge 90 -and @($r.Info)[-1] -ceq $ownOpen -and $r.Info.Count -eq 2 -and $r.Info[0] -ceq $ownWait) { Ok "wsb lists it -> nothing closed; `$false at 90 s, last line '$ownOpen'" }
+else { Bad "own listed: result=$($r.Result) closes=$($script:closeCalls.Count) elapsed=$($r.Elapsed) info=$($r.Info -join ' | ')" }
+# (e) only ANOTHER session's window (another user's sandbox): not this test's -> $true at once, silent, wsb not asked (B6)
+$foreign = New-FakeProcess 'WindowsSandboxRemoteSession' 84 -SessionId ($script:mySession + 1)
+$script:sleeps = 0
+$r = Start-Wait @($foreign) $empty -OwnRun
+if ($r.Result -eq $true -and $script:sleeps -eq 0 -and $r.Info.Count -eq 0 -and $script:wsbAsked -eq 0 -and $script:closeCalls.Count -eq 0 -and -not $foreign.HasExited) { Ok "another session's window only -> `$true at once: zero sleeps, no output, wsb not asked, nothing closed" }
+else { Bad "own + foreign only: result=$($r.Result) sleeps=$($script:sleeps) info=$($r.Info -join ' | ') asked=$($script:wsbAsked)" }
+# (f) this test's stale window plus another session's window: the F1 rule closes nothing; $false at 90 s
+$mine = New-FakeProcess 'WindowsSandboxRemoteSession' 85
+$foreign = New-FakeProcess 'WindowsSandboxClient' 86 -SessionId ($script:mySession + 1)
+$r = Start-Wait @($mine, $foreign) $empty -OwnRun
+if ($r.Result -eq $false -and $script:closeCalls.Count -eq 0 -and -not $mine.HasExited -and -not $foreign.HasExited -and $r.Elapsed -ge 90 -and @($r.Info)[-1] -ceq $ownOpen) { Ok "this test's window plus another session's -> nothing closed (F1 rule), `$false at 90 s" }
+else { Bad "own + foreign: result=$($r.Result) closes=$($script:closeCalls.Count) info=$($r.Info -join ' | ')" }
+# (g) R1 #2: one failed wsb answer during the own-run wait no longer skips the close (before: the process check alone,
+#     nothing closed, $false at 90 s and the still-open line); two in a row still fall back to the process check
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 88
+$r = Start-Wait @($client) { if ((& $at) -eq 2) { $null } else { & $empty } } -OwnRun
+$closeAt = if ($script:closeCalls.Count) { ($script:closeCalls[0].At - $script:start).TotalSeconds } else { -1 }
+if ($r.Result -eq $true -and $script:closeCalls.Count -eq 1 -and $script:closeCalls[0].Process[0].Id -eq 88 -and $closeAt -ge 24 -and ($r.Info -join "`n") -ceq ($want -join "`n")) { Ok "one failed wsb answer during the own-run wait -> still closed ($closeAt s), the same three lines" }
+else { Bad "own one failure: result=$($r.Result) closes=$($script:closeCalls.Count) at=$closeAt info=$($r.Info -join ' | ')" }
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 89
+$r = Start-Wait @($client) { if ((& $at) -in 2, 4) { $null } else { & $empty } } -OwnRun
+if ($r.Result -eq $false -and $script:closeCalls.Count -eq 0 -and -not $client.HasExited -and $script:wsbAsked -eq 3 -and $r.Elapsed -ge 90 -and @($r.Info)[-1] -ceq $ownOpen) { Ok "two failed wsb answers in a row during the own-run wait -> process check only, nothing closed, `$false at 90 s, '$ownOpen'" }
+else { Bad "own two failures: result=$($r.Result) closes=$($script:closeCalls.Count) asked=$($script:wsbAsked) info=$($r.Info -join ' | ')" }
+# (h) R1 #2 at the pre-check: the FIRST answer (asked right after the test's sandbox shut down, when wsb glitches) fails
+#     once and wsb.exe is installed -> asked again after one poll, then the same wait and close as (c), 2 s later.
+#     Before: $false at once, silent, and the leftover window stayed open.
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 110
+$script:sleeps = 0; $script:wsbLookups = 0
+$r = Start-Wait @($client) { if ((& $at) -eq 0) { $null } else { & $empty } } -OwnRun
+$closeAt = if ($script:closeCalls.Count) { ($script:closeCalls[0].At - $script:start).TotalSeconds } else { -1 }
+if ($r.Result -eq $true -and $script:closeCalls.Count -eq 1 -and $script:closeCalls[0].Process[0].Id -eq 110 -and $client.HasExited -and $closeAt -ge 24 -and $closeAt -le 26 -and $script:wsbLookups -eq 1) { Ok "a failed first answer at the pre-check, then the empty list -> asked again after one poll, closed at $closeAt s, `$true" }
+else { Bad "own pre-check one failure: result=$($r.Result) closes=$($script:closeCalls.Count) at=$closeAt lookups=$($script:wsbLookups) asked=$($script:wsbAsked) info=$($r.Info -join ' | ')" }
+if (($r.Info -join "`n") -ceq ($want -join "`n")) { Ok "the same three lines: '$ownWait' / the closing line / '$ownClosed'" } else { Bad "own pre-check one failure lines: $($r.Info -join ' | ')" }
+# (i) two failed answers in a row at the pre-check: $false after that one poll, silent (no "Waiting" line), nothing closed
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 111
+$script:sleeps = 0
+$r = Start-Wait @($client) { if ((& $at) -le 2) { $null } else { & $empty } } -OwnRun
+if ($r.Result -eq $false -and $r.Info.Count -eq 0 -and $script:closeCalls.Count -eq 0 -and -not $client.HasExited -and $script:wsbAsked -eq 2 -and $script:sleeps -eq 1 -and $r.Elapsed -eq 2) { Ok 'two failed answers in a row at the pre-check -> asked twice, $false after one poll (2 s): no output, nothing closed' }
+else { Bad "own pre-check two failures: result=$($r.Result) info=$($r.Info -join ' | ') closes=$($script:closeCalls.Count) asked=$($script:wsbAsked) sleeps=$($script:sleeps) elapsed=$($r.Elapsed)" }
+# (j) a failed first answer, and the window closes on its own during that poll: $true, silent, wsb not asked again
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 112
+$r = Start-Wait @($client) $unknown -OwnRun -OnTick { $client.HasExited = $true }
+if ($r.Result -eq $true -and $r.Info.Count -eq 0 -and $script:closeCalls.Count -eq 0 -and $script:wsbAsked -eq 1 -and $r.Elapsed -eq 2) { Ok 'a failed first answer and the sandbox closes within the poll -> $true, no output, wsb asked once' }
+else { Bad "own pre-check then closed: result=$($r.Result) info=$($r.Info -join ' | ') closes=$($script:closeCalls.Count) asked=$($script:wsbAsked) elapsed=$($r.Elapsed)" }
+Remove-Item -LiteralPath Function:\Get-Command
+# Without -OwnRun nothing changed: the start-up wait's lines ([3] covers its rule).
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 87
+$r = Start-Wait @($client) $empty
+if (@($r.Info | Where-Object { $_ -like "*this test's*" -or $_ -like '*of this session is still open*' }).Count -eq 0 -and @($r.Info)[-1] -ceq ([string][char]0x2713 + ' Previous sandbox closed.')) { Ok "without -OwnRun: the start-up wait's own lines ('Previous sandbox closed.')" }
+else { Bad "start-up lines: $($r.Info -join ' | ')" }
+
+# --- [8] R1 #2 end to end: the real parser between the wait and a fake 'wsb list --raw' -----------------------
+Write-Host "[8] Wait-Win32ToolkitSandboxFree + the real parser: an unparseable 'wsb list --raw' is a failed answer, never 'no sandbox'" -ForegroundColor Cyan
+. (Join-Path $repo 'Private\Get-Win32ToolkitSandboxEnvironment.ps1')   # the real parser again ([3]/[7] shadowed it)
+$script:runnerAsked = 0
+$script:runnerOutput = $null
+function Invoke-Win32ToolkitWsbList { $script:runnerAsked++; [pscustomobject]@{ ExitCode = 0; Output = (& $script:runnerOutput); ErrorOutput = '' } }
+$emptyJson = '{"WindowsSandboxEnvironments":[]}'
+$garbled = 'Sandbox environment is shutting down'   # no JSON object (R1: one non-JSON answer, first character S)
+function Start-RunnerWait([object[]]$Procs, [scriptblock]$Output) {
+    $script:runnerAsked = 0; $script:runnerOutput = $Output
+    Start-Wait $Procs { throw 'the shadow is not used here' }
+}
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 101
+$r = Start-RunnerWait @($client) { if ((& $at) -eq 2) { $garbled } else { $emptyJson } }
+$closeAt = if ($script:closeCalls.Count) { ($script:closeCalls[0].At - $script:start).TotalSeconds } else { -1 }
+if ($r.Result -eq $true -and $script:closeCalls.Count -eq 1 -and $closeAt -ge 24) { Ok "one non-JSON answer, then the empty list -> closed 20 s after the first good answer ($closeAt s), not at once" }
+else { Bad "real parser, one garbled: result=$($r.Result) closes=$($script:closeCalls.Count) at=$closeAt asked=$($script:runnerAsked)" }
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 102
+$r = Start-RunnerWait @($client) { $garbled }
+if ($r.Result -eq $false -and $script:closeCalls.Count -eq 0 -and -not $client.HasExited -and $script:runnerAsked -eq 2) { Ok 'non-JSON answers only -> never taken as "no sandbox": asked twice, nothing closed, $false at the timeout' }
+else { Bad "real parser, garbled only: result=$($r.Result) closes=$($script:closeCalls.Count) asked=$($script:runnerAsked)" }
+$client = New-FakeProcess 'WindowsSandboxRemoteSession' 103
+$r = Start-RunnerWait @($client) { if ((& $at) -in 4, 6) { '{"WindowsSandboxEnvironments":[' } else { $emptyJson } }
+if ($r.Result -eq $false -and $script:closeCalls.Count -eq 0 -and $script:runnerAsked -eq 3) { Ok 'good, then two truncated JSON answers in a row -> not asked again (3 answers), nothing closed' }
+else { Bad "real parser, truncated: result=$($r.Result) closes=$($script:closeCalls.Count) asked=$($script:runnerAsked)" }
 
 # --- [5] Source checks -------------------------------------------------------------------------------------
 Write-Host '[5] Source checks: ASCII new files, C-2 catches, WindowsSandboxServer never targeted' -ForegroundColor Cyan

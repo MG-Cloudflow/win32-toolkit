@@ -330,7 +330,8 @@ Accept wildcard characters: False
 
 ### -Unattended
 Run back-to-back on either backend with no countdown or pause; under Sandbox the guest shuts
-itself down afterwards so chained runs proceed unaided.
+itself down afterwards (and, after a completed run, a window Windows Sandbox leaves open after
+that is closed before the command returns), so chained runs proceed unaided.
 The default is
 watched/interactive.
 Overrides the SandboxTestMode / HyperVTestMode config values; on a

@@ -107,7 +107,8 @@ function Test-Win32ToolkitProject {
     Sandbox with a warning).
 .PARAMETER Unattended
     Run back-to-back on either backend with no countdown or pause; under Sandbox the guest shuts
-    itself down afterwards so chained runs proceed unaided. The default is
+    itself down afterwards (and, after a completed run, a window Windows Sandbox leaves open after
+    that is closed before the command returns), so chained runs proceed unaided. The default is
     watched/interactive. Overrides the SandboxTestMode / HyperVTestMode config values; on a
     non-interactive host Unattended is auto-selected with a warning. Note the context difference:
     Sandbox-unattended runs the package -DeployMode Silent as the sandbox admin user, while
@@ -644,6 +645,11 @@ function Test-Win32ToolkitProject {
                 $runFolder = & $saveRunLog $runLog $(if ($launched) { 60 } else { 0 })
                 Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'InstallUninstall' -Backend 'Sandbox' `
                     -Mode $(if ($sbInteractive) { 'Interactive' } else { 'Unattended' }) -Verdict $iuVerdict -LogFileName 'InstallAssertions.log' -LogFolder $runFolder
+                # An unattended sandbox shuts itself down; Windows Sandbox can leave its window open after that. Close it
+                # now by the rule of the start-up wait (never while wsb lists a sandbox), so the next run and other tools
+                # find no sandbox (installer-identity PR 2 follow-up F10). Only after a completed run (a verdict): an
+                # inconclusive run's sandbox is usually still running. Never changes the verdict.
+                if ($launched -and -not $sbInteractive -and $null -ne $iuVerdict) { $null = Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90 -OwnRun }
                 return $iuVerdict
             }
 
@@ -1214,6 +1220,9 @@ function Test-Win32ToolkitProject {
                 Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'Sandbox' `
                     -Mode $(if ($sbInteractive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict -Baseline $baselineInfo -LogFolder $runFolder
                 if ($updVerdict -eq $false) { & $warnTechSwitch }
+                # The unattended sandbox's leftover window, as after the install/uninstall test (F10): only after a
+                # completed run, closed by the start-up wait's rule. Never changes the verdict.
+                if ($launched -and -not $sbInteractive -and $null -ne $updVerdict) { $null = Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90 -OwnRun }
                 return $updVerdict
             }
         }

@@ -766,7 +766,10 @@ try {
     #      keeps its own evidence. The sandbox launch is shadowed and writes what the guest would: the leg's
     #      UpdateAssertions.log and one exit-code line. The collector wait (60 s max) follows only a launched leg.
     $script:testBackend = 'Sandbox'; $script:testModeCfg = 'Unattended'
-    function Wait-Win32ToolkitSandboxFree { param($TimeoutSeconds) $null = $TimeoutSeconds; $true }
+    # Records the own-sandbox wait each completed unattended leg makes before it returns (F10); a plain function, so
+    # -OwnRun arrives in $args.
+    $script:ownRuns = [System.Collections.Generic.List[int]]::new()
+    function Wait-Win32ToolkitSandboxFree { param($TimeoutSeconds) if ($args -contains '-OwnRun') { $script:ownRuns.Add([int]$TimeoutSeconds) }; $true }
     ${function:New-Win32ToolkitSandboxConfig} = { '<Configuration/>' }
     $script:sbRuns = 0
     $script:sbLaunch = { $true }
@@ -781,9 +784,11 @@ try {
         Add-Content -LiteralPath (Join-Path $ld 'PsadtExitCodes.log') -Value "[t] update Install parent=x64-direct exit=0 result=Success (sandbox run $script:sbRuns)" -Encoding UTF8
         [pscustomobject]@{ Launched = $true }
     }
-    Clear-RunState; $script:collectWaits = @()
+    Clear-RunState; $script:collectWaits = @(); $script:ownRuns.Clear()
     $script:verdictQueue.Enqueue($true); $script:verdictQueue.Enqueue($false)
     $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -BaselineInstallerType Both -SpecificVersion '8.8.9' 6>&1 3>&1)
+    if (($script:ownRuns -join ',') -eq '90,90') { Ok 'Sandbox Both (F10): each launched leg with a verdict waits for its own sandbox (-TimeoutSeconds 90 -OwnRun) before it returns' }
+    else { Bad "own-sandbox waits: $($script:ownRuns -join ',')" }
     $lf = @($script:outcomes | ForEach-Object { [string]$_.LogFolder })
     $sbLeg = { param($i, $name) $f = Join-Path $np "$($lf[$i])\$name"; if ($lf[$i] -and (Test-Path -LiteralPath $f)) { Get-Content -LiteralPath $f -Raw } else { '' } }
     $s1 = [regex]::Match((& $sbLeg 0 'UpdateAssertions.log'), 'sandbox run (\d+)').Groups[1].Value
@@ -796,29 +801,61 @@ try {
     if (($script:collectWaits -join ',') -eq '60,60') { Ok 'Sandbox Both: one collector wait of 60 s after each launched leg' } else { Bad "collector waits: $($script:collectWaits -join ',')" }
     if (@($o.Values).Count -eq 1 -and $o.Values[0] -eq $false) { Ok 'Sandbox Both: the failed leg fails the combined verdict' } else { Bad "sandbox combined: $($o.Values -join ',')" }
     # A leg whose sandbox did not launch: no collector wait for it, and no folder of the other leg's logs.
-    Clear-RunState; $script:collectWaits = @(); $script:sbRuns = 0
+    Clear-RunState; $script:collectWaits = @(); $script:sbRuns = 0; $script:ownRuns.Clear()
     $script:sbLaunch = { param($n) $n -ne 2 }
     $script:verdictQueue.Enqueue($true); $script:verdictQueue.Enqueue($null)
     $null = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -BaselineInstallerType Both -SpecificVersion '8.8.9' 6>$null 3>$null
     $lf = @($script:outcomes | ForEach-Object { [string]$_.LogFolder })
     if (($script:collectWaits -join ',') -eq '60' -and $lf.Count -eq 2 -and $lf[0] -match '_Update_msi' -and -not $lf[1]) { Ok 'a leg that did not launch: no collector wait, no run folder (nothing of the other leg is filed under it)' }
     else { Bad "not launched: waits=$($script:collectWaits -join ',') folders=$($lf -join ' | ')" }
+    if (($script:ownRuns -join ',') -eq '90') { Ok 'F10: only the launched leg waits for its own sandbox' } else { Bad "own-sandbox waits (one leg not launched): $($script:ownRuns -join ',')" }
+    # F10 never follows a leg whose sandbox did not launch (even with a verdict) or a leg without a verdict (the assertion
+    # wait timed out: that sandbox is usually still running).
+    Clear-RunState; $script:sbRuns = 0; $script:ownRuns.Clear()
+    $script:verdictQueue.Enqueue($true); $script:verdictQueue.Enqueue($true)
+    $null = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -BaselineInstallerType Both -SpecificVersion '8.8.9' 6>$null 3>$null
+    if (($script:ownRuns -join ',') -eq '90' -and $script:outcomes.Count -eq 2) { Ok 'F10: a leg that did not launch makes no own-sandbox wait, whatever its verdict' } else { Bad "not launched, verdict: own=$($script:ownRuns -join ',') outcomes=$($script:outcomes.Count)" }
     $script:sbLaunch = { $true }
+    Clear-RunState; $script:sbRuns = 0; $script:ownRuns.Clear()
+    $script:verdictQueue.Enqueue($null); $script:verdictQueue.Enqueue($false)
+    $null = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -BaselineInstallerType Both -SpecificVersion '8.8.9' 6>$null 3>$null
+    if (($script:ownRuns -join ',') -eq '90' -and $script:outcomes.Count -eq 2) { Ok 'F10: a launched leg without a verdict makes no own-sandbox wait; the next leg with one does' } else { Bad "no verdict: own=$($script:ownRuns -join ',') outcomes=$($script:outcomes.Count)" }
+    # A single (not Both) unattended Sandbox Update: one own-sandbox wait.
+    Clear-RunState; $script:sbRuns = 0; $script:ownRuns.Clear()
+    $null = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -SpecificVersion '8.8.9' 6>$null 3>$null
+    if (($script:ownRuns -join ',') -eq '90') { Ok 'F10: a single unattended Sandbox Update with a verdict waits for its own sandbox once' } else { Bad "single: own=$($script:ownRuns -join ',')" }
     $script:testBackend = 'HyperV'
 
     # (g) Both on watched Sandbox: close the previous leg's sandbox first (up to 600 s), else that leg has no verdict
     $script:testBackend = 'Sandbox'; $script:testModeCfg = 'Interactive'
     $script:freeCalls = [System.Collections.Generic.List[int]]::new()
-    function Wait-Win32ToolkitSandboxFree { param($TimeoutSeconds) $script:freeCalls.Add([int]$TimeoutSeconds); [int]$TimeoutSeconds -ne 600 }
+    # The own-sandbox wait (F10, -OwnRun in $args) is filed apart from the start-up and leg-2 waits: a watched run never
+    # makes it (the user is still checking that sandbox).
+    $script:watchedOwnRuns = [System.Collections.Generic.List[int]]::new()
+    function Wait-Win32ToolkitSandboxFree {
+        param($TimeoutSeconds)
+        if ($args -contains '-OwnRun') { $script:watchedOwnRuns.Add([int]$TimeoutSeconds); return $true }
+        $script:freeCalls.Add([int]$TimeoutSeconds); [int]$TimeoutSeconds -ne 600
+    }
     ${function:New-CountdownScript} = { 'countdown.ps1' }
     ${function:New-Win32ToolkitSandboxConfig} = { '<Configuration/>' }
     function Invoke-Win32ToolkitTestRun { [pscustomobject]@{ Launched = $true } }
-    Clear-RunState
+    Clear-RunState; $script:watchedOwnRuns.Clear()
+    $script:verdictQueue.Enqueue($true)   # leg 1 launched with a verdict
     $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -BaselineInstallerType Both -SpecificVersion '8.8.9' 6>&1 3>&1)
     if ($script:freeCalls -contains 600 -and @($o.Info | Where-Object { $_ -eq 'Close the Windows Sandbox of the previous leg to start the exe leg' }).Count -eq 1) { Ok 'watched Sandbox: asks to close the previous sandbox and waits up to 600 s before leg 2' }
     else { Bad "sandbox wait: $($script:freeCalls -join ',') info=$(@($o.Info | Where-Object { $_ -like 'Close*' }) -join '|')" }
     if ($script:dlCalls.Count -eq 1 -and $script:outcomes.Count -eq 1 -and $o.Values.Count -eq 0 -and @($o.Warnings | Where-Object { $_ -like '*still open after 10 minutes*' }).Count -eq 1) { Ok 'still busy -> that leg did not run (warning), combined verdict $null' }
     else { Bad "busy: calls=$($script:dlCalls.Count) outcomes=$($script:outcomes.Count) values=$($o.Values -join ',')" }
+    if ($script:watchedOwnRuns.Count -eq 0 -and $script:outcomes.Count -eq 1 -and $true -eq $script:outcomes[0].Verdict) { Ok 'watched Sandbox Both (F10): the launched leg with a verdict makes no own-sandbox wait (-OwnRun)' }
+    else { Bad "watched Both own-sandbox waits: $($script:watchedOwnRuns -join ',') outcomes=$($script:outcomes.Count)" }
+    # A single watched Sandbox Update, launched, with a verdict: no own-sandbox wait either (no 90 s wait and no 'still
+    # open' line at the end while the user checks the sandbox).
+    Clear-RunState; $script:watchedOwnRuns.Clear()
+    $script:verdictQueue.Enqueue($true)
+    $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -SpecificVersion '8.8.9' 6>&1 3>&1)
+    if ($script:watchedOwnRuns.Count -eq 0 -and $script:outcomes.Count -eq 1 -and @($o.Values) -contains $true) { Ok 'watched Sandbox Update (F10): launched with a verdict, no own-sandbox wait (-OwnRun)' }
+    else { Bad "watched single own-sandbox waits: $($script:watchedOwnRuns -join ',') outcomes=$($script:outcomes.Count) values=$($o.Values -join ',')" }
     # F5 on the Sandbox backend with SandboxTestMode=Unattended (the campaign's configuration): no version given ->
     # the previous version with one warning, never the picker, and a verdict.
     $script:testModeCfg = 'Unattended'

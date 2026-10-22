@@ -402,3 +402,8 @@ so in one line, and starts the next run. A sandbox that `wsb` still lists, such 
 checking, is never closed, and neither is a window that appears meanwhile (a sandbox that is starting) or
 another user's sandbox. Without `wsb`, or when the window cannot be closed, the toolkit waits for the window
 as before.
+An unattended Sandbox test that completed does the same for its own sandbox before it returns: once
+`wsb` reports that the sandbox has shut itself down, a window Windows Sandbox left open is closed after the
+same 20 seconds, so the next run, or another tool, finds no sandbox running. It waits up to 90 seconds for
+this, looks only at this session's Windows Sandbox windows, and never closes anything while `wsb` still
+lists the sandbox; without `wsb`, or after an inconclusive run, it leaves the window to the next run's wait.
