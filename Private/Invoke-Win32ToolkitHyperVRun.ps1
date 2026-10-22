@@ -17,7 +17,12 @@ function Invoke-Win32ToolkitHyperVRun {
         Ordered phases to run, each an object with: Label, Command (a 5.1-safe guest command string),
         and optional IgnoreExit ([bool], default $false) and SuccessExitCodes ([int[]], default @(0): a
         warning is printed only for an exit code outside them). A DepPhase that fails skips every later
-        phase except those with Always = $true (log collection).
+        phase except those with Always = $true (log collection). An Intune-parity phase may name the
+        likely cause of exit code 1460 (the guest runner stopped the package at its 25-minute limit) with
+        the optional key ParityHint, a constant set by the caller: 'Dialog41' (a PSADT 4.1 dialog waiting
+        for the user signed in to the VM), 'Dialog' (a PSADT dialog, or an installer that did not finish)
+        or 'Uninstaller' (the uninstaller or a child process it waits for). The warning then adds that
+        cause and what to do; without the key, or with another value, it names the exit code only.
     .PARAMETER Output
         Project-relative globs to copy back from the guest after the phases (default the capture JSON +
         Sandbox\Logs).
@@ -198,7 +203,19 @@ function Invoke-Win32ToolkitHyperVRun {
             # A phase may declare its success codes (PSADT/Intune: 0, 1707, 3010, 1641); otherwise only 0 is.
             $okExit = if ($ph.SuccessExitCodes) { @($ph.SuccessExitCodes) } else { @(0) }
             if (-not $ph.IgnoreExit -and $okExit -notcontains $exit) {
-                Write-Warning "Guest phase '$($ph.Label)' exited with code $exit."
+                # 1460 = the guest runner stopped the package at its 25-minute limit (New-Win32ToolkitPackageRunnerScript).
+                # The phase names the likely cause with ParityHint, a host constant set by Test-Win32ToolkitProject
+                # (never data); the texts are constants here (installer-identity PR 2, L16).
+                $hint = ''
+                if ($exit -eq 1460) {
+                    switch ([string]$ph.ParityHint) {
+                        'Dialog41'    { $hint = ' In an unattended Intune-parity run this usually means a PSADT dialog was waiting for the user signed in to the VM: PSADT 4.1 shows its welcome dialog in Auto mode when a user is signed in and the app has no processes to close. Run the test watched (without -Unattended) to see and answer it, or list the app''s process in ProcessesToClose; the PSADT log under Sandbox\Logs shows the last dialog it opened.' }
+                        'Dialog'      { $hint = ' In an unattended Intune-parity run this often means a PSADT dialog was waiting for the user signed in to the VM (for example because a listed process to close was running), or the installer itself did not finish. Run the test watched (without -Unattended) to see it; the PSADT log under Sandbox\Logs shows where it stopped.' }
+                        'Uninstaller' { $hint = ' The uninstaller, or a child process it waits for, was still running at the test runner''s 25-minute limit; on devices, a project created with this win32-toolkit version stops it at 30 minutes with exit code 69113. The PSADT log under Sandbox\Logs shows the command it was running.' }
+                    }
+                }
+                if ($hint) { Write-Warning ("Guest phase '$($ph.Label)' exited with code 1460: the guest runner stopped the package at its 25-minute limit." + $hint) }
+                else { Write-Warning "Guest phase '$($ph.Label)' exited with code $exit." }
                 if ($ph.DepPhase) {
                     Write-Warning 'A declared dependency failed to install: the app phases are skipped (Intune would not install the app either).'
                     $depFailed = $true

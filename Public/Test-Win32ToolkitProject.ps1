@@ -452,11 +452,12 @@ function Test-Win32ToolkitProject {
                         # INTUNE PARITY: the exact published command line (Get-Win32ToolkitIntuneCommandLine,
                         # via Sandbox\IntuneCommandLine.json) from a 32-bit cmd.exe parent, as SYSTEM, in the
                         # package folder, with no -DeployMode — the way the IME launches it. Replaces the old
-                        # 64-bit '.ps1 -DeployMode Silent' runs (spec Q7).
+                        # 64-bit '.ps1 -DeployMode Silent' runs (spec Q7). ParityHint names the likely cause
+                        # of exit code 1460 (the runner's 25-minute limit) in the provider's warning (L16).
                         $phases += @(
-                            @{ Label = 'Install (Intune parity)';   Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label app; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes }
+                            @{ Label = 'Install (Intune parity)';   Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label app; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes; ParityHint = 'Dialog' }
                             @{ Label = 'Assert: installed';         Command = "$assertCmd -Phase PostInstall"; IgnoreExit = $true }
-                            @{ Label = 'Uninstall (Intune parity)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Uninstall -Label app; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes }
+                            @{ Label = 'Uninstall (Intune parity)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Uninstall -Label app; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes; ParityHint = 'Uninstaller' }
                             @{ Label = 'Assert: uninstalled';       Command = "$assertCmd -Phase PostUninstall"; IgnoreExit = $true }
                             @{ Label = 'CollectLogs';               Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true; Always = $true }
                         )
@@ -1011,7 +1012,7 @@ function Test-Win32ToolkitProject {
                         $phases += @{ Label = 'Update (PSADT GUI)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -DeploymentType Install -DeployMode Interactive -Label update; exit $LASTEXITCODE'; Interactive = $true; SuccessExitCodes = $psadtSuccessCodes }
                     }
                     else {
-                        $phases += @{ Label = 'Update (Intune parity)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label update; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes }
+                        $phases += @{ Label = 'Update (Intune parity)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label update; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes; ParityHint = 'Dialog' }
                     }
                     $phases += @(
                         @{ Label = 'Assert: PostUpdate'; Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate" }

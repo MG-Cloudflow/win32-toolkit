@@ -140,6 +140,34 @@ if (-not ($w7 -match 'parity-3010') -and -not ($w7 -match 'parity-1641')) { Ok '
 if ($w7 -match "'parity-60008' exited with code 60008") { Ok '60008 outside SuccessExitCodes -> warned with the exact code' } else { Bad "warnings: $($w7 -join ' | ')" }
 if ($w7 -match "'plain-3010' exited with code 3010") { Ok 'no SuccessExitCodes -> only 0 is success (as before)' } else { Bad "warnings: $($w7 -join ' | ')" }
 if (-not ($w7 -match 'ignored-5')) { Ok 'IgnoreExit still silences the warning' } else { Bad "warnings: $($w7 -join ' | ')" }
+# Exit code 1460 = the guest runner's 25-minute limit: an Intune-parity phase names its likely cause through the
+# host constant ParityHint (installer-identity PR 2, L16); other phases and other codes keep the plain line.
+$warn7b = @()
+$script:log2 = @()
+$null = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(
+    @{ Label = 'p-dialog41';    Command = '1460'; SuccessExitCodes = $ok7; ParityHint = 'Dialog41' }
+    @{ Label = 'p-dialog';      Command = '1460'; SuccessExitCodes = $ok7; ParityHint = 'Dialog' }
+    @{ Label = 'p-uninstaller'; Command = '1460'; SuccessExitCodes = $ok7; ParityHint = 'Uninstaller' }
+    @{ Label = 'p-nokey';       Command = '1460'; SuccessExitCodes = $ok7 }
+    @{ Label = 'p-unknown';     Command = '1460'; SuccessExitCodes = $ok7; ParityHint = 'Something' }
+    @{ Label = 'p-exit0';       Command = '0';    SuccessExitCodes = $ok7; ParityHint = 'Dialog41' }
+    @{ Label = 'p-exit5';       Command = '5';    SuccessExitCodes = $ok7; ParityHint = 'Uninstaller' }
+) -WarningVariable warn7b 3>$null 6>$null
+$w7b = @($warn7b | ForEach-Object { "$_" })
+$for7 = { param($label) @($w7b | Where-Object { $_ -like "Guest phase '$label' *" }) }
+$d41 = @(& $for7 'p-dialog41')
+if ($d41.Count -eq 1 -and $d41[0] -match '25-minute limit' -and $d41[0] -match 'signed in' -and $d41[0] -match 'PSADT 4\.1' -and $d41[0] -match 'watched' -and $d41[0] -match 'ProcessesToClose') { Ok '1460 + Dialog41: names the 25-minute limit, the signed-in user, PSADT 4.1, a watched run and ProcessesToClose' } else { Bad "Dialog41: $($d41 -join ' | ')" }
+$dlg = @(& $for7 'p-dialog')
+if ($dlg.Count -eq 1 -and $dlg[0] -match '25-minute limit' -and $dlg[0] -match 'watched' -and $dlg[0] -notmatch 'PSADT 4\.1') { Ok '1460 + Dialog: the 25-minute limit and a watched run, no PSADT version claimed' } else { Bad "Dialog: $($dlg -join ' | ')" }
+$uni = @(& $for7 'p-uninstaller')
+if ($uni.Count -eq 1 -and $uni[0] -match 'uninstaller' -and $uni[0] -match '30 minutes' -and $uni[0] -match '69113' -and $uni[0] -notmatch 'dialog') { Ok '1460 + Uninstaller: names the uninstaller, the 30-minute device limit and 69113, no dialog' } else { Bad "Uninstaller: $($uni -join ' | ')" }
+foreach ($plain in 'p-nokey', 'p-unknown') {
+    $pl = @(& $for7 $plain)
+    if ($pl.Count -eq 1 -and $pl[0] -eq "Guest phase '$plain' exited with code 1460.") { Ok "1460 ($plain): the plain 'exited with code 1460' line" } else { Bad "${plain}: $($pl -join ' | ')" }
+}
+if (@(& $for7 'p-exit0').Count -eq 0) { Ok 'a ParityHint with exit code 0 -> no warning' } else { Bad "exit0: $((& $for7 'p-exit0') -join ' | ')" }
+$e5 = @(& $for7 'p-exit5')
+if ($e5.Count -eq 1 -and $e5[0] -eq "Guest phase 'p-exit5' exited with code 5.") { Ok 'a ParityHint with exit code 5 -> the plain line (the hint is for 1460 only)' } else { Bad "exit5: $($e5 -join ' | ')" }
 Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Read-Host, Function:\Start-Process, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential
 
 Write-Host '[8] the scheduled-task primitive is SYSTEM-only (dead Interactive principal removed, GAP1-01)' -ForegroundColor Cyan

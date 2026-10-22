@@ -86,6 +86,8 @@ if ((Pauses) -ge 1 -and (Inters) -ge 2) { Ok 'interactive phases: a Pause + GUI 
 $gui2 = @($script:hvPhase | Where-Object { $_.Interactive -and $_.Command })
 if ($gui2.Count -eq 2 -and @($gui2 | Where-Object { $_.Command -like "& 'C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1' -DeploymentType * -DeployMode Interactive -Label app; exit `$LASTEXITCODE" -and $_.Command -notmatch 'IntuneParity' -and (Test-CodesEqual $_.SuccessExitCodes) }).Count -eq 2) { Ok 'GUI phases run the package through the runner with -DeployMode Interactive (no parity), exact exit codes' } else { Bad "gui cmds: $(@($gui2.Command) -join ' | ')" }
 if ($script:hvOutput -contains 'Sandbox\Logs\*') { Ok 'collects Sandbox\Logs back' } else { Bad "output=$($script:hvOutput -join ',')" }
+# The 1460 hint key (installer-identity PR 2, L16) is for the Intune-parity phases only: no watched phase carries one.
+if (@($script:hvPhase | Where-Object { $_.ContainsKey('ParityHint') }).Count -eq 0) { Ok 'watched (GUI, assertion, pause, log) phases carry no ParityHint' } else { Bad "hinted: $(@($script:hvPhase | Where-Object { $_.ContainsKey('ParityHint') } | ForEach-Object { $_.Label }) -join ',')" }
 
 Write-Host '[3] HyperV -Unattended = SILENT (no pause, no interactive)' -ForegroundColor Cyan
 $script:backend = 'HyperV'; $script:procs = @(); $script:testMode = 'Interactive'
@@ -98,6 +100,10 @@ $unin3 = @($script:hvPhase | Where-Object { $_.Label -eq 'Uninstall (Intune pari
 if ($inst3.Command -eq '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label app; exit $LASTEXITCODE') { Ok 'unattended install = Intune-parity runner phase (exact command, literal $LASTEXITCODE)' } else { Bad "install cmd: $($inst3.Command)" }
 if ($unin3.Command -eq '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Uninstall -Label app; exit $LASTEXITCODE') { Ok 'unattended uninstall = Intune-parity runner phase' } else { Bad "uninstall cmd: $($unin3.Command)" }
 if ((Test-CodesEqual $inst3.SuccessExitCodes) -and (Test-CodesEqual $unin3.SuccessExitCodes)) { Ok 'parity phases carry SuccessExitCodes 0,1707,3010,1641' } else { Bad "codes: $($inst3.SuccessExitCodes -join ',') / $($unin3.SuccessExitCodes -join ',')" }
+# 1460 hint keys (L16): a dialog cause on the install, the uninstaller on the uninstall; the assertion and log phases none.
+if ($inst3.ParityHint -eq 'Dialog' -and $unin3.ParityHint -eq 'Uninstaller') { Ok "parity phases carry ParityHint (install '$($inst3.ParityHint)', uninstall '$($unin3.ParityHint)')" } else { Bad "hints: install '$($inst3.ParityHint)' uninstall '$($unin3.ParityHint)'" }
+$other3 = @($script:hvPhase | Where-Object { $_.Label -notlike '* (Intune parity)' -and $_.ContainsKey('ParityHint') })
+if ($other3.Count -eq 0) { Ok 'the assertion and log phases carry no ParityHint' } else { Bad "hinted: $(@($other3.Label) -join ',')" }
 $cmds3 = @($script:hvPhase.Command) -join ' | '
 if ($cmds3 -notmatch 'Invoke-AppDeployToolkit\.ps1' -and $cmds3 -notmatch '-DeployMode') { Ok 'no direct deploy-script call and no -DeployMode on the parity phases (D6)' } else { Bad "cmds=$cmds3" }
 if ($script:runnerGen -eq 1 -and (($script:order -join '>') -match '^runner>deps>hvrun$')) { Ok 'runner written BEFORE dependency staging and any phase' } else { Bad "order=$($script:order -join '>') gen=$script:runnerGen" }
@@ -166,6 +172,7 @@ if ($upd6.Command -eq '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -Deploymen
 $base6 = @($script:hvPhase | Where-Object { $_.Label -like 'Install baseline*' })[0]
 if ($base6.Command -eq '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -Path ''C:\PSADTOld\Invoke-AppDeployToolkit.ps1'' -DeployMode Silent -Label baseline; exit $LASTEXITCODE' -and (Test-CodesEqual $base6.SuccessExitCodes)) { Ok 'baseline project runs in its OWN process via the runner (-Label baseline), exact exit code' } else { Bad "baseline cmd: $($base6.Command)" }
 if ($script:waitArgs.Backend -eq 'HyperV' -and $script:waitArgs.TimeoutMinutes -le 1) { Ok 'waiter told HyperV + short timeout (no 30-min hang)' } else { Bad "waitArgs=$($script:waitArgs | Out-String)" }
+if (@($script:hvPhase | Where-Object { $_.ContainsKey('ParityHint') }).Count -eq 0) { Ok 'watched Update phases carry no ParityHint' } else { Bad 'a watched Update phase carries a ParityHint' }
 # The record names the baseline variant: a project baseline carries Source = project and that project's technology.
 $bl6 = $script:recorded.Baseline
 if ($bl6 -and $bl6.Source -eq 'project' -and $bl6.ProjectName -eq (Split-Path -Leaf $base) -and $bl6.Origin -eq 'Project' -and $bl6.InstallerType -eq 'nullsoft' -and $bl6.Family -eq 'exe' -and $bl6.Version -eq '1.0' -and $bl6.Unavailable -eq $false) { Ok 'the project-baseline record carries Baseline.Source = project, its folder leaf and its technology' } else { Bad "baseline record: $($bl6 | ConvertTo-Json -Compress)" }
@@ -179,6 +186,8 @@ if ($cmds7 -match '-DeployMode Silent' -and (Inters) -eq 0) { Ok 'baseline runs 
 $upd7 = @($script:hvPhase | Where-Object { $_.Label -eq 'Update (Intune parity)' })[0]
 if ($upd7.Command -eq '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label update; exit $LASTEXITCODE' -and (Test-CodesEqual $upd7.SuccessExitCodes)) { Ok 'unattended update = Intune-parity runner phase with exit $LASTEXITCODE' } else { Bad "update cmd: $($upd7.Command)" }
 if ($cmds7 -notmatch "'C:\\PSADT\\Invoke-AppDeployToolkit\.ps1'") { Ok 'no direct call of the deploy script left in the Update phases' } else { Bad "cmds=$cmds7" }
+$hinted7 = @($script:hvPhase | Where-Object { $_.ContainsKey('ParityHint') })
+if ($upd7.ParityHint -eq 'Dialog' -and $hinted7.Count -eq 1) { Ok "only the Update (Intune parity) phase carries a ParityHint ('$($upd7.ParityHint)')" } else { Bad "hints: $(@($hinted7 | ForEach-Object { "$($_.Label)=$($_.ParityHint)" }) -join ',')" }
 
 Write-Host '[8] Update + HyperV but the assertions log never came back -> no 30-min hang' -ForegroundColor Cyan
 $script:backend = 'HyperV'; $script:hvCopiesLog = $false; $script:waitArgs = $null
