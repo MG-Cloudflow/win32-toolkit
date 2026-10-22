@@ -181,7 +181,20 @@ $g41 = Get-Text $patched['psadt-4.1.8-auto']
 $newInstall = ([regex]::Match($g41, '(?s)## win32-toolkit:Install:install \(begin\)[^\n]*\n(.*?)    ## win32-toolkit:Install:install \(end\)')).Groups[1].Value
 $newUninstall = ([regex]::Match($g41, '(?s)## win32-toolkit:Uninstall:uninstall \(begin\)[^\n]*\n(.*?)    ## win32-toolkit:Uninstall:uninstall \(end\)')).Groups[1].Value
 if ($oldInstall -and $newInstall -ceq $oldInstall) { Ok 'install block = the 1.1.6 install routine line for line' } else { Bad 'install block differs from the 1.1.6 routine' }
-if ($oldUninstall -and $newUninstall -ceq ($oldUninstall -replace [char]0x2014, '-')) { Ok 'uninstall block = the 1.1.6 uninstall routine (em dash -> ASCII)' } else { Bad 'uninstall block differs from the 1.1.6 routine' }
+# The uninstall block is revision 2 (installer-identity PR 2): it keeps the 1.1.6 lines of the ProductCodes loop,
+# the msi and msix branches and the no-success guard (line for line), and adds the revision marker.
+$oldU = $oldUninstall -replace [char]0x2014, '-'
+$keptParts = [ordered]@{
+    'first line'          = ([regex]::Match($oldU, '^    ## Data-driven uninstall [^\n]*\n')).Value
+    'ProductCodes loop'   = ([regex]::Match($oldU, '(?ms)^        foreach \(\$pc in @\(\$appConfig\.Uninstall\.ProductCodes\)\) \{\n.*?\n        \}\n')).Value
+    'msi branch'          = ([regex]::Match($oldU, "(?m)^                'msi' \{[^\n]*\n")).Value
+    'msix branch'         = ([regex]::Match($oldU, "(?ms)^                'msix' \{\n.*?\n                \}\n")).Value
+    'no-success guard'    = ([regex]::Match($oldU, '(?ms)^        # Fail loudly when nothing actually uninstalled\..*?\n        \}\n')).Value
+}
+$missingParts = @($keptParts.Keys | Where-Object { -not $keptParts[$_] -or -not $newUninstall.Contains($keptParts[$_]) })
+if ($oldUninstall -and $missingParts.Count -eq 0 -and $newUninstall.StartsWith($keptParts['first line'])) { Ok 'uninstall block keeps the 1.1.6 lines of the ProductCodes loop, the msi and msix branches and the no-success guard (em dash -> ASCII)' }
+else { Bad "uninstall block lost 1.1.6 lines: $($missingParts -join ', ')" }
+if (([regex]::Matches($newUninstall, [regex]::Escape('    ## Uninstall revision 2 (win32-toolkit)'))).Count -eq 1 -and $newUninstall -cne $oldU) { Ok 'uninstall block adds the revision-2 marker (installer-identity PR 2)' } else { Bad 'uninstall block has no single revision-2 marker' }
 
 # -- [3] legacy fixtures are never modified --------------------------------------------------------
 Write-Host '[3] projects patched by win32-toolkit 1.1.6: $true and byte-identical' -ForegroundColor Cyan

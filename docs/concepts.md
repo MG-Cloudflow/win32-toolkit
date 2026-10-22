@@ -341,6 +341,39 @@ entry) is left alone, and so are system and shared folders such as `Program File
 or anything under a `Microsoft` folder. Packaging refuses a project with a cleanup path outside the app's
 own install folders or inside such a shared folder (see [the package check](packaging.md#the-package-check)).
 
+On the device, the uninstall of an EXE is guarded as well:
+
+- An EXE uninstaller may run for **30 minutes**, and the uninstall waits for the processes it starts too (for
+  example the copy of itself an Inno Setup or NSIS uninstaller starts from `%TEMP%` before it returns). This
+  wait is what keeps the cleanup below from deleting files the uninstaller is still removing. An
+  uninstaller that is still running at 30 minutes is stopped, together with the processes it started, and
+  the uninstall fails with exit code **69113**: the detection tattoo stays, so Intune keeps reporting the app
+  as installed instead of losing track of a half-removed app. When the uninstaller itself has finished and
+  only a process it started is still running at 30 minutes, PSAppDeployToolkit stops that process and the
+  uninstaller's own exit code decides.
+- An **NSIS** uninstaller that win32-toolkit recognises (winget installer type `nullsoft`, or the NSIS
+  signature in your installer file, on the app's own uninstall entry) always runs with `/S` and with
+  `_?=<its own folder>`. A plain NSIS uninstaller then runs **in place** instead of copying itself to
+  `%TEMP%`, and the uninstaller file it leaves behind is deleted afterwards, inside the app's install folders
+  only. Some vendors ship a wrapper instead: Firefox's `uninstall\helper.exe` starts the real uninstaller,
+  which still copies itself to `%TEMP%`; the wait above covers it, and Firefox removes its own files. That
+  copy cannot delete itself: it stays in the Windows temp folder until the next restart, when Windows removes
+  it. An NSIS uninstaller win32-toolkit does not recognise (for example from an NSIS setup wrapped in a
+  7-Zip self-extractor, or of a product installed next to the app) keeps the captured arguments; it is
+  still waited for together with the processes it starts.
+- Every cleanup path is **checked again on the device** before it is deleted: only inside the install
+  folders recorded in `Uninstall.InstallRoots`, never a system or shared folder, and never a folder that is
+  a link (a junction or symbolic link), lies below one or contains one. A refused folder is logged and left
+  in place; it never fails the uninstall. A folder that is already gone, the leftover NSIS uninstaller
+  (deleted, or already gone), and an uninstaller that is not run because an earlier one already succeeded
+  (the first uninstaller that succeeds is enough; for an EXE uninstaller the line also says whether its file
+  is already gone or still there, which can mean that product is still installed, or that it is the
+  uninstaller that already ran) are logged too, so the PSADT uninstall log shows what happened to each.
+
+Projects created before this version keep their old uninstall; re-create them to get it (packaging warns).
+How a test run shows an uninstaller that runs too long (exit code 69113 or 1460, or an Inconclusive run) is
+described in [Testing packages](testing.md#watched-vs-unattended).
+
 Two more things fall out of the same diff: any new **App Paths** registry entries become the
 PSADT `AppProcessesToClose` list (so an open app is closed gracefully before install/uninstall),
 and the **services** the app registered are recorded in the documentation for troubleshooting.

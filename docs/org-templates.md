@@ -61,7 +61,7 @@ Every prompt shows a default in brackets. Press **Enter** to accept it.
 | Org scripts & extension module | **Enable org hook scripts** + on-error policy | Runs your `.ps1` files in each deploy phase (see below) |
 | | **Ship an org PSADT extension module** | Copies `PSAppDeployToolkit.<Org>\` into every project |
 | | **Ship org branding assets** | Copies your logo/banner into every project |
-| Intune publish defaults | **Minimum Windows release / restart behavior / max run time** | The Intune install experience |
+| Intune publish defaults | **Minimum Windows release / restart behavior / max run time** | The Intune install experience. Keep the maximum run time above 30 minutes (default 60): the uninstall stops an EXE uninstaller at 30 minutes, and a lower Intune limit would stop it first, without the toolkit's exit code |
 | | **Description boilerplate / privacy URL** | Appended to every published app |
 | | **Customer-doc footer line** | Footer on the generated customer documentation |
 
@@ -213,7 +213,7 @@ The template can set the Intune install experience and metadata for every app it
 |---|---|---|
 | Minimum Windows release | `1607` | e.g. `22H2`; also shown in the customer documentation |
 | Device restart behavior | `suppress` | `suppress` / `allow` / `force` / `basedOnReturnCode` |
-| Max run time (minutes) | `60` | Keep it above your dialog timeout |
+| Max run time (minutes) | `60` | Keep it above your dialog timeout, and above 30 (the uninstall's limit for an EXE uninstaller) |
 | Description boilerplate | *(none)* | Appended to every app's Intune description |
 | Privacy URL | *(none)* | Published as the app's privacy information URL |
 

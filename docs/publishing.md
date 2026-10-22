@@ -46,13 +46,15 @@ project's `AppConfig.json` (winget manifest as fallback). Shell defaults:
 |---|---|
 | Install command line | `Invoke-AppDeployToolkit.exe -DeploymentType Install` |
 | Uninstall command line | `Invoke-AppDeployToolkit.exe -DeploymentType Uninstall` |
-| Install behavior | **System** context, restart suppressed, 60-minute max run time |
+| Install behavior | **System** context, restart suppressed, 60-minute max run time (keep it above 30 minutes, see below) |
 | Return codes | 0 and 1707 success · 3010 soft reboot · 1641 hard reboot · 1618 retry |
 | Minimum OS | Windows 10 1607 |
 
 Everything above can be adjusted in the Intune portal after upload. The org template can change the
 restart behavior, the maximum run time and the minimum OS for every app it publishes (see
-[Org templates](org-templates.md#intune-publish-defaults)).
+[Org templates](org-templates.md#intune-publish-defaults)). Keep the maximum run time above 30 minutes
+(default 60): the uninstall stops an EXE uninstaller at 30 minutes, and a lower Intune limit would stop it
+first, without the toolkit's exit code.
 
 **Why `Invoke-AppDeployToolkit.exe`.** The Intune Management Extension is a 32-bit process, so a bare
 `powershell.exe` in the command line starts the **32-bit** Windows PowerShell on a 64-bit device.
@@ -73,6 +75,7 @@ The ones you will meet from a win32-toolkit package:
 |---|---|
 | 60001 | An error inside the deploy script (for example the installer failed, or an org hook threw). The PSADT log on the device names it. |
 | 60008 | PSADT could not start its session: a 32-bit launch of a PSADT 4.2 package (the old command line, see below), or a config value PSADT refuses (see the [text rules](org-templates.md#text-rules)). |
+| 69113 | Uninstall only: an EXE uninstaller the package runs was still running after 30 minutes and was stopped, together with the processes it started. The detection tattoo stays, so Intune keeps reporting the app as installed. The PSADT log on the device names the uninstaller. (When only a process the uninstaller started is still running at 30 minutes, that process is stopped and the uninstaller's own exit code counts.) See [how the uninstall is guarded on the device](concepts.md#how-detection-uninstall-are-generated). |
 | 1602 | The user deferred the installation (org template deferral), or a forced interactive mode found nobody signed in. Deliberately not mapped, so Intune reports it as failed. |
 
 With PSAppDeployToolkit 4.2 the generated deploy script also sets `ExitWithMsiCodes`, so any restart

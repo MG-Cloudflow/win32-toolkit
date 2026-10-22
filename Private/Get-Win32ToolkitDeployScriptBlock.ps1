@@ -154,6 +154,13 @@ $w32tInstallDone = $true
         'Uninstall' {
             @'
 ## Data-driven uninstall (values from SupportFiles\AppConfig.json).
+## Uninstall revision 2 (win32-toolkit). An EXE uninstaller may run 30 minutes and is waited for together with its
+## child processes: that wait is what keeps the cleanup from racing an uninstaller that returns early (an NSIS copy
+## in %TEMP%, also the one started by a vendor's NSIS wrapper around its real uninstaller). An NSIS uninstaller
+## (Uninstallers[].Kind 'nullsoft') also gets '_?=<its own folder>', so a plain NSIS uninstaller runs in place
+## instead of copying itself to %TEMP%. Afterwards the leftover NSIS uninstaller and the cleanup paths are deleted
+## only inside Uninstall.InstallRoots; a system, shared or linked (reparse point) folder is never deleted: a refused
+## path is logged and left in place.
 if ($appConfig.Uninstall) {
     $uninstallSuccess = $false
     # Codes that mean "the app is gone" - checked identically by both loops below so they cannot
@@ -162,20 +169,171 @@ if ($appConfig.Uninstall) {
     # already-absent package. 1641/3010 = removed AND a reboot was initiated/is required. Treating
     # 1641 or 1605 as failure would make the uninstall throw on a successful removal.
     $w32tUninstallOk = @(0, 1605, 1641, 3010)
+    # Catalog constants: how long one EXE uninstaller may run (Intune's own run-time limit must stay above it) and
+    # the exit code of a deployment whose uninstaller had to be stopped.
+    $w32tUninstallLimit = New-TimeSpan -Minutes 30
+    $w32tUninstallLimitCode = 69113
+    # Device guard: the same rules as the host's Test-Win32ToolkitCleanupPath. '' = a plain folder path inside
+    # Program Files, Program Files (x86) or ProgramData and outside every shared or system tree; else the reason.
+    $w32tShellRoots = @('Program Files', 'Program Files (x86)', 'ProgramData')
+    $w32tFolderProblem = {
+        param([string]$w32tPath)
+        $w32tPlain = (-not [string]::IsNullOrWhiteSpace($w32tPath)) -and $w32tPath.Length -le 240 -and $w32tPath -match '^[A-Za-z]:\\[^\\]' -and
+            $w32tPath.IndexOfAny([char[]]'/*?"<>|[]~') -lt 0 -and $w32tPath.IndexOf(':', 2) -lt 0 -and -not $w32tPath.EndsWith('\')
+        if ($w32tPlain) {
+            foreach ($w32tCh in $w32tPath.ToCharArray()) {
+                $w32tCat = [Globalization.CharUnicodeInfo]::GetUnicodeCategory($w32tCh)
+                if ([char]::IsControl($w32tCh) -or $w32tCat -eq [Globalization.UnicodeCategory]::Format -or
+                    $w32tCat -eq [Globalization.UnicodeCategory]::LineSeparator -or $w32tCat -eq [Globalization.UnicodeCategory]::ParagraphSeparator) { $w32tPlain = $false }
+            }
+        }
+        $w32tSeg = @()
+        if ($w32tPlain) {
+            $w32tSeg = @($w32tPath.Split('\'))
+            foreach ($w32tS in @($w32tSeg | Select-Object -Skip 1)) {
+                if ($w32tS -eq '' -or $w32tS -eq '.' -or $w32tS -eq '..' -or $w32tS.EndsWith('.') -or $w32tS.EndsWith(' ') -or $w32tS.StartsWith(' ') -or
+                    $w32tS -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$') { $w32tPlain = $false }
+            }
+        }
+        if ($w32tPlain) {
+            try { $w32tPlain = [IO.Path]::GetFullPath($w32tPath) -ceq $w32tPath } catch { $w32tPlain = $false }
+        }
+        if (-not $w32tPlain) { return 'not a plain folder path' }
+        if ($w32tShellRoots -notcontains $w32tSeg[1]) { return 'not inside Program Files, Program Files (x86) or ProgramData' }
+        if ($w32tSeg.Count -lt 3) { return 'it is a Windows system folder itself' }
+        foreach ($w32tS in $w32tSeg) {
+            if (@('Microsoft', 'Common Files', 'WindowsApps', 'Package Cache') -contains $w32tS) { return 'inside a shared or system folder' }
+        }
+        $w32tVendor = $w32tSeg[2]
+        if ($w32tVendor -match '^(Microsoft|Windows)' -or @('ModifiableWindowsApps', 'Internet Explorer', 'Reference Assemblies', 'MSBuild', 'dotnet') -contains $w32tVendor -or
+            ($w32tSeg[1] -eq 'ProgramData' -and @('Application Data', 'Desktop', 'Documents', 'Start Menu', 'Templates') -contains $w32tVendor)) { return 'inside a shared or system folder' }
+        return ''
+    }
+    # The app's own install folders (recorded from its own uninstall entry at capture), re-checked here.
+    $w32tRoots = @()
+    if ($appConfig.Uninstall.PSObject.Properties['InstallRoots']) {
+        foreach ($w32tRoot in @($appConfig.Uninstall.InstallRoots)) {
+            $w32tRoot = ([string]$w32tRoot).TrimEnd('\')
+            if ($w32tRoot -and -not (& $w32tFolderProblem $w32tRoot)) { $w32tRoots += $w32tRoot }
+        }
+    }
+    # '' when $w32tPath is one of the install folders or inside one (separator-aware), else the reason.
+    $w32tRootProblem = {
+        param([string]$w32tPath)
+        foreach ($w32tRoot in $w32tRoots) {
+            if (($w32tPath + '\').StartsWith($w32tRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { return '' }
+        }
+        return "outside the app's install folders (Uninstall.InstallRoots)"
+    }
+    # '' when neither the folder nor a folder above it is a link (reparse point) and, with -Walk, no folder below it
+    # is one either: a recursive delete under Windows PowerShell 5.1 can follow a junction out of the app's folder.
+    $w32tLinkProblem = {
+        param([string]$w32tPath, [bool]$w32tWalk)
+        try {
+            $w32tUp = $w32tPath
+            while ($w32tUp -and $w32tUp.Length -gt 3) {
+                if ((Test-Path -LiteralPath $w32tUp) -and ([IO.File]::GetAttributes($w32tUp) -band [IO.FileAttributes]::ReparsePoint)) { return 'it or a folder above it is a link (reparse point)' }
+                $w32tUp = [IO.Path]::GetDirectoryName($w32tUp)
+            }
+            if ($w32tWalk) {
+                $w32tQueue = New-Object System.Collections.Queue
+                $w32tQueue.Enqueue($w32tPath)
+                $w32tSeen = 0
+                while ($w32tQueue.Count -gt 0) {
+                    foreach ($w32tSub in [IO.Directory]::GetDirectories([string]$w32tQueue.Dequeue())) {
+                        $w32tSeen++
+                        if ($w32tSeen -gt 50000) { return 'too many folders to check' }
+                        if ([IO.File]::GetAttributes($w32tSub) -band [IO.FileAttributes]::ReparsePoint) { return 'a folder below it is a link (reparse point)' }
+                        $w32tQueue.Enqueue($w32tSub)
+                    }
+                }
+            }
+        }
+        catch { return 'it could not be checked' }
+        return ''
+    }
+    # Log text for a path from AppConfig: printable ASCII only, no CMTrace delimiters.
+    $w32tShow = { param([string]$w32tText) $w32tText -replace '[^\x20-\x7E]|[\[\]<>]', '?' }
     foreach ($pc in @($appConfig.Uninstall.ProductCodes)) {
         if (-not $pc -or $uninstallSuccess) { continue }
         $r = Start-ADTMsiProcess -Action Uninstall -ProductCode $pc -PassThru
         if ($r -and $r.ExitCode -in $w32tUninstallOk) { $uninstallSuccess = $true }
     }
+    $w32tLeftover = @()
+    $w32tRanPath = ''
     foreach ($u in @($appConfig.Uninstall.Uninstallers)) {
-        if (-not $u -or $uninstallSuccess) { continue }
+        if (-not $u) { continue }
+        if ($uninstallSuccess) {
+            # The first uninstaller that succeeds wins: an entry after it is logged as not run, so the log tells it
+            # apart from an entry that was never captured. For an EXE entry the line also says whether its file is
+            # still there (its own Path from AppConfig, nothing else is looked up): still there can mean that
+            # product is still installed (severity 2); already gone, that the earlier uninstaller removed it. The
+            # file of the uninstaller that succeeded (the same uninstaller recorded twice, for example under both
+            # registry views) is not looked up: an NSIS uninstaller run in place is deleted only after this loop.
+            $w32tWhat = [string]$u.Path
+            if (-not $w32tWhat) { $w32tWhat = [string]$u.ProductCode }
+            if (-not $w32tWhat -and $u.PSObject.Properties['PackageName']) { $w32tWhat = [string]$u.PackageName }
+            $w32tLine = "win32-toolkit: uninstaller not run (an earlier one already succeeded): $(& $w32tShow $w32tWhat)"
+            $w32tSeverity = 1
+            if ([string]$u.Type -eq 'exe' -and $w32tRanPath -and [string]::Equals([string]$u.Path, $w32tRanPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $w32tLine += ', and it is the uninstaller that already ran'
+            }
+            elseif ([string]$u.Type -eq 'exe' -and [string]$u.Path -match '^[A-Za-z]:\\[^"*?<>|/:]+\.exe\z') {
+                $w32tThere = $null
+                try { $w32tThere = Test-Path -LiteralPath ([string]$u.Path) -PathType Leaf } catch { $w32tThere = $null }
+                if ($w32tThere -eq $true) { $w32tLine += ', and its file is still there: that product may still be installed'; $w32tSeverity = 2 }
+                elseif ($w32tThere -eq $false) { $w32tLine += ', and its file is already gone' }
+            }
+            Write-ADTLogEntry -Message $w32tLine -Severity $w32tSeverity
+            continue
+        }
         $r = $null
+        $w32tInPlace = ''
         switch ($u.Type) {
             'msi' { $r = Start-ADTMsiProcess -Action Uninstall -ProductCode $u.ProductCode -PassThru }
             'exe' {
-                $spUninstall = @{ FilePath = $u.Path; PassThru = $true }
-                if ($u.Args) { $spUninstall['ArgumentList'] = $u.Args }
-                $r = Start-ADTProcess @spUninstall
+                $w32tArgs = ([string]$u.Args).Trim()
+                if ($u.PSObject.Properties['Kind'] -and [string]$u.Kind -eq 'nullsoft') {
+                    # Without '/S' an NSIS uninstaller shows its UI as SYSTEM and waits for an answer until the limit.
+                    if ($w32tArgs -cnotmatch '(^|\s)/S(\s|$)') { $w32tArgs = ('/S ' + $w32tArgs).Trim() }
+                    $w32tExe = [string]$u.Path
+                    $w32tDir = ''
+                    # A plain absolute .exe path only: '\z' ('$' also matches before a final line feed), no control or
+                    # format character. Test-Path and GetFullPath sit inside the try: on Windows PowerShell 5.1 a path
+                    # they cannot read throws; it is logged below instead, and Start-ADTProcess may still refuse it.
+                    if ($w32tExe -match '^[A-Za-z]:\\[^"*?<>|/:\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+\.exe\z') {
+                        try {
+                            if ((Test-Path -LiteralPath $w32tExe -PathType Leaf) -and [IO.Path]::GetFullPath($w32tExe) -ceq $w32tExe) { $w32tDir = [IO.Path]::GetDirectoryName($w32tExe) }
+                        }
+                        catch { $w32tDir = '' }
+                    }
+                    if ($w32tDir.Length -le 3) {
+                        Write-ADTLogEntry -Message 'win32-toolkit: the NSIS uninstaller is not a plain path to an existing .exe, so it is not run in place.' -Severity 2
+                    }
+                    elseif ($w32tArgs.Contains('_?=')) {
+                        Write-ADTLogEntry -Message "win32-toolkit: the NSIS uninstaller arguments already contain '_?=' and are used as they are." -Severity 2
+                    }
+                    else {
+                        # '_?=' must come LAST, unquoted, inside the one argument string (PSADT 4.2 quotes an argument-list
+                        # element that has a space). It is the folder NSIS itself passes to the copy it starts from %TEMP%
+                        # (NSIS adds a trailing '\' there and drops it when it reads the value).
+                        $w32tArgs = ($w32tArgs + ' _?=' + $w32tDir).Trim()
+                        $w32tInPlace = $w32tExe
+                    }
+                }
+                $spUninstall = @{ FilePath = $u.Path; PassThru = $true; WaitForChildProcesses = $true; Timeout = $w32tUninstallLimit }
+                if ($w32tArgs) { $spUninstall['ArgumentList'] = $w32tArgs }
+                # PSADT's result decides: an uninstaller still running at the limit is stopped with its child processes
+                # and ends the uninstall with exit code 69113; when only a child process is still running then, PSADT
+                # stops that process and returns the uninstaller's own exit code, which is judged below.
+                try { $r = Start-ADTProcess @spUninstall }
+                catch {
+                    if ($_.Exception -is [System.OperationCanceledException] -or $_.Exception -is [System.TimeoutException]) {
+                        Write-ADTLogEntry -Message "win32-toolkit: the uninstaller ran longer than 30 minutes and was stopped (exit code $w32tUninstallLimitCode)." -Severity 3
+                        $adtSession.SetExitCode($w32tUninstallLimitCode)
+                    }
+                    throw
+                }
             }
             'msix' {
                 # Identity-driven removal (exact Name match; Remove-AppxPackage has no exit code,
@@ -195,7 +353,11 @@ if ($appConfig.Uninstall) {
                 }
             }
         }
-        if ($r -and $r.ExitCode -in $w32tUninstallOk) { $uninstallSuccess = $true }
+        if ($r -and $r.ExitCode -in $w32tUninstallOk) {
+            $uninstallSuccess = $true
+            if ($w32tInPlace) { $w32tLeftover += $w32tInPlace }
+            if ([string]$u.Type -eq 'exe') { $w32tRanPath = [string]$u.Path }
+        }
     }
     # Fail loudly when nothing actually uninstalled. $uninstallSuccess used to be computed and then
     # never read: every uninstaller could fail and the script still returned 0, so Intune recorded a
@@ -205,12 +367,46 @@ if ($appConfig.Uninstall) {
     if (-not $uninstallSuccess -and (@($appConfig.Uninstall.ProductCodes).Count + @($appConfig.Uninstall.Uninstallers).Count) -gt 0) {
         throw 'Uninstall failed: no uninstaller reported success (see the entries above for the cause).'
     }
+    # Run in place, an NSIS uninstaller cannot delete itself: remove it now, only inside the install folders.
+    foreach ($w32tFile in $w32tLeftover) {
+        $w32tDir = [IO.Path]::GetDirectoryName($w32tFile)
+        $w32tWhy = & $w32tFolderProblem $w32tDir
+        if (-not $w32tWhy) { $w32tWhy = & $w32tRootProblem $w32tDir }
+        if (-not $w32tWhy) { $w32tWhy = & $w32tLinkProblem $w32tDir $false }
+        if ($w32tWhy) {
+            Write-ADTLogEntry -Message "win32-toolkit: the NSIS uninstaller is left in place ($w32tWhy): $(& $w32tShow $w32tFile)" -Severity 2
+        }
+        elseif (Test-Path -LiteralPath $w32tFile -PathType Leaf) {
+            $w32tGone = $false
+            try { Remove-Item -LiteralPath $w32tFile -Force -ErrorAction Stop; $w32tGone = $true }
+            catch { Write-ADTLogEntry -Message "win32-toolkit: the NSIS uninstaller could not be deleted: $($_.Exception.Message)" -Severity 2 }
+            if ($w32tGone) { Write-ADTLogEntry -Message "win32-toolkit: deleted the NSIS uninstaller it left behind: $(& $w32tShow $w32tFile)" -Severity 1 }
+        }
+        else {
+            # A vendor wrapper or the app's own uninstall already removed it.
+            Write-ADTLogEntry -Message "win32-toolkit: the NSIS uninstaller is already gone: $(& $w32tShow $w32tFile)" -Severity 1
+        }
+    }
+    if (@($appConfig.Uninstall.CleanupPaths | Where-Object { $_ }).Count -gt 0 -and $w32tRoots.Count -eq 0) {
+        Write-ADTLogEntry -Message 'win32-toolkit: no valid install folder is recorded (Uninstall.InstallRoots), so no cleanup path is deleted. Re-create the project to record it.' -Severity 2
+    }
     foreach ($folder in @($appConfig.Uninstall.CleanupPaths)) {
         if (-not $folder) { continue }
-        if (Test-Path -LiteralPath $folder) {
-            try { Remove-ADTFolder -Path $folder }
-            catch { Write-ADTLogEntry -Message "Cleanup failed for ${folder}: $($_.Exception.Message)" -Severity 2 }
+        $w32tFolder = [string]$folder
+        $w32tWhy = & $w32tFolderProblem $w32tFolder
+        if (-not $w32tWhy) { $w32tWhy = & $w32tRootProblem $w32tFolder }
+        if (-not $w32tWhy -and -not (Test-Path -LiteralPath $w32tFolder -PathType Container)) {
+            # Usually the uninstaller removed it already: logged so the PSADT log tells this apart from a refusal.
+            Write-ADTLogEntry -Message "win32-toolkit: cleanup path already absent (no folder there): $(& $w32tShow $w32tFolder)" -Severity 1
+            continue
         }
+        if (-not $w32tWhy) { $w32tWhy = & $w32tLinkProblem $w32tFolder $true }
+        if ($w32tWhy) {
+            Write-ADTLogEntry -Message "win32-toolkit: cleanup path left in place ($w32tWhy): $(& $w32tShow $w32tFolder)" -Severity 2
+            continue
+        }
+        try { Remove-ADTFolder -Path $w32tFolder }
+        catch { Write-ADTLogEntry -Message "Cleanup failed for ${w32tFolder}: $($_.Exception.Message)" -Severity 2 }
     }
 }
 '@
