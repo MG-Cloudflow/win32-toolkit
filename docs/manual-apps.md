@@ -26,6 +26,10 @@ The **uninstall stays automated in both modes**, never from anything you write. 
 depends on the installer: an **MSI** is removed by PSADT's Zero-Config block from the MSI itself (see
 [the MSI notes](concepts.md#msi-zero-config)), an **MSIX/APPX** by its package identity, and an
 **EXE** from what the install capture observed. Only the EXE case needs the capture to have worked.
+When an EXE's uninstall entry has no silent switch, the toolkit uses the switch of the installer
+technology it recognises in your installer file (NSIS `/S`; Inno Setup `/VERYSILENT /SUPPRESSMSGBOXES
+/NORESTART`); otherwise it warns, and you set `Uninstall.Uninstallers[].Args` in
+`SupportFiles\AppConfig.json` yourself.
 
 "Easy" means there is no install *script* for you to write. For an **MSIX/APPX** there is still one
 prerequisite outside the toolkit: the package must be **signed and the certificate trusted on your

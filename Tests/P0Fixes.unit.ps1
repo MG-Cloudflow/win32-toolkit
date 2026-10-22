@@ -31,6 +31,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Get-WingetManifestFile.ps1')         # Update-PSADTUninstallLogic -> Get-Win32ToolkitInstallRoot (C-9)
 . (Join-Path $repo 'Private\Test-Win32ToolkitCleanupPath.ps1')    # the cleanup-path allowlist
 . (Join-Path $repo 'Private\Get-Win32ToolkitInstallRoot.ps1')     # install roots from the app's own uninstall key
+. (Join-Path $repo 'Private\Get-Win32ToolkitInstallerTechnology.ps1')  # Update-PSADTUninstallLogic -> installer signature (C-9)
 
 # ══ P0-1 ═════════════════════════════════════════════════════════════════════════════════════════
 Write-Host '[P0-1] Download-WingetApp: a winget FAILURE must not be reported as success' -ForegroundColor Cyan

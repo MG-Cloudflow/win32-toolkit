@@ -84,6 +84,16 @@ or installed, and nothing in these files is executed.
 
 Fetched on 2026-10-19 from https://github.com/microsoft/winget-pkgs (`manifests/<letter>/<publisher>/<package>/<version>/`).
 
+## Install captures (uninstall data)
+
+Hand-built synthetic `InstallationChanges_*.json` captures (only the `NewFiles` / `NewRegistryKeys` entries a
+case needs; generic product paths, no template or customer names; ASCII, LF) read by `Tests\CleanupPath.unit.ps1`,
+which describes each one in its header. Read-only: the suite copies them to `%TEMP%`.
+
+| File | What it exercises |
+|---|---|
+| `captures/coinstalled-first.json` | a co-installed key (`AcmeUpdater`, WOW6432Node) captured **before** the app's own key (`Acme Widget`): the app's own uninstaller is written first (I-3) and `Uninstall.AppName` is its DisplayName (I-4) |
+
 ## Run-All fixtures (fake suites for the runner's self-test)
 
 `Tests\RunAllParallel.unit.ps1` runs `Tests\Run-All.ps1 -Path <folder>` in a child process against these

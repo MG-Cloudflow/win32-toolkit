@@ -1,0 +1,35 @@
+{
+  "DocumentationInfo": { "ProjectName": "Fixture_coinstalled-first", "Timestamp": "20260101_120000", "PsadtExitCode": 0, "DependencyExitCode": null },
+  "NewFiles": [
+    { "Path": "C:\\Program Files (x86)\\Acme Updater", "Type": "Directory" },
+    { "Path": "C:\\Program Files (x86)\\Acme Updater\\uninstall.exe", "Type": "File" },
+    { "Path": "C:\\Program Files\\Acme Widget", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Acme Widget\\bin", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Acme Widget\\uninstall.exe", "Type": "File" },
+    { "Path": "C:\\Program Files\\Acme Widget\\bin\\widget.exe", "Type": "File" }
+  ],
+  "NewRegistryKeys": [
+    {
+      "Path": "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\AcmeUpdater",
+      "KeyName": "AcmeUpdater",
+      "Values": {
+        "DisplayName": "Acme Updater",
+        "UninstallString": "\"C:\\Program Files (x86)\\Acme Updater\\uninstall.exe\"",
+        "DisplayIcon": "\"C:\\Program Files (x86)\\Acme Updater\\uninstall.exe\",0"
+      }
+    },
+    {
+      "Path": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Acme Widget",
+      "KeyName": "Acme Widget",
+      "Values": {
+        "DisplayName": "Acme Widget 2.0",
+        "DisplayVersion": "2.0.0",
+        "InstallLocation": "C:\\Program Files\\Acme Widget",
+        "UninstallString": "\"C:\\Program Files\\Acme Widget\\uninstall.exe\"",
+        "DisplayIcon": "C:\\Program Files\\Acme Widget\\bin\\widget.exe,0"
+      }
+    }
+  ],
+  "NewServices": [],
+  "NewPrograms": []
+}

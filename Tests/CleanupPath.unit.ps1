@@ -16,8 +16,12 @@
       [6]  malformed captures: empty result, never a throw.
       [7]  Update-PSADTUninstallLogic end to end on the fixtures (temp projects): InstallRoots and
            CleanupPaths, idempotent.
-      [8]  every Get-Content in Get-Win32ToolkitInstallRoot.ps1 passes -Encoding.
-      [9]  C-4 / K1: the two new files are ASCII-only, define only their function, and every catch starts
+      [8]  Update-PSADTUninstallLogic, installer-identity PR 2 spec 2.1: the app's own uninstaller first
+           (I-3), Uninstall.AppName from the primary entry (I-4), Uninstallers[].Kind from the winget
+           manifest or the installer file's signature (B2 #1) kept only when the uninstall entry agrees,
+           the '/S' rule for 'nullsoft' (L5), msi entries, no primary key, idempotent.
+      [9]  every Get-Content in Get-Win32ToolkitInstallRoot.ps1 passes -Encoding.
+      [10] C-4 / K1: the two new files are ASCII-only, define only their function, and every catch starts
            with the C-2 re-throw.
 
     Fixtures (Tests\Fixtures\captures\, hand-built synthetic InstallationChanges_*.json with only the
@@ -36,8 +40,12 @@
                                      Uninstall', DisplayIcon in 'C:\Program Files\Acme\App'.
       default-install-location.json  one HKLM MSI key with no folder information, one HKCU key with an
                                      InstallLocation, created 'C:\Program Files\Acme'.
-    The winget manifests the ProductCode / DefaultInstallLocation cases need are written by this suite
-    into the temp project's Files\ folder.
+      coinstalled-first.json         a co-installed key 'AcmeUpdater' (WOW6432Node) listed BEFORE the
+                                     app's own key 'Acme Widget' (InstallLocation, uninstall.exe, no
+                                     switch); synthetic names.
+    The winget manifests the ProductCode / DefaultInstallLocation cases need, and the synthetic installer
+    files (an NSIS or Inno Setup signature in zeros) of [8], are written by this suite into the temp
+    project's Files\ folder.
 
     Nothing is installed, executed or deleted outside %TEMP%; nothing touches the network.
 
@@ -61,6 +69,7 @@ $rootPath      = Join-Path $repo 'Private\Get-Win32ToolkitInstallRoot.ps1'
 . (Join-Path $repo 'Private\Set-Win32ToolkitAppConfig.ps1')
 . (Join-Path $repo 'Private\Test-Win32ToolkitProductCode.ps1')
 . (Join-Path $repo 'Private\Update-PSADTUninstallLogic.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitInstallerTechnology.ps1')   # Update-PSADTUninstallLogic -> installer signature (C-9)
 
 $fixtures = Join-Path $PSScriptRoot 'Fixtures\captures'
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ('w32cp_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
@@ -406,15 +415,148 @@ try {
         if ($r.Un.Count -eq 1 -and $r.Un[0].Args -ceq '' -and @($r.Warnings | Where-Object { $_ -match 'helper\.exe have no silent switch' -and $_ -match 'would show its UI as SYSTEM' }).Count -eq 1) { Ok "technology '$t': Args stay empty, one warning names helper.exe" } else { Bad "tech '$t': [$($r.Un[0].Args)] warn=$($r.Warnings -join ' | ')" }
     }
 
-    # == [8] encoding guard ============================================================================
-    Write-Host '[8] every Get-Content in Get-Win32ToolkitInstallRoot.ps1 passes -Encoding' -ForegroundColor Cyan
+    # == [8] primary first, AppName, Kind, '/S' (installer-identity PR 2 spec 2.1) =====================
+    Write-Host '[8] the app''s own uninstaller first, its own name, Kind from the manifest or the installer file, the /S rule' -ForegroundColor Cyan
+    $nsisSig = [byte[]](0xEF, 0xBE, 0xAD, 0xDE) + [System.Text.Encoding]::ASCII.GetBytes('NullsoftInst')
+    $innoSig = [System.Text.Encoding]::ASCII.GetBytes('rDlPtS02')
+    # A temp project: optional Source.InstallerType (-Tech), optional manual installer Files\x.exe (-Signature
+    # 'nsis' | 'inno' | 'none': 'MZ' + zeros, the signature at a valid offset), the capture = a fixture
+    # (-Capture) or HKLM Uninstall keys (-Keys @{ Key; Values }). Runs Update-PSADTUninstallLogic twice.
+    function Invoke-UninstallCase {
+        param([string]$Tech, [hashtable[]]$Keys, [string]$Capture, [string]$Signature, [string]$DisplayName = '')
+        $p = Build-TempProject -Name ('u8' + [guid]::NewGuid().ToString('N').Substring(0, 6)) -Capture $Capture -DisplayName $DisplayName
+        $c = Get-Win32ToolkitAppConfig -ProjectPath $p
+        if ($Tech) { $c | Add-Member -NotePropertyName Source -NotePropertyValue ([pscustomobject]@{ InstallerType = $Tech }) -Force }
+        if ($Signature) {
+            $c | Add-Member -NotePropertyName Installer -NotePropertyValue ([pscustomobject]@{ Type = 'exe'; FileName = 'x.exe'; SilentArgs = '/q' }) -Force
+            New-Item -ItemType Directory -Path (Join-Path $p 'Files') -Force | Out-Null
+            $bytes = [byte[]]::new(8192); $bytes[0] = 0x4D; $bytes[1] = 0x5A
+            if ($Signature -eq 'nsis') { [Array]::Copy($nsisSig, 0, $bytes, 1028, 16) }
+            if ($Signature -eq 'inno') { [Array]::Copy($innoSig, 0, $bytes, 3000, 8) }
+            [System.IO.File]::WriteAllBytes((Join-Path $p 'Files\x.exe'), $bytes)
+        }
+        $null = Set-Win32ToolkitAppConfig -ProjectPath $p -Config $c
+        $j = Join-Path $p 'Documentation\InstallationChanges_20260101_120000.json'
+        if ($Keys) {
+            @{ NewRegistryKeys = @($Keys | ForEach-Object { @{ Path = "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$($_.Key)"; Values = $_.Values } }); NewFiles = @() } |
+                ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $j -Encoding UTF8
+        }
+        $verbose = @(); $info = @(); $w = $null
+        $null = Update-PSADTUninstallLogic -ProjectPath $p -JsonFilePath $j -Verbose -WarningVariable w -WarningAction SilentlyContinue 4>&1 6>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.VerboseRecord]) { $verbose += $_.Message }
+            elseif ($_ -is [System.Management.Automation.InformationRecord]) { $info += [string]$_.MessageData }
+        }
+        $file = Join-Path $p 'SupportFiles\AppConfig.json'
+        $first = [System.IO.File]::ReadAllText($file)
+        $null = Update-PSADTUninstallLogic -ProjectPath $p -JsonFilePath $j -WarningAction SilentlyContinue 6>$null
+        $un = (Get-Win32ToolkitAppConfig -ProjectPath $p).Uninstall
+        [pscustomobject]@{
+            Un       = @($un.Uninstallers)
+            AppName  = [string]$un.AppName
+            Warnings = @($w | ForEach-Object { "$_" })
+            Verbose  = $verbose
+            Info     = $info
+            Json     = $first
+            Same     = ([System.IO.File]::ReadAllText($file) -ceq $first)
+        }
+    }
+    # 'Path [Args] Kind' of every uninstaller, for the failure text.
+    function Show-Un($r) { @($r.Un | ForEach-Object { "$($_.Type) $($_.Path) [$($_.Args)] Kind='$($_.Kind)'" }) -join ' ; ' }
+    function Get-Mismatch($r) { @($r.Verbose | Where-Object { $_ -match '^Uninstall: the installer technology .* does not match' }) }
+
+    # (a) Firefox + co-installed Maintenance Service, nullsoft from the winget manifest
+    $r = Invoke-UninstallCase -Tech 'nullsoft' -Capture 'firefox-coinstalled.json' -DisplayName 'Mozilla Firefox'
+    if ($r.Un.Count -eq 2 -and $r.Un[0].Path -ceq 'C:\Program Files\Mozilla Firefox\uninstall\helper.exe' -and $r.Un[0].Kind -ceq 'nullsoft' -and $r.Un[0].Args -ceq '/S') { Ok "(a) Uninstallers[0] = the Firefox helper.exe, Kind 'nullsoft', Args '/S'" } else { Bad "(a) $(Show-Un $r)" }
+    if ($r.Un.Count -eq 2 -and $r.Un[1].Path -like '*Mozilla Maintenance Service\uninstall.exe' -and $r.Un[1].Kind -ceq '' -and $r.Un[1].Args -ceq '/S') { Ok "(a) Uninstallers[1] = the co-installed Maintenance Service, Kind '' (its switch from the technology, as before)" } else { Bad "(a) [1]: $(Show-Un $r)" }
+    if ($r.AppName -ceq 'Mozilla Firefox (x64 en-US)') { Ok "(a) Uninstall.AppName = the primary entry's DisplayName, not the last key's (I-4)" } else { Bad "(a) AppName '$($r.AppName)'" }
+    if (@([regex]::Matches($r.Json, '"Kind":')).Count -eq 2) { Ok '(a) every uninstaller object carries Kind in AppConfig.json' } else { Bad "(a) Kind properties: $(@([regex]::Matches($r.Json, '"Kind":')).Count)" }
+    if (@($r.Verbose | Where-Object { $_ -ceq "Uninstall: installer technology 'nullsoft' (winget manifest); primary uninstall key(s): Mozilla Firefox." }).Count -eq 1 -and (Get-Mismatch $r).Count -eq 0) { Ok '(a) one verbose line names the technology, its source and the primary key; no mismatch line' } else { Bad "(a) verbose: $($r.Verbose -join ' | ')" }
+    if (@($r.Info | Where-Object { $_ -match 'technology: nullsoft\)$' }).Count -eq 1) { Ok "(a) the host line ends with ', technology: nullsoft'" } else { Bad "(a) host line: $($r.Info -join ' | ')" }
+    if ($r.Same -and $r.Warnings.Count -eq 0) { Ok '(a)(g) idempotent (the second run writes the same AppConfig.json), no warning' } else { Bad "(a) same=$($r.Same) warnings=$($r.Warnings -join ' | ')" }
+
+    # (b) a co-installed key captured BEFORE the app's own key (I-3)
+    $r = Invoke-UninstallCase -Tech 'nullsoft' -Capture 'coinstalled-first.json' -DisplayName 'Acme Widget'
+    if ($r.Un.Count -eq 2 -and $r.Un[0].Path -ceq 'C:\Program Files\Acme Widget\uninstall.exe' -and $r.Un[0].Kind -ceq 'nullsoft' -and $r.Un[0].Args -ceq '/S' -and
+        $r.Un[1].Path -ceq 'C:\Program Files (x86)\Acme Updater\uninstall.exe' -and $r.Un[1].Kind -ceq '') { Ok "(b) the app's own uninstaller is written first although its key was captured second (I-3)" } else { Bad "(b) $(Show-Un $r)" }
+    if ($r.AppName -ceq 'Acme Widget 2.0' -and $r.Same) { Ok "(b) AppName 'Acme Widget 2.0'; idempotent" } else { Bad "(b) AppName '$($r.AppName)' same=$($r.Same)" }
+    $r = Invoke-UninstallCase -Capture 'coinstalled-first.json' -DisplayName 'Acme Widget'
+    if ($r.Un.Count -eq 2 -and $r.Un[0].Path -ceq 'C:\Program Files\Acme Widget\uninstall.exe' -and @($r.Un | Where-Object { $_.Kind -cne '' }).Count -eq 0 -and $r.Un[0].Args -ceq '') { Ok "(b) no technology: still primary first, every Kind '', no switch invented" } else { Bad "(b) no tech: $(Show-Un $r)" }
+
+    # (c) manual app: the technology from the installer file's signature (B2 #1)
+    $acmeKey = @{ Key = 'AcmeTool'; Values = @{ DisplayName = 'Acme Tool'; UninstallString = '"C:\Program Files\Acme Tool\uninstall.exe"' } }
+    $acmeInno = @{ Key = 'AcmeTool_is1'; Values = @{ DisplayName = 'Acme Tool'; UninstallString = '"C:\Program Files\Acme Tool\unins000.exe"' } }
+    $r = Invoke-UninstallCase -Signature 'nsis' -Keys $acmeKey
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Kind -ceq 'nullsoft' -and $r.Un[0].Args -ceq '/S' -and $r.Warnings.Count -eq 0) { Ok "(c) no Source, NSIS signature in Files\x.exe -> Kind 'nullsoft', Args '/S', no no-switch warning" } else { Bad "(c) nsis: $(Show-Un $r) warn=$($r.Warnings -join ' | ')" }
+    if (@($r.Verbose | Where-Object { $_ -ceq "Uninstall: installer technology 'nullsoft' (installer file signature); primary uninstall key(s): AcmeTool." }).Count -eq 1 -and $r.Same) { Ok '(c) the verbose line says the technology came from the installer file signature; idempotent' } else { Bad "(c) verbose: $($r.Verbose -join ' | ')" }
+    $r = Invoke-UninstallCase -Signature 'inno' -Keys $acmeInno
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Kind -ceq 'inno' -and $r.Un[0].Args -ceq '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -and $r.Warnings.Count -eq 0) { Ok "(c) Inno Setup signature + an '_is1' key -> Kind 'inno', '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'" } else { Bad "(c) inno: $(Show-Un $r) warn=$($r.Warnings -join ' | ')" }
+    $r = Invoke-UninstallCase -Signature 'none' -Keys $acmeKey
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Kind -ceq '' -and $r.Un[0].Args -ceq '' -and @($r.Warnings | Where-Object { $_ -match 'uninstall\.exe have no silent switch' -and $_ -match "\('unknown'\)" }).Count -eq 1) { Ok "(c) no signature -> Args '', Kind '', the existing no-switch warning" } else { Bad "(c) none: $(Show-Un $r) warn=$($r.Warnings -join ' | ')" }
+    $r = Invoke-UninstallCase -Tech 'exe' -Signature 'nsis' -Keys $acmeKey
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Kind -ceq 'nullsoft' -and $r.Un[0].Args -ceq '/S') { Ok "(c) a winget 'exe' label + an NSIS signature -> Kind 'nullsoft' (Dv4)" } else { Bad "(c) exe label: $(Show-Un $r)" }
+    $r = Invoke-UninstallCase -Tech 'burn' -Signature 'nsis' -Keys $acmeKey
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Kind -ceq '' -and $r.Un[0].Args -ceq '' -and @($r.Warnings | Where-Object { $_ -match "\('burn'\)" }).Count -eq 1) { Ok "(c) a winget label other than exe ('burn') is never overridden by the file; the warning still names it" } else { Bad "(c) burn: $(Show-Un $r) warn=$($r.Warnings -join ' | ')" }
+
+    # (d) the '/S' rule for nullsoft (L5)
+    foreach ($case in @(
+            @{ Args = '/allusers'; Want = '/S /allusers' }
+            @{ Args = '/allusers /S'; Want = '/allusers /S' }
+            @{ Args = '/s'; Want = '/S /s' }
+            @{ Args = '/S /D=x'; Want = '/S /D=x' }
+        )) {
+        $r = Invoke-UninstallCase -Tech 'nullsoft' -Keys @(@{ Key = 'Acme'; Values = @{ DisplayName = 'Acme'; UninstallString = "`"C:\Program Files\Acme\uninstall.exe`" $($case.Args)" } })
+        if ($r.Un.Count -eq 1 -and $r.Un[0].Kind -ceq 'nullsoft' -and $r.Un[0].Args -ceq $case.Want) { Ok "(d) nullsoft '$($case.Args)' -> '$($case.Want)'" } else { Bad "(d) '$($case.Args)': $(Show-Un $r)" }
+    }
+    $r = Invoke-UninstallCase -Tech 'nullsoft' -Keys @(@{ Key = 'Acme'; Values = @{ DisplayName = 'Acme'; UninstallString = '"C:\Program Files\Acme\uninstall.exe"'; QuietUninstallString = '"C:\Program Files\Acme\uninstall.exe" /quiet' } })
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Args -ceq '/S /quiet') { Ok "(d) a QuietUninstallString without '/S' gets '/S' prepended too" } else { Bad "(d) quiet: $(Show-Un $r)" }
+
+    # (e) no primary key -> every Kind ''
+    $r = Invoke-UninstallCase -Tech 'nullsoft' -Capture 'firefox-coinstalled.json'
+    if ($r.Un.Count -eq 2 -and @($r.Un | Where-Object { $_.Kind -cne '' }).Count -eq 0 -and $r.Un[0].Path -like '*Mozilla Firefox\uninstall\helper.exe' -and @($r.Un | Where-Object { $_.Args -cne '/S' }).Count -eq 0) { Ok "(e) PrimaryBy '' -> every Kind '', capture order, the technology switch as before" } else { Bad "(e) $(Show-Un $r)" }
+    if ($r.AppName -ceq 'Mozilla Maintenance Service' -and @($r.Verbose | Where-Object { $_ -match "primary uninstall key\(s\): none\.$" }).Count -eq 1) { Ok '(e) no primary key -> AppName keeps the last DisplayName; the verbose line says none' } else { Bad "(e) AppName '$($r.AppName)' verbose=$($r.Verbose -join ' | ')" }
+
+    # (f) msi entries carry Kind ''
+    $r = Invoke-UninstallCase -Tech 'nullsoft' -Keys @(@{ Key = 'AcmeMsi'; Values = @{ DisplayName = 'Acme'; UninstallString = 'MsiExec.exe /X{11111111-2222-3333-4444-555555555555}' } })
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Type -ceq 'msi' -and $r.Un[0].PSObject.Properties['Kind'] -and $r.Un[0].Kind -ceq '' -and $r.Same) { Ok "(f) a primary msi uninstaller carries Kind '' (idempotent)" } else { Bad "(f) $(Show-Un $r)" }
+
+    # (h) capture corroboration (spec 2.1 step 3)
+    $r = Invoke-UninstallCase -Tech 'nullsoft' -Capture 'git-edge-noise.json' -DisplayName 'Git'
+    $mm = @(Get-Mismatch $r)
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Kind -ceq '' -and $r.Un[0].Args -ceq '/SILENT') { Ok "(h) Git_is1 + a nullsoft label -> Kind '', Args '/SILENT' unchanged (no '/S')" } else { Bad "(h) git+nullsoft: $(Show-Un $r)" }
+    if ($mm.Count -eq 1 -and $mm[0] -ceq "Uninstall: the installer technology 'nullsoft' (winget manifest) does not match the app's uninstall entry 'Git_is1' (an Inno Setup entry): its uninstaller gets no technology switch.") { Ok '(h) exactly one verbose line names Git_is1 and "an Inno Setup entry"' } else { Bad "(h) mismatch lines: $($mm -join ' | ')" }
+    $r = Invoke-UninstallCase -Tech 'inno' -Capture 'git-edge-noise.json' -DisplayName 'Git'
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Kind -ceq 'inno' -and $r.Un[0].Args -ceq '/SILENT' -and (Get-Mismatch $r).Count -eq 0) { Ok "(h) Git_is1 + inno -> Kind 'inno' (captured '/SILENT' kept)" } else { Bad "(h) git+inno: $(Show-Un $r)" }
+    $r = Invoke-UninstallCase -Tech 'nullsoft' -Keys @(@{ Key = 'AcmeInno'; Values = @{ DisplayName = 'Acme'; UninstallString = '"C:\Program Files\Acme\uninstall.exe" /x'; 'Inno Setup: App Path' = 'C:\Program Files\Acme' } })
+    $mm = @(Get-Mismatch $r)
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Kind -ceq '' -and $r.Un[0].Args -ceq '/x' -and $mm.Count -eq 1 -and $mm[0] -match "'AcmeInno' \(an Inno Setup entry\)") { Ok "(h) no '_is1' but an 'Inno Setup: App Path' value + nullsoft -> Kind '', no '/S'" } else { Bad "(h) app path: $(Show-Un $r) $($mm -join ' | ')" }
+    $r = Invoke-UninstallCase -Tech 'nullsoft' -Keys @(@{ Key = 'AcmeWi'; Values = @{ DisplayName = 'Acme'; UninstallString = '"C:\Program Files\Acme\uninstall.exe" /x'; WindowsInstaller = 1 } })
+    $mm = @(Get-Mismatch $r)
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Kind -ceq '' -and $r.Un[0].Args -ceq '/x' -and $mm.Count -eq 1 -and $mm[0] -match "'AcmeWi' \(a Windows Installer entry\)") { Ok "(h) WindowsInstaller 1 + nullsoft -> Kind ''" } else { Bad "(h) WindowsInstaller: $(Show-Un $r) $($mm -join ' | ')" }
+    $r = Invoke-UninstallCase -Tech 'nullsoft' -Keys @(@{ Key = 'AcmeUnins'; Values = @{ DisplayName = 'Acme'; UninstallString = '"C:\Program Files\Acme\unins000.exe"' } })
+    $mm = @(Get-Mismatch $r)
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Kind -ceq '' -and $r.Un[0].Args -ceq '' -and $mm.Count -eq 1 -and $mm[0] -match "\(an Inno Setup uninstaller name\)" -and
+        @($r.Warnings | Where-Object { $_ -match 'unins000\.exe have no silent switch' }).Count -eq 1) { Ok "(h) unins000.exe (no args) + nullsoft -> Kind '', Args '' (default withheld), the no-switch warning" } else { Bad "(h) unins000: $(Show-Un $r) $($mm -join ' | ') warn=$($r.Warnings -join ' | ')" }
+    $r = Invoke-UninstallCase -Tech 'inno' -Signature 'nsis' -Keys $acmeKey
+    $mm = @(Get-Mismatch $r)
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Kind -ceq '' -and $r.Un[0].Args -ceq '' -and $mm.Count -eq 1 -and $mm[0] -match "'AcmeTool' \(not an Inno Setup entry\)" -and $r.Warnings.Count -eq 1) { Ok "(h) inno label on a key without '_is1' / 'Inno Setup: App Path' -> Kind '', default withheld, the no-switch warning" } else { Bad "(h) inno relabelled: $(Show-Un $r) $($mm -join ' | ') warn=$($r.Warnings -join ' | ')" }
+    $r = Invoke-UninstallCase -Signature 'inno' -Keys $acmeKey
+    $mm = @(Get-Mismatch $r)
+    if ($r.Un.Count -eq 1 -and $r.Un[0].Kind -ceq '' -and $mm.Count -eq 1 -and $mm[0] -match "'inno' \(installer file signature\)") { Ok '(h) a signature that the entry contradicts names its source (installer file signature)' } else { Bad "(h) signature mismatch: $(Show-Un $r) $($mm -join ' | ')" }
+    $r = Invoke-UninstallCase -Tech 'nullsoft' -Keys @(@{ Key = "Ac$([char]7)me_is1"; Values = @{ DisplayName = 'Acme'; UninstallString = '"C:\Program Files\Acme\unins000.exe" /SILENT' } })
+    $mm = @(Get-Mismatch $r)
+    if ($mm.Count -eq 1 -and $mm[0].Contains("'Ac?me_is1'") -and -not $mm[0].Contains([string][char]7)) { Ok '(h) a control character in the key name prints as ? in the verbose line' } else { Bad "(h) sanitised: $($mm -join ' | ')" }
+    $r = Invoke-UninstallCase -Tech 'nullsoft' -Capture 'firefox-coinstalled.json' -DisplayName 'Mozilla Firefox'
+    if ($r.Un[0].Kind -ceq 'nullsoft' -and (Get-Mismatch $r).Count -eq 0) { Ok "(h) firefox-coinstalled.json + nullsoft stays Kind 'nullsoft' (= (a))" } else { Bad "(h) firefox: $(Show-Un $r)" }
+
+    # == [9] encoding guard ============================================================================
+    Write-Host '[9] every Get-Content in Get-Win32ToolkitInstallRoot.ps1 passes -Encoding' -ForegroundColor Cyan
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($rootPath, [ref]$null, [ref]$null)
     $reads = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -in @('Get-Content', 'gc', 'cat', 'type') }, $true))
     $noEnc = @($reads | Where-Object { -not ($_.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq 'Encoding' }) })
     if ($reads.Count -ge 1 -and $noEnc.Count -eq 0) { Ok "$($reads.Count) Get-Content call(s), all with -Encoding" } else { Bad "Get-Content without -Encoding: $($noEnc | ForEach-Object { $_.Extent.Text })" }
 
-    # == [9] C-4 / K1 ==================================================================================
-    Write-Host '[9] the new files: ASCII-only, one function each, every catch starts with the C-2 re-throw' -ForegroundColor Cyan
+    # == [10] C-4 / K1 =================================================================================
+    Write-Host '[10] the new files: ASCII-only, one function each, every catch starts with the C-2 re-throw' -ForegroundColor Cyan
     foreach ($file in $predicatePath, $rootPath) {
         $leaf = Split-Path $file -Leaf
         if (@([System.IO.File]::ReadAllBytes($file) | Where-Object { $_ -gt 127 }).Count -eq 0) { Ok "$leaf is ASCII-only" } else { Bad "$leaf has non-ASCII bytes" }
