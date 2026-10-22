@@ -14,6 +14,10 @@
       (c) R9: Wait-Win32ToolkitVMReady -ReturnSession returns the proving session (no throwaway
           connection); the desktop check runs BEFORE the session is created (its recovery path reboots);
           the boot-vs-session failure diagnostic survives.
+      (d) F9: the Gate-2 retries leave no record in $Error once the guest is ready, and a non-terminating
+          refusal none in a caller's -ErrorVariable either; only the retry loop's own records go (a caller's
+          earlier error of the same text stays). The helper runs inside a module, as in production; a
+          timeout keeps the last error.
 
     Run:  pwsh -File Tests\GuestWaitTuning.unit.ps1
 #>
@@ -201,6 +205,105 @@ if ($msg -match 'admin session') { Ok 'heartbeat OK + no session -> the AutoLogo
 $script:hb = 'LostCommunication'
 try { $null = Wait-Win32ToolkitVMReady -VMName 'vm' -Credential $cred -SkipPrep -ReturnSession -PSDirectTimeoutSec 0.05 } catch { $msg = $_.Exception.Message }
 if ($msg -match 'may not have booted') { Ok 'dead heartbeat -> the boot diagnostic (preserved from Gate 1)' } else { Bad "msg: $msg" }
+
+# ══ (d) F9 — Gate 2 retries leave no error records once the guest is ready ═════════════════════════
+Write-Host '[d] Wait-Win32ToolkitVMReady (module-hosted): retry errors leave $Error / -ErrorVariable once ready; a timeout keeps the last' -ForegroundColor Cyan
+# Installer-identity PR 2 follow-up F9 (live P4-ff-hv #3: ErrorVariableCount 6, GlobalErrorCount 2 on a passing run).
+# The helper runs INSIDE a module, as in production (win32-toolkit.psm1 dot-sources Private\): there the plain $Error
+# is the module's own, empty list, so only a trim of $global:Error works (spec B1). A dot-sourced copy (as in [c])
+# would see the global list as $Error and pass with the wrong code. The doubles the module sees must be global.
+Remove-Item Function:\Wait-Win32ToolkitVMReady
+$waitMod = New-Module -Name W32tWaitProbe -ScriptBlock { param($f) . $f; Export-ModuleMember -Function Wait-Win32ToolkitVMReady } -ArgumentList (Join-Path $repo 'Private\Wait-Win32ToolkitVMReady.ps1') | Import-Module -PassThru
+if ((Get-Command Wait-Win32ToolkitVMReady).ModuleName -eq 'W32tWaitProbe') { Ok 'the helper under test runs as a module function' } else { Bad "Wait-Win32ToolkitVMReady comes from '$((Get-Command Wait-Win32ToolkitVMReady).ModuleName)'" }
+# 'write' = a non-terminating cmdlet error (the live PSSessionOpenFailed), 'terminate' = an error raised as
+# terminating whatever -ErrorAction says. The first $script:dFail calls fail; later ones succeed.
+$script:dCalls = 0
+$script:dFail = 2
+$script:dKind = 'write'
+function global:New-PSSession {
+    [CmdletBinding()] param($VMName, [pscredential]$Credential)
+    $null = $VMName, $Credential
+    $script:dCalls++
+    if ($script:dCalls -le $script:dFail) {
+        if ($script:dKind -eq 'terminate') {
+            $PSCmdlet.ThrowTerminatingError([System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new('A remote session might have ended.'), 'PSSessionStateBroken', [System.Management.Automation.ErrorCategory]::OpenError, $null))
+        }
+        Write-Error -Message 'The credential is invalid.' -ErrorId 'PSSessionOpenFailed' -Category OpenError
+        return
+    }
+    [pscustomobject]@{ Id = 7; Name = 'd-session' }
+}
+function global:Invoke-Command {
+    [CmdletBinding()] param($VMName, [pscredential]$Credential, [scriptblock]$ScriptBlock)
+    $null = $VMName, $Credential, $ScriptBlock
+    $script:dCalls++
+    if ($script:dCalls -le $script:dFail) {
+        Write-Error -Message 'The credential is invalid.' -ErrorId 'PSSessionOpenFailed' -Category OpenError
+        return
+    }
+    $true
+}
+function global:Start-Sleep { param([int]$Seconds) $null = $Seconds }
+function global:Get-VMIntegrationService { param($VMName, $Name, $ErrorAction) $null = $VMName, $Name, $ErrorAction; [pscustomobject]@{ PrimaryStatusDescription = 'OK' } }
+# The caller: an advanced function asked for -ErrorVariable, as automation wraps Test-Win32ToolkitProject.
+function Invoke-WaitProbe {
+    [CmdletBinding()] param([pscredential]$Credential, [switch]$ReturnSession, [double]$PSDirectTimeoutSec = 900)
+    Wait-Win32ToolkitVMReady -VMName 'vm' -Credential $Credential -SkipPrep -ReturnSession:$ReturnSession -PSDirectTimeoutSec $PSDirectTimeoutSec -Verbose
+}
+function Split-ProbeOutput { param($Out) @{ Value = @($Out | Where-Object { $_ -isnot [System.Management.Automation.VerboseRecord] }); Verbose = @($Out | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] } | ForEach-Object { $_.Message } | Where-Object { $_ -like 'PowerShell Direct is not ready yet*' }) } }
+
+# d1: -ReturnSession, two refusals (Write-Error) then a session.
+$script:dCalls = 0; $script:dFail = 2; $script:dKind = 'write'
+$Error.Clear()
+$ev = $null
+$d1 = Split-ProbeOutput (Invoke-WaitProbe -Credential $cred -ReturnSession -ErrorVariable ev 4>&1)
+if ($d1.Value.Count -eq 1 -and $d1.Value[0].Name -eq 'd-session' -and $script:dCalls -eq 3) { Ok '-ReturnSession: two refusals, then the session on the third attempt is returned' } else { Bad "d1: value=$($d1.Value | ForEach-Object { "$_" }) calls=$($script:dCalls)" }
+if ($Error.Count -eq 0 -and @($ev).Count -eq 0) { Ok '-ReturnSession: no record left in $Error or the caller''s -ErrorVariable' } else { Bad "d1: `$Error=$($Error.Count) ev=$(@($ev).Count): $(@($Error | ForEach-Object { "$_" }) -join ' | ')" }
+if ($d1.Verbose.Count -eq 2 -and $d1.Verbose[0] -like '*(attempt 1); retrying in 1 s.' -and $d1.Verbose[1] -like '*(attempt 2); retrying in 2 s.') { Ok 'each refusal is a verbose line (attempt 1, attempt 2)' } else { Bad "d1 verbose: $($d1.Verbose -join ' | ')" }
+
+# d2: bool mode, the same with Invoke-Command.
+$script:dCalls = 0; $script:dFail = 2; $script:dKind = 'write'
+$Error.Clear()
+$ev = $null
+$d2 = Split-ProbeOutput (Invoke-WaitProbe -Credential $cred -ErrorVariable ev 4>&1)
+if ($d2.Value.Count -eq 1 -and $d2.Value[0] -eq $true -and $script:dCalls -eq 3 -and $Error.Count -eq 0 -and @($ev).Count -eq 0) { Ok 'bool mode: $true after two refusals, no record in $Error or -ErrorVariable' } else { Bad "d2: value=$($d2.Value -join ',') calls=$($script:dCalls) `$Error=$($Error.Count) ev=$(@($ev).Count)" }
+
+# d3: an error raised as terminating whatever -ErrorAction says: caught, then trimmed from the session's list (B1).
+# Only the retry loop's OWN records go, matched by exception object: the caller's earlier error, seeded first through the
+# same double (same exception type, text, id and category), must stay. So a trim of every record, or one by text, by id
+# or by type, fails here (the seed goes too), and a trim of the plain $Error fails with 3 records (the module's $Error is
+# a separate, empty list). The caller's -ErrorVariable still holds the retry records (Fd5: the engine adds caught
+# terminating errors there; not asserted).
+$script:dCalls = 0; $script:dFail = 1; $script:dKind = 'terminate'
+$Error.Clear()
+try { $null = New-PSSession -VMName 'vm' -Credential $cred } catch { $null = $_ }
+$seed = $Error[0]
+if ($Error.Count -eq 1 -and $seed -is [System.Management.Automation.ErrorRecord] -and $seed.FullyQualifiedErrorId -like 'PSSessionStateBroken*' -and $seed.Exception.Message -eq 'A remote session might have ended.') { Ok 'a caller error of the same kind, text and id is in $Error before the wait' } else { Bad "d3 seed: `$Error=$($Error.Count) id=$($seed.FullyQualifiedErrorId)" }
+$script:dCalls = 0; $script:dFail = 2
+$ev = $null
+$d3 = Split-ProbeOutput (Invoke-WaitProbe -Credential $cred -ReturnSession -ErrorVariable ev 4>&1)
+if ($d3.Value.Count -eq 1 -and $d3.Value[0].Name -eq 'd-session' -and $script:dCalls -eq 3 -and $d3.Verbose.Count -eq 2) { Ok 'terminating refusals: retried, the session is returned' } else { Bad "d3: value=$($d3.Value | ForEach-Object { "$_" }) calls=$($script:dCalls) verbose=$($d3.Verbose.Count)" }
+if ($Error.Count -eq 1 -and [object]::ReferenceEquals($Error[0], $seed)) { Ok 'terminating refusals: their records leave $global:Error once the guest is ready; the caller''s earlier record of the same text and id stays' } else { Bad "d3: `$Error=$($Error.Count) seed kept=$($Error.Count -ge 1 -and [object]::ReferenceEquals($Error[$Error.Count - 1], $seed)): $(@($Error | ForEach-Object { "$($_.FullyQualifiedErrorId)" }) -join ' | ')" }
+
+# d4: timeout: every attempt refused -> one last attempt with -ErrorAction Stop; its error is kept and named.
+$script:dCalls = 0; $script:dFail = [int]::MaxValue; $script:dKind = 'write'
+$Error.Clear()
+$msg4 = $null
+try { $null = Invoke-WaitProbe -Credential $cred -ReturnSession -PSDirectTimeoutSec 0.05 4>$null } catch { $msg4 = $_.Exception.Message }
+if ($msg4 -like '*did not become ready*' -and $msg4 -like '*admin session*' -and $msg4.EndsWith(' Last error: The credential is invalid.')) { Ok 'timeout: the message names the last error' } else { Bad "d4 msg: $msg4" }
+$kept4 = @($Error | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] -and $_.FullyQualifiedErrorId -like 'PSSessionOpenFailed*' })
+if ($kept4.Count -eq 1 -and $Error.Count -eq 2) { Ok 'timeout: $Error keeps exactly the last attempt''s error (plus the thrown one)' } else { Bad "d4: `$Error=$($Error.Count) kept=$($kept4.Count): $(@($Error | ForEach-Object { "$($_.FullyQualifiedErrorId)" }) -join ' | ')" }
+$Error.Clear()
+
+# d5: static (B1): the trim works on the session's list.
+$vmrSrc = Get-Content -LiteralPath (Join-Path $repo 'Private\Wait-Win32ToolkitVMReady.ps1') -Raw
+if ($vmrSrc.Contains('$global:Error.RemoveAt(') -and -not $vmrSrc.Contains('$Error.RemoveAt(')) { Ok 'the trim removes from $global:Error, never from the module''s own $Error' } else { Bad 'Wait-Win32ToolkitVMReady does not trim $global:Error (or trims the plain $Error)' }
+
+Remove-Module -ModuleInfo $waitMod
+# Every copy of the doubles goes (the global ones of [d] and the script ones of [c]).
+foreach ($dbl in 'New-PSSession', 'Invoke-Command', 'Start-Sleep', 'Get-VMIntegrationService', 'Wait-Win32ToolkitVMReady') {
+    while (Test-Path -LiteralPath "Function:\$dbl") { Remove-Item -LiteralPath "Function:\$dbl" }
+}
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'ALL PASS' -ForegroundColor Green; exit 0 }
