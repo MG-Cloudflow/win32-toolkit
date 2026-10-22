@@ -251,6 +251,35 @@ if (@($rows7 | Where-Object { $_ -like '*| HyperV |*' -and $_ -like '*| Inconclu
 if ($rows7 -ccontains '| InstallUninstall | Sandbox | 2026-10-22 10:00 UTC | Inconclusive |') { Ok 'an ordinary Inconclusive record (no NotRun) renders unchanged' } else { Bad "ordinary row: $($rows7 -join ' / ')" }
 if (@($lines7 | Where-Object { $_ -like '- ***' -and $_ -match 'issues:' }).Count -eq 0) { Ok 'no FAIL note for the NotRun records' } else { Bad "fail notes: $(@($lines7 | Where-Object { $_ -match 'issues:' }) -join ' / ')" }
 
+# ══ Test 8: a Hyper-V record whose Notes say how its Intune-parity phases ended (installer-identity PR 2, R6 #3) ═══
+# Test-Win32ToolkitProject now writes one sentence per failed parity phase into Notes (69113 vs 1460). The customer
+# documentation never shows Notes: the same records with and without those Notes render the same document.
+Write-Host '[8] Notes naming the parity exit codes (R6 #3) do not change the customer documentation' -ForegroundColor Cyan
+$parityNotes8 = "Intune-parity phase 'Install (Intune parity)' exited with code 1460: the test's own 25-minute limit for this phase was reached and the package was stopped. " +
+                "Intune-parity phase 'Uninstall (Intune parity)' exited with code 69113: the app's own uninstaller was still running at the device's 30-minute limit and was stopped."
+$records8 = {
+    param([string]$Notes)
+    @(
+        [ordered]@{ Scenario = 'InstallUninstall'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-22T19:00:00Z'; Verdict = 'Failed'
+                    Assertions = @(@{ Name = 'InstallDetected-PostInstall'; Result = 'PASS' }, @{ Name = 'UninstallClean-PostUninstall'; Result = 'FAIL' }); Notes = $Notes
+                    LogFolder = 'Sandbox\Logs\Runs\20261022-190000_InstallUninstall' }
+        [ordered]@{ Scenario = 'InstallUninstall'; Backend = 'Sandbox'; Mode = 'Unattended'; TimestampUtc = '2026-10-22T18:00:00Z'; Verdict = 'Passed'
+                    Assertions = @(@{ Name = 'InstallDetected-PostInstall'; Result = 'PASS' }); Notes = '' }
+    ) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $proj 'Documentation\TestResults.json') -Encoding UTF8
+}
+& $records8 $parityNotes8
+$out8 = Join-Path $proj 'Documentation_paritynotes.md'
+$null = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath $out8 3>$null
+$md8 = Get-Content -LiteralPath $out8 -Raw
+& $records8 ''
+$out8b = Join-Path $proj 'Documentation_nonotes.md'
+$null = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath $out8b 3>$null
+$md8b = Get-Content -LiteralPath $out8b -Raw
+$lines8 = @($md8 -split "\r?\n")
+if ($lines8 -ccontains '| InstallUninstall | HyperV | 2026-10-22 19:00 UTC | Failed |' -and $lines8 -ccontains '- **InstallUninstall / HyperV** - issues: UninstallClean-PostUninstall (FAIL)') { Ok 'the Failed Hyper-V row and its issue line render as before' } else { Bad "rows: $(@($lines8 | Where-Object { $_ -like '| Install*' -or $_ -like '- **Install*' }) -join ' / ')" }
+if ($md8 -cnotmatch 'Intune-parity phase' -and $md8 -cnotmatch 'device''s 30-minute limit') { Ok 'the Notes sentences are not shown to the customer' } else { Bad 'the Notes leaked into the customer documentation' }
+if ($md8 -ceq $md8b) { Ok 'the document is identical with and without the parity Notes' } else { Bad 'the parity Notes changed the document' }
+
 # ── Cleanup ───────────────────────────────────────────────────────────────────────
 Remove-Item -LiteralPath $proj, $bare -Recurse -Force -ErrorAction SilentlyContinue
 

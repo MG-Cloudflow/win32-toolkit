@@ -112,6 +112,12 @@ function Test-Win32ToolkitProject {
     -DeployMode) from a 32-bit cmd.exe parent, as SYSTEM, in the package folder - the way the Intune
     Management Extension launches it - with the exit code checked (0, 1707, 3010, 1641 = success).
     Their results are not equivalent evidence.
+    The Intune-parity uninstall may run 35 minutes, longer than the device's 30-minute limit for an
+    EXE uninstaller, so a hung uninstaller ends with exit code 69113 as on a device.
+    The run's TestResults.json record says how each Intune-parity phase that failed ended: its Notes
+    name the phase and its exit code, and say what 69113 (the app's own uninstaller was still running
+    at the device's 30-minute limit and was stopped) and 1460 (the test's own limit for the phase was
+    reached) mean.
     A HyperV-unattended run of a PSADT 4.1 package with no processes to close and a deferrable welcome
     is not started while a user is signed in to the VM, which the toolkit's VM always is (it would wait
     on the dialog until the 25-minute limit): it is recorded as Inconclusive (not run) with the reason.
@@ -499,18 +505,27 @@ function Test-Win32ToolkitProject {
                         # via Sandbox\IntuneCommandLine.json) from a 32-bit cmd.exe parent, as SYSTEM, in the
                         # package folder, with no -DeployMode — the way the IME launches it. Replaces the old
                         # 64-bit '.ps1 -DeployMode Silent' runs (spec Q7). ParityHint names the likely cause
-                        # of exit code 1460 (the runner's 25-minute limit) in the provider's warning (L16).
+                        # of exit code 1460 (the runner's limit: 25 minutes, 35 for the uninstall) in the
+                        # provider's warning (L16).
+                        # The uninstall outlives the device's 30-minute EXE uninstaller limit, so a hung
+                        # uninstaller ends with exit code 69113 as on a device (installer-identity PR 2
+                        # follow-up F2). A host int constant: the runner's -TimeoutMinutes and the phase key
+                        # RunnerTimeoutMinutes (the provider sets the phase backstop 5 minutes above it) must agree.
+                        $uninstallParityRunnerMinutes = 35
                         $phases += @(
                             @{ Label = 'Install (Intune parity)';   Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label app; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes; ParityHint = $parityDialogHint }
                             @{ Label = 'Assert: installed';         Command = "$assertCmd -Phase PostInstall"; IgnoreExit = $true }
-                            @{ Label = 'Uninstall (Intune parity)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Uninstall -Label app; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes; ParityHint = 'Uninstaller' }
+                            @{ Label = 'Uninstall (Intune parity)'; Command = ('& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Uninstall -TimeoutMinutes ' + $uninstallParityRunnerMinutes + ' -Label app; exit $LASTEXITCODE'); SuccessExitCodes = $psadtSuccessCodes; ParityHint = 'Uninstaller'; RunnerTimeoutMinutes = $uninstallParityRunnerMinutes }
                             @{ Label = 'Assert: uninstalled';       Command = "$assertCmd -Phase PostUninstall"; IgnoreExit = $true }
                             @{ Label = 'CollectLogs';               Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true; Always = $true }
                         )
                         Write-Host 'Running an UNATTENDED Install → Uninstall in the Hyper-V VM with the Intune command line (32-bit parent, SYSTEM)...' -ForegroundColor Cyan
                     }
                     $runLog = Initialize-Win32ToolkitTestRunLog -ProjectPath $ProjectPath -Scenario 'InstallUninstall'
-                    $ran = Invoke-Win32ToolkitHyperVRun -ProjectPath $ProjectPath -Phase $phases -Output @('Sandbox\Logs\*')
+                    # How each Intune-parity phase that failed ended (69113 = the device's limit, 1460 = the test's own), for
+                    # the record's Notes (installer-identity PR 2 follow-up R6 #3): sentences from the provider's constants.
+                    $parityExitNotes = [System.Collections.Generic.List[string]]::new()
+                    $ran = Invoke-Win32ToolkitHyperVRun -ProjectPath $ProjectPath -Phase $phases -Output @('Sandbox\Logs\*') -ParityExitNote $parityExitNotes
                     if ($ran) {
                         Write-Host "✓ Hyper-V install/uninstall completed. Logs: $(Join-Path $ProjectPath 'Sandbox\Logs')" -ForegroundColor Green
                     } else {
@@ -526,7 +541,8 @@ function Test-Win32ToolkitProject {
                     # The logs came back with the copy-out: nothing to wait for.
                     $runFolder = & $saveRunLog $runLog 0
                     Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'InstallUninstall' -Backend 'HyperV' `
-                        -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $iuVerdict -LogFileName 'InstallAssertions.log' -LogFolder $runFolder
+                        -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $iuVerdict -LogFileName 'InstallAssertions.log' -LogFolder $runFolder `
+                        -Notes (@($parityExitNotes) -join ' ')
                     return $iuVerdict
                 }
 
@@ -1068,7 +1084,9 @@ function Test-Win32ToolkitProject {
                         @{ Label = 'CollectLogs';        Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true; Always = $true }
                     )
 
-                    $hvArgs = @{ ProjectPath = $ProjectPath; Phase = $phases; Output = @('Sandbox\Logs\*') }
+                    # How the Intune-parity update ended when it failed, for the record's Notes (R6 #3, as the install/uninstall).
+                    $parityExitNotes = [System.Collections.Generic.List[string]]::new()
+                    $hvArgs = @{ ProjectPath = $ProjectPath; Phase = $phases; Output = @('Sandbox\Logs\*'); ParityExitNote = $parityExitNotes }
                     if ($useBaselineProject) { $hvArgs['BaselineProjectPath'] = $BaselineProjectPath }
 
                     if ($interactive) { Write-Host "`nRunning an INTERACTIVE Update test in the Hyper-V VM (verify the old install in the vmconnect window, then press Enter)..." -ForegroundColor Cyan }
@@ -1087,11 +1105,12 @@ function Test-Win32ToolkitProject {
                     $assertLog = Join-Path $ProjectPath 'Sandbox\Logs\UpdateAssertions.log'
                     if (-not (Test-Path -LiteralPath $assertLog)) {
                         Write-Warning "No UpdateAssertions.log came back from the VM — the assertions never ran, or the copy-out failed. Check $ProjectPath\Sandbox\Logs and the phase warnings above."
-                        Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $null -Notes 'Assertions log did not return from the VM.' -Baseline $baselineInfo -LogFolder $runFolder
+                        Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $null -Notes (@(@('Assertions log did not return from the VM.') + @($parityExitNotes)) -join ' ') -Baseline $baselineInfo -LogFolder $runFolder
                         return $null
                     }
                     $updVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -TimeoutMinutes 1 -PollSeconds 1
-                    Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict -Baseline $baselineInfo -LogFolder $runFolder
+                    Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict -Baseline $baselineInfo -LogFolder $runFolder `
+                        -Notes (@($parityExitNotes) -join ' ')
                     if ($updVerdict -eq $false) { & $warnTechSwitch }
                     return $updVerdict
                 }

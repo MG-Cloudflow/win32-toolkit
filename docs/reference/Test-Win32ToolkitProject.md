@@ -338,6 +338,12 @@ published command line (Invoke-AppDeployToolkit.exe -DeploymentType Install|Unin
 -DeployMode) from a 32-bit cmd.exe parent, as SYSTEM, in the package folder - the way the Intune
 Management Extension launches it - with the exit code checked (0, 1707, 3010, 1641 = success).
 Their results are not equivalent evidence.
+The Intune-parity uninstall may run 35 minutes, longer than the device's 30-minute limit for an
+EXE uninstaller, so a hung uninstaller ends with exit code 69113 as on a device.
+The run's TestResults.json record says how each Intune-parity phase that failed ended: its Notes
+name the phase and its exit code, and say what 69113 (the app's own uninstaller was still running
+at the device's 30-minute limit and was stopped) and 1460 (the test's own limit for the phase was
+reached) mean.
 A HyperV-unattended run of a PSADT 4.1 package with no processes to close and a deferrable welcome
 is not started while a user is signed in to the VM, which the toolkit's VM always is (it would wait
 on the dialog until the 25-minute limit): it is recorded as Inconclusive (not run) with the reason.

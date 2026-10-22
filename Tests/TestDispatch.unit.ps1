@@ -55,7 +55,7 @@ ${function:New-Win32ToolkitPackageRunnerScript} = { param($ProjectPath) $script:
 $script:installAssertGen = 0
 $script:recorded = $null
 function New-InstallAssertionScript { param($ProjectPath) $script:installAssertGen++; 'fake' }
-function Write-Win32ToolkitTestOutcome { param($ProjectPath, $Scenario, $Backend, $Mode, $Verdict, $LogFileName, $Notes, $Baseline, $LogFolder) $script:recorded = @{ Scenario = $Scenario; Backend = $Backend; Mode = $Mode; LogFileName = $LogFileName; Baseline = $Baseline; LogFolder = $LogFolder } }
+function Write-Win32ToolkitTestOutcome { param($ProjectPath, $Scenario, $Backend, $Mode, $Verdict, $LogFileName, $Notes, $Baseline, $LogFolder) $script:recorded = @{ Scenario = $Scenario; Backend = $Backend; Mode = $Mode; LogFileName = $LogFileName; Baseline = $Baseline; LogFolder = $LogFolder; Notes = $Notes } }
 function Get-Win32ToolkitTestBackend { param($Backend) return $script:backend }
 function Get-Process { param($Name, $ErrorAction) return $script:procs }
 # The single-instance guard goes through the Phase-0 seam helper, NOT Get-Process directly. Without this
@@ -114,6 +114,10 @@ if ($gui2.Count -eq 2 -and @($gui2 | Where-Object { $_.Command -like "& 'C:\PSAD
 if ($script:hvOutput -contains 'Sandbox\Logs\*') { Ok 'collects Sandbox\Logs back' } else { Bad "output=$($script:hvOutput -join ',')" }
 # The 1460 hint key (installer-identity PR 2, L16) is for the Intune-parity phases only: no watched phase carries one.
 if (@($script:hvPhase | Where-Object { $_.ContainsKey('ParityHint') }).Count -eq 0) { Ok 'watched (GUI, assertion, pause, log) phases carry no ParityHint' } else { Bad "hinted: $(@($script:hvPhase | Where-Object { $_.ContainsKey('ParityHint') } | ForEach-Object { $_.Label }) -join ',')" }
+# F2 (installer-identity PR 2 follow-ups): only the unattended Intune-parity uninstall raises the runner limit; a watched
+# run keeps the runner's 25 minutes (30 for the phase) on every phase.
+$rtm2 = @($script:hvPhase | Where-Object { $_.ContainsKey('RunnerTimeoutMinutes') -or ([string]$_.Command) -match '-TimeoutMinutes' })
+if ($rtm2.Count -eq 0) { Ok 'watched phases carry no RunnerTimeoutMinutes and pass no -TimeoutMinutes to the runner' } else { Bad "raised: $(@($rtm2.Label) -join ',')" }
 
 Write-Host '[3] HyperV -Unattended = SILENT (no pause, no interactive)' -ForegroundColor Cyan
 $script:backend = 'HyperV'; $script:procs = @(); $script:testMode = 'Interactive'
@@ -124,7 +128,14 @@ if ((Pauses) -eq 0 -and (Inters) -eq 0 -and ($script:hvPhase.Label -contains 'In
 $inst3 = @($script:hvPhase | Where-Object { $_.Label -eq 'Install (Intune parity)' })[0]
 $unin3 = @($script:hvPhase | Where-Object { $_.Label -eq 'Uninstall (Intune parity)' })[0]
 if ($inst3.Command -eq '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label app; exit $LASTEXITCODE') { Ok 'unattended install = Intune-parity runner phase (exact command, literal $LASTEXITCODE)' } else { Bad "install cmd: $($inst3.Command)" }
-if ($unin3.Command -eq '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Uninstall -Label app; exit $LASTEXITCODE') { Ok 'unattended uninstall = Intune-parity runner phase' } else { Bad "uninstall cmd: $($unin3.Command)" }
+if ($unin3.Command -eq '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Uninstall -TimeoutMinutes 35 -Label app; exit $LASTEXITCODE') { Ok 'unattended uninstall = Intune-parity runner phase with the 35-minute runner limit (F2)' } else { Bad "uninstall cmd: $($unin3.Command)" }
+# F2 (installer-identity PR 2 follow-ups, spec 1b): the Intune-parity uninstall outlives the device's 30-minute EXE
+# uninstaller limit, so a hung uninstaller ends with 69113 as on a device. The phase key (the provider sets the phase
+# backstop 5 minutes above it) and the runner's -TimeoutMinutes are the SAME host int; no other phase is raised.
+if ($unin3.RunnerTimeoutMinutes -is [int] -and $unin3.RunnerTimeoutMinutes -eq 35) { Ok 'the uninstall phase carries RunnerTimeoutMinutes 35 (an int: the provider sets the backstop to 40)' } else { Bad "uninstall RunnerTimeoutMinutes: '$($unin3.RunnerTimeoutMinutes)'" }
+if ([string]$unin3.Command -match '-TimeoutMinutes (\d+) ' -and [int]$Matches[1] -eq $unin3.RunnerTimeoutMinutes) { Ok 'the runner gets the same limit as the phase key' } else { Bad "runner limit vs key: '$($unin3.Command)' / '$($unin3.RunnerTimeoutMinutes)'" }
+$rtm3 = @($script:hvPhase | Where-Object { $_.Label -ne 'Uninstall (Intune parity)' -and ($_.ContainsKey('RunnerTimeoutMinutes') -or ([string]$_.Command) -match '-TimeoutMinutes') })
+if (-not $inst3.ContainsKey('RunnerTimeoutMinutes') -and $rtm3.Count -eq 0) { Ok 'the install, assertion and log phases keep the default limits (no key, no -TimeoutMinutes)' } else { Bad "raised: $(@($rtm3.Label) -join ',')" }
 if ((Test-CodesEqual $inst3.SuccessExitCodes) -and (Test-CodesEqual $unin3.SuccessExitCodes)) { Ok 'parity phases carry SuccessExitCodes 0,1707,3010,1641' } else { Bad "codes: $($inst3.SuccessExitCodes -join ',') / $($unin3.SuccessExitCodes -join ',')" }
 # 1460 hint keys (L16): a dialog cause on the install (PSADT 4.1 welcome named: the pre-check found that risk), the
 # uninstaller on the uninstall; the assertion and log phases none.
@@ -215,6 +226,9 @@ if ($upd7.Command -eq '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntunePar
 if ($cmds7 -notmatch "'C:\\PSADT\\Invoke-AppDeployToolkit\.ps1'") { Ok 'no direct call of the deploy script left in the Update phases' } else { Bad "cmds=$cmds7" }
 $hinted7 = @($script:hvPhase | Where-Object { $_.ContainsKey('ParityHint') })
 if ($upd7.ParityHint -eq 'Dialog41' -and $hinted7.Count -eq 1) { Ok "only the Update (Intune parity) phase carries a ParityHint ('$($upd7.ParityHint)')" } else { Bad "hints: $(@($hinted7 | ForEach-Object { "$($_.Label)=$($_.ParityHint)" }) -join ',')" }
+# F2 raises the limit of the Intune-parity UNINSTALL only: the Update phases keep the runner's 25 minutes.
+$rtm7 = @($script:hvPhase | Where-Object { $_.ContainsKey('RunnerTimeoutMinutes') -or ([string]$_.Command) -match '-TimeoutMinutes' })
+if ($rtm7.Count -eq 0) { Ok 'no Update phase carries RunnerTimeoutMinutes or passes -TimeoutMinutes to the runner' } else { Bad "raised: $(@($rtm7.Label) -join ',')" }
 
 Write-Host '[8] Update + HyperV but the assertions log never came back -> no 30-min hang' -ForegroundColor Cyan
 $script:backend = 'HyperV'; $script:hvCopiesLog = $false; $script:waitArgs = $null
@@ -222,6 +236,45 @@ $verdict = $null
 try { $verdict = Test-Win32ToolkitProject -ProjectPath $proj -Scenario 'Update' -BaselineProjectPath $base -Unattended *>$null } catch { }
 if ($null -eq $script:waitArgs) { Ok 'waiter never entered (returns null instead of polling 30 min)' } else { Bad "waiter was called: $($script:waitArgs | Out-String)" }
 $script:hvCopiesLog = $true
+
+# Installer-identity PR 2 follow-up R6 #3: a parity uninstall that ended with 69113 (the device's limit) and one that hit the
+# test's own limit (1460) looked alike in TestResults.json. The provider fills the caller's list (-ParityExitNote) with one
+# sentence per failed Intune-parity phase; the record's Notes carry them, joined by a space, after any note of its own.
+Write-Host '[8b] Hyper-V: the record''s Notes say how each failed Intune-parity phase ended (69113 vs 1460, R6 #3)' -ForegroundColor Cyan
+$savedHv8b = ${function:Invoke-Win32ToolkitHyperVRun}
+$script:hvNotes8b = @()
+$script:hvList8b = $null
+$script:hvLog8b = $true
+function Invoke-Win32ToolkitHyperVRun {
+    param($ProjectPath, $Phase, $Output, $BaselineProjectPath, [System.Collections.Generic.List[string]]$ParityExitNote)
+    $script:hvCalled++; $script:hvPhase = $Phase; $script:hvList8b = $ParityExitNote
+    if ($null -ne $ParityExitNote) { foreach ($n in $script:hvNotes8b) { $ParityExitNote.Add($n) } }
+    if ($script:hvLog8b) {
+        $ld = Join-Path $ProjectPath 'Sandbox\Logs'
+        New-Item -ItemType Directory -Path $ld -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $ld 'UpdateAssertions.log') -Value '[t] ASSERT Tattoo-PostUpdate = PASS'
+    }
+    $true
+}
+$n69 = "Intune-parity phase 'Uninstall (Intune parity)' exited with code 69113: the app's own uninstaller was still running at the device's 30-minute limit and was stopped."
+$n1460 = "Intune-parity phase 'Install (Intune parity)' exited with code 1460: the test's own 25-minute limit for this phase was reached and the package was stopped."
+$nUpd = "Intune-parity phase 'Update (Intune parity)' exited with code 1603."
+foreach ($case in @(
+        @{ Tag = 'InstallUninstall unattended, 1460 install + 69113 uninstall'; P = @{ Scenario = 'InstallUninstall'; Unattended = $true }; Notes = @($n1460, $n69); Log = $true; Want = "$n1460 $n69" }
+        @{ Tag = 'InstallUninstall unattended, no failed parity phase';       P = @{ Scenario = 'InstallUninstall'; Unattended = $true }; Notes = @();               Log = $true; Want = '' }
+        @{ Tag = 'Update unattended, failed parity update';                   P = @{ Scenario = 'Update'; BaselineProjectPath = $base; Unattended = $true }; Notes = @($nUpd); Log = $true;  Want = $nUpd }
+        @{ Tag = 'Update unattended, no assertions log + failed update';      P = @{ Scenario = 'Update'; BaselineProjectPath = $base; Unattended = $true }; Notes = @($nUpd); Log = $false; Want = "Assertions log did not return from the VM. $nUpd" }
+        @{ Tag = 'Update unattended, no assertions log, no failed phase';     P = @{ Scenario = 'Update'; BaselineProjectPath = $base; Unattended = $true }; Notes = @();      Log = $false; Want = 'Assertions log did not return from the VM.' })) {
+    $script:backend = 'HyperV'; $script:testMode = 'Interactive'; $script:depCount = 0; $script:procs = @(); $script:recorded = $null; $script:hvCalled = 0
+    $script:hvNotes8b = $case.Notes; $script:hvLog8b = $case.Log; $script:hvList8b = $null
+    $p8b = @{ ProjectPath = $proj } + $case.P
+    try { $null = Test-Win32ToolkitProject @p8b 3>$null 6>$null } catch { Bad "$($case.Tag): threw $($_.Exception.Message)" }
+    $listOk = $script:hvList8b -is [System.Collections.Generic.List[string]]
+    if ($script:hvCalled -eq 1 -and $listOk -and $null -ne $script:recorded -and $script:recorded.Backend -eq 'HyperV' -and [string]$script:recorded.Notes -ceq $case.Want) {
+        Ok "$($case.Tag): the provider gets a list and the record's Notes are '$($case.Want)'"
+    } else { Bad "$($case.Tag): hv=$script:hvCalled list=$listOk recorded=$($null -ne $script:recorded) notes='$($script:recorded.Notes)'" }
+}
+${function:Invoke-Win32ToolkitHyperVRun} = $savedHv8b   # the Update shadow of [6]-[8] again for the tests below
 
 Write-Host '[9] declared dependencies install FIRST in BOTH scenarios' -ForegroundColor Cyan
 $script:depCount = 1

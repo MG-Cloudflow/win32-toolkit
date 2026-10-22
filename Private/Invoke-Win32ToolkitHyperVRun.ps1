@@ -18,11 +18,15 @@ function Invoke-Win32ToolkitHyperVRun {
         and optional IgnoreExit ([bool], default $false) and SuccessExitCodes ([int[]], default @(0): a
         warning is printed only for an exit code outside them). A DepPhase that fails skips every later
         phase except those with Always = $true (log collection). An Intune-parity phase may name the
-        likely cause of exit code 1460 (the guest runner stopped the package at its 25-minute limit) with
-        the optional key ParityHint, a constant set by the caller: 'Dialog41' (a PSADT 4.1 dialog waiting
-        for the user signed in to the VM), 'Dialog' (a PSADT dialog, or an installer that did not finish)
-        or 'Uninstaller' (the uninstaller or a child process it waits for). The warning then adds that
-        cause and what to do; without the key, or with another value, it names the exit code only.
+        likely cause of exit code 1460 (the guest runner stopped the package at its limit: 25 minutes, or
+        the phase's optional RunnerTimeoutMinutes, an int 1-235 the caller also passes to the runner as
+        -TimeoutMinutes; the phase's own backstop is then RunnerTimeoutMinutes + 5) with the optional key
+        ParityHint, a constant set by the caller: 'Dialog41' (a PSADT 4.1 dialog waiting for the user
+        signed in to the VM), 'Dialog' (a PSADT dialog, or an installer that did not finish) or
+        'Uninstaller' (the uninstaller or a child process it waits for; it also explains exit code 69113:
+        the package stopped the app's EXE uninstaller at the device's 30-minute limit). The warning then
+        adds that cause and what to do; without the key, or with another value, it names the exit code
+        only.
     .PARAMETER Output
         Project-relative globs to copy back from the guest after the phases (default the capture JSON +
         Sandbox\Logs).
@@ -31,6 +35,13 @@ function Invoke-Win32ToolkitHyperVRun {
     .PARAMETER VMName / Credential / CheckpointName
         Resolved from config / the stored guest credential when omitted (CheckpointName: the HyperVCheckpoint
         config value, default 'clean-base' - the checkpoint the test VM commands maintain).
+    .PARAMETER ParityExitNote
+        Optional list the run adds one sentence to for each Intune-parity phase (a phase with a ParityHint) that
+        exited with a code outside its SuccessExitCodes, for the Notes of the test's TestResults.json record:
+        the phase label, the exit code and, for 1460 (the test's own limit for the phase was reached) and for
+        69113 with ParityHint 'Uninstaller' (the app's own uninstaller was still running at the device's
+        30-minute limit and was stopped), what it means; any other code is named only. A phase that did not
+        finish (267009 / 267011) did not exit and adds nothing. Host constants and the exit code only.
     .OUTPUTS
         [bool] — $true if the run completed (individual phase failures are warned, not fatal, matching
         the Sandbox fire-and-forget semantics; callers judge results from the copied-back outputs).
@@ -49,7 +60,10 @@ function Invoke-Win32ToolkitHyperVRun {
         [pscredential]$Credential,
         # No default: an omitted name is the configured HyperVCheckpoint (default 'clean-base') below, the
         # checkpoint New-/Set-Win32ToolkitTestVM* maintain (installer-identity PR 2, L18).
-        [string]$CheckpointName
+        [string]$CheckpointName,
+        # Filled for the caller's test record (installer-identity PR 2 follow-up R6 #3): one sentence per Intune-parity
+        # phase that exited outside its success codes, so a 69113 and a 1460 are told apart in TestResults.json.
+        [System.Collections.Generic.List[string]]$ParityExitNote
     )
 
     if (-not $VMName)     { $VMName = Get-Win32ToolkitConfigValue -Name 'HyperVVMName' -Default 'win32tk-golden' }
@@ -194,7 +208,19 @@ function Invoke-Win32ToolkitHyperVRun {
             # Every phase runs as SYSTEM (the Intune account; bitness and launcher parity come from the
             # Intune-parity runner phases, not from this primitive). For an interactive phase PSADT's own
             # deploy mode renders its GUI in the logged-on user's session (a real desktop is ensured above).
-            $exit = Invoke-Win32ToolkitGuestPhase -Session $session -Command $ph.Command -Label $ph.Label
+            # The guest runner's limit for this phase: RunnerTimeoutMinutes (a host constant the caller also passes to the
+            # runner as -TimeoutMinutes) or the runner's default 25; the phase backstop stays 5 minutes above it (25/30, 35/40).
+            $runnerLimit = 25
+            $phaseArgs = @{ Session = $session; Command = $ph.Command; Label = $ph.Label }
+            $rtm = 0
+            if ($null -ne $ph.RunnerTimeoutMinutes) {
+                if ([int]::TryParse([string]$ph.RunnerTimeoutMinutes, [ref]$rtm) -and $rtm -ge 1 -and $rtm -le 235) {
+                    $runnerLimit = $rtm
+                    $phaseArgs['TimeoutMinutes'] = $rtm + 5
+                }
+                else { Write-Verbose "  Phase '$($ph.Label)': RunnerTimeoutMinutes '$($ph.RunnerTimeoutMinutes)' is not 1-235; the default limits apply." }
+            }
+            $exit = Invoke-Win32ToolkitGuestPhase @phaseArgs
             # 267009 (SCHED_S_TASK_RUNNING: stopped at its timeout) / 267011 (SCHED_S_TASK_HAS_NOT_RUN) are
             # not exit codes of the phase: it did not finish. Whatever IgnoreExit says, stop here.
             if ($exit -in 267009, 267011) {
@@ -206,7 +232,7 @@ function Invoke-Win32ToolkitHyperVRun {
             # A phase may declare its success codes (PSADT/Intune: 0, 1707, 3010, 1641); otherwise only 0 is.
             $okExit = if ($ph.SuccessExitCodes) { @($ph.SuccessExitCodes) } else { @(0) }
             if (-not $ph.IgnoreExit -and $okExit -notcontains $exit) {
-                # 1460 = the guest runner stopped the package at its 25-minute limit (New-Win32ToolkitPackageRunnerScript).
+                # 1460 = the guest runner stopped the package at its $runnerLimit-minute limit (New-Win32ToolkitPackageRunnerScript).
                 # The phase names the likely cause with ParityHint, a host constant set by Test-Win32ToolkitProject
                 # (never data); the texts are constants here (installer-identity PR 2, L16).
                 $hint = ''
@@ -217,11 +243,29 @@ function Invoke-Win32ToolkitHyperVRun {
                     switch ([string]$ph.ParityHint) {
                         'Dialog41'    { $hint = ' In an unattended Intune-parity run this usually means a PSADT dialog was waiting for the user signed in to the VM: PSADT 4.1 shows its welcome dialog in Auto mode when a user is signed in and the app has no processes to close. Run the test watched to see and answer it' + $watchedNeeds + ', or list the app''s process in ProcessesToClose; the PSADT log under Sandbox\Logs shows the last dialog it opened.' }
                         'Dialog'      { $hint = ' In an unattended Intune-parity run this often means a PSADT dialog was waiting for the user signed in to the VM (for example because a listed process to close was running), or the installer itself did not finish. Run the test watched to see it' + $watchedNeeds + '; the PSADT log under Sandbox\Logs shows where it stopped.' }
-                        'Uninstaller' { $hint = ' The uninstaller, or a child process it waits for, was still running at the test runner''s 25-minute limit; on devices, a project created with this win32-toolkit version stops it at 30 minutes with exit code 69113. The PSADT log under Sandbox\Logs shows the command it was running.' }
+                        'Uninstaller' {
+                            if ($runnerLimit -gt 30) {
+                                $hint = " The uninstall was still running after $runnerLimit minutes, longer than the device's 30-minute uninstaller limit: a project created with this win32-toolkit version stops an EXE uninstaller after 30 minutes with exit code 69113, so this is a project created before that (re-create it), or a step that limit does not cover, for example an MSI uninstall. The PSADT log under Sandbox\Logs shows the command it was running."
+                            }
+                            else {
+                                $hint = " The uninstaller, or a child process it waits for, was still running at the test runner's $runnerLimit-minute limit; on devices, a project created with this win32-toolkit version stops the uninstaller at 30 minutes (exit code 69113 when the uninstaller itself is still running; a child process still running then is stopped and the uninstaller's own exit code counts). The PSADT log under Sandbox\Logs shows the command it was running."
+                            }
+                        }
                     }
                 }
-                if ($hint) { Write-Warning ("Guest phase '$($ph.Label)' exited with code 1460: the guest runner stopped the package at its 25-minute limit." + $hint) }
+                if ($hint) { Write-Warning ("Guest phase '$($ph.Label)' exited with code 1460: the guest runner stopped the package at its $runnerLimit-minute limit." + $hint) }
+                elseif ($exit -eq 69113 -and [string]$ph.ParityHint -eq 'Uninstaller') {
+                    Write-Warning "Guest phase '$($ph.Label)' exited with code 69113: the package stopped the app's EXE uninstaller at the device's 30-minute limit, as a device would. The detection tattoo stays, so Intune would keep reporting the app as installed. The PSADT log under Sandbox\Logs names the uninstaller."
+                }
                 else { Write-Warning "Guest phase '$($ph.Label)' exited with code $exit." }
+                # The test record says how an Intune-parity phase ended (R6 #3): a 69113 (the device's limit, as on a device)
+                # and a 1460 (the test's own limit) otherwise look alike outside the PSADT logs. Constant texts.
+                if ($null -ne $ParityExitNote -and -not [string]::IsNullOrEmpty([string]$ph.ParityHint)) {
+                    $meaning = if ($exit -eq 1460) { ": the test's own $runnerLimit-minute limit for this phase was reached and the package was stopped." }
+                               elseif ($exit -eq 69113 -and [string]$ph.ParityHint -eq 'Uninstaller') { ": the app's own uninstaller was still running at the device's 30-minute limit and was stopped." }
+                               else { '.' }
+                    $ParityExitNote.Add("Intune-parity phase '$($ph.Label)' exited with code $exit$meaning")
+                }
                 if ($ph.DepPhase) {
                     Write-Warning 'A declared dependency failed to install: the app phases are skipped (Intune would not install the app either).'
                     $depFailed = $true

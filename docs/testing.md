@@ -100,21 +100,32 @@ and after it looks (a test that then starts skips its own first restore). When i
 sessions, it warns and the test starts as usual. PSADT 4.2 packages are not checked: PSADT 4.2 resolves
 Auto mode to Silent when no listed process is running.
 
-**Exit code 1460.** The guest runner stops a package that is still running after 25 minutes and records
-exit code 1460. For an Intune-parity phase the warning names the likely cause:
+**Exit code 1460.** The guest runner stops a package that is still running after 25 minutes (35 for the
+Intune-parity uninstall, see below) and records exit code 1460. For an Intune-parity phase the warning
+names the likely cause:
 
 - **Install or update phase**: a PSADT dialog waiting for the user signed in to the VM (for example
   because a listed process to close was running, or, on PSADT 4.1, a welcome dialog), or an installer that
   did not finish. Run the test watched to see it (the three conditions above).
-- **Uninstall phase**: the uninstaller, or a child process it waits for, was still running.
+- **Uninstall phase**: the package was still running after 35 minutes, longer than the 30-minute limit
+  the uninstall of a project created with this version puts on an EXE uninstaller: a project created
+  before that limit (re-create it), or a step the limit does not cover, for example an MSI uninstall.
 
 The PSADT log under `Sandbox\Logs` shows where the package stopped.
 
-**Test-run limits and the device limit.** A test run stops a package earlier than a device does: after 25
-minutes in the guest runner, 30 minutes for a Hyper-V phase, and 10 minutes for the Sandbox
-install/uninstall wait. On a device, the uninstall of a project created with this version stops an EXE
-uninstaller that runs longer than 30 minutes, with exit code 69113. So a test run never shows exit code
-69113: a hung uninstaller shows there as exit code 1460 (Hyper-V) or as an Inconclusive run (Sandbox).
+**Test-run limits and the device limit.** On a device, the uninstall of a project created with this
+version stops an EXE uninstaller that is still running after 30 minutes and fails with exit code 69113.
+The Intune-parity uninstall of an unattended Hyper-V test may run 35 minutes (40 for the whole phase), so
+it ends the same way: exit code 69113 (the warning says so), and the uninstall assertions fail because the
+detection tattoo stays, as on a device. The other limits stay below the device limit: 25 minutes in the
+guest runner for the install, the update and the watched uninstall (30 for the Hyper-V phase around it),
+and 10 minutes for the Sandbox install/uninstall wait. A hung uninstaller shows there as exit code 1460
+(watched Hyper-V) or as an Inconclusive run (Sandbox).
+
+The `Documentation\TestResults.json` record of an unattended Hyper-V run says how each Intune-parity phase
+that failed ended: its `Notes` give one sentence per phase with the exit code, and say what 69113 (the
+app's own uninstaller was still running at the device's 30-minute limit and was stopped) and 1460 (the
+test's own limit for the phase was reached) mean. The customer documentation does not show `Notes`.
 
 ### One package, one process
 
