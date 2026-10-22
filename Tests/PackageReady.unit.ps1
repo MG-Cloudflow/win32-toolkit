@@ -67,12 +67,12 @@ function Use-ShapeResult {
     param(
         [string]$Shape = 'Psadt41', [AllowNull()][object]$Dasv = '4.1.8', [bool]$IsPatched = $true,
         [AllowNull()][object]$GeneratorVersion = 2, [bool]$HasTattoo = $true, [string]$Support = 'Supported',
-        [string]$SupportReason = '', [string]$Reason = ''
+        [string]$SupportReason = '', [string]$Reason = '', [int]$UninstallRevision = 2
     )
     $script:shape = [pscustomobject]@{
         Shape = $Shape; DeployAppScriptVersion = $Dasv; IsSupportedVersion = $true; IsPatched = $IsPatched
         GeneratorVersion = $GeneratorVersion; HasTattoo = $HasTattoo; ParseErrors = 0; MarkerIssues = [string[]]@()
-        Support = $Support; SupportReason = $SupportReason; Reason = $Reason
+        Support = $Support; SupportReason = $SupportReason; Reason = $Reason; UninstallRevision = $UninstallRevision
     }
 }
 # A spec 2.4 result. Defaults = bundled 4.1.8 with a 4.1.8 script.
@@ -679,6 +679,90 @@ try {
     $top = @($fAst.EndBlock.Statements)
     $reads = @($fAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-Content' }, $true))
     if ($top.Count -eq 1 -and $top[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and @($reads | Where-Object { $_.Extent.Text -notmatch '-Encoding UTF8' }).Count -eq 0) { Ok 'the file defines only its function; every Get-Content passes -Encoding UTF8' } else { Bad '[26] top-level code or Get-Content without -Encoding' }
+
+    # == [27]-[30] the uninstall predates the hardened uninstall (installer-identity PR 2, spec 2.4, D12) ======
+    $oldRx = '^.+Invoke-AppDeployToolkit\.ps1: its uninstall predates the hardened uninstall of this win32-toolkit version: '
+    function Get-OldUninstallWarning($r) { @($r.Warnings | Where-Object { $_ -match 'predates the hardened uninstall' }) }
+    $exeUninstall = [ordered]@{ AppName = 'Acme'; ProductCodes = @(); CleanupPaths = @()
+        Uninstallers = @([ordered]@{ Type = 'exe'; ProductCode = $null; Path = 'C:\Program Files\Acme\uninstall.exe'; Args = '/S' }) }
+
+    Write-Host '[27] uninstall revision 1 + an EXE uninstaller -> one warning at Export, none at Finalize' -ForegroundColor Cyan
+    $p27 = Build-CleanupProject -Name 'Old27' -Uninstall $exeUninstall
+    Initialize-TestDouble; Use-ShapeResult -UninstallRevision 1
+    $r = Invoke-Gate -ProjectPath $p27 -Stage Export
+    $w27 = @(Get-OldUninstallWarning $r)
+    if (-not $r.Error -and $r.Result.Ready -and $r.Warnings.Count -eq 1 -and $w27.Count -eq 1 -and $w27[0].StartsWith("$(Join-Path $p27 'Invoke-AppDeployToolkit.ps1'): its uninstall predates the hardened uninstall") -and $w27[0] -match $oldRx) { Ok 'Export -> Ready with exactly one warning: "<script>: its uninstall predates the hardened uninstall ..."' } else { Bad "[27] Export -> error='$($r.Error)' warnings=$($r.Warnings -join ' | ')" }
+    if ($w27.Count -eq 1 -and $w27[0].Contains('an EXE uninstaller has no time limit and is not waited for with its child processes') -and $w27[0].Contains('Re-create the project with this win32-toolkit version') -and $w27[0].EndsWith('to get it. This only warns.')) { Ok 'the warning says what is missing, how to get it (re-create) and that it only warns' } else { Bad "[27] text: $($w27 -join ' | ')" }
+    if ($r.Result.Warnings -contains $w27[0]) { Ok 'the warning is returned in Result.Warnings too' } else { Bad '[27] not in Result.Warnings' }
+    Initialize-TestDouble; Use-ShapeResult -UninstallRevision 1
+    $r = Invoke-Gate -ProjectPath $p27 -Stage Finalize
+    if (-not $r.Error -and $r.Warnings.Count -eq 0) { Ok 'Finalize -> no warning (Export only)' } else { Bad "[27] Finalize -> warnings=$($r.Warnings -join ' | ')" }
+    Initialize-TestDouble; Use-ShapeResult -UninstallRevision 1
+    $r = Invoke-Gate -ProjectPath $p27 -Stage Export -AllowLegacyScript
+    if (-not $r.Error -and @(Get-OldUninstallWarning $r).Count -eq 1 -and $r.Warnings.Count -eq 1) { Ok '-AllowLegacyScript changes nothing: the same single warning' } else { Bad "[27] -AllowLegacyScript -> warnings=$($r.Warnings -join ' | ')" }
+    $p27b = Build-CleanupProject -Name 'Old27b' -Capture 'git-edge-noise.json' -DisplayName 'Git' -Uninstall ([ordered]@{
+            AppName = 'Git'; ProductCodes = @(); Uninstallers = @(); CleanupPaths = @('C:\Program Files\Git'); InstallRoots = @('C:\Program Files\Git') })
+    Initialize-TestDouble; Use-ShapeResult -UninstallRevision 1
+    $r = Invoke-Gate -ProjectPath $p27b -Stage Export
+    if (-not $r.Error -and @(Get-OldUninstallWarning $r).Count -eq 1 -and $r.Warnings.Count -eq 1) { Ok 'revision 1 + a cleanup path (no EXE uninstaller) -> the same single warning' } else { Bad "[27b] -> error='$($r.Error)' warnings=$($r.Warnings -join ' | ')" }
+
+    Write-Host '[28] uninstall revision 1 without an EXE uninstaller or a cleanup path (MSI / MSIX) -> no warning' -ForegroundColor Cyan
+    $p28msi = Build-CleanupProject -Name 'Old28msi' -Uninstall $null
+    $p28msiU = Build-CleanupProject -Name 'Old28msiU' -Uninstall ([ordered]@{ AppName = 'Acme'; ProductCodes = @('{11111111-2222-3333-4444-555555555555}'); CleanupPaths = @()
+            Uninstallers = @([ordered]@{ Type = 'msi'; ProductCode = '{11111111-2222-3333-4444-555555555555}'; Path = $null; Args = $null }) })
+    $p28msix = Build-CleanupProject -Name 'Old28msix' -Uninstall ([ordered]@{ AppName = 'Acme'; ProductCodes = @(); CleanupPaths = @()
+            Uninstallers = @([ordered]@{ Type = 'msix'; PackageName = 'Acme.App' }) })
+    foreach ($case in @(@{ L = 'MSI (no Uninstall section)'; P = $p28msi }, @{ L = 'msi uninstallers only'; P = $p28msiU }, @{ L = 'MSIX (msix uninstaller, no cleanup)'; P = $p28msix })) {
+        Initialize-TestDouble; Use-ShapeResult -UninstallRevision 1
+        $r = Invoke-Gate -ProjectPath $case.P -Stage Export
+        if (-not $r.Error -and $r.Result.Ready -and $r.Warnings.Count -eq 0) { Ok "$($case.L) -> Ready, no warning" } else { Bad "[28] $($case.L) -> error='$($r.Error)' warnings=$($r.Warnings -join ' | ')" }
+    }
+
+    Write-Host '[29] uninstall revision 2 -> no warning; Legacy (revision 0) -> still exactly the one legacy warning' -ForegroundColor Cyan
+    Initialize-TestDouble; Use-ShapeResult -UninstallRevision 2
+    $r = Invoke-Gate -ProjectPath $p27 -Stage Export
+    if (-not $r.Error -and $r.Result.Ready -and $r.Warnings.Count -eq 0) { Ok 'revision 2 + an EXE uninstaller -> Ready, no warning' } else { Bad "[29] rev 2 -> warnings=$($r.Warnings -join ' | ')" }
+    Initialize-TestDouble; Use-ProjectVersionResult -IsLegacy $true -Warning $legacyText
+    Use-ShapeResult -GeneratorVersion 0 -Support 'Legacy' -SupportReason $legacyText -UninstallRevision 0
+    $r = Invoke-Gate -ProjectPath $p27 -Stage Export
+    if (-not $r.Error -and $r.Warnings.Count -eq 1 -and $r.Warnings[0] -match 'WOW6432Node' -and @(Get-OldUninstallWarning $r).Count -eq 0) { Ok 'Legacy -> exactly the one legacy warning' } else { Bad "[29] Legacy -> warnings=$($r.Warnings -join ' | ')" }
+    Initialize-TestDouble; Use-ShapeResult -Shape 'Psadt42Default' -Support 'Unsupported' -SupportReason 'PSADT 4.2 default template without Zero-Config' -UninstallRevision 1
+    $r = Invoke-Gate -ProjectPath $p27 -Stage Export -AllowLegacyScript
+    if (-not $r.Error -and @(Get-OldUninstallWarning $r).Count -eq 0) { Ok 'an unsupported shape accepted with -AllowLegacyScript -> no hardened-uninstall warning (only Supported scripts)' } else { Bad "[29] unsupported -> warnings=$($r.Warnings -join ' | ')" }
+    Initialize-TestDouble; $script:shape = $null; Use-ShapeResult -UninstallRevision 1
+    $script:shape.PSObject.Properties.Remove('UninstallRevision')
+    $r = Invoke-Gate -ProjectPath $p27 -Stage Export
+    if (-not $r.Error -and $r.Warnings.Count -eq 0) { Ok 'a shape result without UninstallRevision (older detector) -> no warning, no error' } else { Bad "[29] no property -> error='$($r.Error)' warnings=$($r.Warnings -join ' | ')" }
+
+    Write-Host '[30] uninstall revision 1 + an unreadable or locked AppConfig.json -> only the cleanup "could not be read" error' -ForegroundColor Cyan
+    Initialize-TestDouble; Use-ShapeResult -UninstallRevision 1
+    $r = Invoke-Gate -ProjectPath $p25b -Stage Export
+    if ((Test-NotReady $r) -and @($r.Lines | Where-Object { $_ -match $unreadRx }).Count -eq 1 -and @($r.Lines | Select-Object -Skip 1 | Select-Object -SkipLast 1).Count -eq 1 -and $r.Warnings.Count -eq 0) { Ok 'corrupt AppConfig.json -> the one Unreadable error line, no warning, no throw from the new read' } else { Bad "[30] corrupt -> error='$($r.Error)' lines=$($r.Lines -join ' | ') warnings=$($r.Warnings -join ' | ')" }
+    $p30 = Build-CleanupProject -Name 'Old30' -Uninstall $exeUninstall
+    $cfg30 = Join-Path $p30 'SupportFiles\AppConfig.json'
+    Initialize-TestDouble; Use-ShapeResult -UninstallRevision 1
+    $streamed = [System.Collections.Generic.List[object]]::new()
+    $caught30 = $null; $w30 = $null
+    $prevEap = $ErrorActionPreference
+    $hold = [System.IO.File]::Open($cfg30, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+    try {
+        # The module default (Continue), not this suite's 'Stop': a NON-terminating read error would be written
+        # to the error stream here. ForEach-Object keeps what was streamed before the gate's final throw.
+        $ErrorActionPreference = 'Continue'
+        try { Assert-Win32ToolkitPackageReady -ProjectPath $p30 -Stage Export -WarningVariable w30 -WarningAction SilentlyContinue 2>&1 | ForEach-Object { $streamed.Add($_) } }
+        catch { $caught30 = $_ }
+    }
+    finally { $ErrorActionPreference = $prevEap; $hold.Dispose() }
+    $stray = @($streamed | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] })
+    $l30 = if ($caught30) { @("$($caught30.Exception.Message)" -split '\r?\n') } else { @() }
+    if ($caught30 -and $caught30.FullyQualifiedErrorId -ceq 'W32T.PackageNotReady' -and @($l30 | Where-Object { $_ -match $unreadRx }).Count -eq 1 -and @($l30 | Select-Object -Skip 1 | Select-Object -SkipLast 1).Count -eq 1) { Ok 'a locked AppConfig.json -> W32T.PackageNotReady with only the Unreadable line' } else { Bad "[30] locked -> caught='$caught30' lines=$($l30 -join ' | ')" }
+    if ($stray.Count -eq 0 -and @($w30 | Where-Object { "$_" -match 'predates the hardened uninstall' }).Count -eq 0) { Ok 'no stray error record on the error stream and no hardened-uninstall warning (the new read uses -ErrorAction Stop)' } else { Bad "[30] stray errors: $(@($stray | ForEach-Object { $_.FullyQualifiedErrorId }) -join ' | ') warnings=$($w30 -join ' | ')" }
+
+    # The new read: -ErrorAction Stop inside a try whose catch starts with the C-2 re-throw.
+    $aAst = [System.Management.Automation.Language.Parser]::ParseFile($assertPath, [ref]$null, [ref]$null)
+    $readTry = @($aAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.TryStatementAst] -and
+                @($n.Body.FindAll({ param($c) $c -is [System.Management.Automation.Language.CommandAst] -and $c.GetCommandName() -eq 'Get-Win32ToolkitAppConfig' }, $true)).Count }, $true))
+    if ($readTry.Count -eq 1 -and $readTry[0].Body.Extent.Text -match '-ErrorAction Stop' -and $readTry[0].CatchClauses.Count -eq 1 -and $readTry[0].CatchClauses[0].Body.Statements[0].Extent.Text -ceq $c2) { Ok 'K2: the AppConfig read passes -ErrorAction Stop and its catch starts with the C-2 re-throw' } else { Bad '[30] the AppConfig read in Assert-Win32ToolkitPackageReady' }
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

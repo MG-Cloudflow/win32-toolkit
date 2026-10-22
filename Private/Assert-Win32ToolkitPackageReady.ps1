@@ -23,6 +23,7 @@ function Assert-Win32ToolkitPackageReady {
             the bundled PSADT module and the script form a supported    Export   error; -AllowLegacyScript: warning
             pair (Get-Win32ToolkitProjectPsadtVersion)
             the bundled PSADT module is a prerelease (e.g. 4.2.0-rc2)   Export   warning only (F-05)
+            the uninstall is the hardened one (uninstall revision 2)    Export   warning only
             uninstall cleanup paths stay inside the app's own install   Export   error (no override)
             folders (AppConfig)
 
@@ -195,6 +196,24 @@ function Assert-Win32ToolkitPackageReady {
             # production unnoticed: warn at Export only, so a Finalize -> Export run says it once.
             if ($projectVersion -and -not [string]::IsNullOrWhiteSpace([string]$projectVersion.Prerelease)) {
                 $warnings.Add("$ProjectPath bundles PSAppDeployToolkit $versionText, a PRERELEASE (for testing only). Rebuild the project on a stable PSAppDeployToolkit before you publish it to production devices.")
+            }
+
+            # An uninstall block written before the hardened uninstall (installer-identity PR 2, D12: no in-place
+            # re-render, the project must be re-created to get it). Only when it matters: an EXE uninstaller or a
+            # cleanup path. MSI/MSIX projects and Legacy scripts (their own single warning) get none.
+            if ($support -eq 'Supported' -and [int]$shape.UninstallRevision -eq 1) {
+                $uninstallCfg = $null
+                # -ErrorAction Stop: a locked file or an ACL denial is a NON-terminating Get-Content error; without it Export would
+                # print a raw error record and continue with $null (same read as Get-Win32ToolkitCleanupPathFinding.ps1).
+                try { $uninstallCfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath -ErrorAction Stop }
+                catch {
+                    if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                    $uninstallCfg = $null    # an unreadable AppConfig is already an error of the cleanup-path check below
+                }
+                $un = if ($uninstallCfg -and $uninstallCfg.PSObject.Properties['Uninstall']) { $uninstallCfg.Uninstall } else { $null }
+                if ($un -and (@(@($un.Uninstallers) | Where-Object { $_ -and [string]$_.Type -eq 'exe' }).Count -gt 0 -or @(@($un.CleanupPaths) | Where-Object { $_ }).Count -gt 0)) {
+                    $warnings.Add("${scriptPath}: its uninstall predates the hardened uninstall of this win32-toolkit version: an EXE uninstaller has no time limit and is not waited for with its child processes (an NSIS uninstaller returns before it has finished), and the cleanup paths are not re-checked on the device. $recreate to get it. This only warns.")
+                }
             }
         }
     }
