@@ -191,7 +191,17 @@ What happens inside the guest, in order:
    actually works.
 5. **Uninstall**: the same package with `-DeploymentType Uninstall`, again in its own process.
 6. **Assert: uninstalled**. The detection signal (and, for an MSI, the product code) must now be
-   *gone*.
+   *gone*. For an EXE app (from winget or a manual app), the app's own Add/Remove Programs entries must
+   be gone too (`AppArpGone-PostUninstall`): the machine-wide entries the install capture identified as
+   the app's own, recorded in `SupportFiles\AppConfig.json` as `Uninstall.PrimaryKeys` (key name and 32-
+   or 64-bit registry view). An entry of a product the installer put next to the app (for example a
+   maintenance service) is never checked, and neither is a per-user entry: the capture runs as the
+   Sandbox user, an install on a device runs as SYSTEM, so an app that registers itself only per user
+   gets no such check. Both assertion steps log each recorded entry as `present=[True]` or
+   `present=[False]`; an entry that was not there after the install proves nothing when it is gone after
+   the uninstall. The check needs the uninstall of a project created with this version: a project created
+   before it, even when its capture was run again later, keeps the detection check only (its uninstall
+   can return before the uninstaller has finished); re-create it to get the check.
 7. **Log collection**. PSADT and MSI logs are copied back to the project's `Sandbox\Logs\` folder for
    troubleshooting, whatever the outcome, and kept in the run's own folder
    (see [Each run keeps its own logs](#each-run-keeps-its-own-logs)).

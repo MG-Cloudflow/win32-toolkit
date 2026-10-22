@@ -18,6 +18,10 @@ function Update-PSADTUninstallLogic {
         the allowlist (Test-Win32ToolkitCleanupPath): the uninstall deletes them recursively as SYSTEM.
         The install folders are stored next to them as Uninstall.InstallRoots.
 
+        The app's own uninstall entries are recorded as Uninstall.PrimaryKeys (key name and registry view,
+        from its primary key(s) only, machine-wide entries only: a per-user entry is never recorded); the
+        install/uninstall test checks they are gone.
+
         The uninstallers of the app's own uninstall entry (its primary key(s)) are written first, so a
         co-installed product's uninstaller can no longer be the one that runs first; Uninstall.AppName is
         the primary entry's DisplayName. Every uninstaller carries Kind: the installer technology
@@ -196,12 +200,24 @@ function Update-PSADTUninstallLogic {
         $verboseText = "Cleanup paths: $(@($ir.CreatedDirectories).Count - $keep.Count) created folder(s) outside the app's install folders were not kept; rejected uninstall keys and install-folder candidates: $(if ($rejectedText.Count) { $rejectedText -join '; ' } else { 'none' })."
         Write-Verbose ($verboseText -replace '[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]', '?')
 
+        # The app's own uninstall entries (key name + registry view): its primary key(s) only, never a co-installed
+        # product's, and machine-wide (HKLM) only. The install/uninstall test checks that they are gone after the
+        # uninstall (F13). A name that is not a plain key name, or another view, is not recorded.
+        $uninstallKeyNameRule = '^[^\\/:*?"<>|\p{Cc}\p{Cf}\p{Zl}\p{Zp}]{1,255}\z'
+        $primaryKeyData = @(foreach ($entry in @($ir.PrimaryKeyEntries | Where-Object { $_ })) {
+                $keyName = [string]$entry.Name
+                $keyView = [string]$entry.View
+                if ($keyName -match $uninstallKeyNameRule -and $keyName -ne '.' -and $keyName -ne '..' -and $keyView -cin 'Registry64', 'Registry32') { [pscustomobject]@{ Name = $keyName; View = $keyView } }
+                else { Write-Verbose (& $sanitize "Uninstall: the app's uninstall key '$keyName' is not a plain key name in Registry64 or Registry32; it is not recorded in Uninstall.PrimaryKeys.") }
+            })
+
         $cfg | Add-Member -NotePropertyName Uninstall -NotePropertyValue ([pscustomobject]@{
             AppName      = $appName
             ProductCodes = $productCodes
             Uninstallers = $uninstallers
             CleanupPaths = $cleanupPaths
             InstallRoots = @($ir.Roots)
+            PrimaryKeys  = $primaryKeyData
         }) -Force
         Set-Win32ToolkitAppConfig -ProjectPath $ProjectPath -Config $cfg | Out-Null
 

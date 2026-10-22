@@ -23,6 +23,9 @@
       [9]  every Get-Content in Get-Win32ToolkitInstallRoot.ps1 passes -Encoding.
       [10] C-4 / K1: the two new files are ASCII-only, define only their function, and every catch starts
            with the C-2 re-throw.
+      [11] F13 (follow-ups spec 2.3): Get-Win32ToolkitInstallRoot's PrimaryKeyEntries (key name + registry
+           view, the app's own HKLM keys only) and Update-PSADTUninstallLogic's Uninstall.PrimaryKeys
+           (plain key names in Registry64 / Registry32 only, case-sensitive view, idempotent).
 
     Fixtures (Tests\Fixtures\captures\, hand-built synthetic InstallationChanges_*.json with only the
     NewFiles / NewRegistryKeys entries the cases need; generic product paths, no template or customer
@@ -43,6 +46,8 @@
       coinstalled-first.json         a co-installed key 'AcmeUpdater' (WOW6432Node) listed BEFORE the
                                      app's own key 'Acme Widget' (InstallLocation, uninstall.exe, no
                                      switch); synthetic names.
+      x86-primary.json               the app's only key 'Acme Tool' in the 32-bit view (WOW6432Node,
+                                     InstallLocation 'C:\Program Files (x86)\Acme Tool', uninstall.exe /S).
     The winget manifests the ProductCode / DefaultInstallLocation cases need, and the synthetic installer
     files (an NSIS or Inno Setup signature in zeros) of [8], are written by this suite into the temp
     project's Files\ folder.
@@ -223,7 +228,7 @@ try {
     if ($edge.Count -eq 6 -and $edgeValid.Count -eq 0) { Ok 'every one of the 6 Edge / EdgeCore / EdgeUpdate / EdgeWebView folders is rejected' } else { Bad "Edge folders: $($edge.Count), valid: $($edgeValid -join ' | ')" }
     if ($ir.Roots -is [string[]] -and $ir.CreatedDirectories -is [string[]] -and $ir.PrimaryKeys -is [string[]]) { Ok 'Roots, CreatedDirectories and PrimaryKeys are [string[]]' } else { Bad 'result types' }
     $names = @($ir.PSObject.Properties.Name) -join ','
-    if ($names -ceq 'Roots,Rejected,CreatedDirectories,PrimaryKeys,PrimaryBy') { Ok 'result has exactly Roots, Rejected, CreatedDirectories, PrimaryKeys, PrimaryBy' } else { Bad "result properties: $names" }
+    if ($names -ceq 'Roots,Rejected,CreatedDirectories,PrimaryKeys,PrimaryBy,PrimaryKeyEntries') { Ok 'result has exactly Roots, Rejected, CreatedDirectories, PrimaryKeys, PrimaryBy, PrimaryKeyEntries' } else { Bad "result properties: $names" }
 
     # == [3] Firefox + co-installed Maintenance Service ================================================
     Write-Host '[3] firefox-coinstalled.json: the primary key only; the co-installed service folder is left alone' -ForegroundColor Cyan
@@ -568,6 +573,117 @@ try {
         $bad = @($catches | Where-Object { -not $_.Body.Statements.Count -or $_.Body.Statements[0].Extent.Text -cne "if (`$_.FullyQualifiedErrorId -like 'W32T.*') { throw }" })
         if ($catches.Count -ge 1 -and $bad.Count -eq 0) { Ok "$leaf - $($catches.Count) catch(es), each starts with the C-2 line" } else { Bad "$leaf catches without the C-2 line: $($bad.Count) of $($catches.Count)" }
     }
+
+    # == [11] F13: the app's own uninstall entries (PrimaryKeyEntries -> Uninstall.PrimaryKeys) ============
+    Write-Host '[11] F13: PrimaryKeyEntries (name + view, own HKLM keys only) and Uninstall.PrimaryKeys' -ForegroundColor Cyan
+    # 'Name|View' of each entry, joined with ';' (a key name with a control character is shown as is).
+    function Show-Entry($List) { @(@($List) | Where-Object { $_ } | ForEach-Object { "$($_.Name)|$($_.View)" }) -join ';' }
+
+    $ir = Get-Win32ToolkitInstallRoot -Capture (Read-Capture 'firefox-coinstalled.json') -DisplayName 'Mozilla Firefox'
+    if ((Show-Entry $ir.PrimaryKeyEntries) -ceq 'Mozilla Firefox|Registry64' -and $ir.PrimaryKeyEntries -is [pscustomobject[]]) { Ok 'firefox-coinstalled.json -> PrimaryKeyEntries = [Mozilla Firefox, Registry64] ([pscustomobject[]]), no MozillaMaintenanceService' } else { Bad "firefox: $(Show-Entry $ir.PrimaryKeyEntries)" }
+    $ir = Get-Win32ToolkitInstallRoot -Capture (Read-Capture 'coinstalled-first.json') -DisplayName 'Acme Widget'
+    if ((Show-Entry $ir.PrimaryKeyEntries) -ceq 'Acme Widget|Registry64') { Ok 'coinstalled-first.json -> [Acme Widget, Registry64] (the co-installed WOW6432Node AcmeUpdater is absent)' } else { Bad "coinstalled-first: $(Show-Entry $ir.PrimaryKeyEntries)" }
+    $ir = Get-Win32ToolkitInstallRoot -Capture (Read-Capture 'x86-primary.json')
+    if ((Show-Entry $ir.PrimaryKeyEntries) -ceq 'Acme Tool|Registry32' -and $ir.PrimaryBy -ceq 'OnlyKey' -and (@($ir.Roots) -join '|') -ceq 'C:\Program Files (x86)\Acme Tool') { Ok 'x86-primary.json -> [Acme Tool, Registry32] (OnlyKey; root C:\Program Files (x86)\Acme Tool)' } else { Bad "x86-primary: $(Show-Entry $ir.PrimaryKeyEntries) by '$($ir.PrimaryBy)' roots $(@($ir.Roots) -join ' | ')" }
+    $ir = Get-Win32ToolkitInstallRoot -Capture (Read-Capture 'default-install-location.json')
+    if ((Show-Entry $ir.PrimaryKeyEntries) -ceq '{0D6A3B2C-1111-4A5B-9C8D-0123456789AB}|Registry64' -and -not @(@($ir.PrimaryKeyEntries) | Where-Object { $_.Name -ceq 'AcmeUserHelper' }).Count) { Ok 'default-install-location.json -> exactly [{0D6A3B2C-...}, Registry64]; the HKCU key AcmeUserHelper is never recorded (B4)' } else { Bad "default-install-location: $(Show-Entry $ir.PrimaryKeyEntries)" }
+    $ir = Get-Win32ToolkitInstallRoot -Capture (Read-Capture 'firefox-coinstalled.json') -DisplayName ''
+    if (@($ir.PrimaryKeyEntries).Count -eq 0 -and $ir.PrimaryKeyEntries -is [pscustomobject[]]) { Ok 'no primary key -> PrimaryKeyEntries is an empty [pscustomobject[]]' } else { Bad "no primary: $(Show-Entry $ir.PrimaryKeyEntries)" }
+    # The [6] captures: no HKLM uninstall key -> empty; the two that do hold one HKLM key (OnlyKey) -> that key.
+    foreach ($case in $cases) {
+        $want = switch ($case.Label) {
+            'a key whose Values is a string' { 'X|Registry64' }
+            'hashtables (HKLM short form, WOW6432Node, quoted InstallLocation)' { 'Acme|Registry32' }
+            default { '' }
+        }
+        $ir = $null
+        try { $ir = Get-Win32ToolkitInstallRoot -Capture $case.Capture }
+        catch { Bad "[6] $($case.Label) -> threw: $($_.Exception.Message)"; continue }
+        if ((Show-Entry $ir.PrimaryKeyEntries) -ceq $want -and $ir.PSObject.Properties.Name -contains 'PrimaryKeyEntries') { Ok "[6] $($case.Label) -> PrimaryKeyEntries [$want], no throw" } else { Bad "[6] $($case.Label) -> [$(Show-Entry $ir.PrimaryKeyEntries)]" }
+    }
+    # A capture that fails half-way (the validation throws after the primary key was found) -> the catch empties it too.
+    $ir = & {
+        function Test-Win32ToolkitCleanupPath { param($Path, $InstallRoot, $CreatedDirectory, [switch]$AsInstallRoot) $null = $Path, $InstallRoot, $CreatedDirectory, $AsInstallRoot; throw 'predicate failed' }
+        Get-Win32ToolkitInstallRoot -Capture (Read-Capture 'x86-primary.json')
+    }
+    if (@($ir.PrimaryKeyEntries).Count -eq 0 -and @($ir.PrimaryKeys).Count -eq 0 -and $ir.PSObject.Properties.Name -contains 'PrimaryKeyEntries') { Ok 'an unreadable capture (the predicate throws after the key was found) -> PrimaryKeyEntries cleared with PrimaryKeys' } else { Bad "catch: entries [$(Show-Entry $ir.PrimaryKeyEntries)] keys [$(@($ir.PrimaryKeys) -join ',')]" }
+
+    # Update-PSADTUninstallLogic writes them as Uninstall.PrimaryKeys (a JSON array of { Name, View }), idempotent.
+    function Invoke-PrimaryKeyCase {
+        param([string]$Capture, [hashtable[]]$Keys, [string]$DisplayName = '', [scriptblock]$Shadow)
+        $p = Build-TempProject -Name ('pk' + [guid]::NewGuid().ToString('N').Substring(0, 6)) -Capture $Capture -DisplayName $DisplayName
+        $j = Join-Path $p 'Documentation\InstallationChanges_20260101_120000.json'
+        if ($Keys) {
+            @{ NewRegistryKeys = @($Keys | ForEach-Object { @{ Path = $_.Path; Values = @{ DisplayName = 'Acme Tool'; UninstallString = '"C:\Program Files\Acme Tool\uninstall.exe" /S' } } }); NewFiles = @() } |
+                ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $j -Encoding UTF8
+        }
+        $run = {
+            param($ProjectPath, $JsonFilePath, $ShadowBlock)
+            if ($ShadowBlock) { ${function:Get-Win32ToolkitInstallRoot} = $ShadowBlock }
+            $v = @()
+            $null = Update-PSADTUninstallLogic -ProjectPath $ProjectPath -JsonFilePath $JsonFilePath -Verbose -WarningAction SilentlyContinue 4>&1 6>$null | ForEach-Object {
+                if ($_ -is [System.Management.Automation.VerboseRecord]) { $v += $_.Message }
+            }
+            , $v
+        }
+        $verbose = & $run $p $j $Shadow
+        $file = Join-Path $p 'SupportFiles\AppConfig.json'
+        $first = [System.IO.File]::ReadAllText($file)
+        $null = & $run $p $j $Shadow
+        $un = (Get-Win32ToolkitAppConfig -ProjectPath $p).Uninstall
+        [pscustomobject]@{
+            Has     = [bool]($un -and $un.PSObject.Properties.Name -contains 'PrimaryKeys')
+            Keys    = Show-Entry $un.PrimaryKeys
+            Verbose = @($verbose)
+            NotRec  = @(@($verbose) | Where-Object { $_ -match 'is not a plain key name' })
+            Json    = $first
+            Same    = ([System.IO.File]::ReadAllText($file) -ceq $first)
+        }
+    }
+    foreach ($case in @(
+            @{ Capture = 'firefox-coinstalled.json'; DisplayName = 'Mozilla Firefox'; Want = 'Mozilla Firefox|Registry64' }
+            @{ Capture = 'coinstalled-first.json'; DisplayName = 'Acme Widget'; Want = 'Acme Widget|Registry64' }
+            @{ Capture = 'x86-primary.json'; DisplayName = ''; Want = 'Acme Tool|Registry32' }
+            @{ Capture = 'git-edge-noise.json'; DisplayName = 'Git'; Want = 'Git_is1|Registry64' }
+        )) {
+        $r = Invoke-PrimaryKeyCase -Capture $case.Capture -DisplayName $case.DisplayName
+        if ($r.Has -and $r.Keys -ceq $case.Want -and $r.Json -match '"PrimaryKeys":\s*\[\s*\{' -and $r.NotRec.Count -eq 0) { Ok "$($case.Capture): Uninstall.PrimaryKeys = [$($case.Want)] (a JSON array of { Name, View })" } else { Bad "$($case.Capture): has=$($r.Has) keys [$($r.Keys)] notRecorded=$($r.NotRec -join ' | ')" }
+        if ($r.Same) { Ok "$($case.Capture): idempotent (the second run writes the same AppConfig.json)" } else { Bad "$($case.Capture): the second run changed AppConfig.json" }
+    }
+    $r = Invoke-PrimaryKeyCase -Capture 'firefox-coinstalled.json' -DisplayName ''
+    if ($r.Has -and $r.Keys -ceq '' -and $r.Json -match '"PrimaryKeys":\s*\[\s*\]' -and $r.NotRec.Count -eq 0 -and $r.Same) { Ok 'no primary key -> Uninstall.PrimaryKeys present and empty ([]), idempotent' } else { Bad "no primary: has=$($r.Has) keys [$($r.Keys)] json-array=$($r.Json -match '"PrimaryKeys":\s*\[\s*\]')" }
+    $uninstallBase = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\'
+    foreach ($case in @(
+            @{ Label = 'a TAB'; Leaf = "Acme`tTool"; Shown = "'Acme?Tool'" }
+            @{ Label = "a '/'"; Leaf = 'Acme/Tool'; Shown = "'Acme/Tool'" }
+            @{ Label = 'a trailing line feed (B3)'; Leaf = "Acme Tool`n"; Shown = "'Acme Tool?'" }
+        )) {
+        $r = Invoke-PrimaryKeyCase -Keys @(@{ Path = $uninstallBase + $case.Leaf })
+        if ($r.Has -and $r.Keys -ceq '' -and $r.NotRec.Count -eq 1 -and $r.NotRec[0].Contains($case.Shown) -and $r.NotRec[0] -notmatch '[\t\n]' -and $r.Same) { Ok "an OnlyKey whose name has $($case.Label) -> not recorded, one verbose line ($($case.Shown))" } else { Bad "$($case.Label): keys [$($r.Keys)] verbose $($r.NotRec -join ' | ')" }
+    }
+    # A Get-Win32ToolkitInstallRoot result without PrimaryKeyEntries (an older shadow) -> [] and no spurious verbose line (B10).
+    $r = Invoke-PrimaryKeyCase -Capture 'x86-primary.json' -Shadow { param($Capture, $ProjectPath, $DisplayName) $null = $Capture, $ProjectPath, $DisplayName; [pscustomobject]@{ Roots = [string[]]@(); Rejected = @(); CreatedDirectories = [string[]]@(); PrimaryKeys = [string[]]@('Acme Tool'); PrimaryBy = 'OnlyKey' } }
+    if ($r.Has -and $r.Keys -ceq '' -and $r.Json -match '"PrimaryKeys":\s*\[\s*\]' -and $r.NotRec.Count -eq 0) { Ok 'a result without PrimaryKeyEntries -> Uninstall.PrimaryKeys [] and no "is not a plain key name" line (B10)' } else { Bad "no property: keys [$($r.Keys)] verbose $($r.NotRec -join ' | ')" }
+    # Shadowed entries: the key-name rule and the case-sensitive view (B10).
+    $k255 = 'k' * 255
+    $r = Invoke-PrimaryKeyCase -Capture 'x86-primary.json' -Shadow {
+        param($Capture, $ProjectPath, $DisplayName) $null = $Capture, $ProjectPath, $DisplayName
+        [pscustomobject]@{ Roots = [string[]]@(); Rejected = @(); CreatedDirectories = [string[]]@(); PrimaryKeys = [string[]]@(); PrimaryBy = 'OnlyKey'
+            PrimaryKeyEntries = @(
+                [pscustomobject]@{ Name = 'Acme'; View = 'registry64' }
+                [pscustomobject]@{ Name = '.'; View = 'Registry64' }
+                [pscustomobject]@{ Name = '..'; View = 'Registry64' }
+                [pscustomobject]@{ Name = 'a\b'; View = 'Registry64' }
+                [pscustomobject]@{ Name = 'x:y'; View = 'Registry64' }
+                [pscustomobject]@{ Name = ('k' * 256); View = 'Registry64' }
+                [pscustomobject]@{ Name = 'Good'; View = 'HKCU' }
+                [pscustomobject]@{ Name = ''; View = 'Registry64' }
+                $null
+                [pscustomobject]@{ Name = ('k' * 255); View = 'Registry32' }
+                [pscustomobject]@{ Name = '{0D6A3B2C-1111-4A5B-9C8D-0123456789AB}'; View = 'Registry64' }
+            ) }
+    }
+    if ($r.Keys -ceq "$k255|Registry32;{0D6A3B2C-1111-4A5B-9C8D-0123456789AB}|Registry64" -and $r.NotRec.Count -eq 8 -and $r.Same) { Ok "View 'registry64' (case), '.', '..', 'a\b', 'x:y', 256 chars, View 'HKCU', '' -> not recorded (8 verbose lines); 255 chars and a GUID kept" } else { Bad "rule: keys [$($r.Keys)] notRecorded $($r.NotRec.Count): $($r.NotRec -join ' | ')" }
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

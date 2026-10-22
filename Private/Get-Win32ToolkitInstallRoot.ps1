@@ -43,7 +43,8 @@ function Get-Win32ToolkitInstallRoot {
     .OUTPUTS
         [pscustomobject] Roots ([string[]], unique, sorted), Rejected ([pscustomobject[]] Candidate, Origin,
         Reasons), CreatedDirectories ([string[]]: the capture's new folders), PrimaryKeys ([string[]]: key
-        names), PrimaryBy ('ProductCode', 'OnlyKey', 'DisplayName' or '').
+        names), PrimaryBy ('ProductCode', 'OnlyKey', 'DisplayName' or ''), PrimaryKeyEntries
+        ([pscustomobject[]] Name, View 'Registry64'|'Registry32': the primary keys with their registry view).
     .EXAMPLE
         $capture = Get-Content -LiteralPath $json -Raw -Encoding UTF8 | ConvertFrom-Json
         (Get-Win32ToolkitInstallRoot -Capture $capture -ProjectPath $proj -DisplayName 'Git').Roots
@@ -67,6 +68,7 @@ function Get-Win32ToolkitInstallRoot {
     $roots       = [System.Collections.Generic.List[string]]::new()
     $rejected    = [System.Collections.Generic.List[object]]::new()
     $primaryKeys = [System.Collections.Generic.List[string]]::new()
+    $primaryKeyEntries = [System.Collections.Generic.List[object]]::new()
     $primaryBy   = ''
 
     # A property of a parsed JSON object (or a hashtable); $null when absent or not an object.
@@ -116,7 +118,8 @@ function Get-Win32ToolkitInstallRoot {
         $keys = @(foreach ($key in @(& $getValue $Capture 'NewRegistryKeys')) {
                 $keyPath = [string](& $getValue $key 'Path')
                 if ($keyPath -match $uninstallKeyPattern) {
-                    [pscustomobject]@{ Name = $keyPath.Substring($keyPath.LastIndexOf('\') + 1); Values = (& $getValue $key 'Values'); IsPrimary = $false }
+                    $view = if ($keyPath -match '^(HKEY_LOCAL_MACHINE|HKLM)\\SOFTWARE\\WOW6432Node\\') { 'Registry32' } else { 'Registry64' }
+                    [pscustomobject]@{ Name = $keyPath.Substring($keyPath.LastIndexOf('\') + 1); View = $view; Values = (& $getValue $key 'Values'); IsPrimary = $false }
                 }
             })
 
@@ -162,6 +165,7 @@ function Get-Win32ToolkitInstallRoot {
                 continue
             }
             $primaryKeys.Add($key.Name)
+            $primaryKeyEntries.Add([pscustomobject]@{ Name = $key.Name; View = $key.View })
             $values = $key.Values
 
             $location = (& $removeQuote ([string](& $getValue $values 'InstallLocation'))).TrimEnd('\')
@@ -226,7 +230,7 @@ function Get-Win32ToolkitInstallRoot {
     catch {
         if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
         Write-Verbose "Install roots: the capture could not be read ($($_.Exception.Message)); no install root."
-        $created.Clear(); $roots.Clear(); $rejected.Clear(); $primaryKeys.Clear(); $primaryBy = ''
+        $created.Clear(); $roots.Clear(); $rejected.Clear(); $primaryKeys.Clear(); $primaryKeyEntries.Clear(); $primaryBy = ''
     }
 
     [pscustomobject]@{
@@ -235,5 +239,6 @@ function Get-Win32ToolkitInstallRoot {
         CreatedDirectories = [string[]]$created.ToArray()
         PrimaryKeys        = [string[]]$primaryKeys.ToArray()
         PrimaryBy          = $primaryBy
+        PrimaryKeyEntries  = [pscustomobject[]]$primaryKeyEntries.ToArray()
     }
 }

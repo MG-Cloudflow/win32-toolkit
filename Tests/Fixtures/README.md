@@ -93,6 +93,7 @@ which describes each one in its header. Read-only: the suite copies them to `%TE
 | File | What it exercises |
 |---|---|
 | `captures/coinstalled-first.json` | a co-installed key (`AcmeUpdater`, WOW6432Node) captured **before** the app's own key (`Acme Widget`): the app's own uninstaller is written first (I-3) and `Uninstall.AppName` is its DisplayName (I-4) |
+| `captures/x86-primary.json` | the app's only uninstall key is in the 32-bit view (WOW6432Node): Uninstall.PrimaryKeys records View Registry32 (F13) |
 
 ## Run-All fixtures (fake suites for the runner's self-test)
 
