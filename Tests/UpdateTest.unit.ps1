@@ -9,6 +9,8 @@
 
     Run:  pwsh -File Tests\UpdateTest.unit.ps1
 #>
+# Test shadows keep the real command names and signatures (C-4: no PSScriptAnalyzer warning in the suites).
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'test shadows mirror the real signatures')]
 [CmdletBinding()]
 param()
 
@@ -406,10 +408,13 @@ try {
     function Get-Win32ToolkitRequirementRule { 'rule' }
     ${function:New-UpdateAssertionScript} = { 'assert.ps1' }
     $script:hvRuns = 0
+    $script:hvHints = [System.Collections.Generic.List[string]]::new()   # each run's 'Update (Intune parity)' ParityHint
     function Invoke-Win32ToolkitHyperVRun {
         param($ProjectPath, $Phase, $Output, $BaselineProjectPath)
         $script:hvRuns++
         $script:lastHvPhase = $Phase
+        $upd = @($Phase | Where-Object { $_.Label -eq 'Update (Intune parity)' })
+        if ($upd.Count) { $script:hvHints.Add([string]$upd[0].ParityHint) }
         $ld = Join-Path $ProjectPath 'Sandbox\Logs'
         New-Item -ItemType Directory -Path $ld -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $ld 'UpdateAssertions.log') -Value "[t] ASSERT Tattoo-PostUpdate = PASS (guest run $script:hvRuns)" -Encoding UTF8
@@ -424,7 +429,23 @@ try {
     $script:outcomes = [System.Collections.Generic.List[object]]::new()
     function Write-Win32ToolkitTestOutcome { param($Scenario, $Verdict, $Baseline, $LogFolder) $script:outcomes.Add([pscustomobject]@{ Scenario = $Scenario; Verdict = $Verdict; Baseline = $Baseline; LogFolder = $LogFolder }) }
     $script:records = [System.Collections.Generic.List[object]]::new()
-    function Add-Win32ToolkitTestResult { param($Scenario, $Backend, $Verdict, $Mode, $Assertions, $Notes, $Baseline) $script:records.Add([pscustomobject]@{ Scenario = $Scenario; Backend = $Backend; Verdict = $Verdict; Mode = $Mode; Assertions = @($Assertions); Notes = $Notes; Baseline = $Baseline }) }
+    function Add-Win32ToolkitTestResult { param($Scenario, $Backend, $Verdict, $Mode, $Assertions, $Notes, $Baseline, [hashtable]$NotRun) $script:records.Add([pscustomobject]@{ Scenario = $Scenario; Backend = $Backend; Verdict = $Verdict; Mode = $Mode; Assertions = @($Assertions); Notes = $Notes; Baseline = $Baseline; NotRun = $NotRun }) }
+    # C-9 (installer-identity PR 2): an unattended Hyper-V Update asks the Intune-parity pre-check before Step 1. Not
+    # blocked by default, PSADT 4.1 dialog risk found (no processes to close; the update phase's 1460 hint is then
+    # 'Dialog41'); (j) blocks it, or clears the risk.
+    $script:preCalls = [System.Collections.Generic.List[string]]::new()
+    $script:preBlocked = $false
+    $script:preAtRisk = $true
+    $script:preProcessCount = 0
+    function Invoke-Win32ToolkitParityPrecheck {
+        param($ProjectPath, $Scenario)
+        $script:preCalls.Add([string]$Scenario)
+        [pscustomobject]@{
+            Blocked = $script:preBlocked; Risk = @{ AtRisk = $script:preAtRisk; Shape = 'Psadt41'; ProcessCount = $script:preProcessCount }; Guest = $null
+            Message = $(if ($script:preBlocked) { 'PRECHECK-MESSAGE' } else { '' }); Notes = $(if ($script:preBlocked) { 'Not run (Intune-parity pre-check): x' } else { '' })
+            NotRun  = $(if ($script:preBlocked) { @{ Code = 'PARITY-DIALOG-WAIT'; Shape = 'Psadt41'; ProcessesToClose = 0; Welcome = 'OrgUi'; SignedInSessions = 1 } } else { $null })
+        }
+    }
     $script:switchCalls = 0
     function Get-Win32ToolkitTechnologySwitch { $script:switchCalls++; [pscustomobject]@{ Code = 'ID-TECH-SWITCH'; Message = 'Technology switch: TEST' } }
     $script:source = [pscustomobject]@{ InstallerType = 'wix'; Family = 'msi'; Scope = 'machine' }
@@ -467,6 +488,7 @@ try {
     function Clear-RunState {
         $script:dlCalls.Clear(); $script:outcomes.Clear(); $script:records.Clear(); $script:verdictQueue.Clear()
         $script:switchCalls = 0; $script:pickerCalls = 0; $script:W32TUpdateLegContext = $null; $script:dlAnswer = { 'ok' }
+        $script:preCalls.Clear(); $script:hvHints.Clear(); $script:preBlocked = $false; $script:preAtRisk = $true; $script:preProcessCount = 0
     }
     function Split-Out($Items) {
         [pscustomobject]@{
@@ -802,6 +824,53 @@ try {
     $bp = Join-Path $base 'bp'; New-Item -ItemType Directory -Path $bp -Force | Out-Null; Set-Content (Join-Path $bp 'Invoke-AppDeployToolkit.ps1') '# stub'
     if (Test-BaselineErr @{ ProjectPath = $put; Scenario = 'Update'; BaselineProjectPath = $bp; BaselineInstallerType = 'nullsoft' } 'applies to a winget baseline; the baseline project has its own technology') { Ok '-BaselineInstallerType with -BaselineProjectPath -> the new error' } else { Bad 'baseline project accepted a technology' }
 
+    # (j) Intune-parity pre-check (installer-identity PR 2, A1 hv r1.2): an unattended Hyper-V Update that would only wait on
+    #     a PSADT 4.1 dialog is not started - before any download; one record with NotRun and no Baseline; once per outer call.
+    Write-Host "`n[10j] Intune-parity pre-check before the Update baseline (installer-identity PR 2)" -ForegroundColor Cyan
+    $script:testBackend = 'HyperV'; $script:testModeCfg = 'Unattended'
+    foreach ($case in @(@{ Label = 'single run'; Extra = @{ SpecificVersion = '8.8.9' } }, @{ Label = '-BaselineInstallerType Both'; Extra = @{ BaselineInstallerType = 'Both'; VersionsBack = 1 } })) {
+        Clear-RunState
+        $script:preBlocked = $true
+        $hv0 = $script:hvRuns
+        $extra = $case.Extra
+        $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update @extra 6>&1 3>&1)
+        $r = if ($script:records.Count) { $script:records[0] } else { $null }
+        if (($script:preCalls -join ',') -eq 'Update' -and $script:dlCalls.Count -eq 0 -and $script:hvRuns -eq $hv0 -and $script:outcomes.Count -eq 0 -and $o.Values.Count -eq 0 -and
+            @($o.Info | Where-Object { $_ -like '=== Update test leg*' }).Count -eq 0) {
+            Ok "blocked ($($case.Label)): the pre-check is asked once; no download, no guest run, no leg, no outcome; returns `$null"
+        } else { Bad "blocked ($($case.Label)): pre=$($script:preCalls -join ',') downloads=$($script:dlCalls.Count) outcomes=$($script:outcomes.Count) values=$($o.Values -join ',')" }
+        if ($script:records.Count -eq 1 -and $r.Scenario -eq 'Update' -and $r.Backend -eq 'HyperV' -and $r.Mode -eq 'Unattended' -and $r.Verdict -eq 'Inconclusive' -and
+            $r.Assertions.Count -eq 0 -and $r.NotRun.Code -eq 'PARITY-DIALOG-WAIT' -and $null -eq $r.Baseline -and $r.Notes -like 'Not run (Intune-parity pre-check)*') {
+            Ok "blocked ($($case.Label)): one Update record with NotRun and no Baseline"
+        } else { Bad "blocked ($($case.Label)) record: $($script:records | ConvertTo-Json -Compress -Depth 5)" }
+        $wAt = [array]::IndexOf([string[]]$o.Warnings, 'PRECHECK-MESSAGE')
+        if ($wAt -ge 0 -and @($o.Info | Where-Object { $_ -eq 'Update test: NOT RUN (Intune-parity pre-check).' }).Count -eq 1 -and @($o.Info | Where-Object { $_ -like 'Baseline technology*' }).Count -eq 0) {
+            Ok "blocked ($($case.Label)): the warning and 'NOT RUN' are printed before any baseline step"
+        } else { Bad "blocked ($($case.Label)) output: warnings=$($o.Warnings -join ' | ') info=$($o.Info -join ' | ')" }
+    }
+    $hvBefore = $script:hvRuns
+    Clear-RunState
+    $null = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -SpecificVersion '8.8.9' 6>$null 3>$null
+    if ($script:preCalls.Count -eq 1 -and $script:hvRuns -eq $hvBefore + 1 -and ($script:hvHints -join ',') -eq 'Dialog41' -and $script:dlCalls.Count -eq 1) { Ok "not blocked, single run: today's flow; the Update (Intune parity) phase carries ParityHint 'Dialog41'" }
+    else { Bad "not blocked single: pre=$($script:preCalls.Count) runs=$($script:hvRuns - $hvBefore) hints=$($script:hvHints -join ',')" }
+    # A PSADT 4.1 project that lists a process to close is not at risk: its 1460 hint is the generic 'Dialog' (a listed
+    # process still running), never the 4.1 welcome text, although its shape is Psadt41 (L16).
+    $hvBefore = $script:hvRuns
+    Clear-RunState
+    $script:preAtRisk = $false; $script:preProcessCount = 1
+    $null = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -SpecificVersion '8.8.9' 6>$null 3>$null
+    if ($script:preCalls.Count -eq 1 -and $script:hvRuns -eq $hvBefore + 1 -and ($script:hvHints -join ',') -eq 'Dialog') { Ok "not blocked, PSADT 4.1 with a process to close (not at risk): the Update (Intune parity) phase carries the generic 'Dialog' hint" }
+    else { Bad "not at risk: pre=$($script:preCalls.Count) runs=$($script:hvRuns - $hvBefore) hints=$($script:hvHints -join ',')" }
+    Clear-RunState
+    $null = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -BaselineInstallerType Both -SpecificVersion '8.8.9' 6>$null 3>$null
+    if ($script:preCalls.Count -eq 1 -and ($script:hvHints -join ',') -eq 'Dialog,Dialog' -and $script:dlCalls.Count -eq 2) { Ok "not blocked, Both: the outer call asks once; each leg's update phase carries the generic 'Dialog' hint (legs never re-check)" }
+    else { Bad "not blocked Both: pre=$($script:preCalls -join ',') hints=$($script:hvHints -join ',') downloads=$($script:dlCalls.Count)" }
+    Clear-RunState
+    $script:testModeCfg = 'Interactive'
+    $null = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -SpecificVersion '8.8.9' 6>$null 3>$null
+    if ($script:preCalls.Count -eq 0) { Ok 'a watched Hyper-V Update never asks the pre-check' } else { Bad "watched: pre=$($script:preCalls.Count)" }
+    $script:testModeCfg = 'Unattended'
+
     # (i) K5/K6: the two catches around the baseline download start with the IVU line; the download is family-pinned
     $tpFile = Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1'
     $tpAst = [System.Management.Automation.Language.Parser]::ParseFile($tpFile, [ref]$null, [ref]$null)
@@ -832,7 +901,7 @@ try {
     else { Bad "K5/K6: $($dlCatches.Count) catch(es)" }
     $c2 = "if (`$_.FullyQualifiedErrorId -like 'W32T.*') { throw }"
     $newCatches = @(& $triesOf @('Get-Win32ToolkitTechnologySwitch', 'Add-Win32ToolkitTestResult', 'Test-Win32ToolkitProject') | ForEach-Object { $_.CatchClauses })
-    if ($newCatches.Count -eq 3 -and @($newCatches | Where-Object { ($_.Body.Statements[0].Extent.Text -replace '\s+', ' ') -eq $c2 }).Count -eq 3) { Ok 'the three other new catches (technology switch, Unavailable record, Both leg) start with the C-2 line' }
+    if ($newCatches.Count -eq 4 -and @($newCatches | Where-Object { ($_.Body.Statements[0].Extent.Text -replace '\s+', ' ') -eq $c2 }).Count -eq 4) { Ok 'the four other new catches (technology switch, Unavailable record, Both leg, not-run record) start with the C-2 line' }
     else { Bad "new catches: $($newCatches.Count)" }
     $tpSrc = Get-Content -LiteralPath $tpFile -Raw -Encoding UTF8
     if ($tpSrc -match '(?s)\$dl = @\{[^}]*FamilyPin\s*=\s*\$true' -and $tpSrc -notmatch "\`$dl\['Locale'\]") { Ok 'the baseline download is always family-pinned and never passes -Locale' } else { Bad 'download hashtable not family-pinned' }

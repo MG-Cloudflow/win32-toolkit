@@ -338,6 +338,10 @@ published command line (Invoke-AppDeployToolkit.exe -DeploymentType Install|Unin
 -DeployMode) from a 32-bit cmd.exe parent, as SYSTEM, in the package folder - the way the Intune
 Management Extension launches it - with the exit code checked (0, 1707, 3010, 1641 = success).
 Their results are not equivalent evidence.
+A HyperV-unattended run of a PSADT 4.1 package with no processes to close and a deferrable welcome
+is not started while a user is signed in to the VM, which the toolkit's VM always is (it would wait
+on the dialog until the 25-minute limit): it is recorded as Inconclusive (not run) with the reason.
+Run it watched, or list the app's process in ProcessesToClose.
 
 ```yaml
 Type: SwitchParameter

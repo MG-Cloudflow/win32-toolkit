@@ -112,6 +112,10 @@ function Test-Win32ToolkitProject {
     -DeployMode) from a 32-bit cmd.exe parent, as SYSTEM, in the package folder - the way the Intune
     Management Extension launches it - with the exit code checked (0, 1707, 3010, 1641 = success).
     Their results are not equivalent evidence.
+    A HyperV-unattended run of a PSADT 4.1 package with no processes to close and a deferrable welcome
+    is not started while a user is signed in to the VM, which the toolkit's VM always is (it would wait
+    on the dialog until the 25-minute limit): it is recorded as Inconclusive (not run) with the reason.
+    Run it watched, or list the app's process in ProcessesToClose.
 .EXAMPLE
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario Update -VersionsBack 1 -SkipRequirementCheck
 .EXAMPLE
@@ -324,6 +328,47 @@ function Test-Win32ToolkitProject {
             }
         }
 
+        # Records a Hyper-V unattended test the Intune-parity pre-check did not start (installer-identity PR 2): an
+        # Inconclusive record with the reason (Notes) and the NotRun facts, listed but never judged. Written
+        # directly, never through Write-Win32ToolkitTestOutcome (it would read a stale assertions log).
+        $recordNotRun = {
+            param([string]$RecordScenario, $Precheck)
+            try {
+                $null = Add-Win32ToolkitTestResult -ProjectPath $ProjectPath -Scenario $RecordScenario -Backend 'HyperV' -Mode 'Unattended' `
+                    -Verdict 'Inconclusive' -Assertions @() -Notes ([string]$Precheck.Notes) -NotRun $Precheck.NotRun
+            }
+            catch {
+                if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                Write-Warning "Could not record the test result to Documentation\TestResults.json: $($_.Exception.Message)"
+            }
+        }
+
+        # Intune-parity pre-check (installer-identity PR 2, A1 hv r1.2): an unattended Hyper-V run of a PSADT 4.1 package
+        # with no processes to close and a deferrable welcome would only wait on that dialog for the user signed in to the
+        # VM, then fail with 1460 after 25 minutes. Such a run is NOT started: the warning comes first and the record says
+        # why (Inconclusive, NotRun), and $null is returned. Asked BEFORE anything is written, cleared or staged for the
+        # run (the guest runner, the exit-code and assertion logs, dependency downloads, the Update baseline), so a
+        # blocked run leaves the project as it was (live P5). Once per outer call: the legs of an Update
+        # '-BaselineInstallerType Both' run never re-check (one record for the whole run, L11). Watched runs and Sandbox
+        # never ask. The mode is read without its non-interactive warning, which the scenario prints once when it runs.
+        $parityPre = $null
+        if ($resolvedBackend -eq 'HyperV' -and $null -eq $script:W32TUpdateLegContext -and
+            (Get-Win32ToolkitTestMode -Backend HyperV -Unattended:$Unattended -WarningAction SilentlyContinue) -eq 'Unattended') {
+            $parityPre = Invoke-Win32ToolkitParityPrecheck -ProjectPath $ProjectPath -Scenario $Scenario
+            if ($parityPre -and $parityPre.Blocked) {
+                Write-Warning $parityPre.Message
+                & $recordNotRun $Scenario $parityPre
+                $notRunWhat = if ($Scenario -eq 'Update') { 'Update test' } else { 'Install/uninstall test' }
+                Write-Host "${notRunWhat}: NOT RUN (Intune-parity pre-check)." -ForegroundColor Yellow
+                return $null
+            }
+        }
+        # The exit-code-1460 hint of the install / update parity phase names the PSADT 4.1 welcome only when the pre-check
+        # found that dialog risk and did not block (nobody signed in, or the guest could not be read) (L16). A 4.1 project
+        # that lists processes to close, or whose welcome cannot defer, and an inner Both leg (it did not check) get the
+        # generic dialog text.
+        $parityDialogHint = if ($parityPre -and $parityPre.Risk -and $parityPre.Risk.AtRisk) { 'Dialog41' } else { 'Dialog' }
+
         # One PSADT package = one process: every package (baseline project, the app) runs through the guest
         # runner Sandbox\Invoke-PsadtPackage.ps1 instead of being dot-called inside the LogonCommand / phase
         # process — PSADT 4.2 refuses a second copy of its module in a process (60008), and 4.1/4.2 cannot
@@ -371,7 +416,6 @@ function Test-Win32ToolkitProject {
             if ($rel) { Write-Host "Run logs         : $(Join-Path $ProjectPath $rel)" -ForegroundColor Gray }
             [string]$rel
         }
-
         # Stage declared dependencies (winget installers / packaged projects) into Sandbox\Dependencies\ so
         # the guest installs them BEFORE the app — the same order Intune uses on a real device. Returns 0
         # (and generates nothing) when the project declares none, so behaviour is unchanged for those.
@@ -428,6 +472,8 @@ function Test-Win32ToolkitProject {
                     # Intune-parity phases back-to-back (published command line from a 32-bit cmd.exe
                     # parent, as SYSTEM, no -DeployMode). One resolver for both backends (Get-Win32ToolkitTestMode).
                     $interactive = (Get-Win32ToolkitTestMode -Backend HyperV -Unattended:$Unattended) -eq 'Interactive'
+                    # An unattended run got here only past the Intune-parity pre-check (asked before anything was written;
+                    # $parityDialogHint is its 1460 hint).
 
                     # Dependencies go in FIRST (silently), exactly as Intune installs them on a device.
                     $phases = @()
@@ -455,7 +501,7 @@ function Test-Win32ToolkitProject {
                         # 64-bit '.ps1 -DeployMode Silent' runs (spec Q7). ParityHint names the likely cause
                         # of exit code 1460 (the runner's 25-minute limit) in the provider's warning (L16).
                         $phases += @(
-                            @{ Label = 'Install (Intune parity)';   Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label app; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes; ParityHint = 'Dialog' }
+                            @{ Label = 'Install (Intune parity)';   Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label app; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes; ParityHint = $parityDialogHint }
                             @{ Label = 'Assert: installed';         Command = "$assertCmd -Phase PostInstall"; IgnoreExit = $true }
                             @{ Label = 'Uninstall (Intune parity)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Uninstall -Label app; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes; ParityHint = 'Uninstaller' }
                             @{ Label = 'Assert: uninstalled';       Command = "$assertCmd -Phase PostUninstall"; IgnoreExit = $true }
@@ -593,6 +639,9 @@ function Test-Win32ToolkitProject {
                         Write-Verbose "Technology-switch check skipped: $($_.Exception.Message)"
                     }
                 }
+
+                # An unattended Hyper-V Update got here only past the Intune-parity pre-check, asked before anything was
+                # written and before any baseline is downloaded or copied ($parityDialogHint is its 1460 hint).
 
                 if ($useBaselineProject) {
                     # ── Baseline = a previous TOOLKIT package (no winget) ──────────────────
@@ -1012,7 +1061,7 @@ function Test-Win32ToolkitProject {
                         $phases += @{ Label = 'Update (PSADT GUI)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -DeploymentType Install -DeployMode Interactive -Label update; exit $LASTEXITCODE'; Interactive = $true; SuccessExitCodes = $psadtSuccessCodes }
                     }
                     else {
-                        $phases += @{ Label = 'Update (Intune parity)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label update; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes; ParityHint = 'Dialog' }
+                        $phases += @{ Label = 'Update (Intune parity)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label update; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes; ParityHint = $parityDialogHint }
                     }
                     $phases += @(
                         @{ Label = 'Assert: PostUpdate'; Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate" }

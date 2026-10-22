@@ -216,6 +216,19 @@ try {
     Set-TestResultFile $npp @((New-Record -Unavailable))
     $a = Get-Advisory $npp
     if (@($a.Update).Count -eq 0 -and -not (Find $a 'UPDATE-FAILED') -and -not (Find $a 'UPDATE-INCONCLUSIVE') -and (Find $a 'ID-SIBLING-UNTESTED')) { Ok 'an Unavailable record alone is never judged (no Update entry, no UPDATE-* finding)' } else { Bad "Unavailable only -> $(Codes $a)" }
+    # Installer-identity PR 2: a test the Intune-parity pre-check did not start (NotRun: Inconclusive, no assertions, no
+    # Baseline) is listed but never judged - it would otherwise read as the newest (legacy) record and hide the FAIL.
+    $notRun = [pscustomobject][ordered]@{ Scenario = 'Update'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-22T09:00:00Z'; Verdict = 'Inconclusive'
+        Assertions = @(); Notes = 'Not run (Intune-parity pre-check): x'
+        NotRun = [ordered]@{ Code = 'PARITY-DIALOG-WAIT'; Shape = 'Psadt41'; ProcessesToClose = 0; Welcome = 'OrgUi'; SignedInSessions = 1 } }
+    Set-TestResultFile $npp @((New-Record -When '2026-10-19T09:00:00Z'), $notRun)
+    $a = Get-Advisory $npp
+    if ((Find $a 'UPDATE-FAILED').Message -match '2026-10-19\) FAILED' -and -not (Find $a 'UPDATE-INCONCLUSIVE') -and @($a.Update).Count -eq 1 -and -not $a.Update[0].Legacy) {
+        Ok 'a FAILED Update record followed by a NotRun one -> UPDATE-FAILED still reported, no UPDATE-INCONCLUSIVE'
+    } else { Bad "Failed then NotRun -> $(Codes $a) / Update $(($a.Update | ConvertTo-Json -Compress -Depth 4))" }
+    Set-TestResultFile $npp @($notRun)
+    $a = Get-Advisory $npp
+    if (@($a.Update).Count -eq 0 -and -not (Find $a 'UPDATE-FAILED') -and -not (Find $a 'UPDATE-INCONCLUSIVE')) { Ok 'a NotRun record alone is never judged (no Update entry, no UPDATE-* finding)' } else { Bad "NotRun only -> $(Codes $a)" }
     Set-TestResultFile $npp @((New-Record -When '2026-10-19T09:00:00Z'), (New-Record -Verdict Passed -Fail @() -When '2026-10-20T09:00:00Z'))
     $a = Get-Advisory $npp
     if (-not (Find $a 'UPDATE-FAILED') -and (Find $a 'ID-SIBLING-FAMILY').Severity -eq 'Info') { Ok 'an older FAIL followed by a newer PASS of the same family -> no UPDATE-FAILED' } else { Bad "Failed then Passed -> $(Codes $a)" }

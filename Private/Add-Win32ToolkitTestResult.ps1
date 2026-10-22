@@ -8,13 +8,17 @@ function Add-Win32ToolkitTestResult {
         "all the tests we did". Entries are appended newest-last.
 
         Each entry has the shape:
-            { Scenario, Backend, Mode, TimestampUtc, Verdict, Assertions[], Notes [, Baseline] [, OldArpSurvivors[]] [, LogFolder] }
+            { Scenario, Backend, Mode, TimestampUtc, Verdict, Assertions[], Notes [, Baseline] [, OldArpSurvivors[]] [, LogFolder] [, NotRun] }
         where Assertions is an array of @{ Name; Result } (Result in PASS|FAIL|SKIP). Baseline (the Update
         test's old-version variant: Version, Mode, Origin, RequestedInstallerType, InstallerType, Family,
         UsedFallback, FallbackReason, RequestedScope, Scope, ScopeRelaxed, Unavailable, Locale, Source,
         ProjectName) and OldArpSurvivors (@{ DisplayName; Key; KeyLeaf; View }) are written only when supplied,
         so entries without them keep the old shape (installer-identity PR 1, spec 2.11). LogFolder (the run's
         own log folder, Sandbox\Logs\Runs\<run>, relative to the project) is likewise written only when supplied.
+        NotRun marks a test that was NOT started (Verdict Inconclusive, no assertions): the Intune-parity
+        pre-check found that an unattended Hyper-V run would only wait on a PSADT 4.1 dialog (Code
+        PARITY-DIALOG-WAIT, Shape, ProcessesToClose, Welcome, SignedInSessions). Such a record is listed but
+        never judged, and the customer documentation shows it as 'Not run (Intune-parity pre-check)'.
 
         The file is written as a JSON ARRAY (even for a single entry) in BOM-less UTF-8, matching
         Set-Win32ToolkitAppConfig. A corrupt/unparseable existing file is never fatal: it is
@@ -43,6 +47,11 @@ function Add-Win32ToolkitTestResult {
     .PARAMETER LogFolder
         The folder that keeps this run's logs, relative to the project (Sandbox\Logs\Runs\<run>, from
         Save-Win32ToolkitTestRunLog). Omitted or empty: no LogFolder property.
+    .PARAMETER NotRun
+        The facts of a test the Intune-parity pre-check did not start (Invoke-Win32ToolkitParityPrecheck):
+        written as the NotRun property, keys Code, Shape, ProcessesToClose, Welcome, SignedInSessions first,
+        then any other key alphabetically; strings pass ConvertTo-Win32ToolkitSafeText (64 characters at most),
+        integers and booleans are kept. Omitted: no NotRun property.
     .EXAMPLE
         Add-Win32ToolkitTestResult -ProjectPath $p -Scenario InstallUninstall -Backend Sandbox `
             -Verdict Passed -Assertions @(@{ Name = 'Installed'; Result = 'PASS' }) -Notes 'clean run'
@@ -80,7 +89,9 @@ function Add-Win32ToolkitTestResult {
         [object[]]$OldArpSurvivors,
 
         [AllowEmptyString()]
-        [string]$LogFolder
+        [string]$LogFolder,
+
+        [hashtable]$NotRun
     )
 
     $docDir = Join-Path $ProjectPath 'Documentation'
@@ -155,6 +166,20 @@ function Add-Win32ToolkitTestResult {
     }
     if ($LogFolder) {
         $entry | Add-Member -NotePropertyName LogFolder -NotePropertyValue ([string]$LogFolder)
+    }
+    # A test the Intune-parity pre-check did not start (installer-identity PR 2, spec 2.5): known keys first.
+    if ($PSBoundParameters.ContainsKey('NotRun') -and $null -ne $NotRun) {
+        $order = @('Code', 'Shape', 'ProcessesToClose', 'Welcome', 'SignedInSessions')
+        $keys = @($order | Where-Object { $NotRun.ContainsKey($_) }) +
+                @($NotRun.Keys | ForEach-Object { [string]$_ } | Where-Object { $_ -notin $order } | Sort-Object)
+        $n = [ordered]@{}
+        foreach ($k in $keys) {
+            $v = $NotRun[$k]
+            $n[$k] = if ($v -is [bool] -or $v -is [int] -or $v -is [long]) { $v }
+                     elseif ($null -eq $v) { '' }
+                     else { ConvertTo-Win32ToolkitSafeText -Text ([string]$v) -MaxLength 64 }
+        }
+        $entry | Add-Member -NotePropertyName NotRun -NotePropertyValue ([pscustomobject]$n)
     }
 
     $entries += $entry

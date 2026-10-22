@@ -228,6 +228,29 @@ if ($notes6 -ccontains '- **Update (baseline: nullsoft exe, v8.8.9) / HyperV** -
 } else { Bad "fail notes: $($notes6 -join ' / ')" }
 if (@(($rows6 + $notes6) -join '' | ForEach-Object { $_.ToCharArray() } | Where-Object { [int]$_ -gt 127 }).Count -eq 0) { Ok 'the Update rows and notes are ASCII' } else { Bad 'non-ASCII characters in the Update rows' }
 
+# ══ Test 7: a test the Intune-parity pre-check did not start (installer-identity PR 2, L17) ════════
+# A NotRun record (Verdict Inconclusive, no assertions) is shown as 'Not run (Intune-parity pre-check)', never as a bare
+# 'Inconclusive' (a test that ran without a verdict). An ordinary Inconclusive record renders as before.
+Write-Host '[7] NotRun records: Result cell ''Not run (Intune-parity pre-check)''; an ordinary Inconclusive is unchanged' -ForegroundColor Cyan
+$notRun7 = [ordered]@{ Code = 'PARITY-DIALOG-WAIT'; Shape = 'Psadt41'; ProcessesToClose = 0; Welcome = 'OrgUi'; SignedInSessions = 1 }
+@(
+    [ordered]@{ Scenario = 'InstallUninstall'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-22T09:00:00.0000000Z'; Verdict = 'Inconclusive'
+                Assertions = @(); Notes = 'Not run (Intune-parity pre-check): a PSADT 4.1 package ...'; NotRun = $notRun7 }
+    [ordered]@{ Scenario = 'Update'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-22T09:05:00Z'; Verdict = 'Inconclusive'
+                Assertions = @(); Notes = 'Not run (Intune-parity pre-check): x'; NotRun = $notRun7 }
+    [ordered]@{ Scenario = 'InstallUninstall'; Backend = 'Sandbox'; Mode = 'Unattended'; TimestampUtc = '2026-10-22T10:00:00Z'; Verdict = 'Inconclusive'
+                Assertions = @(@{ Name = 'InstallDetected-PostInstall'; Result = 'SKIP' }); Notes = '' }
+) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $proj 'Documentation\TestResults.json') -Encoding UTF8
+$out7 = Join-Path $proj 'Documentation_notrun.md'
+$null = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath $out7 3>$null
+$lines7 = @((Get-Content -LiteralPath $out7 -Raw) -split "\r?\n")
+$rows7 = @($lines7 | Where-Object { $_ -like '| InstallUninstall *' -or $_ -like '| Update *' })
+if ($rows7 -ccontains '| InstallUninstall | HyperV | 2026-10-22 09:00 UTC | Not run (Intune-parity pre-check) |') { Ok 'the InstallUninstall NotRun row: | InstallUninstall | HyperV | 2026-10-22 09:00 UTC | Not run (Intune-parity pre-check) |' } else { Bad "IU NotRun row: $($rows7 -join ' / ')" }
+if ($rows7 -ccontains '| Update | HyperV | 2026-10-22 09:05 UTC | Not run (Intune-parity pre-check) |') { Ok 'the Update NotRun row has the same Result text' } else { Bad "Update NotRun row: $($rows7 -join ' / ')" }
+if (@($rows7 | Where-Object { $_ -like '*| HyperV |*' -and $_ -like '*| Inconclusive |' }).Count -eq 0) { Ok 'no bare | Inconclusive | for a NotRun record' } else { Bad "bare Inconclusive: $($rows7 -join ' / ')" }
+if ($rows7 -ccontains '| InstallUninstall | Sandbox | 2026-10-22 10:00 UTC | Inconclusive |') { Ok 'an ordinary Inconclusive record (no NotRun) renders unchanged' } else { Bad "ordinary row: $($rows7 -join ' / ')" }
+if (@($lines7 | Where-Object { $_ -like '- ***' -and $_ -match 'issues:' }).Count -eq 0) { Ok 'no FAIL note for the NotRun records' } else { Bad "fail notes: $(@($lines7 | Where-Object { $_ -match 'issues:' }) -join ' / ')" }
+
 # ── Cleanup ───────────────────────────────────────────────────────────────────────
 Remove-Item -LiteralPath $proj, $bare -Recurse -Force -ErrorAction SilentlyContinue
 

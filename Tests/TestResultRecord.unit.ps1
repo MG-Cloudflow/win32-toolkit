@@ -165,6 +165,27 @@ if (@($last5.OldArpSurvivors).Count -eq 10 -and -not $last5.PSObject.Properties[
 $null = Add-Win32ToolkitTestResult -ProjectPath $proj5 -Scenario 'Update' -Backend 'Sandbox' -Verdict 'Inconclusive' -Baseline @{ Version = '1.0'; Unavailable = $true; InstallerType = ''; Family = 'msi' }
 $last6 = (Get-Win32ToolkitTestResult -ProjectPath $proj5)[-1]
 if ($last6.Baseline.Unavailable -eq $true -and $last6.Baseline.InstallerType -eq '' -and -not $last6.PSObject.Properties['OldArpSurvivors']) { Ok 'an Unavailable record: Baseline only, empty InstallerType kept' } else { Bad "unavailable: $($last6 | ConvertTo-Json -Compress -Depth 5)" }
+
+# ── A test the Intune-parity pre-check did not start (installer-identity PR 2): NotRun ─────────────────
+Write-Host '[7] -NotRun is written only when supplied: key order, safe text, integers and booleans kept' -ForegroundColor Cyan
+$proj7 = New-Proj; $made += $proj7
+$p7 = Join-Path $proj7 'Documentation\TestResults.json'
+$null = Add-Win32ToolkitTestResult -ProjectPath $proj7 -Scenario 'InstallUninstall' -Backend 'HyperV' -Verdict 'Passed' -LogFolder 'Sandbox\Logs\Runs\x'
+$raw7a = Get-Content -LiteralPath $p7 -Raw -Encoding UTF8
+if ($raw7a -notmatch '"NotRun"') { Ok 'without -NotRun: no NotRun property (the older shape)' } else { Bad 'NotRun written without -NotRun' }
+$nr = @{ SignedInSessions = 2; Welcome = "Org${esc}Ui"; Zeta = $true; ProcessesToClose = 0; Shape = 'Psadt41'; Code = 'PARITY-DIALOG-WAIT'; Alpha = ('x' * 100) }
+$e7 = Add-Win32ToolkitTestResult -ProjectPath $proj7 -Scenario 'InstallUninstall' -Backend 'HyperV' -Mode 'Unattended' -Verdict 'Inconclusive' -Assertions @() `
+    -Notes 'Not run (Intune-parity pre-check): reason' -LogFolder 'Sandbox\Logs\Runs\y' -NotRun $nr
+$last7 = (Get-Win32ToolkitTestResult -ProjectPath $proj7)[-1]
+$n7 = $last7.NotRun
+$keys7 = @($n7.PSObject.Properties.Name)
+if (($keys7 -join ',') -eq 'Code,Shape,ProcessesToClose,Welcome,SignedInSessions,Alpha,Zeta') { Ok 'NotRun keys: Code, Shape, ProcessesToClose, Welcome, SignedInSessions, then the others alphabetically' } else { Bad "NotRun keys: $($keys7 -join ',')" }
+if ($n7.ProcessesToClose -is [long] -or $n7.ProcessesToClose -is [int]) { $intsKept = $n7.ProcessesToClose -eq 0 -and $n7.SignedInSessions -eq 2 } else { $intsKept = $false }
+if ($intsKept -and $n7.Zeta -is [bool] -and $n7.Zeta) { Ok 'integers and booleans stay JSON numbers and booleans' } else { Bad "types: $($n7 | ConvertTo-Json -Compress)" }
+if ($n7.Welcome -eq 'Org?Ui' -and $n7.Alpha.Length -eq 64 -and $n7.Alpha.EndsWith('...') -and $n7.Code -eq 'PARITY-DIALOG-WAIT') { Ok 'strings pass ConvertTo-Win32ToolkitSafeText (ESC -> ?, at most 64 characters)' } else { Bad "strings: $($n7 | ConvertTo-Json -Compress)" }
+$props7 = @($last7.PSObject.Properties.Name)
+if (($props7 -join ',') -eq 'Scenario,Backend,Mode,TimestampUtc,Verdict,Assertions,Notes,LogFolder,NotRun' -and $last7.Verdict -eq 'Inconclusive' -and @($last7.Assertions).Count -eq 0) { Ok 'NotRun is written after LogFolder; Verdict Inconclusive, no assertions' } else { Bad "entry: $($props7 -join ',')" }
+if ($e7.PSObject.Properties['NotRun'] -and (Get-Content -LiteralPath $p7 -Raw -Encoding UTF8) -match '"ProcessesToClose":\s*0') { Ok 'the returned entry carries NotRun; the raw JSON keeps ProcessesToClose a number' } else { Bad 'NotRun missing from the returned entry or written as a string' }
 # ── cleanup ───────────────────────────────────────────────────────────────────────────────────────
 foreach ($m in $made) { Remove-Item -LiteralPath $m -Recurse -Force -ErrorAction SilentlyContinue }
 

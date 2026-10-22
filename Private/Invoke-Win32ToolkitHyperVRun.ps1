@@ -29,7 +29,8 @@ function Invoke-Win32ToolkitHyperVRun {
     .PARAMETER BaselineProjectPath
         Update baseline-project mode: a second project copied read-only-in-effect to C:\PSADTOld.
     .PARAMETER VMName / Credential / CheckpointName
-        Resolved from config / the stored guest credential when omitted.
+        Resolved from config / the stored guest credential when omitted (CheckpointName: the HyperVCheckpoint
+        config value, default 'clean-base' - the checkpoint the test VM commands maintain).
     .OUTPUTS
         [bool] — $true if the run completed (individual phase failures are warned, not fatal, matching
         the Sandbox fire-and-forget semantics; callers judge results from the copied-back outputs).
@@ -46,7 +47,9 @@ function Invoke-Win32ToolkitHyperVRun {
         [string]$BaselineProjectPath,
         [string]$VMName,
         [pscredential]$Credential,
-        [string]$CheckpointName = 'clean-base'
+        # No default: an omitted name is the configured HyperVCheckpoint (default 'clean-base') below, the
+        # checkpoint New-/Set-Win32ToolkitTestVM* maintain (installer-identity PR 2, L18).
+        [string]$CheckpointName
     )
 
     if (-not $VMName)     { $VMName = Get-Win32ToolkitConfigValue -Name 'HyperVVMName' -Default 'win32tk-golden' }
@@ -208,9 +211,12 @@ function Invoke-Win32ToolkitHyperVRun {
                 # (never data); the texts are constants here (installer-identity PR 2, L16).
                 $hint = ''
                 if ($exit -eq 1460) {
+                    # Dropping -Unattended alone is not enough (live P5 r2): HyperVTestMode=Unattended or a non-interactive
+                    # host also make the run unattended (Get-Win32ToolkitTestMode).
+                    $watchedNeeds = ' (a watched run needs all three: no -Unattended switch, the HyperVTestMode value under HKCU:\Software\CloudFlow\win32-toolkit set to Interactive or removed, and an interactive console)'
                     switch ([string]$ph.ParityHint) {
-                        'Dialog41'    { $hint = ' In an unattended Intune-parity run this usually means a PSADT dialog was waiting for the user signed in to the VM: PSADT 4.1 shows its welcome dialog in Auto mode when a user is signed in and the app has no processes to close. Run the test watched (without -Unattended) to see and answer it, or list the app''s process in ProcessesToClose; the PSADT log under Sandbox\Logs shows the last dialog it opened.' }
-                        'Dialog'      { $hint = ' In an unattended Intune-parity run this often means a PSADT dialog was waiting for the user signed in to the VM (for example because a listed process to close was running), or the installer itself did not finish. Run the test watched (without -Unattended) to see it; the PSADT log under Sandbox\Logs shows where it stopped.' }
+                        'Dialog41'    { $hint = ' In an unattended Intune-parity run this usually means a PSADT dialog was waiting for the user signed in to the VM: PSADT 4.1 shows its welcome dialog in Auto mode when a user is signed in and the app has no processes to close. Run the test watched to see and answer it' + $watchedNeeds + ', or list the app''s process in ProcessesToClose; the PSADT log under Sandbox\Logs shows the last dialog it opened.' }
+                        'Dialog'      { $hint = ' In an unattended Intune-parity run this often means a PSADT dialog was waiting for the user signed in to the VM (for example because a listed process to close was running), or the installer itself did not finish. Run the test watched to see it' + $watchedNeeds + '; the PSADT log under Sandbox\Logs shows where it stopped.' }
                         'Uninstaller' { $hint = ' The uninstaller, or a child process it waits for, was still running at the test runner''s 25-minute limit; on devices, a project created with this win32-toolkit version stops it at 30 minutes with exit code 69113. The PSADT log under Sandbox\Logs shows the command it was running.' }
                     }
                 }

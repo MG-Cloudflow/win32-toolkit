@@ -9,8 +9,9 @@ function Get-Win32ToolkitTechnologySwitch {
         the package's family: the vendor install of the old version (e.g. an NSIS EXE) survived the package of
         another technology (e.g. a WiX MSI), so devices that have it get two registrations over one folder.
 
-        Records marked Baseline.Unavailable (the baseline technology could not be downloaded, L21) are never
-        judged and never hide an older record of their family.
+        Records marked Baseline.Unavailable (the baseline technology could not be downloaded, L21), and
+        records with NotRun (the Intune-parity pre-check did not start the test), are never judged and never
+        hide an older record of their family.
 
         A record written before PR 1 (no Baseline) is judged only when all of these hold (L5):
           1. it is the newest Update record (Unavailable records aside);
@@ -85,7 +86,7 @@ function Get-Win32ToolkitTechnologySwitch {
     # ---- Update records, oldest first (Add-Win32ToolkitTestResult appends newest-last) ----
     $records = @(Get-Win32ToolkitTestResult -ProjectPath $ProjectPath -WarningAction SilentlyContinue | ForEach-Object { $_ } |
             Where-Object { $_ -and [string](& $prop $_ 'Scenario') -eq 'Update' })
-    $judged = @($records | Where-Object { -not ((& $prop (& $prop $_ 'Baseline') 'Unavailable') -eq $true) })
+    $judged = @($records | Where-Object { -not ((& $prop (& $prop $_ 'Baseline') 'Unavailable') -eq $true) -and -not (& $prop $_ 'NotRun') })
     if ($judged.Count -eq 0) { return }
 
     # Latest judged record per baseline family.

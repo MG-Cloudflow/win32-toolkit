@@ -273,7 +273,10 @@ function Export-Win32ToolkitDocumentation {
                 }
                 else { $dt = & $cell $dtVal }
             }
-            $vd = & $cell (& $prop $t 'Verdict' '')
+            # A test the Intune-parity pre-check did not start (NotRun) is named as such, never as a bare
+            # 'Inconclusive', which would read as a test that ran without a verdict (installer-identity PR 2, L17).
+            $notRun = if ($t -is [System.Collections.IDictionary]) { $t.Contains('NotRun') } else { $t.PSObject.Properties.Name -contains 'NotRun' }
+            $vd = if ($notRun) { 'Not run (Intune-parity pre-check)' } else { & $cell (& $prop $t 'Verdict' '') }
             $null = $sb.AppendLine("| $sc | $bk | $dt | $vd |")
             # Only genuine FAILs are "issues". A SKIP means "not checkable" (e.g. no tattoo/DisplayName to
             # detect against), not a failure — listing it as an issue would misread as a fault to the customer.

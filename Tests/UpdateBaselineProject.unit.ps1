@@ -68,15 +68,41 @@ $script:recordedBaseline = $null
 function Write-Win32ToolkitTestOutcome { param($ProjectPath, $Scenario, $Backend, $Mode, $Verdict, $LogFileName, $Notes, $Baseline) $script:recordedBaseline = $Baseline }
 # Installer-identity PR 1 (C-9): the project baseline's technology for the record, the technology-switch check
 # after a failed run (never reached here: the waiter passes).
-function Get-Win32ToolkitProjectSource { [pscustomobject]@{ InstallerType = 'inno'; Family = 'exe'; Scope = 'machine'; Locale = '' } }
+$script:sourceCalls = 0
+function Get-Win32ToolkitProjectSource { $script:sourceCalls++; [pscustomobject]@{ InstallerType = 'inno'; Family = 'exe'; Scope = 'machine'; Locale = '' } }
 function Get-Win32ToolkitTechnologySwitch { @() }
 function Resolve-Win32ToolkitBaselineFamily { throw 'a project baseline never resolves a winget baseline technology' }
+# C-9 (installer-identity PR 2): an unattended Hyper-V Update asks the Intune-parity pre-check before the baseline is
+# touched. Not blocked by default (PSADT 4.1 dialog risk found, no processes to close); [5] blocks it, or clears the
+# risk. A blocked run is recorded directly.
+$script:preBlocked = $false
+$script:preAtRisk  = $true
+$script:preProcessCount = 0
+$script:preCalls   = @()
+$script:prePaths   = @()
+function Invoke-Win32ToolkitParityPrecheck {
+    param($ProjectPath, $Scenario)
+    $script:preCalls += $Scenario
+    $script:prePaths += $ProjectPath
+    [pscustomobject]@{
+        Blocked = $script:preBlocked; Risk = @{ AtRisk = $script:preAtRisk; Shape = 'Psadt41'; ProcessCount = $script:preProcessCount }; Guest = $null
+        Message = $(if ($script:preBlocked) { 'PRECHECK-MESSAGE' } else { '' }); Notes = $(if ($script:preBlocked) { 'Not run (Intune-parity pre-check): x' } else { '' })
+        NotRun  = $(if ($script:preBlocked) { @{ Code = 'PARITY-DIALOG-WAIT'; Shape = 'Psadt41'; ProcessesToClose = 0; Welcome = 'Script'; SignedInSessions = 1 } } else { $null })
+    }
+}
+$script:results = @()
+function Add-Win32ToolkitTestResult {
+    param($ProjectPath, $Scenario, $Backend, $Mode, $Verdict, $Assertions, $Notes, $Baseline, $OldArpSurvivors, $LogFolder, [hashtable]$NotRun)
+    $script:results += [pscustomobject]@{ Scenario = $Scenario; Backend = $Backend; Mode = $Mode; Verdict = $Verdict; Baseline = $Baseline; NotRun = $NotRun; HasBaseline = $PSBoundParameters.ContainsKey('Baseline') }
+}
 
 $script:hvBaseline = $null
 $script:hvCalled   = 0
+$script:hvPhase    = $null
 function Invoke-Win32ToolkitHyperVRun {
     param($ProjectPath, $Phase, $Output, $BaselineProjectPath)
     $script:hvCalled++
+    $script:hvPhase = $Phase
     $script:hvBaseline = $BaselineProjectPath
     $ld = Join-Path $ProjectPath 'Sandbox\Logs'
     New-Item -ItemType Directory -Path $ld -Force | Out-Null
@@ -156,6 +182,30 @@ Write-Host '[4] a resolved ref that is not a real PSADT project is rejected by t
 $badName = 'Bad_x64_1.0'
 New-Item -ItemType Directory -Path (Join-Path $script:base (Join-Path 'Projects' (Join-Path $TEMPLATE $badName))) -Force | Out-Null
 if (ExpectThrow @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProject = "$TEMPLATE\$badName" } 'no Invoke-AppDeployToolkit.ps1') { Ok 'resolved-but-not-a-PSADT-project -> existing validation still fires' } else { Bad 'a non-PSADT folder passed as a baseline' }
+
+# ══ [5] Intune-parity pre-check (installer-identity PR 2, A1 hv r1.2) ═══════════════════════════════
+Write-Host '[5] an unattended Hyper-V Update with a project baseline asks the pre-check first; a blocked run is not started' -ForegroundColor Cyan
+$script:preBlocked = $true; $script:preCalls = @(); $script:prePaths = @(); $script:results = @(); $script:hvCalled = 0; $script:sourceCalls = 0; $script:recordedBaseline = $null
+$ret5 = 'not-set'
+$ret5 = Test-Win32ToolkitProject -ProjectPath $proj -Scenario Update -BaselineProject "$TEMPLATE\$NAME" -Unattended 3>$null 6>$null
+if (($script:preCalls -join ',') -eq 'Update' -and ($script:prePaths -join ',') -eq $proj -and $script:hvCalled -eq 0 -and $script:sourceCalls -eq 0 -and $null -eq $ret5) { Ok 'blocked: pre-check asked once, for the project under test (not the baseline); no baseline copy (no run), the baseline project is not read; returns $null' } else { Bad "blocked: pre=$($script:preCalls -join ',') hv=$script:hvCalled source=$script:sourceCalls ret=$ret5" }
+$r5 = @($script:results)
+if ($r5.Count -eq 1 -and $r5[0].Scenario -eq 'Update' -and $r5[0].Backend -eq 'HyperV' -and $r5[0].Mode -eq 'Unattended' -and $r5[0].Verdict -eq 'Inconclusive' -and $r5[0].NotRun.Code -eq 'PARITY-DIALOG-WAIT' -and -not $r5[0].HasBaseline -and $null -eq $script:recordedBaseline) {
+    Ok 'one Update record with NotRun and no Baseline (the outcome writer is not used)'
+} else { Bad "records: $($r5 | ConvertTo-Json -Compress -Depth 4)" }
+$script:preBlocked = $false; $script:preCalls = @(); $script:results = @(); $script:hvCalled = 0
+$null = Test-Win32ToolkitProject -ProjectPath $proj -Scenario Update -BaselineProject "$TEMPLATE\$NAME" -Unattended 3>$null 6>$null
+$upd5 = @($script:hvPhase | Where-Object { $_.Label -eq 'Update (Intune parity)' })[0]
+if ($script:preCalls.Count -eq 1 -and $script:hvCalled -eq 1 -and $script:hvBaseline -eq $EXPECTED -and $upd5.ParityHint -eq 'Dialog41' -and $script:results.Count -eq 0) { Ok "not blocked: today's flow (baseline forwarded); the Update (Intune parity) phase carries ParityHint 'Dialog41'" } else { Bad "not blocked: pre=$($script:preCalls.Count) hv=$script:hvCalled baseline=$script:hvBaseline hint='$($upd5.ParityHint)' records=$($script:results.Count)" }
+# A PSADT 4.1 project that lists a process to close is not at risk: the generic 'Dialog' hint, not the 4.1 welcome text (L16).
+$script:preAtRisk = $false; $script:preProcessCount = 1; $script:preCalls = @(); $script:results = @(); $script:hvCalled = 0; $script:hvPhase = $null
+$null = Test-Win32ToolkitProject -ProjectPath $proj -Scenario Update -BaselineProject "$TEMPLATE\$NAME" -Unattended 3>$null 6>$null
+$upd5b = @($script:hvPhase | Where-Object { $_.Label -eq 'Update (Intune parity)' })[0]
+if ($script:preCalls.Count -eq 1 -and $script:hvCalled -eq 1 -and $upd5b.ParityHint -eq 'Dialog') { Ok "not at risk (PSADT 4.1, a process to close): the Update (Intune parity) phase carries the generic 'Dialog' hint" } else { Bad "not at risk: pre=$($script:preCalls.Count) hv=$script:hvCalled hint='$($upd5b.ParityHint)'" }
+$script:preAtRisk = $true; $script:preProcessCount = 0
+$script:preCalls = @()
+Test-Win32ToolkitProject -ProjectPath $proj -Scenario Update -BaselineProject "$TEMPLATE\$NAME" *>$null
+if ($script:preCalls.Count -eq 0) { Ok 'a watched Hyper-V Update never asks the pre-check' } else { Bad "watched: pre=$($script:preCalls.Count)" }
 
 Remove-Item -LiteralPath $script:base, $proj -Recurse -Force -ErrorAction SilentlyContinue
 

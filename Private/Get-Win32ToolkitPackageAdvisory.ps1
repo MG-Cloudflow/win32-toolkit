@@ -10,7 +10,8 @@ function Get-Win32ToolkitPackageAdvisory {
 
         Update findings (Documentation\TestResults.json, Scenario Update), one per baseline family: the
         latest judged record of each Baseline.Family. A record marked Baseline.Unavailable (the baseline
-        technology could not be downloaded) is never judged, so it cannot hide an older failure. A record
+        technology could not be downloaded), or one with NotRun (the Intune-parity pre-check did not start
+        the test), is never judged, so it cannot hide an older failure. A record
         written before baselines were recorded (no Baseline) counts only when it is the newest judged
         Update record; its family comes from Sandbox\OldVersion when that manifest is the version the
         generated Sandbox\UpdateAssertions.ps1 expected and the run used a winget baseline (else unknown).
@@ -156,7 +157,8 @@ function Get-Win32ToolkitPackageAdvisory {
     try {
         $records = Get-Win32ToolkitTestResult -ProjectPath $ProjectPath
         $candidates = @(@($records) | Where-Object {
-                $_ -and [string](& $prop $_ 'Scenario') -eq 'Update' -and -not [bool](& $prop (& $prop $_ 'Baseline') 'Unavailable')
+                $_ -and [string](& $prop $_ 'Scenario') -eq 'Update' -and -not [bool](& $prop (& $prop $_ 'Baseline') 'Unavailable') -and
+                -not (& $prop $_ 'NotRun')
             })
         for ($i = 0; $i -lt $candidates.Count; $i++) {
             $r = $candidates[$i]

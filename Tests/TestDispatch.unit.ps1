@@ -9,6 +9,8 @@
     Run:  pwsh -File Tests\TestDispatch.unit.ps1
     Exits non-zero on any failure.
 #>
+# Test shadows keep the real command names and signatures (C-4: no PSScriptAnalyzer warning in the suites).
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'test shadows mirror the real signatures')]
 [CmdletBinding()]
 param()
 
@@ -64,6 +66,30 @@ function New-LogCollectorScript { param($ProjectPath) return 'fake' }
 function Get-Win32ToolkitConfigValue { param($Name, $Default) return $script:testMode }
 function Invoke-Win32ToolkitHyperVRun { param($ProjectPath, $Phase, $Output) $script:hvCalled++; $script:order += 'hvrun'; $script:hvPhase = $Phase; $script:hvOutput = $Output; return $true }
 function Start-Process { param($FilePath, $ArgumentList) $script:launched++ }
+# C-9 (installer-identity PR 2): a Hyper-V UNATTENDED run asks the Intune-parity pre-check first. By default it does not
+# block and found the PSADT 4.1 dialog risk (no processes to close; the install phase's 1460 hint is then 'Dialog41');
+# a case sets $script:pre*.
+$script:preCalls  = @()
+$script:preBlocked = $false
+$script:preShape  = 'Psadt41'
+$script:preAtRisk = $true
+$script:preProcessCount = 0
+function Invoke-Win32ToolkitParityPrecheck {
+    param($ProjectPath, $Scenario)
+    $script:preCalls += "$Scenario|$ProjectPath"
+    $script:order += 'pre'
+    [pscustomobject]@{
+        Blocked = $script:preBlocked; Risk = @{ AtRisk = $script:preAtRisk; Shape = $script:preShape; ProcessCount = $script:preProcessCount }; Guest = $null
+        Message = $(if ($script:preBlocked) { 'PRECHECK-MESSAGE: was NOT started' } else { '' })
+        Notes   = $(if ($script:preBlocked) { 'Not run (Intune-parity pre-check): PRECHECK-NOTES' } else { '' })
+        NotRun  = $(if ($script:preBlocked) { @{ Code = 'PARITY-DIALOG-WAIT'; Shape = 'Psadt41'; ProcessesToClose = 0; Welcome = 'OrgUi'; SignedInSessions = 1 } } else { $null })
+    }
+}
+$script:results = @()
+function Add-Win32ToolkitTestResult {
+    param($ProjectPath, $Scenario, $Backend, $Mode, $Verdict, $Assertions, $Notes, $Baseline, $OldArpSurvivors, $LogFolder, [hashtable]$NotRun)
+    $script:results += [pscustomobject]@{ Scenario = $Scenario; Backend = $Backend; Mode = $Mode; Verdict = $Verdict; Assertions = @($Assertions); Notes = $Notes; Baseline = $Baseline; NotRun = $NotRun }
+}
 
 # real temp project so the internal Test-Path / Split-Path succeed
 $proj = Join-Path ([System.IO.Path]::GetTempPath()) ('w32td_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -100,13 +126,14 @@ $unin3 = @($script:hvPhase | Where-Object { $_.Label -eq 'Uninstall (Intune pari
 if ($inst3.Command -eq '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label app; exit $LASTEXITCODE') { Ok 'unattended install = Intune-parity runner phase (exact command, literal $LASTEXITCODE)' } else { Bad "install cmd: $($inst3.Command)" }
 if ($unin3.Command -eq '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Uninstall -Label app; exit $LASTEXITCODE') { Ok 'unattended uninstall = Intune-parity runner phase' } else { Bad "uninstall cmd: $($unin3.Command)" }
 if ((Test-CodesEqual $inst3.SuccessExitCodes) -and (Test-CodesEqual $unin3.SuccessExitCodes)) { Ok 'parity phases carry SuccessExitCodes 0,1707,3010,1641' } else { Bad "codes: $($inst3.SuccessExitCodes -join ',') / $($unin3.SuccessExitCodes -join ',')" }
-# 1460 hint keys (L16): a dialog cause on the install, the uninstaller on the uninstall; the assertion and log phases none.
-if ($inst3.ParityHint -eq 'Dialog' -and $unin3.ParityHint -eq 'Uninstaller') { Ok "parity phases carry ParityHint (install '$($inst3.ParityHint)', uninstall '$($unin3.ParityHint)')" } else { Bad "hints: install '$($inst3.ParityHint)' uninstall '$($unin3.ParityHint)'" }
+# 1460 hint keys (L16): a dialog cause on the install (PSADT 4.1 welcome named: the pre-check found that risk), the
+# uninstaller on the uninstall; the assertion and log phases none.
+if ($inst3.ParityHint -eq 'Dialog41' -and $unin3.ParityHint -eq 'Uninstaller') { Ok "parity phases carry ParityHint (install '$($inst3.ParityHint)', uninstall '$($unin3.ParityHint)')" } else { Bad "hints: install '$($inst3.ParityHint)' uninstall '$($unin3.ParityHint)'" }
 $other3 = @($script:hvPhase | Where-Object { $_.Label -notlike '* (Intune parity)' -and $_.ContainsKey('ParityHint') })
 if ($other3.Count -eq 0) { Ok 'the assertion and log phases carry no ParityHint' } else { Bad "hinted: $(@($other3.Label) -join ',')" }
 $cmds3 = @($script:hvPhase.Command) -join ' | '
 if ($cmds3 -notmatch 'Invoke-AppDeployToolkit\.ps1' -and $cmds3 -notmatch '-DeployMode') { Ok 'no direct deploy-script call and no -DeployMode on the parity phases (D6)' } else { Bad "cmds=$cmds3" }
-if ($script:runnerGen -eq 1 -and (($script:order -join '>') -match '^runner>deps>hvrun$')) { Ok 'runner written BEFORE dependency staging and any phase' } else { Bad "order=$($script:order -join '>') gen=$script:runnerGen" }
+if ($script:runnerGen -eq 1 -and (($script:order -join '>') -match '^pre>runner>deps>hvrun$')) { Ok 'the Intune-parity pre-check first, then the runner, BEFORE dependency staging and any phase' } else { Bad "order=$($script:order -join '>') gen=$script:runnerGen" }
 
 Write-Host '[4] HyperVTestMode=Unattended config also forces silent' -ForegroundColor Cyan
 $script:backend = 'HyperV'; $script:procs = @(); $script:testMode = 'Unattended'
@@ -187,7 +214,7 @@ $upd7 = @($script:hvPhase | Where-Object { $_.Label -eq 'Update (Intune parity)'
 if ($upd7.Command -eq '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label update; exit $LASTEXITCODE' -and (Test-CodesEqual $upd7.SuccessExitCodes)) { Ok 'unattended update = Intune-parity runner phase with exit $LASTEXITCODE' } else { Bad "update cmd: $($upd7.Command)" }
 if ($cmds7 -notmatch "'C:\\PSADT\\Invoke-AppDeployToolkit\.ps1'") { Ok 'no direct call of the deploy script left in the Update phases' } else { Bad "cmds=$cmds7" }
 $hinted7 = @($script:hvPhase | Where-Object { $_.ContainsKey('ParityHint') })
-if ($upd7.ParityHint -eq 'Dialog' -and $hinted7.Count -eq 1) { Ok "only the Update (Intune parity) phase carries a ParityHint ('$($upd7.ParityHint)')" } else { Bad "hints: $(@($hinted7 | ForEach-Object { "$($_.Label)=$($_.ParityHint)" }) -join ',')" }
+if ($upd7.ParityHint -eq 'Dialog41' -and $hinted7.Count -eq 1) { Ok "only the Update (Intune parity) phase carries a ParityHint ('$($upd7.ParityHint)')" } else { Bad "hints: $(@($hinted7 | ForEach-Object { "$($_.Label)=$($_.ParityHint)" }) -join ',')" }
 
 Write-Host '[8] Update + HyperV but the assertions log never came back -> no 30-min hang' -ForegroundColor Cyan
 $script:backend = 'HyperV'; $script:hvCopiesLog = $false; $script:waitArgs = $null
@@ -428,6 +455,83 @@ $e14b = $null; $ev14b = $null
 try { $null = Test-Win32ToolkitProject -ProjectPath $proj -Scenario InstallUninstall -ErrorAction SilentlyContinue -ErrorVariable ev14b *>$null } catch { $e14b = $_ }
 if (-not $e14b -and @($ev14b | Where-Object { "$_" -match 'Test-Win32ToolkitProject failed: disk full' }).Count -ge 1) { Ok 'a plain error is still a non-terminating "Test-Win32ToolkitProject failed: ..." (unchanged)' } else { Bad "plain: caught='$e14b' ev=[$(@($ev14b) -join ' | ')]" }
 ${function:Initialize-Win32ToolkitDependencyStaging} = $savedStaging14
+
+# Installer-identity PR 2 (A1 hv r1.2): an unattended Hyper-V run of a package that would only wait on a PSADT 4.1
+# dialog is NOT started - warning first, one Inconclusive record with NotRun, $null. Watched runs and Sandbox never ask.
+Write-Host '[15] Hyper-V unattended InstallUninstall: the Intune-parity pre-check runs first; a blocked run is not started' -ForegroundColor Cyan
+$script:depCount = 0; $script:procs = @(); $script:testMode = 'Interactive'
+function Invoke-Win32ToolkitHyperVRun {
+    param($ProjectPath, $Phase, $Output, $BaselineProjectPath)
+    $script:hvCalled++; $script:hvPhase = $Phase
+    $ld = Join-Path $ProjectPath 'Sandbox\Logs'
+    New-Item -ItemType Directory -Path $ld -Force | Out-Null
+    Set-Content -Path (Join-Path $ld 'UpdateAssertions.log') -Value 'ASSERT Tattoo = PASS'
+    $true
+}
+$isStream = { param($o) $o -is [System.Management.Automation.WarningRecord] -or $o -is [System.Management.Automation.InformationRecord] }
+# (a) blocked
+$script:backend = 'HyperV'; $script:preBlocked = $true; $script:preShape = 'Psadt41'
+$script:preCalls = @(); $script:results = @(); $script:recorded = $null; $script:hvCalled = 0
+$script:order = @(); $script:runnerGen = 0; $script:installAssertGen = 0; $script:depCount = 1
+# The previous run's top-level logs: a blocked run must leave them as they are (live P5: it removed these two).
+$logs15 = Join-Path $proj 'Sandbox\Logs'
+New-Item -ItemType Directory -Path $logs15 -Force | Out-Null
+foreach ($n in 'PsadtExitCodes.log', 'InstallAssertions.log') { Set-Content -LiteralPath (Join-Path $logs15 $n) -Value "previous run: $n" }
+$all15 = @(Test-Win32ToolkitProject -ProjectPath $proj -Scenario InstallUninstall -Unattended 3>&1 6>&1)
+$script:depCount = 0
+if (($script:order -join '>') -eq 'pre' -and $script:runnerGen -eq 0 -and $script:installAssertGen -eq 0) { Ok 'blocked: asked before anything is written or staged (no runner script, no dependency staging, no assertion script)' } else { Bad "blocked order=$($script:order -join '>') runner=$script:runnerGen assert=$script:installAssertGen" }
+if (@('PsadtExitCodes.log', 'InstallAssertions.log' | Where-Object { (Get-Content -LiteralPath (Join-Path $logs15 $_) -Raw -ErrorAction SilentlyContinue) -match "previous run: $([regex]::Escape($_))" }).Count -eq 2) { Ok 'blocked: the previous run''s top-level exit-code and assertion logs are left in place' } else { Bad 'blocked: a previous top-level log was cleared' }
+foreach ($n in 'PsadtExitCodes.log', 'InstallAssertions.log') { Remove-Item -LiteralPath (Join-Path $logs15 $n) -Force -ErrorAction SilentlyContinue }
+$lines15 = @($all15 | Where-Object { & $isStream $_ } | ForEach-Object { "$_" })
+$ret15 = @($all15 | Where-Object { -not (& $isStream $_) -and $null -ne $_ })
+if (($script:preCalls -join ';') -eq "InstallUninstall|$proj") { Ok 'the pre-check is asked once, for this project and InstallUninstall' } else { Bad "pre-check calls: $($script:preCalls -join ';')" }
+if ($script:hvCalled -eq 0 -and $ret15.Count -eq 0) { Ok 'blocked: Invoke-Win32ToolkitHyperVRun is NOT called and the call returns $null' } else { Bad "blocked: hvCalled=$script:hvCalled returned=[$($ret15 -join ',')]" }
+$r15 = @($script:results)
+if ($r15.Count -eq 1 -and $r15[0].Scenario -eq 'InstallUninstall' -and $r15[0].Backend -eq 'HyperV' -and $r15[0].Mode -eq 'Unattended' -and $r15[0].Verdict -eq 'Inconclusive' -and
+    @($r15[0].Assertions).Count -eq 0 -and $r15[0].Notes -eq 'Not run (Intune-parity pre-check): PRECHECK-NOTES' -and $r15[0].NotRun.Code -eq 'PARITY-DIALOG-WAIT' -and $null -eq $r15[0].Baseline) {
+    Ok 'one Inconclusive InstallUninstall/HyperV/Unattended record with the pre-check''s Notes and NotRun, no assertions'
+} else { Bad "records: $($r15 | ConvertTo-Json -Compress -Depth 4)" }
+if ($null -eq $script:recorded) { Ok 'the outcome writer (which reads the assertions log) is not used for it' } else { Bad 'Write-Win32ToolkitTestOutcome was called' }
+$wAt = [array]::IndexOf($lines15, 'PRECHECK-MESSAGE: was NOT started')
+$nrAt = [array]::IndexOf($lines15, 'Install/uninstall test: NOT RUN (Intune-parity pre-check).')
+if ($wAt -ge 0 -and $nrAt -gt $wAt -and -not ($lines15 -match 'Running an UNATTENDED')) { Ok 'the pre-check warning comes first, then ''NOT RUN''; no ''Running an UNATTENDED'' line' } else { Bad "lines: $($lines15 -join ' / ')" }
+# (b) not blocked: the run starts once; the install phase's 1460 hint follows the pre-check's risk (AtRisk, never the shape
+# alone: a PSADT 4.1 project that lists a process to close, or whose welcome cannot defer, gets the generic text), the
+# uninstall one does not
+foreach ($case in @(
+        @{ Shape = 'Psadt41';           AtRisk = $true;  ProcessCount = 0; Hint = 'Dialog41'; Why = 'at risk (nobody signed in)' }
+        @{ Shape = 'Psadt41';           AtRisk = $false; ProcessCount = 1; Hint = 'Dialog';   Why = 'lists a process to close' }
+        @{ Shape = 'Psadt41';           AtRisk = $false; ProcessCount = 0; Hint = 'Dialog';   Why = 'welcome cannot defer' }
+        @{ Shape = 'Psadt42ZeroConfig'; AtRisk = $false; ProcessCount = 0; Hint = 'Dialog';   Why = 'PSADT 4.2' })) {
+    $script:preBlocked = $false; $script:preShape = $case.Shape; $script:preAtRisk = $case.AtRisk; $script:preProcessCount = $case.ProcessCount
+    $script:preCalls = @(); $script:results = @(); $script:hvCalled = 0
+    $null = Test-Win32ToolkitProject -ProjectPath $proj -Scenario InstallUninstall -Unattended 3>$null 6>$null
+    $i15 = @($script:hvPhase | Where-Object { $_.Label -eq 'Install (Intune parity)' })[0]
+    $u15 = @($script:hvPhase | Where-Object { $_.Label -eq 'Uninstall (Intune parity)' })[0]
+    if ($script:preCalls.Count -eq 1 -and $script:hvCalled -eq 1 -and $i15.ParityHint -eq $case.Hint -and $u15.ParityHint -eq 'Uninstaller' -and $script:results.Count -eq 0) {
+        Ok "not blocked, $($case.Shape) $($case.Why) (ProcessCount $($case.ProcessCount)): the run starts once; install hint '$($case.Hint)', uninstall 'Uninstaller'"
+    } else { Bad "$($case.Shape) $($case.Why): pre=$($script:preCalls.Count) hv=$script:hvCalled install='$($i15.ParityHint)' uninstall='$($u15.ParityHint)' records=$($script:results.Count)" }
+}
+$script:preAtRisk = $true; $script:preProcessCount = 0
+# (c) watched Hyper-V and Sandbox (watched or unattended) never ask, for either scenario
+$base15 = Join-Path ([System.IO.Path]::GetTempPath()) ('w32base_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $base15 -Force | Out-Null
+Set-Content -Path (Join-Path $base15 'Invoke-AppDeployToolkit.ps1') -Value '# psadt'
+$script:preBlocked = $true
+foreach ($case in @(
+        @{ Backend = 'HyperV';  Mode = 'Interactive'; P = @{ Scenario = 'InstallUninstall' } }
+        @{ Backend = 'HyperV';  Mode = 'Interactive'; P = @{ Scenario = 'Update'; BaselineProjectPath = $base15 } }
+        @{ Backend = 'Sandbox'; Mode = 'Interactive'; P = @{ Scenario = 'InstallUninstall'; Unattended = $true } }
+        @{ Backend = 'Sandbox'; Mode = 'Interactive'; P = @{ Scenario = 'Update'; BaselineProjectPath = $base15; Unattended = $true } }
+        @{ Backend = 'Sandbox'; Mode = 'Interactive'; P = @{ Scenario = 'InstallUninstall' } })) {
+    $script:backend = $case.Backend; $script:testMode = $case.Mode; $script:preCalls = @(); $script:results = @()
+    $p15 = @{ ProjectPath = $proj } + $case.P
+    Run $p15
+    $tag = "$($case.Backend) $($case.P.Scenario) $(if ($case.P.Unattended) { 'unattended' } else { 'watched' })"
+    if ($script:preCalls.Count -eq 0 -and $script:results.Count -eq 0) { Ok "${tag}: no pre-check, nothing recorded as not run" } else { Bad "${tag}: pre-check calls=$($script:preCalls.Count) records=$($script:results.Count)" }
+}
+$script:preBlocked = $false; $script:preShape = 'Psadt41'; $script:backend = 'HyperV'
+Remove-Item -LiteralPath $base15 -Recurse -Force -ErrorAction SilentlyContinue
 
 Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
 

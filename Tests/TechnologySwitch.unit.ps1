@@ -227,6 +227,27 @@ try {
     Add-Rec $p 'Inconclusive' @() (New-Baseline nullsoft exe '8.8.7' -Unavailable)
     if (@(Get-Win32ToolkitTechnologySwitch -ProjectPath $p).Count -eq 1) { Ok 'a newer Unavailable record does not make the legacy record "not newest" (never judged)' } else { Bad 'Unavailable record hid the legacy record' }
 
+    # Installer-identity PR 2: a test the Intune-parity pre-check did not start (NotRun: no Baseline, no assertions) is
+    # never judged - not as the newest legacy record (no read of Sandbox\OldVersion and a stale log for it), and it never
+    # hides an older record.
+    $addNotRun = { param($Proj) $null = Add-Win32ToolkitTestResult -ProjectPath $Proj -Scenario 'Update' -Backend 'HyperV' -Mode 'Unattended' -Verdict 'Inconclusive' -Assertions @() `
+            -Notes 'Not run (Intune-parity pre-check): x' -NotRun @{ Code = 'PARITY-DIALOG-WAIT'; Shape = 'Psadt41'; ProcessesToClose = 0; Welcome = 'OrgUi'; SignedInSessions = 1 } }
+    $p = New-LegacyProj
+    Add-Rec $p 'Failed' $failA $null $null
+    & $addNotRun $p
+    $fnr = @(Get-Win32ToolkitTechnologySwitch -ProjectPath $p)
+    if ($fnr.Count -eq 1 -and $fnr[0].Legacy -and $fnr[0].BaselineVersion -eq '8.8.9') { Ok 'a newer NotRun record does not make the legacy FAIL "not newest" (still judged)' } else { Bad "legacy + NotRun: $($fnr | ConvertTo-Json -Compress -Depth 5)" }
+    $realManifest = ${function:Get-WingetManifestFile}
+    $script:manifestReads = 0
+    ${function:Get-WingetManifestFile} = { param([string]$Path, [string]$Kind) $script:manifestReads++; & $realManifest -Path $Path -Kind $Kind }
+    $p = New-LegacyProj   # a stale Sandbox\OldVersion + UpdateAssertions.log that belong to no recorded run
+    Add-Rec $p 'Failed' $failA (New-Baseline nullsoft exe) @($nppSurvivor)
+    & $addNotRun $p
+    $fnr2 = @(Get-Win32ToolkitTechnologySwitch -ProjectPath $p)
+    if ($fnr2.Count -eq 1 -and -not $fnr2[0].Legacy -and $fnr2[0].Message -eq $expectedMsg -and $script:manifestReads -eq 0) { Ok 'a newest NotRun record is skipped: no legacy-path read of the stale log; the older Baseline FAIL is still judged' }
+    else { Bad "NotRun newest: reads=$script:manifestReads findings=$($fnr2 | ConvertTo-Json -Compress -Depth 5)" }
+    ${function:Get-WingetManifestFile} = $realManifest
+
     # End to end with the real -FamilyPin download (winget shadowed: no type of the family is offered): the
     # Unavailable run leaves Sandbox\OldVersion paired with UpdateAssertions.ps1, so the legacy FAIL is still judged (L21).
     . (Join-Path $repo 'Private\Test-Win32ToolkitWingetNoApplicableInstaller.ps1')

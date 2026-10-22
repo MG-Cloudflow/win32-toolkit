@@ -70,10 +70,51 @@ Unattended and prints a loud warning. Interactive mode would block forever on pr
 > uses on a real device**. The two verdicts are therefore *not equivalent evidence*: an app that behaves
 > differently under SYSTEM (per-user shortcuts, HKCU writes, user profile paths) can pass in the Sandbox
 > and still fail via Intune. The recorded outcome includes the backend and mode so you can tell them
-> apart later. For the closest-to-Intune signal, use the Hyper-V backend unattended. (It does not force
-> a signed-in desktop. If a user is signed in to the VM, PSADT's Auto mode can still show a dialog, for
-> example for a PSADT 4.1 app with an empty processes-to-close list, and the run then waits until the
-> runner's 25-minute timeout, recorded as exit code 1460.)
+> apart later. For the closest-to-Intune signal, use the Hyper-V backend unattended.
+
+**PSADT 4.1 dialogs in an unattended Hyper-V run.** The toolkit's test VM always restores to a signed-in
+desktop: its checkpoint is taken at an AutoLogon desktop. PSADT's Auto mode shows its dialogs to a
+signed-in user, and PSADT 4.1 shows its welcome dialog whenever the user may defer, even when the app has
+no processes to close. So before an unattended Hyper-V test of a PSADT 4.1 package with **no processes to
+close** and a **welcome dialog that lets the user defer** (the org template's welcome with `AllowDefer`,
+or a deferrable welcome in the deploy script), the toolkit checks the VM over PowerShell Direct. When a
+user is signed in, which the toolkit's VM always is, the test is **not started**: nobody would answer the
+dialog, so the run would wait 25 minutes and then fail with exit code 1460. A warning says so before
+anything runs (nothing is written, cleared or downloaded for the test: the logs of the previous run stay
+in place), and the test is recorded as Inconclusive with the reason (the customer documentation shows it
+as "Not run (Intune-parity pre-check)"). To test such a package:
+
+- run the test **watched** and answer the dialog in the VM window. A watched run needs all three: no
+  `-Unattended` switch, the `HyperVTestMode` config value set to `Interactive` or removed (see
+  [Configuration](configuration.md#test-modes-sandboxtestmode-hypervtestmode)), and an interactive console.
+  Leaving out `-Unattended` alone is not enough when `HyperVTestMode` is `Unattended`; or
+- list the app's process in `ProcessesToClose`, so that PSADT 4.1 asks only while the app is running
+  (on devices too).
+
+Devices with a signed-in user show the same dialog. Signing the user out of the VM is not a remedy:
+watched and unattended runs restore the same checkpoint, a watched run needs the signed-in desktop (a run
+that lands on the sign-in screen restarts the VM to sign in again), and changing the VM's resources or
+repairing its checkpoint takes a signed-in checkpoint again. The check runs only for such packages and
+can take a few minutes, with one line on the console while it runs: it restores the VM's checkpoint before
+and after it looks (a test that then starts skips its own first restore). When it cannot reach the VM or read its
+sessions, it warns and the test starts as usual. PSADT 4.2 packages are not checked: PSADT 4.2 resolves
+Auto mode to Silent when no listed process is running.
+
+**Exit code 1460.** The guest runner stops a package that is still running after 25 minutes and records
+exit code 1460. For an Intune-parity phase the warning names the likely cause:
+
+- **Install or update phase**: a PSADT dialog waiting for the user signed in to the VM (for example
+  because a listed process to close was running, or, on PSADT 4.1, a welcome dialog), or an installer that
+  did not finish. Run the test watched to see it (the three conditions above).
+- **Uninstall phase**: the uninstaller, or a child process it waits for, was still running.
+
+The PSADT log under `Sandbox\Logs` shows where the package stopped.
+
+**Test-run limits and the device limit.** A test run stops a package earlier than a device does: after 25
+minutes in the guest runner, 30 minutes for a Hyper-V phase, and 10 minutes for the Sandbox
+install/uninstall wait. On a device, the uninstall of a project created with this version stops an EXE
+uninstaller that runs longer than 30 minutes, with exit code 69113. So a test run never shows exit code
+69113: a hung uninstaller shows there as exit code 1460 (Hyper-V) or as an Inconclusive run (Sandbox).
 
 ### One package, one process
 

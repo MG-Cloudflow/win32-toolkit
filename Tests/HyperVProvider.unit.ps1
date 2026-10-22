@@ -7,6 +7,11 @@
     Run:  pwsh -File Tests\HyperVProvider.unit.ps1
     Exits non-zero on any failure.
 #>
+# Test shadows keep the real command names and signatures (C-4: no PSScriptAnalyzer warning in the suites).
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'test shadows mirror the real signatures')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'test shadows keep the real command names')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', '', Justification = 'test shadows take a fake credential')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUsePSCredentialType', '', Justification = 'test shadows take a fake credential')]
 [CmdletBinding()]
 param()
 
@@ -159,6 +164,11 @@ $d41 = @(& $for7 'p-dialog41')
 if ($d41.Count -eq 1 -and $d41[0] -match '25-minute limit' -and $d41[0] -match 'signed in' -and $d41[0] -match 'PSADT 4\.1' -and $d41[0] -match 'watched' -and $d41[0] -match 'ProcessesToClose') { Ok '1460 + Dialog41: names the 25-minute limit, the signed-in user, PSADT 4.1, a watched run and ProcessesToClose' } else { Bad "Dialog41: $($d41 -join ' | ')" }
 $dlg = @(& $for7 'p-dialog')
 if ($dlg.Count -eq 1 -and $dlg[0] -match '25-minute limit' -and $dlg[0] -match 'watched' -and $dlg[0] -notmatch 'PSADT 4\.1') { Ok '1460 + Dialog: the 25-minute limit and a watched run, no PSADT version claimed' } else { Bad "Dialog: $($dlg -join ' | ')" }
+# Live P5 r2: "without -Unattended" alone did not make a watched run when HyperVTestMode=Unattended is configured.
+$needs7 = 'a watched run needs all three: no -Unattended switch, the HyperVTestMode value under HKCU:\Software\CloudFlow\win32-toolkit set to Interactive or removed, and an interactive console'
+if ($d41.Count -eq 1 -and $dlg.Count -eq 1 -and $d41[0].Contains($needs7) -and $dlg[0].Contains($needs7) -and -not ($d41[0] -match 'watched \(without -Unattended\)') -and -not ($dlg[0] -match 'watched \(without -Unattended\)')) {
+    Ok '1460 + Dialog41 / Dialog: the watched-run advice names all three conditions'
+} else { Bad "watched advice: $($d41 -join ' | ') || $($dlg -join ' | ')" }
 $uni = @(& $for7 'p-uninstaller')
 if ($uni.Count -eq 1 -and $uni[0] -match 'uninstaller' -and $uni[0] -match '30 minutes' -and $uni[0] -match '69113' -and $uni[0] -notmatch 'dialog') { Ok '1460 + Uninstaller: names the uninstaller, the 30-minute device limit and 69113, no dialog' } else { Bad "Uninstaller: $($uni -join ' | ')" }
 foreach ($plain in 'p-nokey', 'p-unknown') {
@@ -237,6 +247,28 @@ $null = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(
     @{ Label = 'CollectLogs'; Command = '0'; IgnoreExit = $true; Always = $true }
 ) -Output @('Sandbox\Logs\*') 3>$null 6>$null
 if ((@($script:log9 | Where-Object { $_ -like 'phase:*' }) -join ' ') -eq 'phase:Install dependencies phase:Install phase:CollectLogs') { Ok 'a successful dependency phase changes nothing' } else { Bad "phases: $($script:log9 -join ' > ')" }
+Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential
+
+Write-Host '[11] the run reverts the configured HyperVCheckpoint (installer-identity PR 2, L18)' -ForegroundColor Cyan
+# The parameter has no default any more: an omitted -CheckpointName is the HyperVCheckpoint config value (default
+# 'clean-base'), the checkpoint New-/Set-Win32ToolkitTestVM* maintain; an explicit one still wins.
+$script:cfg11 = @{}
+function Get-Win32ToolkitConfigValue { param($Name, $Default) if ($script:cfg11.ContainsKey($Name)) { $script:cfg11[$Name] } else { $Default } }
+function Get-Win32ToolkitGuestCredential { [pscredential]::new('w32admin', (New-Object System.Security.SecureString)) }
+function New-Win32ToolkitHyperVSession    { param($VMName, $Credential, $CheckpointName, [switch]$SkipRevert, [switch]$EnsureDesktop) $script:log11 += "open:$CheckpointName"; 'SESS' }
+function Copy-Win32ToolkitProjectToGuest  { param($Session, $ProjectPath, $GuestPath) }
+function Copy-Win32ToolkitResultsFromGuest{ param($Session, $GuestPath, $Destination, $GuestRoot) }
+function Remove-Win32ToolkitHyperVSession { param($Session, $VMName, $CheckpointName, [switch]$Revert) $script:log11 += "revert:$CheckpointName" }
+function Invoke-Win32ToolkitGuestPhase    { param($Session, $Command, $Label) 0 }
+foreach ($case in @(
+        @{ Label = 'HyperVCheckpoint warm-x, no -CheckpointName'; Cfg = @{ HyperVCheckpoint = 'warm-x' }; Arg = @{}; Want = 'warm-x' }
+        @{ Label = 'HyperVCheckpoint warm-x, -CheckpointName clean-base'; Cfg = @{ HyperVCheckpoint = 'warm-x' }; Arg = @{ CheckpointName = 'clean-base' }; Want = 'clean-base' }
+        @{ Label = 'nothing configured (the default)'; Cfg = @{}; Arg = @{}; Want = 'clean-base' })) {
+    $script:cfg11 = $case.Cfg; $script:log11 = @()
+    $arg11 = $case.Arg
+    $null = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(@{ Label = 'x'; Command = 'y' }) @arg11 3>$null 6>$null
+    if (($script:log11 -join ' ') -eq "open:$($case.Want) revert:$($case.Want)") { Ok "$($case.Label): opens and reverts '$($case.Want)'" } else { Bad "$($case.Label): $($script:log11 -join ' ')" }
+}
 Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential
 
 if ($fail -eq 0) {
