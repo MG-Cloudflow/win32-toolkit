@@ -36,6 +36,11 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 function Get-Win32ToolkitSandboxEnvironment { $null }   # C-9: no wsb answer -> the process check decides (test campaign F1)
 . (Join-Path $repo 'Private\Get-Win32ToolkitConfigValue.ps1')   # New-TargetedDocumentation reads SandboxTestMode
 . (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1')   # for -BaselineProjectPath validation (throws early)
+# C-9 (installer-identity PR 2 follow-up F7): every test first asks for the uninstall cleanup paths Export refuses. No
+# finding by default; [10] (e) sets some.
+$script:cleanupCalls = 0
+$script:cleanupFindings = @()
+function Get-Win32ToolkitCleanupPathFinding { param($ProjectPath) $null = $ProjectPath; $script:cleanupCalls++; @($script:cleanupFindings) }
 . (Join-Path $repo 'Private\Initialize-Win32ToolkitTestRunLog.ps1')   # C-9: each run keeps its logs in Sandbox\Logs\Runs\<run> (real)
 . (Join-Path $repo 'Private\Save-Win32ToolkitTestRunLog.ps1')
 function Wait-Win32ToolkitCollectedLog { param($TimeoutSeconds) $script:collectWaits += [int]$TimeoutSeconds; $true }   # no wait for a guest log collector
@@ -489,6 +494,7 @@ try {
         $script:dlCalls.Clear(); $script:outcomes.Clear(); $script:records.Clear(); $script:verdictQueue.Clear()
         $script:switchCalls = 0; $script:pickerCalls = 0; $script:W32TUpdateLegContext = $null; $script:dlAnswer = { 'ok' }
         $script:preCalls.Clear(); $script:hvHints.Clear(); $script:preBlocked = $false; $script:preAtRisk = $true; $script:preProcessCount = 0
+        $script:cleanupCalls = 0; $script:cleanupFindings = @()
     }
     function Split-Out($Items) {
         [pscustomobject]@{
@@ -695,7 +701,12 @@ try {
     $versionsShadowE = ${function:Get-WingetVersions}
     ${function:Get-WingetVersions} = { $script:versionCalls++; @('8.8.9', '8.8.8') }
     $script:verdictQueue.Enqueue($true); $script:verdictQueue.Enqueue($false)
+    $script:cleanupFindings = @([pscustomobject]@{ Kind = 'CleanupPath'; Message = 'UNSAFE-BOTH' })
     $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -BaselineInstallerType Both -VersionsBack 1 6>&1 3>&1)
+    # F7 (installer-identity PR 2 follow-up): the outer call checks the cleanup paths Export refuses once, for both legs.
+    $cw = @($o.Warnings | Where-Object { $_ -like 'Export refuses this project*' })
+    if ($script:cleanupCalls -eq 1 -and $cw.Count -eq 1 -and $cw[0].StartsWith('Export refuses this project (1 uninstall cleanup-path finding(s)); the test runs anyway. UNSAFE-BOTH ')) { Ok 'Both: one cleanup-path check and one warning for the whole run (the legs do not repeat it)' }
+    else { Bad "Both cleanup check: calls=$($script:cleanupCalls) warnings=$($cw -join ' | ')" }
     if ($script:dlCalls.Count -eq 2 -and $script:dlCalls[0]['InstallerType'] -eq 'wix' -and $script:dlCalls[1]['InstallerType'] -eq 'nullsoft' -and
         $script:dlCalls[0]['Version'] -eq '8.8.9' -and $script:dlCalls[1]['Version'] -eq '8.8.9' -and $script:pickerCalls -eq 0) { Ok 'Both: two inner runs at the same version (-SpecificVersion 8.8.9, VersionsBack dropped): wix, then nullsoft' }
     else { Bad "both calls: $($script:dlCalls | ConvertTo-Json -Compress)" }

@@ -15,6 +15,10 @@ function Test-Win32ToolkitProject {
     when one of the app's listed processes is running (otherwise the run is silent); on 4.1.x Auto
     shows PSADT's dialogs. (The watched Hyper-V GUI phases force -DeployMode Interactive.)
 
+    Before a test runs, it warns once when the project's uninstall cleanup paths fail the check
+    Export-Win32ToolkitIntuneWin enforces, with Export's own findings, and then runs anyway: Export is
+    the only command that refuses such a project.
+
     Process isolation: every PSADT package runs in its OWN Windows PowerShell process (PSADT 4.2
     refuses a second copy of its module in one process, and 4.1 and 4.2 cannot share one). Each
     declared 'project:' dependency is started by Sandbox\InstallDependencies.ps1, which stops at the
@@ -322,6 +326,19 @@ function Test-Win32ToolkitProject {
         # Sandbox with a warning if the VM / guest credential aren't ready).
         $resolvedBackend = if ($Backend) { Get-Win32ToolkitTestBackend -Backend $Backend } else { Get-Win32ToolkitTestBackend }
         Write-Host "Backend          : $resolvedBackend" -ForegroundColor Cyan
+
+        # Uninstall cleanup paths Export refuses (installer-identity PR 2 follow-up F7, D6): Export is the only hard stop,
+        # so the test still runs, but says so first with Export's own findings. Once per outer call (not in the legs of an
+        # Update 'Both' run). In the guest, a project created with this version re-checks every cleanup path (uninstall
+        # revision 2); an older project's uninstall deletes them there as SYSTEM.
+        if ($null -eq $script:W32TUpdateLegContext) {
+            $cleanupFindings = @(Get-Win32ToolkitCleanupPathFinding -ProjectPath $ProjectPath | Where-Object { $_ })
+            if ($cleanupFindings.Count -gt 0) {
+                Write-Warning (("Export refuses this project ({0} uninstall cleanup-path finding(s)); the test runs anyway. " -f $cleanupFindings.Count) +
+                    ((@($cleanupFindings | ForEach-Object { [string]$_.Message })) -join ' ') +
+                    ' When the test uninstalls the app, a project created with this win32-toolkit version checks every cleanup path again in the guest and leaves a refused one in place; the uninstall of an older project deletes them there.')
+            }
+        }
 
         # Windows Sandbox allows a single running instance. Instead of throwing the moment one exists —
         # which silently killed chained runs (the capture sandbox is still auto-closing when the

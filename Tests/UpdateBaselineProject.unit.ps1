@@ -26,6 +26,10 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Wait-Win32ToolkitSandboxFree.ps1')          # the guard now waits instead of throwing
 function Get-Win32ToolkitSandboxEnvironment { $null }   # C-9: no wsb answer -> the process check decides (test campaign F1)
 . (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1')
+# C-9 (installer-identity PR 2 follow-up F7): every test first asks for the uninstall cleanup paths Export refuses (none here).
+$script:cleanupCalls = 0
+$script:cleanupFindings = @()
+function Get-Win32ToolkitCleanupPathFinding { param($ProjectPath) $null = $ProjectPath; $script:cleanupCalls++; @($script:cleanupFindings) }
 . (Join-Path $repo 'Private\Initialize-Win32ToolkitTestRunLog.ps1')   # C-9: each run keeps its logs in Sandbox\Logs\Runs\<run> (real)
 . (Join-Path $repo 'Private\Save-Win32ToolkitTestRunLog.ps1')
 function Wait-Win32ToolkitCollectedLog { param($TimeoutSeconds) $script:collectWaits += [int]$TimeoutSeconds; $true }   # no wait for a guest log collector

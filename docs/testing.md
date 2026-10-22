@@ -222,6 +222,13 @@ The host waits for the in-guest assertion log (`Sandbox\Logs\InstallAssertions.l
 `Documentation\TestResults.json`. In watched Sandbox mode the guest stays open; closing it early before
 the uninstall assertion leaves the verdict inconclusive.
 
+**Cleanup paths packaging refuses.** When the project's uninstall cleanup paths fail the check packaging
+enforces (see [the package check](packaging.md#the-package-check)), every test first prints one warning
+with packaging's own findings and then runs anyway: only packaging stops such a project. In the guest, the
+uninstall of a project created with this version checks every cleanup path again and leaves a refused one
+in place; the uninstall of an older project deletes them there (the Sandbox is discarded afterwards, and
+the next Hyper-V run restores the VM's checkpoint).
+
 <!-- SCREENSHOT: Windows Sandbox during an InstallUninstall run, with the 2-minute countdown dialog visible over the freshly installed app -->
 
 ## The Update scenario

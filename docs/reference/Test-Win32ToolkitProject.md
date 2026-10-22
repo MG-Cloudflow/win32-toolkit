@@ -28,6 +28,10 @@ when one of the app's listed processes is running (otherwise the run is silent);
 shows PSADT's dialogs.
 (The watched Hyper-V GUI phases force -DeployMode Interactive.)
 
+Before a test runs, it warns once when the project's uninstall cleanup paths fail the check
+Export-Win32ToolkitIntuneWin enforces, with Export's own findings, and then runs anyway: Export is
+the only command that refuses such a project.
+
 Process isolation: every PSADT package runs in its OWN Windows PowerShell process (PSADT 4.2
 refuses a second copy of its module in one process, and 4.1 and 4.2 cannot share one).
 Each

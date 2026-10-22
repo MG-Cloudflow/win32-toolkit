@@ -24,6 +24,11 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Wait-Win32ToolkitSandboxFree.ps1')      # the guard now waits instead of throwing
 function Get-Win32ToolkitSandboxEnvironment { $null }   # C-9: no wsb answer -> the process check decides (test campaign F1)
 . (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1')
+# C-9 (installer-identity PR 2 follow-up F7): every test first asks for the uninstall cleanup paths Export refuses. No
+# finding by default ([16] sets some); it records nothing in $script:order, so [3]'s call order stays as it is.
+$script:cleanupCalls = 0
+$script:cleanupFindings = @()
+function Get-Win32ToolkitCleanupPathFinding { param($ProjectPath) $null = $ProjectPath; $script:cleanupCalls++; @($script:cleanupFindings) }
 . (Join-Path $repo 'Private\Initialize-Win32ToolkitTestRunLog.ps1')   # C-9: each run keeps its logs in Sandbox\Logs\Runs\<run> (real)
 . (Join-Path $repo 'Private\Save-Win32ToolkitTestRunLog.ps1')
 function Wait-Win32ToolkitCollectedLog { param($TimeoutSeconds) $script:collectWaits += [int]$TimeoutSeconds; $true }   # no wait for a guest log collector
@@ -585,6 +590,65 @@ foreach ($case in @(
 }
 $script:preBlocked = $false; $script:preShape = 'Psadt41'; $script:backend = 'HyperV'
 Remove-Item -LiteralPath $base15 -Recurse -Force -ErrorAction SilentlyContinue
+
+# Installer-identity PR 2 follow-up F7 (P3-guard-sb #2): a project whose uninstall cleanup paths Export refuses is still
+# tested, after ONE warning with Export's own findings, on every backend and in every mode; Export stays the only hard stop.
+Write-Host '[16] cleanup paths Export refuses: one warning with its findings first, then the test runs (F7)' -ForegroundColor Cyan
+$script:depCount = 0; $script:procs = @(); $script:preBlocked = $false; $script:preAtRisk = $true
+function Invoke-Win32ToolkitTestRun {
+    param($Backend, $SandboxConfigPath)
+    $script:launched++
+    New-Item -ItemType Directory -Path (Join-Path $proj 'Sandbox\Logs') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $proj 'Sandbox\Logs\InstallAssertions.log') -Value '[t] ASSERT InstallDetected-PostInstall = PASS'
+    [pscustomobject]@{ Launched = $true }
+}
+$unsafe16 = @([pscustomobject]@{ Kind = 'CleanupPath'; Message = 'UNSAFE-A' }, [pscustomobject]@{ Kind = 'CleanupPath'; Message = 'UNSAFE-B' })
+$head16 = 'Export refuses this project (2 uninstall cleanup-path finding(s)); the test runs anyway. '
+$run16 = {
+    param([string]$Backend, [bool]$Unattended, $Findings)
+    $script:backend = $Backend; $script:testMode = 'Interactive'
+    $script:cleanupFindings = @($Findings); $script:cleanupCalls = 0; $script:hvCalled = 0; $script:launched = 0
+    $p = @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
+    if ($Unattended) { $p['Unattended'] = $true }
+    $all = @(Test-Win32ToolkitProject @p 3>&1 6>&1)
+    $lines = @($all | Where-Object { & $isStream $_ } | ForEach-Object { "$_" })
+    $warnAt = -1; $startAt = -1; $preAt = -1
+    for ($k = 0; $k -lt $lines.Count; $k++) {
+        if ($warnAt -lt 0 -and $lines[$k].StartsWith('Export refuses this project')) { $warnAt = $k }
+        if ($startAt -lt 0 -and $lines[$k] -match '^\s*(Running an|Launching)') { $startAt = $k }
+        if ($preAt -lt 0 -and $lines[$k] -eq 'PRECHECK-MESSAGE: was NOT started') { $preAt = $k }
+    }
+    [pscustomobject]@{
+        Warnings = @($all | Where-Object { $_ -is [System.Management.Automation.WarningRecord] -and "$_".StartsWith('Export refuses this project') } | ForEach-Object { "$_" })
+        WarnAt = $warnAt; StartAt = $startAt; PreAt = $preAt; Ran = $script:hvCalled + $script:launched; Calls = $script:cleanupCalls
+    }
+}
+foreach ($case in @(
+        @{ Tag = 'Hyper-V watched';    Backend = 'HyperV';  Unattended = $false }
+        @{ Tag = 'Hyper-V unattended'; Backend = 'HyperV';  Unattended = $true }
+        @{ Tag = 'Sandbox unattended'; Backend = 'Sandbox'; Unattended = $true })) {
+    $r16 = & $run16 $case.Backend $case.Unattended $unsafe16
+    $w16 = if ($r16.Warnings.Count) { $r16.Warnings[0] } else { '' }
+    if ($r16.Warnings.Count -eq 1 -and $w16.StartsWith($head16) -and $w16.Contains('UNSAFE-A') -and $w16.Contains('UNSAFE-B') -and $w16.EndsWith('the uninstall of an older project deletes them there.')) {
+        Ok "$($case.Tag): exactly one 'Export refuses this project (2 ...)' warning with both of Export's findings"
+    } else { Bad "$($case.Tag): warnings=$($r16.Warnings -join ' | ')" }
+    if ($r16.WarnAt -ge 0 -and $r16.StartAt -gt $r16.WarnAt -and $r16.Ran -eq 1 -and $r16.Calls -eq 1) { Ok "$($case.Tag): the warning comes before the run starts, the test still runs, one finding check" }
+    else { Bad "$($case.Tag): warnAt=$($r16.WarnAt) startAt=$($r16.StartAt) ran=$($r16.Ran) calls=$($r16.Calls)" }
+    $r16n = & $run16 $case.Backend $case.Unattended @()
+    if ($r16n.Warnings.Count -eq 0 -and $r16n.Ran -eq 1 -and $r16n.Calls -eq 1) { Ok "$($case.Tag): no finding -> no such warning, the test runs" } else { Bad "$($case.Tag) clean: warnings=$($r16n.Warnings.Count) ran=$($r16n.Ran) calls=$($r16n.Calls)" }
+}
+# Before the Intune-parity pre-check too (Fd3): a run the pre-check does not start still shows the finding first.
+$script:preBlocked = $true; $script:results = @()
+$r16p = & $run16 'HyperV' $true $unsafe16
+$script:preBlocked = $false; $script:results = @()
+if ($r16p.Warnings.Count -eq 1 -and $r16p.WarnAt -ge 0 -and $r16p.PreAt -gt $r16p.WarnAt -and $r16p.Ran -eq 0) { Ok 'Hyper-V unattended, not started by the pre-check: the cleanup-path warning still comes first' }
+else { Bad "pre-check blocked: warnings=$($r16p.Warnings.Count) warnAt=$($r16p.WarnAt) preAt=$($r16p.PreAt) ran=$($r16p.Ran)" }
+# Once per outer call: a call made inside an Update 'Both' leg (leg context set) does not check again.
+$script:W32TUpdateLegContext = @{ Mode = 'Both'; Origin = 'Sibling'; Index = 2; Count = 2 }
+try { $r16l = & $run16 'HyperV' $true $unsafe16 }
+finally { $script:W32TUpdateLegContext = $null }
+if ($r16l.Calls -eq 0 -and $r16l.Warnings.Count -eq 0 -and $r16l.Ran -eq 1) { Ok 'inside a Both leg: no second check, no second warning (the outer call already warned)' } else { Bad "leg: calls=$($r16l.Calls) warnings=$($r16l.Warnings.Count) ran=$($r16l.Ran)" }
+$script:cleanupFindings = @(); $script:backend = 'HyperV'
 
 Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
 
