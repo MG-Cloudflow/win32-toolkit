@@ -12,6 +12,8 @@
       - PSScriptAnalyzerSettings.psd1  PSUseCompatibleSyntax TargetVersions = @('7.4')
       - Public\Show-Win32Toolkit.ps1   guard compares with [version]'7.4', message and help say 7.4
       - Private\Test-Win32ToolkitPrerequisites.ps1  row 'PowerShell 7.4+' with -ge [version]'7.4'
+      - Launch-Win32Toolkit.cmd     the 'pwsh not found' message names PowerShell 7.4 or later (TUI audit
+                                    G12; an older pwsh still fails closed through the manifest floor)
       - no stale 7.2 floor anywhere in *.ps1 / *.psm1 / *.psd1 outside Tests\
 
     The generated DEVICE scripts are unaffected: they still target Windows PowerShell 5.1.
@@ -69,6 +71,13 @@ $stale = foreach ($f in $files) {
 if ($files.Count -gt 10 -and @($stale).Count -eq 0) { Ok "no 7.2 floor reference in $($files.Count) script/manifest files" }
 elseif ($files.Count -le 10) { Bad "scanned only $($files.Count) files - the scan root looks wrong" }
 else { foreach ($s in $stale) { Bad "stale 7.2 floor: $s" } }
+
+Write-Host "`n[6] the double-click launcher names the 7.4 floor" -ForegroundColor Cyan
+$launcher = TextOf 'Launch-Win32Toolkit.cmd'
+if ($launcher.Contains('echo   PowerShell 7.4 or later ^(pwsh^) is required, but pwsh was not found.')) { Ok "Launch-Win32Toolkit.cmd: 'PowerShell 7.4 or later ^(pwsh^) is required, but pwsh was not found.'" } else { Bad 'the launcher does not name PowerShell 7.4 or later' }
+if (-not $launcher.Contains('PowerShell 7 ^(pwsh^)')) { Ok "no 'PowerShell 7 ^(pwsh^)' (the floor without its minor version)" } else { Bad "the launcher still says 'PowerShell 7 ^(pwsh^)'" }
+# An older pwsh is refused by the manifest floor at Import-Module; the launcher shows that error and waits.
+if ($launcher -match "Import-Module '%~dp0win32-toolkit\.psd1'" -and $launcher -match 'catch \{ Write-Host \$_\.Exception\.Message -ForegroundColor Red; Read-Host') { Ok 'the launcher imports the manifest (7.4 floor) in a try and shows its error' } else { Bad 'the launcher no longer imports the manifest in a try/catch' }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All PwshFloor tests passed.' -ForegroundColor Green; exit 0 }

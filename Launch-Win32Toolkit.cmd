@@ -8,7 +8,7 @@ REM ============================================================================
 where pwsh >nul 2>nul
 if errorlevel 1 (
     echo.
-    echo   PowerShell 7 ^(pwsh^) is required but was not found.
+    echo   PowerShell 7.4 or later ^(pwsh^) is required, but pwsh was not found.
     echo   Install it from https://aka.ms/powershell and run this again.
     echo.
     pause
