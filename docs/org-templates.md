@@ -215,7 +215,7 @@ The template can set the Intune install experience and metadata for every app it
 |---|---|---|
 | Minimum Windows release | `1607` | e.g. `22H2`; also shown in the customer documentation |
 | Device restart behavior | `suppress` | `suppress` / `allow` / `force` / `basedOnReturnCode` |
-| Max run time (minutes) | `60` | Keep it above your dialog timeout, and above 30 (the uninstall's limit for an EXE uninstaller) |
+| Max run time (minutes) | `60` | Keep it above your dialog timeout, and above 30 (the uninstall's limit for an EXE uninstaller); the wizard warns when you enter 30 or less |
 | Description boilerplate | *(none)* | Appended to every app's Intune description |
 | Privacy URL | *(none)* | Published as the app's privacy information URL |
 

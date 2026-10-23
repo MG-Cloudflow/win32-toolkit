@@ -585,6 +585,23 @@ try {
     $script:PsadtSupportedRange = $savedRange
     if (-not $we.Error -and $we.Warnings.Count -eq 0) { Ok 'no supported range -> the version rule is skipped (no warning)' } else { Bad "no range: $($we.Error) $($we.Warnings -join ' | ')" }
 
+    # 4g (TUI audit G10): a maximum run time of 30 minutes or less is flagged where it is set (Publish warns too).
+    $rtWarn = 'A maximum run time of 30 minutes is 30 minutes or less: the uninstall stops an EXE uninstaller after 30 minutes with exit code 69113, ' +
+        'and with an Intune limit of 30 minutes or less Intune stops the deployment first and reports a timeout instead. ' +
+        'Keep it above 30 minutes (default 60). Projects copy this value when they are created, and Publish warns about it.'
+    Use-ScriptedAnswer @{ 'Max run time (minutes)' = '30' }
+    $wr = Invoke-Wizard 'Runtime30'
+    if (-not $wr.Error -and $wr.Warnings.Count -eq 1 -and $wr.Warnings[0] -ceq $rtWarn -and $wr.Template.IntuneDefaults.MaxRuntimeMinutes -eq 30) { Ok '30 -> exactly one warning with that text; the template keeps 30 (it only warns)' } else { Bad "30: error=$($wr.Error) runtime=$($wr.Template.IntuneDefaults.MaxRuntimeMinutes) warnings=[$($wr.Warnings -join ' | ')]" }
+    Use-ScriptedAnswer @{ 'Max run time (minutes)' = '1' }
+    $wr = Invoke-Wizard 'Runtime1'
+    if (-not $wr.Error -and $wr.Warnings.Count -eq 1 -and $wr.Warnings[0].StartsWith('A maximum run time of 1 minute is 30 minutes or less: ') -and $wr.Template.IntuneDefaults.MaxRuntimeMinutes -eq 1) { Ok "1 -> 'A maximum run time of 1 minute ...'" } else { Bad "1: warnings=[$($wr.Warnings -join ' | ')]" }
+    Use-ScriptedAnswer @{ 'Max run time (minutes)' = '31' }
+    $wr = Invoke-Wizard 'Runtime31'
+    if (-not $wr.Error -and $wr.Warnings.Count -eq 0 -and $wr.Template.IntuneDefaults.MaxRuntimeMinutes -eq 31) { Ok '31 -> no warning' } else { Bad "31: warnings=[$($wr.Warnings -join ' | ')]" }
+    Use-ScriptedAnswer @{ 'Max run time (minutes)' = '0' }
+    $wr = Invoke-Wizard 'Runtime0'
+    if (-not $wr.Error -and $wr.Warnings.Count -eq 0 -and $wr.Template.IntuneDefaults.MaxRuntimeMinutes -eq 60) { Ok '0 -> the default 60, no warning' } else { Bad "0: runtime=$($wr.Template.IntuneDefaults.MaxRuntimeMinutes) warnings=[$($wr.Warnings -join ' | ')]" }
+
     # =============================================================================================
     Write-Host "`n[5] Get-OrgTemplate re-validates stored JSON on every load path" -ForegroundColor Cyan
     function Save-TemplateJson { param([string]$Base, $Tpl) $d = Join-Path $Base 'Templates'; New-Item -ItemType Directory -Path $d -Force | Out-Null

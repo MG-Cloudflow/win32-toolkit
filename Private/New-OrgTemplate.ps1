@@ -231,6 +231,13 @@ function New-OrgTemplate {
     if ($idRestart -notin @('suppress','allow','force','basedOnReturnCode')) { Write-Host "  '$idRestart' invalid — using 'suppress'." -ForegroundColor DarkYellow; $idRestart = 'suppress' }
     $idRuntime = Read-TI 'Max run time (minutes)'                          (${ExistingTemplate}?.IntuneDefaults?.MaxRuntimeMinutes ?? 60)
     if ($idRuntime -le 0) { $idRuntime = 60 }
+    # Warn only (TUI audit G10): the same rule Publish-Win32ToolkitIntuneApp warns about, said where the value is set.
+    if ($idRuntime -le 30) {
+        $idRuntimeText = if ($idRuntime -eq 1) { '1 minute' } else { "$idRuntime minutes" }
+        Write-Warning ("A maximum run time of $idRuntimeText is 30 minutes or less: the uninstall stops an EXE uninstaller after 30 minutes with exit code 69113, " +
+            'and with an Intune limit of 30 minutes or less Intune stops the deployment first and reports a timeout instead. ' +
+            'Keep it above 30 minutes (default 60). Projects copy this value when they are created, and Publish warns about it.')
+    }
     $idDesc    = Read-TV 'Description boilerplate appended to every app (blank=none)' (${ExistingTemplate}?.IntuneDefaults?.DescriptionBoilerplate ?? '') -Clear
     $idPrivacy = Read-TV 'Privacy information URL (blank=none)'            (${ExistingTemplate}?.IntuneDefaults?.PrivacyUrl ?? '') -Clear
     $docFooter = Read-TV 'Customer-doc footer line (blank=default)'        (${ExistingTemplate}?.DocFooter ?? '') -Clear
