@@ -53,8 +53,9 @@ that has never seen the app.
 
 The pipeline **fails closed**. If the project cannot be created, if its deploy script is not a
 PSAppDeployToolkit template layout this version knows (the error starts with
-`Unsupported PSADT template shape:`), or if the installer configuration or the org template cannot be
-applied, the command stops with an error before anything is captured, tested, packaged or published.
+`Unsupported PSADT template shape:`), if the installer configuration or the org template cannot be
+applied, or if the winget download fails (`W32T.DownloadFailed`), the command stops with an error
+before anything is captured, tested, packaged or published.
 It never ships a deploy script it could not generate correctly.
 
 ### Two guest backends, one contract

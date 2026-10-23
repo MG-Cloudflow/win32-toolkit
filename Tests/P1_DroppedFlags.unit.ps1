@@ -11,8 +11,9 @@
     -PublishUpdate and -DependsOn.
 
     These tests assert the failure path now NAMES every option the caller actually supplied, names ONLY
-    those (no false noise about flags they never passed), and still returns instead of throwing — the
-    project folder is deliberately kept so the run can be retried.
+    those (no false noise about flags they never passed), and then stops with the terminating error
+    W32T.DownloadFailed (TUI audit G2) after those warnings — the project folder is deliberately kept so
+    the run can be retried.
 
     Also (installer-identity PR 1): -InstallerType reaches the download as the pin (parameter); without it
     the download is unpinned (winget-default). The rebuild self-anchor is read before Create-PSADTProject
@@ -127,8 +128,14 @@ $r = Invoke-Failing -ExtraArgs @{
     RunTest       = @('InstallUninstall')
 }
 
-if ($null -eq $r.Threw) { Ok 'the download-failure path returns without throwing (project folder is kept for a retry)' }
-else { Bad "it threw: $($r.Threw.Exception.Message)" }
+if ($r.Threw -and $r.Threw.FullyQualifiedErrorId -eq 'W32T.DownloadFailed') { Ok 'the download-failure path stops with W32T.DownloadFailed (terminating; the project folder is kept for a retry)' }
+else { Bad "expected W32T.DownloadFailed, got: $(if ($r.Threw) { "$($r.Threw.FullyQualifiedErrorId): $($r.Threw.Exception.Message)" } else { 'no error' })" }
+$wantStart = "Download FAILED for 'Git.Git' (x64): nothing was configured, tested, packaged or published."
+if ($r.Threw -and $r.Threw.Exception.Message.StartsWith($wantStart) -and $r.Threw.Exception.Message.Contains((Join-Path $script:tmpBase 'Projects\TestTpl\Git_x64_2.45.0'))) { Ok 'the error message names the app, the architecture and the kept project folder' }
+else { Bad "message: $(if ($r.Threw) { $r.Threw.Exception.Message })" }
+if ($r.Threw -and [string]$r.Threw.TargetObject -eq (Join-Path $script:tmpBase 'Projects\TestTpl\Git_x64_2.45.0')) { Ok 'its TargetObject is the project path' } else { Bad "TargetObject: $(if ($r.Threw) { $r.Threw.TargetObject })" }
+if ($r.Text -match '(?i)download\s+failed' -and $r.Text -match [regex]::Escape('-PublishIntune')) { Ok 'the warnings were written before the error (the error does not replace them)' }
+else { Bad "warnings before the error:`n$($r.Text)" }
 
 if ($r.Text -match '(?i)download\s+failed') { Ok 'the warning still says the download failed' }
 else { Bad "no download-failure warning. Got:`n$($r.Text)" }
@@ -158,9 +165,11 @@ else { Bad "dependency refs not echoed:`n$($r2.Text)" }
 # ══ 2. NO false noise ════════════════════════════════════════════════════════════════════════════
 Write-Host '[P1] a run that supplied NO such flags must not name them' -ForegroundColor Cyan
 
+$script:OrgTemplate = [pscustomobject]@{ TemplateName = 'stale' }
 $bare = Invoke-Failing
-if ($null -eq $bare.Threw) { Ok 'the bare run also returns without throwing' }
-else { Bad "bare run threw: $($bare.Threw.Exception.Message)" }
+if ($bare.Threw -and $bare.Threw.FullyQualifiedErrorId -eq 'W32T.DownloadFailed') { Ok 'the bare run also stops with W32T.DownloadFailed' }
+else { Bad "bare run: $(if ($bare.Threw) { "$($bare.Threw.FullyQualifiedErrorId): $($bare.Threw.Exception.Message)" } else { 'no error' })" }
+if ($null -eq $script:OrgTemplate) { Ok 'the finally still clears $script:OrgTemplate after W32T.DownloadFailed' } else { Bad 'org template leaked after W32T.DownloadFailed' }
 
 $noise = @()
 foreach ($flag in '-PackageIntune', '-PublishIntune', '-PublishUpdate', '-RunTest', '-DependsOn') {
@@ -181,7 +190,7 @@ else { Bad "reported -PackageIntune even though it was explicitly `$false:`n$($o
 Write-Host '[P1] -InstallerType reaches the download; without it winget chooses' -ForegroundColor Cyan
 $script:dlSeen = $null
 $t = Invoke-Failing -ExtraArgs @{ InstallerType = 'nullsoft'; UpdateBaselineInstallerType = 'Both'; RunTest = @('Update') }
-if ($null -eq $t.Threw -and $script:dlSeen -and $script:dlSeen['InstallerType'] -eq 'nullsoft' -and $script:dlSeen['PinnedBy'] -eq 'parameter' -and $script:dlSeen['PinReason'] -eq 'requested') {
+if ($t.Threw -and $t.Threw.FullyQualifiedErrorId -eq 'W32T.DownloadFailed' -and $script:dlSeen -and $script:dlSeen['InstallerType'] -eq 'nullsoft' -and $script:dlSeen['PinnedBy'] -eq 'parameter' -and $script:dlSeen['PinReason'] -eq 'requested') {
     Ok '-InstallerType nullsoft -> Download-WingetApp -InstallerType nullsoft -PinnedBy parameter -PinReason requested'
 } else { Bad "threw=$($t.Threw) download saw: $(if ($script:dlSeen) { ($script:dlSeen.Keys | ForEach-Object { "$_=$($script:dlSeen[$_])" }) -join '; ' })" }
 if ($t.Text -match [regex]::Escape('-RunTest (Update)')) { Ok 'the failed download still names the skipped -RunTest' } else { Bad "warnings:`n$($t.Text)" }

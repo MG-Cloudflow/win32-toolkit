@@ -8,9 +8,11 @@ function Invoke-Win32Toolkit {
     a Windows Sandbox session for targeted installation documentation.
 
     Fails closed: when the PSADT project cannot be created, when its deploy script uses a template
-    layout this version does not support ("Unsupported PSADT template shape: ..."), or when the
-    configuration or the org template cannot be applied, the command stops with a terminating error
-    and the project is NOT documented, tested, packaged or published.
+    layout this version does not support ("Unsupported PSADT template shape: ..."), when the
+    configuration or the org template cannot be applied, or when the winget download fails
+    (W32T.DownloadFailed; the warnings name every option that was skipped and the project folder is
+    kept for a retry), the command stops with a terminating error and the project is NOT documented,
+    tested, packaged or published.
 .PARAMETER SearchTerm
     Term to search for in the Winget repository.
 .PARAMETER Id
@@ -415,9 +417,10 @@ function Invoke-Win32Toolkit {
             }
             else {
                 # The download failed, so Rename/Configure/Finalize above were all skipped. Anything the
-                # user asked for downstream (test, package, publish, dependencies) silently did NOT happen.
+                # user asked for downstream (test, package, publish, dependencies) did NOT happen.
                 # Name the options they actually supplied — a failed run must never look like a published one.
-                # This stays a WARNING: the project folder is deliberately kept so the run can be retried.
+                # The warnings come first; then the run stops with W32T.DownloadFailed (TUI audit G2, S10-F6 a).
+                # The project folder is deliberately kept so the run can be retried.
                 Write-Warning "Download FAILED for '$($selectedApp.Id)' ($selectedArch) - no installer was placed in the project's Files folder."
 
                 $skipped = [System.Collections.Generic.List[string]]::new()
@@ -451,6 +454,9 @@ function Invoke-Win32Toolkit {
                 Write-Warning "To package an installer you supply yourself, use the manual flow instead:"
                 Write-Warning "  New-Win32ToolkitManualApp -Name '$($selectedApp.Name)' -Version '$($selectedApp.Version)' -Architecture $selectedArch -SourcePath <path-to-your-installer>"
                 Write-Warning "Do not copy files into '$downloadPath' and re-run this command — the project folder is recreated from scratch each run, which would delete them."
+                throw [System.Management.Automation.ErrorRecord]::new(
+                    [System.InvalidOperationException]::new("Download FAILED for '$($selectedApp.Id)' ($selectedArch): nothing was configured, tested, packaged or published. The project folder was kept for a retry: $projectFullPath (see the warnings above)."),
+                    'W32T.DownloadFailed', [System.Management.Automation.ErrorCategory]::ResourceUnavailable, $projectFullPath)
             }
         }
         else {

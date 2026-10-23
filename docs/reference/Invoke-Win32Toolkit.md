@@ -19,9 +19,11 @@ configures the installer, generates Intune requirement scripts, and launches
 a Windows Sandbox session for targeted installation documentation.
 
 Fails closed: when the PSADT project cannot be created, when its deploy script uses a template
-layout this version does not support ("Unsupported PSADT template shape: ..."), or when the
-configuration or the org template cannot be applied, the command stops with a terminating error
-and the project is NOT documented, tested, packaged or published.
+layout this version does not support ("Unsupported PSADT template shape: ..."), when the
+configuration or the org template cannot be applied, or when the winget download fails
+(W32T.DownloadFailed; the warnings name every option that was skipped and the project folder is
+kept for a retry), the command stops with a terminating error and the project is NOT documented,
+tested, packaged or published.
 
 ## EXAMPLES
 

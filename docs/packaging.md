@@ -90,6 +90,8 @@ The pin covers the whole family: if the version you package does not offer that 
 1. Skip this version and package the next one that ships the technology again. This is the recommended choice when a vendor drops a technology for one release.
 2. Switch technology on purpose with `-InstallerType <other type>`. Devices that already have the earlier technology then get a second registration.
 
+**When the download fails.** `Invoke-Win32Toolkit` prints which of your options were skipped and stops with `W32T.DownloadFailed`; the project folder is kept for a retry (the menu shows the error in red). Re-run the same command for a transient error, or package an installer you supply with `New-Win32ToolkitManualApp`.
+
 **Identity checks after the download.** Once the installer is downloaded, win32-toolkit compares it with what winget ships and with the earlier versions in the template folder, prints warnings, and stores the result in `Documentation\IdentityDelta.json` (it never ships). None of them blocks packaging:
 
 | Code | Meaning | What to do |
