@@ -8,7 +8,7 @@ function Add-Win32ToolkitTestResult {
         "all the tests we did". Entries are appended newest-last.
 
         Each entry has the shape:
-            { Scenario, Backend, Mode, TimestampUtc, Verdict, Assertions[], Notes [, Baseline] [, OldArpSurvivors[]] [, LogFolder] [, NotRun] }
+            { Scenario, Backend, Mode, TimestampUtc, Verdict, Assertions[], Notes [, Baseline] [, OldArpSurvivors[]] [, LogFolder] [, NotRun] [, Timing] [, Lane] }
         where Assertions is an array of @{ Name; Result } (Result in PASS|FAIL|SKIP). Baseline (the Update
         test's old-version variant: Version, Mode, Origin, RequestedInstallerType, InstallerType, Family,
         UsedFallback, FallbackReason, RequestedScope, Scope, ScopeRelaxed, Unavailable, Locale, Source,
@@ -52,6 +52,21 @@ function Add-Win32ToolkitTestResult {
         written as the NotRun property, keys Code, Shape, ProcessesToClose, Welcome, SignedInSessions first,
         then any other key alphabetically; strings pass ConvertTo-Win32ToolkitSafeText (64 characters at most),
         integers and booleans are kept. Omitted: no NotRun property.
+    .PARAMETER Timing
+        A Hyper-V run's host measurements (Hyper-V speed-up PR 1, D12), written as the Timing property through an
+        allow-list, keys in this order: TotalSeconds, OpenSeconds, OpenRevertSkipped, SecondsSinceTeardown,
+        CopyInSeconds, CopyInSha256, Phases (at most 20 of { Label, Seconds }), TeardownSeconds, RevertMode,
+        PrecheckSeconds, PrecheckFromCache. Any other key is dropped; numbers are rounded to one decimal; a value
+        of the wrong type (or a CopyInSha256 that is not 64 upper-case hex characters) becomes $null; labels pass
+        ConvertTo-Win32ToolkitSafeText (64 characters at most). Omitted or $null: no Timing property. The
+        customer documentation never shows it.
+    .PARAMETER Lane
+        The test VM and checkpoint the Hyper-V run used, written as the Lane property through an allow-list, keys
+        in this order: VMName, VMId, CheckpointName, CheckpointId, CheckpointCreatedUtc, CheckpointAgeDays,
+        ProcessorCount, MemoryGB, ConcurrentLanes, Attestation ({ SignedIn, DefenderRealTime,
+        DefenderExclusionCount, SignatureAgeDays, FromCache } or $null). Names pass ConvertTo-Win32ToolkitSafeText
+        (64 characters at most); an Id that is not a GUID is ''; a value of the wrong type becomes $null. Omitted
+        or $null: no Lane property.
     .EXAMPLE
         Add-Win32ToolkitTestResult -ProjectPath $p -Scenario InstallUninstall -Backend Sandbox `
             -Verdict Passed -Assertions @(@{ Name = 'Installed'; Result = 'PASS' }) -Notes 'clean run'
@@ -91,7 +106,11 @@ function Add-Win32ToolkitTestResult {
         [AllowEmptyString()]
         [string]$LogFolder,
 
-        [hashtable]$NotRun
+        [hashtable]$NotRun,
+
+        [hashtable]$Timing,
+
+        [hashtable]$Lane
     )
 
     $docDir = Join-Path $ProjectPath 'Documentation'
@@ -180,6 +199,71 @@ function Add-Win32ToolkitTestResult {
                      else { ConvertTo-Win32ToolkitSafeText -Text ([string]$v) -MaxLength 64 }
         }
         $entry | Add-Member -NotePropertyName NotRun -NotePropertyValue ([pscustomobject]$n)
+    }
+
+    # A Hyper-V run's host measurements and VM identity (speed-up PR 1, A-7): an ALLOW-LIST, unlike Baseline/NotRun -
+    # unknown keys are dropped, a value of the wrong type becomes $null, so nothing can widen the record.
+    $isNumber = { param($v) ($v -is [int] -or $v -is [long] -or $v -is [double] -or $v -is [decimal] -or $v -is [single] -or $v -is [int16] -or $v -is [byte]) -and -not [double]::IsNaN([double]$v) -and -not [double]::IsInfinity([double]$v) }
+    $isInteger = { param($v) $v -is [int] -or $v -is [long] -or $v -is [int16] -or $v -is [byte] }
+    $num = { param($v, [int]$Digits) if (& $isNumber $v) { [math]::Round([double]$v, $Digits) } else { $null } }
+    $int = { param($v) if ((& $isInteger $v) -and [long]$v -ge [int]::MinValue -and [long]$v -le [int]::MaxValue) { [int]$v } else { $null } }
+    $bool = { param($v) if ($v -is [bool]) { $v } else { $null } }
+    $guidPattern = '^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$'
+    if ($PSBoundParameters.ContainsKey('Timing') -and $null -ne $Timing) {
+        $t = [ordered]@{}
+        foreach ($k in 'TotalSeconds', 'OpenSeconds', 'OpenRevertSkipped', 'SecondsSinceTeardown', 'CopyInSeconds', 'CopyInSha256', 'Phases',
+            'TeardownSeconds', 'RevertMode', 'PrecheckSeconds', 'PrecheckFromCache') {
+            $v = $Timing[$k]
+            $t[$k] = switch ($k) {
+                { $_ -in 'OpenRevertSkipped', 'PrecheckFromCache' } { & $bool $v; break }
+                'CopyInSha256' { if ($v -is [string] -and $v -cmatch '^[0-9A-F]{64}$') { $v } else { $null }; break }
+                'RevertMode' { if ($v -is [string] -and $v -cin 'TurnOffFirst', 'Legacy') { $v } else { $null }; break }
+                'Phases' {
+                    if ($v -is [System.Collections.IEnumerable] -and $v -isnot [string] -and $v -isnot [System.Collections.IDictionary]) {
+                        , @(@($v) | Where-Object { $null -ne $_ } | Select-Object -First 20 | ForEach-Object {
+                                [pscustomobject][ordered]@{ Label = ConvertTo-Win32ToolkitSafeText -Text ([string]$_.Label) -MaxLength 64; Seconds = & $num $_.Seconds 1 }
+                            })
+                    }
+                    else { $null }
+                    break
+                }
+                default { & $num $v 1 }
+            }
+        }
+        $entry | Add-Member -NotePropertyName Timing -NotePropertyValue ([pscustomobject]$t)
+    }
+    if ($PSBoundParameters.ContainsKey('Lane') -and $null -ne $Lane) {
+        $l = [ordered]@{}
+        foreach ($k in 'VMName', 'VMId', 'CheckpointName', 'CheckpointId', 'CheckpointCreatedUtc', 'CheckpointAgeDays', 'ProcessorCount', 'MemoryGB',
+            'ConcurrentLanes', 'Attestation') {
+            $v = $Lane[$k]
+            $l[$k] = switch ($k) {
+                { $_ -in 'VMName', 'CheckpointName' } { if ($v -is [string]) { ConvertTo-Win32ToolkitSafeText -Text $v -MaxLength 64 } elseif ($null -eq $v) { '' } else { $null }; break }
+                { $_ -in 'VMId', 'CheckpointId' } { if ($v -is [string] -and $v -match $guidPattern) { $v } else { '' }; break }
+                'CheckpointCreatedUtc' {
+                    $parsed = [datetime]::MinValue
+                    if ($v -is [string] -and [datetime]::TryParseExact($v, 'o', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) { $v } else { '' }
+                    break
+                }
+                'MemoryGB' { & $num $v 2; break }
+                'Attestation' {
+                    if ($v -is [System.Collections.IDictionary] -or $v -is [System.Management.Automation.PSCustomObject]) {
+                        $read = { param($o, [string]$Name) if ($o -is [System.Collections.IDictionary]) { $o[$Name] } elseif ($o.PSObject.Properties[$Name]) { $o.$Name } else { $null } }
+                        [pscustomobject][ordered]@{
+                            SignedIn               = & $bool (& $read $v 'SignedIn')
+                            DefenderRealTime       = & $bool (& $read $v 'DefenderRealTime')
+                            DefenderExclusionCount = & $int (& $read $v 'DefenderExclusionCount')
+                            SignatureAgeDays       = & $int (& $read $v 'SignatureAgeDays')
+                            FromCache              = & $bool (& $read $v 'FromCache')
+                        }
+                    }
+                    else { $null }
+                    break
+                }
+                default { & $int $v }
+            }
+        }
+        $entry | Add-Member -NotePropertyName Lane -NotePropertyValue ([pscustomobject]$l)
     }
 
     $entries += $entry

@@ -280,6 +280,33 @@ if ($lines8 -ccontains '| InstallUninstall | HyperV | 2026-10-22 19:00 UTC | Fai
 if ($md8 -cnotmatch 'Intune-parity phase' -and $md8 -cnotmatch 'device''s 30-minute limit') { Ok 'the Notes sentences are not shown to the customer' } else { Bad 'the Notes leaked into the customer documentation' }
 if ($md8 -ceq $md8b) { Ok 'the document is identical with and without the parity Notes' } else { Bad 'the parity Notes changed the document' }
 
+# ══ Test 9: a Hyper-V record's Timing and Lane (Hyper-V speed-up PR 1, D12) never reach the customer documentation ═══
+# (guard: it passes before PR 1 too; the document reads record fields by name and must keep ignoring these two objects.)
+Write-Host '[9] Timing / Lane on a Hyper-V record do not change the customer documentation' -ForegroundColor Cyan
+$records9 = {
+    param([switch]$WithRunFacts)
+    $hv = [ordered]@{ Scenario = 'InstallUninstall'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-23T19:00:00Z'; Verdict = 'Failed'
+                      Assertions = @(@{ Name = 'InstallDetected-PostInstall'; Result = 'PASS' }, @{ Name = 'UninstallClean-PostUninstall'; Result = 'FAIL' }); Notes = '' }
+    if ($WithRunFacts) {
+        $hv['Timing'] = [ordered]@{ TotalSeconds = 412.3; OpenSeconds = 61.2; OpenRevertSkipped = $false; SecondsSinceTeardown = $null; CopyInSeconds = 8.1; CopyInSha256 = ('AB' * 32)
+                                    Phases = @(@{ Label = 'Install (Intune parity)'; Seconds = 95.4 }); TeardownSeconds = 58.7; RevertMode = 'Legacy'; PrecheckSeconds = 1.1; PrecheckFromCache = $true }
+        $hv['Lane'] = [ordered]@{ VMName = 'win32tk-measure'; VMId = '0e5f9e66-1111-2222-3333-444455556666'; CheckpointName = 'clean-base'; CheckpointId = '29613cba-d62f-4998-a421-df2e124a2b4f'
+                                  CheckpointCreatedUtc = '2026-10-23T15:29:00.0000000Z'; CheckpointAgeDays = 0; ProcessorCount = 4; MemoryGB = 8; ConcurrentLanes = 1
+                                  Attestation = [ordered]@{ SignedIn = $true; DefenderRealTime = $true; DefenderExclusionCount = 0; SignatureAgeDays = 1; FromCache = $false } }
+    }
+    @($hv) | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $proj 'Documentation\TestResults.json') -Encoding UTF8
+}
+& $records9 -WithRunFacts
+$out9 = Join-Path $proj 'Documentation_runfacts.md'
+$null = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath $out9 3>$null
+$md9 = Get-Content -LiteralPath $out9 -Raw
+& $records9
+$out9b = Join-Path $proj 'Documentation_norunfacts.md'
+$null = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath $out9b 3>$null
+$md9b = Get-Content -LiteralPath $out9b -Raw
+if ($md9 -ceq $md9b) { Ok 'the document is byte-identical with and without Timing / Lane' } else { Bad 'Timing / Lane changed the customer documentation' }
+if ($md9 -cnotmatch 'win32tk-measure' -and $md9 -cnotmatch 'CopyInSha256|Attestation|SecondsSinceTeardown') { Ok 'no VM name, hash or timing key is shown' } else { Bad 'run facts leaked into the document' }
+
 # ── Cleanup ───────────────────────────────────────────────────────────────────────
 Remove-Item -LiteralPath $proj, $bare -Recurse -Force -ErrorAction SilentlyContinue
 

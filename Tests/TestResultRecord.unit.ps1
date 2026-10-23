@@ -186,6 +186,73 @@ if ($n7.Welcome -eq 'Org?Ui' -and $n7.Alpha.Length -eq 64 -and $n7.Alpha.EndsWit
 $props7 = @($last7.PSObject.Properties.Name)
 if (($props7 -join ',') -eq 'Scenario,Backend,Mode,TimestampUtc,Verdict,Assertions,Notes,LogFolder,NotRun' -and $last7.Verdict -eq 'Inconclusive' -and @($last7.Assertions).Count -eq 0) { Ok 'NotRun is written after LogFolder; Verdict Inconclusive, no assertions' } else { Bad "entry: $($props7 -join ',')" }
 if ($e7.PSObject.Properties['NotRun'] -and (Get-Content -LiteralPath $p7 -Raw -Encoding UTF8) -match '"ProcessesToClose":\s*0') { Ok 'the returned entry carries NotRun; the raw JSON keeps ProcessesToClose a number' } else { Bad 'NotRun missing from the returned entry or written as a string' }
+
+# ── A Hyper-V run's Timing and Lane (Hyper-V speed-up PR 1, D12, A-7): an allow-list ──────────────────────────────────
+Write-Host '[8] -Timing / -Lane: allow-listed keys in the contract order, wrong types -> null, safe text; absent -> no property' -ForegroundColor Cyan
+$proj8 = New-Proj; $made += $proj8
+$p8 = Join-Path $proj8 'Documentation\TestResults.json'
+$null = Add-Win32ToolkitTestResult -ProjectPath $proj8 -Scenario 'InstallUninstall' -Backend 'HyperV' -Verdict 'Passed'
+$raw8a = Get-Content -LiteralPath $p8 -Raw -Encoding UTF8
+if ($raw8a -notmatch '"Timing"' -and $raw8a -notmatch '"Lane"') { Ok 'without -Timing / -Lane: no such property (the older shape)' } else { Bad 'Timing/Lane written without the parameters' }
+$hash8 = 'AB' * 32
+$phases8 = [System.Collections.Generic.List[object]]::new()
+foreach ($i in 1..22) { $phases8.Add(@{ Label = "Phase $i"; Seconds = $i + 0.04 }) }
+$phases8[0] = @{ Label = "Install${esc}x (Intune parity)"; Seconds = 12.345 }
+$timing8 = @{
+    PrecheckFromCache = $true; Unknown = 'dropped'; TotalSeconds = 123.456; OpenSeconds = 31; OpenRevertSkipped = $false; SecondsSinceTeardown = $null
+    CopyInSeconds = '7.5'; CopyInSha256 = $hash8; Phases = $phases8; TeardownSeconds = [double]::NaN; RevertMode = 'Legacy'; PrecheckSeconds = 1.25
+}
+$lane8 = @{
+    Attestation = [pscustomobject]@{ SignedIn = $true; DefenderRealTime = $true; DefenderExclusionCount = 0; SignatureAgeDays = $null; FromCache = $false; Extra = 'x' }
+    VMName = ('v' * 200); VMId = '0E5F9E66-1111-2222-3333-444455556666'; CheckpointName = "clean${esc}base"; CheckpointId = 'not-a-guid'
+    CheckpointCreatedUtc = '2026-10-23T15:29:00.0000000Z'; CheckpointAgeDays = 0; ProcessorCount = 4; MemoryGB = 7.996; ConcurrentLanes = 1
+    CheckpointCreationTicks = 638653893400000000; CheckpointObjectId = 'internal'
+}
+$e8 = Add-Win32ToolkitTestResult -ProjectPath $proj8 -Scenario 'InstallUninstall' -Backend 'HyperV' -Mode 'Unattended' -Verdict 'Passed' -Timing $timing8 -Lane $lane8
+$last8 = (Get-Win32ToolkitTestResult -ProjectPath $proj8)[-1]
+$t8 = $last8.Timing; $l8 = $last8.Lane
+if ((@($t8.PSObject.Properties.Name) -join ',') -eq 'TotalSeconds,OpenSeconds,OpenRevertSkipped,SecondsSinceTeardown,CopyInSeconds,CopyInSha256,Phases,TeardownSeconds,RevertMode,PrecheckSeconds,PrecheckFromCache') {
+    Ok 'Timing keys in the contract order; the unknown key is dropped'
+} else { Bad "Timing keys: $(@($t8.PSObject.Properties.Name) -join ',')" }
+if ($t8.TotalSeconds -eq 123.5 -and $t8.OpenSeconds -eq 31 -and $t8.OpenRevertSkipped -eq $false -and $null -eq $t8.SecondsSinceTeardown -and $null -eq $t8.CopyInSeconds -and
+    $t8.CopyInSha256 -ceq $hash8 -and $null -eq $t8.TeardownSeconds -and $t8.RevertMode -ceq 'Legacy' -and $t8.PrecheckSeconds -eq 1.2 -and $t8.PrecheckFromCache -eq $true) {
+    Ok 'numbers rounded to one decimal; a string number and NaN -> null; booleans, the hash and RevertMode kept'
+} else { Bad "Timing values: $($t8 | ConvertTo-Json -Compress -Depth 4)" }
+$ph8 = @($t8.Phases)
+if ($ph8.Count -eq 20 -and $ph8[0].Label -ceq 'Install?x (Intune parity)' -and $ph8[0].Seconds -eq 12.3 -and $ph8[19].Label -eq 'Phase 20' -and (@($ph8[0].PSObject.Properties.Name) -join ',') -eq 'Label,Seconds') {
+    Ok 'Phases: at most 20, { Label (safe text), Seconds (one decimal) }'
+} else { Bad "Phases: $($ph8 | ConvertTo-Json -Compress)" }
+if ((@($l8.PSObject.Properties.Name) -join ',') -eq 'VMName,VMId,CheckpointName,CheckpointId,CheckpointCreatedUtc,CheckpointAgeDays,ProcessorCount,MemoryGB,ConcurrentLanes,Attestation') {
+    Ok 'Lane keys in the contract order; the internal cache keys (CheckpointCreationTicks, CheckpointObjectId) are dropped'
+} else { Bad "Lane keys: $(@($l8.PSObject.Properties.Name) -join ',')" }
+$raw8 = Get-Content -LiteralPath $p8 -Raw -Encoding UTF8
+if ($l8.VMName.Length -eq 64 -and $l8.VMName.EndsWith('...') -and $l8.CheckpointName -ceq 'clean?base' -and $l8.VMId -eq '0E5F9E66-1111-2222-3333-444455556666' -and $l8.CheckpointId -eq '' -and
+    $raw8 -match '"CheckpointCreatedUtc":\s*"2026-10-23T15:29:00\.0000000Z"' -and $l8.CheckpointAgeDays -eq 0 -and $l8.ProcessorCount -eq 4 -and $l8.MemoryGB -eq 8 -and $l8.ConcurrentLanes -eq 1) {
+    Ok 'Lane: a 200-character VM name cut to 64, safe text, a bad GUID -> '''', the creation time kept as written, numbers kept'
+} else { Bad "Lane values: $($l8 | ConvertTo-Json -Compress -Depth 4)" }
+$a8 = $l8.Attestation
+if ((@($a8.PSObject.Properties.Name) -join ',') -eq 'SignedIn,DefenderRealTime,DefenderExclusionCount,SignatureAgeDays,FromCache' -and $a8.SignedIn -eq $true -and $a8.DefenderExclusionCount -eq 0 -and $null -eq $a8.SignatureAgeDays -and $a8.FromCache -eq $false) {
+    Ok 'Lane.Attestation: the five keys only, SignatureAgeDays $null kept as null'
+} else { Bad "Attestation: $($a8 | ConvertTo-Json -Compress)" }
+if ($e8.PSObject.Properties['Timing'] -and $e8.PSObject.Properties['Lane'] -and (@($last8.PSObject.Properties.Name) -join ',') -eq 'Scenario,Backend,Mode,TimestampUtc,Verdict,Assertions,Notes,Timing,Lane') { Ok 'the returned entry carries both; Timing then Lane, after the older properties' } else { Bad "entry: $(@($last8.PSObject.Properties.Name) -join ',')" }
+# Wrong types for whole objects or members.
+$null = Add-Win32ToolkitTestResult -ProjectPath $proj8 -Scenario 'Update' -Backend 'HyperV' -Verdict 'Failed' -Timing @{ TotalSeconds = 'x'; CopyInSha256 = ('ab' * 32); RevertMode = 'Fast'; Phases = 'Install'; OpenRevertSkipped = 'false' } `
+    -Lane @{ VMName = 42; VMId = 7; CheckpointCreatedUtc = '23/10/2026'; CheckpointAgeDays = '3'; MemoryGB = 'big'; Attestation = 'yes'; ConcurrentLanes = 1.5 }
+$last8b = (Get-Win32ToolkitTestResult -ProjectPath $proj8)[-1]
+$t8b = $last8b.Timing; $l8b = $last8b.Lane
+if ($null -eq $t8b.TotalSeconds -and $null -eq $t8b.CopyInSha256 -and $null -eq $t8b.RevertMode -and $null -eq $t8b.Phases -and $null -eq $t8b.OpenRevertSkipped -and $null -eq $t8b.OpenSeconds) {
+    Ok 'Timing: a string number, a lower-case hash, an unknown RevertMode, a string Phases, a string boolean and an absent key -> null'
+} else { Bad "Timing wrong types: $($t8b | ConvertTo-Json -Compress -Depth 4)" }
+if ($null -eq $l8b.VMName -and $l8b.VMId -eq '' -and $l8b.CheckpointName -eq '' -and $l8b.CheckpointCreatedUtc -eq '' -and $null -eq $l8b.CheckpointAgeDays -and $null -eq $l8b.MemoryGB -and $null -eq $l8b.Attestation -and $null -eq $l8b.ConcurrentLanes) {
+    Ok 'Lane: a number as a name -> null, a number as an Id -> '''', a non round-trip time -> '''', wrong numbers and attestation -> null, an absent name -> '''''
+} else { Bad "Lane wrong types: $($l8b | ConvertTo-Json -Compress -Depth 4)" }
+$null = Add-Win32ToolkitTestResult -ProjectPath $proj8 -Scenario 'InstallUninstall' -Backend 'HyperV' -Verdict 'Inconclusive' -Timing $null -Lane $null
+$last8c = (Get-Win32ToolkitTestResult -ProjectPath $proj8)[-1]
+if (-not $last8c.PSObject.Properties['Timing'] -and -not $last8c.PSObject.Properties['Lane']) { Ok '-Timing $null / -Lane $null: no property' } else { Bad 'a $null Timing/Lane was written' }
+$null = Add-Win32ToolkitTestResult -ProjectPath $proj8 -Scenario 'InstallUninstall' -Backend 'HyperV' -Verdict 'Passed' -Timing @{ Phases = [System.Collections.Generic.List[object]]::new() }
+if (@((Get-Win32ToolkitTestResult -ProjectPath $proj8)[-1].Timing.Phases).Count -eq 0 -and (Get-Content -LiteralPath $p8 -Raw -Encoding UTF8) -match '"Phases":\s*\[\s*\]') { Ok 'no phase ran: Phases is an empty array' } else { Bad 'an empty phase list was not written as []' }
+$all8 = Get-Win32ToolkitTestResult -ProjectPath $proj8   # the reader returns the array itself (unary comma)
+if ($all8.Count -eq 5) { Ok 'round trip: every record reads back' } else { Bad "records: $($all8.Count)" }
 # ── cleanup ───────────────────────────────────────────────────────────────────────────────────────
 foreach ($m in $made) { Remove-Item -LiteralPath $m -Recurse -Force -ErrorAction SilentlyContinue }
 

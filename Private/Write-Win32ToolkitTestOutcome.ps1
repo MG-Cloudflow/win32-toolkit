@@ -14,6 +14,8 @@ function Write-Win32ToolkitTestOutcome {
 
         -LogFolder records where the run's own logs were kept (Sandbox\Logs\Runs\<run>, test campaign F2); the
         assertions are still read from the top-level log, which is this run's until the next run starts.
+        -Timing and -Lane (a Hyper-V run's host measurements and VM identity, speed-up PR 1) are passed through
+        to Add-Win32ToolkitTestResult when given.
 
         Never throws — documenting a run must not fail the run. A recording failure is a warning.
     #>
@@ -47,7 +49,12 @@ function Write-Win32ToolkitTestOutcome {
         # The run's own log folder, relative to the project (Sandbox\Logs\Runs\<run>, Save-Win32ToolkitTestRunLog).
         # Recorded as LogFolder when not empty.
         [AllowEmptyString()]
-        [string]$LogFolder = ''
+        [string]$LogFolder = '',
+
+        # A Hyper-V run's Timing and Lane (Invoke-Win32ToolkitHyperVRun -RunInfo); recorded when not $null.
+        [hashtable]$Timing,
+
+        [hashtable]$Lane
     )
 
     $v = if ($Verdict -eq $true) { 'Passed' } elseif ($Verdict -eq $false) { 'Failed' } else { 'Inconclusive' }
@@ -70,6 +77,8 @@ function Write-Win32ToolkitTestOutcome {
     $extra = @{}
     if ($PSBoundParameters.ContainsKey('Baseline') -and $null -ne $Baseline) { $extra['Baseline'] = $Baseline }
     if ($LogFolder) { $extra['LogFolder'] = $LogFolder }
+    if ($PSBoundParameters.ContainsKey('Timing') -and $null -ne $Timing) { $extra['Timing'] = $Timing }
+    if ($PSBoundParameters.ContainsKey('Lane') -and $null -ne $Lane) { $extra['Lane'] = $Lane }
     if ($Scenario -eq 'Update' -and $arpFailLine) {
         # The old version's ARP entries that survived the update (host-side parse of the guest line, L5).
         try {

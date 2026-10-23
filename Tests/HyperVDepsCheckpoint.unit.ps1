@@ -28,6 +28,9 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Get-Win32ToolkitDepsCheckpointName.ps1')
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitHyperVRun.ps1')
 . (Join-Path $repo 'Private\New-Win32ToolkitProjectZip.ps1')   # C-9: the zip prebuild rebuilds it in the thread job
+# C-9 (Hyper-V speed-up PR 1): the provider's record helpers, inert (no Lane, no copy-in hash); none reaches Hyper-V.
+function Get-Win32ToolkitHyperVLane { param($VMName, $CheckpointName, $VM) }
+function Get-Win32ToolkitZipContentHash { param($ZipPath) }
 
 function New-Proj {
     param([switch]$WithDeps)

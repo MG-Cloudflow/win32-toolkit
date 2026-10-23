@@ -28,6 +28,10 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Copy-Win32ToolkitProjectToGuest.ps1')
 . (Join-Path $repo 'Private\Remove-Win32ToolkitHyperVSession.ps1')
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitHyperVRun.ps1')
+# C-9 (Hyper-V speed-up PR 1): the provider's new record helpers, inert by default ([14]/[15] replace them). The lane
+# double returns nothing (the run's Lane stays $null) and the hash double emits nothing (no CopyInSha256).
+function Get-Win32ToolkitHyperVLane { param($VMName, $CheckpointName, $VM) }
+function Get-Win32ToolkitZipContentHash { param($ZipPath) }
 
 Write-Host '[1] Invoke-Win32ToolkitGuestPhase runs as SYSTEM and returns ONLY the exit code' -ForegroundColor Cyan
 # Simulate a guest that emits output lines followed by the exit code (the shape that broke the [int] cast).
@@ -405,6 +409,177 @@ catch { Bad "267009: $($_.Exception.Message)" }
 $r13c = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(@{ Label = 'x'; Command = '69113'; SuccessExitCodes = $ok7; ParityHint = 'Uninstaller' }) 3>$null 6>$null
 if ($r13c -eq $true) { Ok 'no -ParityExitNote: the run completes as before' } else { Bad "no list: returned $r13c" }
 Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential
+
+# ── Hyper-V speed-up PR 1 ────────────────────────────────────────────────────────────────────────────────────────────
+# C-12 static check (V-1): in the files below, every call of a helper this round added or changed is assigned or used
+# as an if/elseif condition within its own statement, so nothing it returns can join a caller's [bool] or session.
+$c12Files = @('Private\Invoke-Win32ToolkitHyperVRun.ps1', 'Private\New-Win32ToolkitHyperVSession.ps1', 'Private\Remove-Win32ToolkitHyperVSession.ps1')
+$c12Names = @('Get-Win32ToolkitHyperVLane', 'Get-Win32ToolkitZipContentHash', 'New-Win32ToolkitHyperVSession', 'Remove-Win32ToolkitHyperVSession')
+$c12Check = {
+    param([string[]]$Files, [string[]]$Names)
+    $bad = [System.Collections.Generic.List[string]]::new()
+    $seen = 0
+    foreach ($rel in $Files) {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repo $rel), [ref]$null, [ref]$null)
+        foreach ($cmd in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -in $Names }, $true)) {
+            $seen++
+            $ok = $false
+            $child = $cmd; $p = $cmd.Parent
+            while ($p) {
+                if ($p -is [System.Management.Automation.Language.AssignmentStatementAst]) { $ok = $true; break }
+                if ($p -is [System.Management.Automation.Language.IfStatementAst]) {
+                    $ok = @($p.Clauses | Where-Object { [object]::ReferenceEquals($_.Item1, $child) }).Count -gt 0
+                    break
+                }
+                if ($p -is [System.Management.Automation.Language.StatementBlockAst] -or $p -is [System.Management.Automation.Language.NamedBlockAst]) { break }
+                $child = $p; $p = $p.Parent
+            }
+            if (-not $ok) { $bad.Add("$(Split-Path -Leaf $rel):$($cmd.Extent.StartLineNumber) $($cmd.GetCommandName())") }
+        }
+    }
+    [pscustomobject]@{ Seen = $seen; Bad = @($bad) }
+}
+
+Write-Host '[14] -RunInfo: Timing and Lane for the record; the output stays exactly one [bool] (speed-up PR 1, C-12)' -ForegroundColor Cyan
+function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }
+function Get-Win32ToolkitGuestCredential { [pscredential]::new('w32admin', (New-Object System.Security.SecureString)) }
+$script:skip14 = $false; $script:since14 = $null
+$vmId14 = '0e5f9e66-1111-2222-3333-444455556666'
+function New-Win32ToolkitHyperVSession {
+    param($VMName, $Credential, $CheckpointName, [switch]$SkipRevert, [switch]$EnsureDesktop, [hashtable]$Info)
+    if ($null -ne $Info) { $Info['RevertSkipped'] = $script:skip14; $Info['SecondsSinceTeardown'] = $script:since14; $Info['VM'] = [pscustomobject]@{ Name = $VMName; Id = $vmId14 }; $Info['VMId'] = $vmId14; $Info['Warm'] = $true }
+    'SESS'
+}
+function Copy-Win32ToolkitProjectToGuest  { param($Session, $ProjectPath, $GuestPath, [switch]$ReadOnly, $PrebuiltZip) }
+function Copy-Win32ToolkitResultsFromGuest { param($Session, $GuestPath, $Destination, $GuestRoot) }
+function Invoke-Win32ToolkitGuestPhase    { param($Session, $Command, $Label) [int]$Command }
+function Read-Host { param($Prompt) }
+# The teardown double fills -Info and RETURNS AN OBJECT: an unassigned call would add it to the run's output.
+function Remove-Win32ToolkitHyperVSession { param($Session, $VMName, $CheckpointName, [switch]$Revert, [hashtable]$Info)
+    if ($null -ne $Info) { $Info['Restored'] = $true; $Info['RevertMode'] = 'Legacy' }
+    [pscustomobject]@{ Leak = 'teardown' }
+}
+$script:laneThrows = $false
+$script:laneVm = $null
+function Get-Win32ToolkitHyperVLane { param($VMName, $CheckpointName, $VM)
+    if ($script:laneThrows) { throw 'the checkpoint could not be read' }
+    $script:laneVm = $VM
+    @{ VMName = $VMName; VMId = $vmId14; CheckpointName = $CheckpointName; CheckpointId = '29613cba-d62f-4998-a421-df2e124a2b4f'; ConcurrentLanes = 1 }
+}
+$ri14 = @{}
+$out14 = @(Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(
+        @{ Label = 'Install'; Command = '0' }
+        @{ Label = 'Test the app'; Pause = $true }
+        @{ Label = 'Uninstall'; Command = '0' }
+        @{ Label = 'CollectLogs'; Command = '0'; IgnoreExit = $true; Always = $true }
+    ) -RunInfo $ri14 3>$null 6>$null)
+if ($out14.Count -eq 1 -and $out14[0] -is [bool] -and $out14[0]) { Ok 'the output is exactly one [bool] $true (the teardown double''s object does not leak)' } else { Bad "output: $(@($out14 | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ')" }
+$t14 = $ri14['Timing']
+$nums14 = @('OpenSeconds', 'CopyInSeconds', 'TeardownSeconds', 'TotalSeconds' | Where-Object { $t14 -and $t14[$_] -is [double] -and $t14[$_] -ge 0 })
+if ($nums14.Count -eq 4) { Ok 'Timing: OpenSeconds, CopyInSeconds, TeardownSeconds and TotalSeconds are numbers >= 0' } else { Bad "timing: $($t14 | ConvertTo-Json -Compress -Depth 4)" }
+if ((@($t14['Phases'] | ForEach-Object { $_.Label }) -join '|') -eq 'Install|Uninstall|CollectLogs' -and @($t14['Phases'] | Where-Object { $_.Seconds -isnot [double] }).Count -eq 0) { Ok 'Timing.Phases: the phases that ran, in order, each with its seconds (the Pause is not one)' } else { Bad "phases: $($t14['Phases'] | ConvertTo-Json -Compress)" }
+if ($t14['RevertMode'] -ceq 'Legacy' -and $t14['OpenRevertSkipped'] -eq $false -and $null -eq $t14['SecondsSinceTeardown'] -and $null -eq $t14['CopyInSha256'] -and $null -eq $t14['PrecheckSeconds']) { Ok 'Timing: RevertMode Legacy (a teardown restore ran), OpenRevertSkipped from the open, no hash without a prebuild, no pre-check' } else { Bad "timing: $($t14 | ConvertTo-Json -Compress -Depth 4)" }
+$l14 = $ri14['Lane']
+if ($l14 -and $l14.VMId -eq $vmId14 -and $l14.CheckpointName -eq 'clean-base' -and $script:laneVm -and $script:laneVm.Id -eq $vmId14) { Ok 'Lane comes from Get-Win32ToolkitHyperVLane, given the VM object the open read (one Get-VM)' } else { Bad "lane: $($l14 | ConvertTo-Json -Compress) vm=$($script:laneVm | ConvertTo-Json -Compress)" }
+# A marker-skip open: its RevertSkipped and age reach the record.
+$script:skip14 = $true; $script:since14 = 42.5
+$ri14b = @{}
+$out14b = @(Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(@{ Label = 'Install'; Command = '0' }) -RunInfo $ri14b 3>$null 6>$null)
+if ($out14b.Count -eq 1 -and $out14b[0] -eq $true -and $ri14b['Timing']['OpenRevertSkipped'] -eq $true -and $ri14b['Timing']['SecondsSinceTeardown'] -eq 42.5) { Ok 'a skipped open restore: OpenRevertSkipped $true and SecondsSinceTeardown copied from the open' } else { Bad "skip: out=$($out14b -join ',') timing=$($ri14b['Timing'] | ConvertTo-Json -Compress -Depth 4)" }
+$script:skip14 = $false; $script:since14 = $null
+# A lane that cannot be read: Lane $null, the run unchanged.
+$script:laneThrows = $true
+$ri14c = @{}
+$out14c = @(Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(@{ Label = 'Install'; Command = '0' }) -RunInfo $ri14c 3>$null 6>$null)
+$script:laneThrows = $false
+if ($out14c.Count -eq 1 -and $out14c[0] -is [bool] -and $out14c[0] -and $ri14c.ContainsKey('Lane') -and $null -eq $ri14c['Lane'] -and $ri14c['Timing']) { Ok 'Get-Win32ToolkitHyperVLane throws -> Lane $null, Timing still filled, the run exactly $true' } else { Bad "lane throws: out=$($out14c -join ',') keys=$(@($ri14c.Keys) -join ',')" }
+# A run whose open throws: Timing still handed over (OpenSeconds $null), the run $false.
+${function:New-Win32ToolkitHyperVSession_Saved} = ${function:New-Win32ToolkitHyperVSession}
+function New-Win32ToolkitHyperVSession { param($VMName, $Credential, $CheckpointName, [switch]$SkipRevert, [switch]$EnsureDesktop, [hashtable]$Info) throw 'PowerShell Direct is not ready' }
+$ri14d = @{}
+$out14d = @(Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(@{ Label = 'Install'; Command = '0' }) -RunInfo $ri14d 3>$null 6>$null)
+${function:New-Win32ToolkitHyperVSession} = ${function:New-Win32ToolkitHyperVSession_Saved}
+Remove-Item Function:\New-Win32ToolkitHyperVSession_Saved
+if ($out14d.Count -eq 1 -and $out14d[0] -eq $false -and $ri14d['Timing'] -and $null -eq $ri14d['Timing']['OpenSeconds'] -and $ri14d['Timing']['TotalSeconds'] -ge 0 -and @($ri14d['Timing']['Phases']).Count -eq 0) { Ok 'the open throws -> exactly $false; Timing handed over with OpenSeconds $null and no phase' } else { Bad "open throws: out=$($out14d -join ',') timing=$($ri14d['Timing'] | ConvertTo-Json -Compress -Depth 4)" }
+# Without -RunInfo the run is unchanged (every existing caller).
+$out14e = @(Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(@{ Label = 'Install'; Command = '0' }) 3>$null 6>$null)
+if ($out14e.Count -eq 1 -and $out14e[0] -eq $true) { Ok 'no -RunInfo: exactly $true, as before' } else { Bad "no RunInfo: $($out14e -join ',')" }
+# No teardown restore ran (spec §3.3): RevertMode $null in the provider's own record, both when the teardown
+# reports Restored $false and when it fills nothing; the double still returns an object, the output stays one [bool].
+${function:Remove-Win32ToolkitHyperVSession_Saved} = ${function:Remove-Win32ToolkitHyperVSession}
+$script:td14Fill = $true
+function Remove-Win32ToolkitHyperVSession { param($Session, $VMName, $CheckpointName, [switch]$Revert, [hashtable]$Info)
+    if ($script:td14Fill -and $null -ne $Info) { $Info['Restored'] = $false; $Info['RevertMode'] = $null }
+    [pscustomobject]@{ Leak = 'teardown' }
+}
+try {
+    $ri14f = @{}
+    $out14f = @(Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(@{ Label = 'Install'; Command = '0' }) -RunInfo $ri14f 3>$null 6>$null)
+    $script:td14Fill = $false
+    $ri14g = @{}
+    $out14g = @(Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(@{ Label = 'Install'; Command = '0' }) -RunInfo $ri14g 3>$null 6>$null)
+}
+finally {
+    ${function:Remove-Win32ToolkitHyperVSession} = ${function:Remove-Win32ToolkitHyperVSession_Saved}
+    Remove-Item Function:\Remove-Win32ToolkitHyperVSession_Saved
+}
+if ($out14f.Count -eq 1 -and $out14f[0] -is [bool] -and $ri14f['Timing'] -and $ri14f['Timing'].ContainsKey('RevertMode') -and $null -eq $ri14f['Timing']['RevertMode']) { Ok 'a failed teardown restore (Restored $false): Timing.RevertMode $null, the output exactly one [bool]' } else { Bad "failed teardown: out=$(@($out14f | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ') timing=$($ri14f['Timing'] | ConvertTo-Json -Compress -Depth 4)" }
+if ($out14g.Count -eq 1 -and $out14g[0] -is [bool] -and $ri14g['Timing'] -and $ri14g['Timing'].ContainsKey('RevertMode') -and $null -eq $ri14g['Timing']['RevertMode']) { Ok 'a teardown that reports nothing (no Restored key): Timing.RevertMode $null, the output exactly one [bool]' } else { Bad "silent teardown: out=$(@($out14g | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ') timing=$($ri14g['Timing'] | ConvertTo-Json -Compress -Depth 4)" }
+# C-12 static check.
+$c12 = & $c12Check $c12Files $c12Names
+if ($c12.Seen -ge 3 -and $c12.Bad.Count -eq 0) { Ok "C-12: all $($c12.Seen) calls of the round's helpers in the provider and the session helpers are assigned or tested" } else { Bad "C-12: seen=$($c12.Seen) unassigned: $($c12.Bad -join ', ')" }
+
+Write-Host '[15] CopyInSha256: the copy-in zip''s content hash, computed in the prebuild thread job (A-3, V-8)' -ForegroundColor Cyan
+if (-not (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue)) { Bad 'Start-ThreadJob is not available: the prebuild cannot be tested' }
+else {
+    . (Join-Path $repo 'Private\New-Win32ToolkitProjectZip.ps1')
+    . (Join-Path $repo 'Private\Get-Win32ToolkitZipContentHash.ps1')
+    $proj15 = Join-Path ([System.IO.Path]::GetTempPath()) ('w32hvp15_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $base15 = Join-Path ([System.IO.Path]::GetTempPath()) ('w32hvp15b_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path (Join-Path $proj15 'Files'), $base15 -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $proj15 'Files\setup.cmd') -Value 'echo install'
+    Set-Content -LiteralPath (Join-Path $proj15 'Invoke-AppDeployToolkit.ps1') -Value '# deploy'
+    Set-Content -LiteralPath (Join-Path $base15 'Invoke-AppDeployToolkit.ps1') -Value '# old deploy'
+    # Records what each prebuild job emitted (project first, then baseline), passing it on unchanged.
+    $script:jobOut15 = [System.Collections.Generic.List[object]]::new()
+    function Receive-Job { param($Job, [switch]$Wait, $ErrorAction)
+        $o = @(Microsoft.PowerShell.Core\Receive-Job -Job $Job -Wait -ErrorAction Stop)
+        $script:jobOut15.Add($o)
+        $o
+    }
+    $run15 = {
+        param([switch]$WithBaseline)
+        $ri = @{}
+        $a = @{ ProjectPath = $proj15; Phase = @(@{ Label = 'Install'; Command = '0' }); RunInfo = $ri }
+        if ($WithBaseline) { $a['BaselineProjectPath'] = $base15 }
+        $o = @(Invoke-Win32ToolkitHyperVRun @a 3>$null 6>$null)
+        [pscustomobject]@{ Out = $o; Hash = $ri['Timing']['CopyInSha256'] }
+    }
+    try {
+        $script:jobOut15.Clear()
+        $h1 = & $run15 -WithBaseline
+        $h2 = & $run15
+        if ($h1.Hash -is [string] -and $h1.Hash -cmatch '^[0-9A-F]{64}$' -and $h1.Out.Count -eq 1 -and $h1.Out[0] -eq $true) { Ok "the project zip's hash is one scalar [string] of 64 upper-case hex characters ($($h1.Hash.Substring(0, 12))...)" } else { Bad "hash: $($h1.Hash | ConvertTo-Json -Compress) out=$($h1.Out -join ',')" }
+        if ($h2.Hash -ceq $h1.Hash) { Ok 'two runs of the same project give the same value' } else { Bad "second run: $($h2.Hash)" }
+        if ($script:jobOut15.Count -ge 2 -and @($script:jobOut15[0]).Count -eq 1 -and @($script:jobOut15[1]).Count -eq 0) { Ok 'the project job emits only the hash, the baseline job nothing (the build''s zip path is discarded)' } else { Bad "job outputs: $(@($script:jobOut15 | ForEach-Object { '[' + (@($_) -join ',') + ']' }) -join ' ')" }
+        (Get-Item -LiteralPath (Join-Path $proj15 'Files\setup.cmd')).LastWriteTime = [datetime]'2020-01-01T00:00:00'
+        $h3 = & $run15
+        if ($h3.Hash -ceq $h1.Hash) { Ok 'a file whose write time alone changed: the same value (zip timestamps do not count)' } else { Bad "write time changed the hash: $($h3.Hash)" }
+        Set-Content -LiteralPath (Join-Path $proj15 'Files\setup.cmd') -Value 'echo install v2'
+        $h4 = & $run15
+        if ($h4.Hash -cmatch '^[0-9A-F]{64}$' -and $h4.Hash -cne $h1.Hash) { Ok 'a file whose bytes changed: a different value' } else { Bad "bytes changed, hash: $($h4.Hash)" }
+        Remove-Item Function:\Get-Win32ToolkitZipContentHash
+        $h5 = & $run15
+        if ($null -eq $h5.Hash -and $h5.Out.Count -eq 1 -and $h5.Out[0] -eq $true) { Ok 'without Get-Win32ToolkitZipContentHash: CopyInSha256 $null, the run still exactly $true' } else { Bad "no hash helper: hash=$($h5.Hash) out=$($h5.Out -join ',')" }
+    }
+    finally {
+        Remove-Item Function:\Receive-Job -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $proj15, $base15 -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential, Function:\Read-Host
+function Get-Win32ToolkitHyperVLane { param($VMName, $CheckpointName, $VM) }
+function Get-Win32ToolkitZipContentHash { param($ZipPath) }
 
 if ($fail -eq 0) {
     Write-Host "`nAll HyperVProvider tests passed." -ForegroundColor Green

@@ -15,6 +15,12 @@ function New-Win32ToolkitHyperVSession {
         The warm checkpoint to revert to (default 'clean-base').
     .PARAMETER SkipRevert
         Connect to the VM as-is without reverting (e.g. when it is already clean).
+    .PARAMETER Info
+        Optional hashtable the open fills for the caller's record and caches (Hyper-V speed-up PR 1):
+        RevertSkipped ($true when no checkpoint was restored: the clean marker was used, or -SkipRevert),
+        SecondsSinceTeardown (the marker's age when it was used, else $null), VM (the Get-VM object read after
+        the restore), VMId (its Id, or '') and Warm ($false when the VM was not Running after the restore and
+        had to be started). The output is unchanged: exactly the session.
     .OUTPUTS
         A PSSession (System.Management.Automation.Runspaces.PSSession).
     #>
@@ -28,9 +34,15 @@ function New-Win32ToolkitHyperVSession {
 
         # Interactive GUI runs need a real logged-in desktop; if the checkpoint landed on the login
         # screen, recover by rebooting to trigger AutoLogon (Confirm-Win32ToolkitGuestDesktop).
-        [switch]$EnsureDesktop
+        [switch]$EnsureDesktop,
+
+        # Filled for the caller (speed-up PR 1): RevertSkipped, SecondsSinceTeardown, VM, VMId, Warm.
+        [hashtable]$Info
     )
 
+    # Nothing is restored with -SkipRevert; a used clean marker also skips the restore (below).
+    $revertSkipped = [bool]$SkipRevert
+    $sinceTeardown = $null
     if (-not $SkipRevert) {
         # Skip the open-revert only when THIS process verified a teardown revert of the SAME VM+checkpoint
         # moments ago (Remove-Win32ToolkitHyperVSession stamps $script:HyperVCleanMarker strictly AFTER a
@@ -44,6 +56,8 @@ function New-Win32ToolkitHyperVSession {
                        (((Get-Date) - $m.StampedAt).TotalMinutes -lt 10)
         if ($markerFresh) {
             Write-Verbose "'$VMName' was left verified-clean at '$CheckpointName' by this process — skipping the redundant open-revert."
+            $revertSkipped = $true
+            $sinceTeardown = [math]::Round(((Get-Date) - $m.StampedAt).TotalSeconds, 1)
         }
         else {
             Restore-VMCheckpoint -VMName $VMName -Name $CheckpointName -Confirm:$false -ErrorAction Stop
@@ -52,11 +66,21 @@ function New-Win32ToolkitHyperVSession {
     # From here the VM is in use — it can no longer be presumed clean, whatever happens to this run.
     $script:HyperVCleanMarker = $null
 
-    if ((Get-VM -Name $VMName -ErrorAction Stop).State -ne 'Running') {
+    $vm = Get-VM -Name $VMName -ErrorAction Stop
+    $warm = $true
+    if ($vm.State -ne 'Running') {
         # A Standard (memory-state) checkpoint restores a RUNNING guest; landing here means the checkpoint
         # was taken powered-off or as a Production checkpoint — every run is paying a full boot.
         Write-Warning "VM '$VMName' was not Running after restoring '$CheckpointName' — the checkpoint is not a warm memory-state one, so every run pays a full boot. Re-take it with the VM running at a logged-in desktop (Standard checkpoint type) to restore warm-revert speed."
         Start-VM -Name $VMName -ErrorAction Stop
+        $warm = $false
+    }
+    if ($null -ne $Info) {
+        $Info['RevertSkipped']        = $revertSkipped
+        $Info['SecondsSinceTeardown'] = $sinceTeardown
+        $Info['VM']                   = $vm
+        $Info['VMId']                 = if ($null -ne $vm -and $null -ne $vm.Id) { [string]$vm.Id } else { '' }
+        $Info['Warm']                 = $warm
     }
 
     # Warm revert returns a running, logged-in guest; -SkipPrep because the golden image already set the

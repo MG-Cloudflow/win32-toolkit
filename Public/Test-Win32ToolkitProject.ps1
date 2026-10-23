@@ -386,12 +386,23 @@ function Test-Win32ToolkitProject {
             param([string]$RecordScenario, $Precheck)
             try {
                 $null = Add-Win32ToolkitTestResult -ProjectPath $ProjectPath -Scenario $RecordScenario -Backend 'HyperV' -Mode 'Unattended' `
-                    -Verdict 'Inconclusive' -Assertions @() -Notes ([string]$Precheck.Notes) -NotRun $Precheck.NotRun
+                    -Verdict 'Inconclusive' -Assertions @() -Notes ([string]$Precheck.Notes) -NotRun $Precheck.NotRun `
+                    -Timing @{ PrecheckSeconds = $Precheck.Seconds; PrecheckFromCache = $Precheck.FromCache } -Lane $Precheck.Lane
             }
             catch {
                 if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
                 Write-Warning "Could not record the test result to Documentation\TestResults.json: $($_.Exception.Message)"
             }
+        }
+        # A Hyper-V run's Timing (Invoke-Win32ToolkitHyperVRun -RunInfo) gains this outer call's pre-check timing (speed-up
+        # PR 1, D12): PrecheckSeconds / PrecheckFromCache stay $null when no pre-check ran (watched runs, the legs of a Both run).
+        $withPrecheck = {
+            param($RunTiming)
+            if ($RunTiming -is [hashtable] -and $parityPre) {
+                $RunTiming['PrecheckSeconds'] = $parityPre.Seconds
+                $RunTiming['PrecheckFromCache'] = $parityPre.FromCache
+            }
+            $RunTiming
         }
 
         # Intune-parity pre-check (installer-identity PR 2, A1 hv r1.2): an unattended Hyper-V run of a PSADT 4.1 package
@@ -570,7 +581,9 @@ function Test-Win32ToolkitProject {
                     # How each Intune-parity phase that failed ended (69113 = the device's limit, 1460 = the test's own), for
                     # the record's Notes (installer-identity PR 2 follow-up R6 #3): sentences from the provider's constants.
                     $parityExitNotes = [System.Collections.Generic.List[string]]::new()
-                    $ran = Invoke-Win32ToolkitHyperVRun -ProjectPath $ProjectPath -Phase $phases -Output @('Sandbox\Logs\*') -ParityExitNote $parityExitNotes
+                    # The run's Timing and Lane for the record (speed-up PR 1, D12).
+                    $runInfo = @{}
+                    $ran = Invoke-Win32ToolkitHyperVRun -ProjectPath $ProjectPath -Phase $phases -Output @('Sandbox\Logs\*') -ParityExitNote $parityExitNotes -RunInfo $runInfo
                     if ($ran) {
                         Write-Host "✓ Hyper-V install/uninstall completed. Logs: $(Join-Path $ProjectPath 'Sandbox\Logs')" -ForegroundColor Green
                     } else {
@@ -587,7 +600,7 @@ function Test-Win32ToolkitProject {
                     $runFolder = & $saveRunLog $runLog 0
                     Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'InstallUninstall' -Backend 'HyperV' `
                         -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $iuVerdict -LogFileName 'InstallAssertions.log' -LogFolder $runFolder `
-                        -Notes (@($parityExitNotes) -join ' ')
+                        -Notes (@($parityExitNotes) -join ' ') -Timing (& $withPrecheck $runInfo.Timing) -Lane $runInfo.Lane
                     return $iuVerdict
                 }
 
@@ -1136,7 +1149,9 @@ function Test-Win32ToolkitProject {
 
                     # How the Intune-parity update ended when it failed, for the record's Notes (R6 #3, as the install/uninstall).
                     $parityExitNotes = [System.Collections.Generic.List[string]]::new()
-                    $hvArgs = @{ ProjectPath = $ProjectPath; Phase = $phases; Output = @('Sandbox\Logs\*'); ParityExitNote = $parityExitNotes }
+                    # The run's Timing and Lane for the record (speed-up PR 1, D12).
+                    $runInfo = @{}
+                    $hvArgs = @{ ProjectPath = $ProjectPath; Phase = $phases; Output = @('Sandbox\Logs\*'); ParityExitNote = $parityExitNotes; RunInfo = $runInfo }
                     if ($useBaselineProject) { $hvArgs['BaselineProjectPath'] = $BaselineProjectPath }
 
                     if ($interactive) { Write-Host "`nRunning an INTERACTIVE Update test in the Hyper-V VM (verify the old install in the vmconnect window, then press Enter)..." -ForegroundColor Cyan }
@@ -1155,12 +1170,12 @@ function Test-Win32ToolkitProject {
                     $assertLog = Join-Path $ProjectPath 'Sandbox\Logs\UpdateAssertions.log'
                     if (-not (Test-Path -LiteralPath $assertLog)) {
                         Write-Warning "No UpdateAssertions.log came back from the VM — the assertions never ran, or the copy-out failed. Check $ProjectPath\Sandbox\Logs and the phase warnings above."
-                        Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $null -Notes (@(@('Assertions log did not return from the VM.') + @($parityExitNotes)) -join ' ') -Baseline $baselineInfo -LogFolder $runFolder
+                        Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $null -Notes (@(@('Assertions log did not return from the VM.') + @($parityExitNotes)) -join ' ') -Baseline $baselineInfo -LogFolder $runFolder -Timing (& $withPrecheck $runInfo.Timing) -Lane $runInfo.Lane
                         return $null
                     }
                     $updVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -TimeoutMinutes 1 -PollSeconds 1
                     Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict -Baseline $baselineInfo -LogFolder $runFolder `
-                        -Notes (@($parityExitNotes) -join ' ')
+                        -Notes (@($parityExitNotes) -join ' ') -Timing (& $withPrecheck $runInfo.Timing) -Lane $runInfo.Lane
                     if ($updVerdict -eq $false) { & $warnTechSwitch }
                     return $updVerdict
                 }

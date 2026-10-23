@@ -109,6 +109,63 @@ $null = New-Win32ToolkitHyperVSession -VMName 'vmA' -Credential $cred -Checkpoin
 if ($script:started -eq 1) { Ok 'Start-VM fired for the cold checkpoint' } else { Bad "started=$($script:started)" }
 if ("$warnings" -match 'memory-state') { Ok 'operator warned the checkpoint is not warm' } else { Bad "no cold-checkpoint warning: '$warnings'" }
 
+# ── (m) Hyper-V speed-up PR 1: -Info for the run's record; the output stays exactly the session (C-12) ──────────────
+Write-Host '[m] New-Win32ToolkitHyperVSession -Info (RevertSkipped, SecondsSinceTeardown, VM, VMId, Warm); Remove- -Info (Restored)' -ForegroundColor Cyan
+$sessionDouble = [pscustomobject]@{ Kind = 'session-double' }
+${function:Wait-Win32ToolkitVMReady_Saved} = ${function:Wait-Win32ToolkitVMReady}
+function Wait-Win32ToolkitVMReady { param($VMName, $Credential, [switch]$SkipPrep, [switch]$ReturnSession) if ($ReturnSession) { $sessionDouble } else { $true } }
+$openM = {
+    param([hashtable]$Info)
+    $o = @(New-Win32ToolkitHyperVSession -VMName 'vmA' -Credential $cred -CheckpointName 'clean-base' -Info $Info 3>$null)
+    [pscustomobject]@{ Out = $o; Exact = ($o.Count -eq 1 -and [object]::ReferenceEquals($o[0], $sessionDouble)) }
+}
+# a restore
+Reset-State
+$im = @{}
+$rm = & $openM $im
+if ($rm.Exact -and $script:restores -eq 1 -and $im['RevertSkipped'] -eq $false -and $null -eq $im['SecondsSinceTeardown'] -and $im['Warm'] -eq $true -and $im['VM'] -and $im['VM'].State -eq 'Running' -and $im.ContainsKey('VMId')) {
+    Ok 'a restore: RevertSkipped $false, SecondsSinceTeardown $null, Warm $true, the VM object; exactly the session returned'
+} else { Bad "restore: exact=$($rm.Exact) restores=$($script:restores) info=$($im | ConvertTo-Json -Compress -Depth 2)" }
+# a marker skip (the marker the teardown stamps, 30 s old)
+Reset-State
+$script:HyperVCleanMarker = @{ VMName = 'vmA'; VMId = $script:vmId; CheckpointName = 'clean-base'; StampedAt = (Get-Date).AddSeconds(-30) }
+$im = @{}
+$rm = & $openM $im
+if ($rm.Exact -and $script:restores -eq 0 -and $im['RevertSkipped'] -eq $true -and $im['SecondsSinceTeardown'] -ge 29 -and $im['SecondsSinceTeardown'] -le 40 -and $im['Warm'] -eq $true) {
+    Ok "a marker skip: no restore, RevertSkipped `$true, SecondsSinceTeardown $($im['SecondsSinceTeardown']) (the marker's age)"
+} else { Bad "skip: exact=$($rm.Exact) restores=$($script:restores) info=$($im | ConvertTo-Json -Compress -Depth 2)" }
+# the cold fallback
+Reset-State
+$script:vmState = 'Off'
+$im = @{}
+$rm = & $openM $im
+if ($rm.Exact -and $script:started -eq 1 -and $im['Warm'] -eq $false -and $im['RevertSkipped'] -eq $false) { Ok 'the cold fallback (VM not Running after the restore, started): Warm $false' } else { Bad "cold: exact=$($rm.Exact) started=$($script:started) info=$($im | ConvertTo-Json -Compress -Depth 2)" }
+# -SkipRevert: nothing restored
+Reset-State
+$im = @{}
+$o = @(New-Win32ToolkitHyperVSession -VMName 'vmA' -Credential $cred -CheckpointName 'clean-base' -SkipRevert -Info $im)
+if ($o.Count -eq 1 -and $script:restores -eq 0 -and $im['RevertSkipped'] -eq $true) { Ok '-SkipRevert: RevertSkipped $true (no restore)' } else { Bad "skiprevert: count=$($o.Count) info=$($im | ConvertTo-Json -Compress -Depth 2)" }
+# without -Info: unchanged
+Reset-State
+$o = @(New-Win32ToolkitHyperVSession -VMName 'vmA' -Credential $cred -CheckpointName 'clean-base')
+if ($o.Count -eq 1 -and [object]::ReferenceEquals($o[0], $sessionDouble)) { Ok 'without -Info: exactly the session, as before' } else { Bad "no info: count=$($o.Count)" }
+# the teardown
+Reset-State
+$tm = @{}
+$o = @(Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert -Info $tm)
+if ($o.Count -eq 0 -and $tm['Restored'] -eq $true -and $tm['RevertMode'] -ceq 'Legacy') { Ok 'Remove- -Info after a restore: Restored $true, RevertMode Legacy; it emits nothing' } else { Bad "teardown: count=$($o.Count) info=$($tm | ConvertTo-Json -Compress)" }
+Reset-State
+$script:restoreFail = $true
+$tm = @{}
+$o = @(Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert -Info $tm 3>$null)
+if ($o.Count -eq 0 -and $tm['Restored'] -eq $false -and $null -eq $tm['RevertMode']) { Ok 'a failed teardown restore: Restored $false, RevertMode $null' } else { Bad "failed teardown: count=$($o.Count) info=$($tm | ConvertTo-Json -Compress)" }
+$tm = @{}
+$null = Remove-Win32ToolkitHyperVSession -Session 'fake' -Info $tm
+if ($tm['Restored'] -eq $false) { Ok 'no -Revert: Restored $false' } else { Bad "no revert: $($tm | ConvertTo-Json -Compress)" }
+${function:Wait-Win32ToolkitVMReady} = ${function:Wait-Win32ToolkitVMReady_Saved}
+Remove-Item Function:\Wait-Win32ToolkitVMReady_Saved
+Reset-State
+
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'ALL PASS' -ForegroundColor Green; exit 0 }
 else { Write-Host "$fail FAILED" -ForegroundColor Red; exit 1 }

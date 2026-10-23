@@ -133,6 +133,11 @@ that failed ended: its `Notes` give one sentence per phase with the exit code, a
 app's own uninstaller was still running at the device's 30-minute limit and was stopped) and 1460 (the
 test's own limit for the phase was reached) mean. The customer documentation does not show `Notes`.
 
+The record of a Hyper-V run also keeps `Timing` (seconds per step: opening the VM, copying the project in,
+each phase that ran, the teardown, the whole run, and whether the run could skip its first checkpoint
+restore) and `Lane` (the VM and its checkpoint: names, Ids, the checkpoint's age, the VM's processors and
+memory). The customer documentation does not show them.
+
 ### One package, one process
 
 Every PSADT package in a test (each `project:` dependency, an Update baseline project, and the app

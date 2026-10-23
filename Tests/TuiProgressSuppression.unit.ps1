@@ -24,6 +24,9 @@ function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitHyperVRun.ps1')
+# C-9 (Hyper-V speed-up PR 1): the provider's record helpers, inert; none reaches Hyper-V.
+function Get-Win32ToolkitHyperVLane { param($VMName, $CheckpointName, $VM) }
+function Get-Win32ToolkitZipContentHash { param($ZipPath) }
 
 # ── (a) HOST guard: silenced DURING the run, restored AFTER — even when the run fails ───────────────
 Write-Host '[a] Invoke-Win32ToolkitHyperVRun silences $ProgressPreference during the run and restores it' -ForegroundColor Cyan

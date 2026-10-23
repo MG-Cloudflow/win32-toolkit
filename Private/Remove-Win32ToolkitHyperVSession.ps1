@@ -14,15 +14,23 @@ function Remove-Win32ToolkitHyperVSession {
         The checkpoint to restore (default 'clean-base').
     .PARAMETER Revert
         Restore the clean checkpoint after closing the session.
+    .PARAMETER Info
+        Optional hashtable the teardown fills for the caller's record (Hyper-V speed-up PR 1): Restored ($true
+        when the checkpoint was restored) and RevertMode ('Legacy' after a restore, else $null). Nothing is
+        written to the output.
     #>
     [CmdletBinding()]
     param(
         $Session,
         [string]$VMName,
         [string]$CheckpointName = 'clean-base',
-        [switch]$Revert
+        [switch]$Revert,
+
+        # Filled for the caller (speed-up PR 1): Restored, RevertMode.
+        [hashtable]$Info
     )
 
+    if ($null -ne $Info) { $Info['Restored'] = $false; $Info['RevertMode'] = $null }
     if ($Session) { Remove-PSSession -Session $Session -ErrorAction SilentlyContinue }
     if ($Revert -and $VMName) {
         # The old -ErrorAction SilentlyContinue swallowed a FAILED revert — and a failure here must never
@@ -31,6 +39,7 @@ function Remove-Win32ToolkitHyperVSession {
         # open-revert); on failure clear it and warn, so the next run reverts before starting.
         try {
             Restore-VMCheckpoint -VMName $VMName -Name $CheckpointName -Confirm:$false -ErrorAction Stop
+            if ($null -ne $Info) { $Info['Restored'] = $true; $Info['RevertMode'] = 'Legacy' }
             $script:HyperVCleanMarker = @{ VMName = $VMName; CheckpointName = $CheckpointName; StampedAt = Get-Date }
         }
         catch {

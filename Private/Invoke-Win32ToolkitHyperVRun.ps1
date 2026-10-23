@@ -42,6 +42,11 @@ function Invoke-Win32ToolkitHyperVRun {
         69113 with ParityHint 'Uninstaller' (the app's own uninstaller was still running at the device's
         30-minute limit and was stopped), what it means; any other code is named only. A phase that did not
         finish (267009 / 267011) did not exit and adds nothing. Host constants and the exit code only.
+    .PARAMETER RunInfo
+        Optional hashtable the run fills with Timing (seconds per step: open, copy-in, each phase that ran,
+        teardown, total; whether the open skipped its restore; the copy-in zip's content hash) and Lane (the VM
+        and checkpoint it used) for the caller's TestResults.json record (Hyper-V speed-up PR 1, D12). Best
+        effort: a measurement that fails leaves its value $null. The [bool] output is unchanged.
     .OUTPUTS
         [bool] — $true if the run completed (individual phase failures are warned, not fatal, matching
         the Sandbox fire-and-forget semantics; callers judge results from the copied-back outputs).
@@ -63,7 +68,9 @@ function Invoke-Win32ToolkitHyperVRun {
         [string]$CheckpointName,
         # Filled for the caller's test record (installer-identity PR 2 follow-up R6 #3): one sentence per Intune-parity
         # phase that exited outside its success codes, so a 69113 and a 1460 are told apart in TestResults.json.
-        [System.Collections.Generic.List[string]]$ParityExitNote
+        [System.Collections.Generic.List[string]]$ParityExitNote,
+        # Filled for the caller's test record (Hyper-V speed-up PR 1, D12): Timing and Lane.
+        [hashtable]$RunInfo
     )
 
     if (-not $VMName)     { $VMName = Get-Win32ToolkitConfigValue -Name 'HyperVVMName' -Default 'win32tk-golden' }
@@ -72,6 +79,18 @@ function Invoke-Win32ToolkitHyperVRun {
     if (-not $Credential) {
         throw "No Hyper-V guest credential is configured. Run New-Win32ToolkitTestVM first (it stores the credential), or pass -Credential."
     }
+
+    # Host measurements for the caller's record (speed-up PR 1, D12). Bookkeeping only: every block that fills them
+    # is fail-open (a missing helper or a Hyper-V read error never changes the run's result, warnings or teardown).
+    $runWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $timing = @{
+        TotalSeconds = $null; OpenSeconds = $null; OpenRevertSkipped = $null; SecondsSinceTeardown = $null
+        CopyInSeconds = $null; CopyInSha256 = $null; Phases = [System.Collections.Generic.List[object]]::new()
+        TeardownSeconds = $null; RevertMode = 'Legacy'; PrecheckSeconds = $null; PrecheckFromCache = $null
+    }
+    $lane = $null
+    $openInfo = @{}
+    $teardownWatch = $null
 
     $session = $null
     # Suppress HOST progress bars for the whole run. Copy-Item -To/-FromSession (the project copy in/out)
@@ -123,28 +142,35 @@ function Invoke-Win32ToolkitHyperVRun {
     # in the copy helper, exactly as before. The job has none of this module's functions, so it rebuilds
     # New-Win32ToolkitProjectZip from its text: one builder, the same zip either way (Sandbox\Logs\Runs\
     # stays on the host, test campaign F2).
+    # The project job also hashes the zip's content for the record (CopyInSha256, speed-up PR 1 A-3), off the critical
+    # path: it emits ONLY that hash (the build's own output, the zip path, is discarded), the baseline job nothing.
     $zipJobs = @{}
     $zipBuilderText = [string]${function:New-Win32ToolkitProjectZip}
+    $hashText = [string]${function:Get-Win32ToolkitZipContentHash}
     $canThreadJob = [bool](Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) -and -not [string]::IsNullOrWhiteSpace($zipBuilderText)
     if ($canThreadJob) {
         $zipBuilder = {
-            param($src, $dst, $builderText)
+            param($src, $dst, $builderText, $hashText)
             $build = [scriptblock]::Create($builderText)
-            & $build -ProjectPath $src -ZipPath $dst
+            $null = & $build -ProjectPath $src -ZipPath $dst
+            if ($hashText) { & ([scriptblock]::Create($hashText)) -ZipPath $dst }
         }
         $projZipPath = Join-Path ([System.IO.Path]::GetTempPath()) ('w32proj_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.zip')
-        $zipJobs['project'] = @{ Job = (Start-ThreadJob -ScriptBlock $zipBuilder -ArgumentList $ProjectPath, $projZipPath, $zipBuilderText); Path = $projZipPath }
+        $zipJobs['project'] = @{ Job = (Start-ThreadJob -ScriptBlock $zipBuilder -ArgumentList $ProjectPath, $projZipPath, $zipBuilderText, $hashText); Path = $projZipPath }
         if ($BaselineProjectPath) {
             $baseZipPath = Join-Path ([System.IO.Path]::GetTempPath()) ('w32proj_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.zip')
-            $zipJobs['baseline'] = @{ Job = (Start-ThreadJob -ScriptBlock $zipBuilder -ArgumentList $BaselineProjectPath, $baseZipPath, $zipBuilderText); Path = $baseZipPath }
+            $zipJobs['baseline'] = @{ Job = (Start-ThreadJob -ScriptBlock $zipBuilder -ArgumentList $BaselineProjectPath, $baseZipPath, $zipBuilderText, ''); Path = $baseZipPath }
         }
     }
-    # Joins a prebuild job and returns its zip path — or $null (build-inline fallback) on any job error.
+    # Joins a prebuild job and returns its zip path — or $null (build-inline fallback) on any job error. The job's hash
+    # is stored BY REFERENCE in the shared table ($zipJobs[$key].Hash): this scriptblock runs in a child scope, so a
+    # variable it assigned would never reach the run.
     $joinZip = {
         param($key)
         if (-not $zipJobs.ContainsKey($key)) { return $null }
         try {
-            $null = Receive-Job -Job $zipJobs[$key].Job -Wait -ErrorAction Stop
+            $out = @(Receive-Job -Job $zipJobs[$key].Job -Wait -ErrorAction Stop)
+            $zipJobs[$key].Hash = if ($out.Count -ge 1 -and [string]$out[-1] -cmatch '^[0-9A-F]{64}$') { [string]$out[-1] } else { $null }
             return $zipJobs[$key].Path
         }
         catch {
@@ -161,9 +187,23 @@ function Invoke-Win32ToolkitHyperVRun {
         $needsDesktop = @($Phase | Where-Object { $_.Interactive }).Count -gt 0
 
         Write-Verbose "Reverting '$VMName' to '$effectiveCheckpoint' and connecting over PowerShell Direct..."
-        $session = New-Win32ToolkitHyperVSession -VMName $VMName -Credential $Credential -CheckpointName $effectiveCheckpoint -EnsureDesktop:$needsDesktop
+        $openWatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $session = New-Win32ToolkitHyperVSession -VMName $VMName -Credential $Credential -CheckpointName $effectiveCheckpoint -EnsureDesktop:$needsDesktop -Info $openInfo
+        # The record's open timing and the VM/checkpoint identity (speed-up PR 1, D12): fail-open.
+        try {
+            $timing.OpenSeconds = [math]::Round($openWatch.Elapsed.TotalSeconds, 1)
+            $timing.OpenRevertSkipped = $openInfo['RevertSkipped']
+            $timing.SecondsSinceTeardown = $openInfo['SecondsSinceTeardown']
+            $lane = Get-Win32ToolkitHyperVLane -VMName $VMName -CheckpointName $effectiveCheckpoint -VM $openInfo['VM']
+        }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Verbose "Hyper-V run record: the VM and checkpoint identity could not be read ($($_.Exception.Message))."
+            $lane = $null
+        }
 
         Write-Verbose "Copying project into the guest (C:\PSADT)..."
+        $copyWatch = [System.Diagnostics.Stopwatch]::StartNew()
         Copy-Win32ToolkitProjectToGuest -Session $session -ProjectPath $ProjectPath -GuestPath 'C:\PSADT' -PrebuiltZip (& $joinZip 'project')
         if ($BaselineProjectPath) {
             # -ReadOnly reproduces the Sandbox <ReadOnly>true</ReadOnly> mount, so the baseline's own PSADT
@@ -171,6 +211,9 @@ function Invoke-Win32ToolkitHyperVRun {
             Write-Verbose 'Copying the update baseline into the guest (C:\PSADTOld, read-only)...'
             Copy-Win32ToolkitProjectToGuest -Session $session -ProjectPath $BaselineProjectPath -GuestPath 'C:\PSADTOld' -ReadOnly -PrebuiltZip (& $joinZip 'baseline')
         }
+        $timing.CopyInSeconds = [math]::Round($copyWatch.Elapsed.TotalSeconds, 1)
+        # Already validated by the join; $null when the prebuild did not run, failed or emitted no hash.
+        $timing.CopyInSha256 = if ($zipJobs.ContainsKey('project')) { $zipJobs['project'].Hash } else { $null }
 
         # Deps are baked into the restored image: remove the in-guest installer script so the CAPTURE
         # script (which installs deps in-script, not as a tagged phase) skips them too.
@@ -220,7 +263,10 @@ function Invoke-Win32ToolkitHyperVRun {
                 }
                 else { Write-Verbose "  Phase '$($ph.Label)': RunnerTimeoutMinutes '$($ph.RunnerTimeoutMinutes)' is not 1-235; the default limits apply." }
             }
+            $phaseWatch = [System.Diagnostics.Stopwatch]::StartNew()
             $exit = Invoke-Win32ToolkitGuestPhase @phaseArgs
+            # The record keeps the phases that ran (never a Pause or a skipped phase), at most 20.
+            if ($timing.Phases.Count -lt 20) { $timing.Phases.Add(@{ Label = [string]$ph.Label; Seconds = [math]::Round($phaseWatch.Elapsed.TotalSeconds, 1) }) }
             # 267009 (SCHED_S_TASK_RUNNING: stopped at its timeout) / 267011 (SCHED_S_TASK_HAS_NOT_RUN) are
             # not exit codes of the phase: it did not finish. Whatever IgnoreExit says, stop here.
             if ($exit -in 267009, 267011) {
@@ -292,6 +338,7 @@ function Invoke-Win32ToolkitHyperVRun {
         }
 
         Write-Verbose "Copying results back to the project..."
+        $teardownWatch = [System.Diagnostics.Stopwatch]::StartNew()
         # An incomplete run still brings its logs back for inspection, but never an install capture: the
         # capture of a phase that did not finish is not trusted.
         $copyOut = if ($incomplete) { @($Output | Where-Object { $_ -notlike '*InstallationChanges_*' }) } else { @($Output) }
@@ -310,7 +357,8 @@ function Invoke-Win32ToolkitHyperVRun {
         # Revert to the EFFECTIVE checkpoint: with the deps feature that leaves the VM clean-with-deps
         # (still never holding app/test state), and the R2 marker then matches the next run of the same
         # project for the single-revert skip.
-        Remove-Win32ToolkitHyperVSession -Session $session -VMName $VMName -CheckpointName $effectiveCheckpoint -Revert
+        $tdInfo = @{}
+        $null = Remove-Win32ToolkitHyperVSession -Session $session -VMName $VMName -CheckpointName $effectiveCheckpoint -Revert -Info $tdInfo
         # INTERACTIVE runs leave a vmconnect window attached to the reverted-but-running guest — the
         # operator can keep poking it after the teardown, invisibly dirtying the VM within the marker's
         # TTL. Never presume clean after an interactive run; unattended runs (no console, no operator)
@@ -323,6 +371,20 @@ function Invoke-Win32ToolkitHyperVRun {
         foreach ($k in $zipJobs.Keys) {
             if ($zipJobs[$k].Job) { Remove-Job -Job $zipJobs[$k].Job -Force -ErrorAction SilentlyContinue }
             if (Test-Path -LiteralPath $zipJobs[$k].Path) { Remove-Item -LiteralPath $zipJobs[$k].Path -Force -ErrorAction SilentlyContinue }
+        }
+        # The record's teardown and total timing, handed to the caller (speed-up PR 1): best effort, never throws.
+        try {
+            if ($null -ne $teardownWatch) { $timing.TeardownSeconds = [math]::Round($teardownWatch.Elapsed.TotalSeconds, 1) }
+            if ($tdInfo['Restored'] -ne $true) { $timing.RevertMode = $null }
+            $timing.TotalSeconds = [math]::Round($runWatch.Elapsed.TotalSeconds, 1)
+            if ($null -ne $RunInfo) {
+                $RunInfo['Timing'] = $timing
+                $RunInfo['Lane'] = $lane
+            }
+        }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Verbose "Hyper-V run record: the timings could not be handed over ($($_.Exception.Message))."
         }
         # Restore the caller's preference (the teardown Restore-VMCheckpoint above stays silenced), so this
         # never leaks to a later Publish/Azure-upload bar. Runs on both the return and the catch paths.

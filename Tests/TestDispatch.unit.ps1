@@ -60,7 +60,7 @@ ${function:New-Win32ToolkitPackageRunnerScript} = { param($ProjectPath) $script:
 $script:installAssertGen = 0
 $script:recorded = $null
 function New-InstallAssertionScript { param($ProjectPath) $script:installAssertGen++; 'fake' }
-function Write-Win32ToolkitTestOutcome { param($ProjectPath, $Scenario, $Backend, $Mode, $Verdict, $LogFileName, $Notes, $Baseline, $LogFolder) $script:recorded = @{ Scenario = $Scenario; Backend = $Backend; Mode = $Mode; LogFileName = $LogFileName; Baseline = $Baseline; LogFolder = $LogFolder; Notes = $Notes } }
+function Write-Win32ToolkitTestOutcome { param($ProjectPath, $Scenario, $Backend, $Mode, $Verdict, $LogFileName, $Notes, $Baseline, $LogFolder, $Timing, $Lane) $script:recorded = @{ Scenario = $Scenario; Backend = $Backend; Mode = $Mode; LogFileName = $LogFileName; Baseline = $Baseline; LogFolder = $LogFolder; Notes = $Notes; Timing = $Timing; Lane = $Lane; Verdict = $Verdict } }
 function Get-Win32ToolkitTestBackend { param($Backend) return $script:backend }
 function Get-Process { param($Name, $ErrorAction) return $script:procs }
 # The single-instance guard goes through the Phase-0 seam helper, NOT Get-Process directly. Without this
@@ -79,6 +79,9 @@ $script:preBlocked = $false
 $script:preShape  = 'Psadt41'
 $script:preAtRisk = $true
 $script:preProcessCount = 0
+# Hyper-V speed-up PR 1: the pre-check also reports its own duration, whether its answer came from the cache, and the lane.
+$script:preSeconds = 151.3
+$script:preFromCache = $false
 function Invoke-Win32ToolkitParityPrecheck {
     param($ProjectPath, $Scenario)
     $script:preCalls += "$Scenario|$ProjectPath"
@@ -88,12 +91,13 @@ function Invoke-Win32ToolkitParityPrecheck {
         Message = $(if ($script:preBlocked) { 'PRECHECK-MESSAGE: was NOT started' } else { '' })
         Notes   = $(if ($script:preBlocked) { 'Not run (Intune-parity pre-check): PRECHECK-NOTES' } else { '' })
         NotRun  = $(if ($script:preBlocked) { @{ Code = 'PARITY-DIALOG-WAIT'; Shape = 'Psadt41'; ProcessesToClose = 0; Welcome = 'OrgUi'; SignedInSessions = 1 } } else { $null })
+        Seconds = $script:preSeconds; FromCache = $script:preFromCache; Lane = @{ VMName = 'vm-pre'; CheckpointName = 'clean-base' }
     }
 }
 $script:results = @()
 function Add-Win32ToolkitTestResult {
-    param($ProjectPath, $Scenario, $Backend, $Mode, $Verdict, $Assertions, $Notes, $Baseline, $OldArpSurvivors, $LogFolder, [hashtable]$NotRun)
-    $script:results += [pscustomobject]@{ Scenario = $Scenario; Backend = $Backend; Mode = $Mode; Verdict = $Verdict; Assertions = @($Assertions); Notes = $Notes; Baseline = $Baseline; NotRun = $NotRun }
+    param($ProjectPath, $Scenario, $Backend, $Mode, $Verdict, $Assertions, $Notes, $Baseline, $OldArpSurvivors, $LogFolder, [hashtable]$NotRun, $Timing, $Lane)
+    $script:results += [pscustomobject]@{ Scenario = $Scenario; Backend = $Backend; Mode = $Mode; Verdict = $Verdict; Assertions = @($Assertions); Notes = $Notes; Baseline = $Baseline; NotRun = $NotRun; Timing = $Timing; Lane = $Lane }
 }
 
 # real temp project so the internal Test-Path / Split-Path succeed
@@ -772,6 +776,63 @@ $sw17.Stop()
 if ($v17 -eq $true -and $sw17.Elapsed.TotalSeconds -lt 30) { Ok "with the real wait the verdict is returned unchanged, without waiting ($([int]$sw17.Elapsed.TotalSeconds) s)" } else { Bad "real wait: verdict=$v17 took $($sw17.Elapsed.TotalSeconds) s" }
 ${function:Wait-Win32ToolkitUpdateAssertion} = $savedWait17
 $script:backend = 'HyperV'
+
+# Hyper-V speed-up PR 1 (D12): every Hyper-V run hands -RunInfo to the provider; the record gets its Timing (plus the outer
+# call's pre-check duration and cache flag) and Lane. A run the pre-check did not start records the pre-check's own.
+Write-Host '[18] Hyper-V runs pass -RunInfo; the record gets Timing (with the pre-check''s timing) and Lane' -ForegroundColor Cyan
+$base18 = Join-Path ([System.IO.Path]::GetTempPath()) ('w32base_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $base18 -Force | Out-Null
+Set-Content -Path (Join-Path $base18 'Invoke-AppDeployToolkit.ps1') -Value '# psadt'
+$script:hv18 = $null
+$script:hvLog18 = $true
+function Invoke-Win32ToolkitHyperVRun {
+    param($ProjectPath, $Phase, $Output, $BaselineProjectPath, [System.Collections.Generic.List[string]]$ParityExitNote, [hashtable]$RunInfo)
+    $script:hvCalled++; $script:hvPhase = $Phase
+    $script:hv18 = @{ Bound = $PSBoundParameters.ContainsKey('RunInfo') -and $null -ne $RunInfo }
+    if ($null -ne $RunInfo) {
+        $RunInfo['Timing'] = @{ TotalSeconds = 300.5; OpenSeconds = 60.1; PrecheckSeconds = $null; PrecheckFromCache = $null }
+        $RunInfo['Lane'] = @{ VMName = 'vm-run'; CheckpointName = 'clean-base' }
+    }
+    if ($script:hvLog18) {
+        $ld = Join-Path $ProjectPath 'Sandbox\Logs'
+        New-Item -ItemType Directory -Path $ld -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $ld 'UpdateAssertions.log') -Value '[t] ASSERT Tattoo-PostUpdate = PASS', '[t] RESULT COMPLETE'
+    }
+    $true
+}
+$script:backend = 'HyperV'; $script:procs = @(); $script:depCount = 0; $script:preBlocked = $false; $script:preAtRisk = $true
+$script:preSeconds = 151.3; $script:preFromCache = $false
+foreach ($case in @(
+        @{ Tag = 'InstallUninstall unattended'; Mode = 'Interactive'; P = @{ Scenario = 'InstallUninstall'; Unattended = $true }; Log = $true; Pre = $true }
+        @{ Tag = 'InstallUninstall watched';    Mode = 'Interactive'; P = @{ Scenario = 'InstallUninstall' }; Log = $true; Pre = $false }
+        @{ Tag = 'Update unattended';           Mode = 'Interactive'; P = @{ Scenario = 'Update'; BaselineProjectPath = $base18; Unattended = $true }; Log = $true; Pre = $true }
+        @{ Tag = 'Update unattended, no assertions log'; Mode = 'Interactive'; P = @{ Scenario = 'Update'; BaselineProjectPath = $base18; Unattended = $true }; Log = $false; Pre = $true }
+        @{ Tag = 'Update watched';              Mode = 'Interactive'; P = @{ Scenario = 'Update'; BaselineProjectPath = $base18 }; Log = $true; Pre = $false })) {
+    $script:testMode = $case.Mode; $script:recorded = $null; $script:hv18 = $null; $script:hvCalled = 0; $script:hvLog18 = $case.Log; $script:preCalls = @()
+    $p18 = @{ ProjectPath = $proj } + $case.P
+    try { $null = Test-Win32ToolkitProject @p18 3>$null 6>$null } catch { Bad "$($case.Tag): threw $($_.Exception.Message)" }
+    $t18 = $script:recorded.Timing; $l18 = $script:recorded.Lane
+    $wantPre = if ($case.Pre) { 151.3 } else { $null }
+    $wantCache = if ($case.Pre) { $false } else { $null }
+    if ($script:hv18 -and $script:hv18.Bound -and $t18 -is [hashtable] -and $t18['TotalSeconds'] -eq 300.5 -and $t18['OpenSeconds'] -eq 60.1 -and
+        $t18['PrecheckSeconds'] -eq $wantPre -and $t18['PrecheckFromCache'] -eq $wantCache -and ($case.Pre -or $null -eq $t18['PrecheckSeconds']) -and $l18 -is [hashtable] -and $l18['VMName'] -eq 'vm-run') {
+        Ok "$($case.Tag): -RunInfo passed; the record's Timing (PrecheckSeconds $(if ($case.Pre) { '151.3, PrecheckFromCache $false' } else { '$null: no pre-check' })) and Lane come from the run"
+    } else { Bad "$($case.Tag): bound=$($script:hv18.Bound) pre=$($script:preCalls.Count) timing=$($t18 | ConvertTo-Json -Compress) lane=$($l18 | ConvertTo-Json -Compress)" }
+}
+# A cache hit is recorded as such.
+$script:preFromCache = $true; $script:preSeconds = 0.4; $script:testMode = 'Interactive'; $script:recorded = $null; $script:hvLog18 = $true
+$null = Test-Win32ToolkitProject -ProjectPath $proj -Scenario InstallUninstall -Unattended 3>$null 6>$null
+if ($script:recorded.Timing['PrecheckFromCache'] -eq $true -and $script:recorded.Timing['PrecheckSeconds'] -eq 0.4) { Ok 'a pre-check answered from its cache: PrecheckFromCache $true, PrecheckSeconds 0.4' } else { Bad "cache hit: $($script:recorded.Timing | ConvertTo-Json -Compress)" }
+# Blocked: the NotRun record carries the pre-check's own Timing and Lane.
+$script:preBlocked = $true; $script:preFromCache = $false; $script:preSeconds = 151.3; $script:results = @(); $script:hvCalled = 0
+$null = Test-Win32ToolkitProject -ProjectPath $proj -Scenario InstallUninstall -Unattended 3>$null 6>$null
+$r18 = @($script:results)
+if ($script:hvCalled -eq 0 -and $r18.Count -eq 1 -and $r18[0].NotRun -and $r18[0].Timing -is [hashtable] -and $r18[0].Timing['PrecheckSeconds'] -eq 151.3 -and $r18[0].Timing['PrecheckFromCache'] -eq $false -and
+    $r18[0].Lane -is [hashtable] -and $r18[0].Lane['VMName'] -eq 'vm-pre') {
+    Ok 'blocked: the NotRun record carries Timing.PrecheckSeconds / PrecheckFromCache and the pre-check''s Lane'
+} else { Bad "blocked record: $($r18 | ConvertTo-Json -Compress -Depth 4)" }
+$script:preBlocked = $false; $script:preSeconds = 151.3; $script:preFromCache = $false
+Remove-Item -LiteralPath $base18 -Recurse -Force -ErrorAction SilentlyContinue
 
 Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
 

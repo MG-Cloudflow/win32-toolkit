@@ -174,6 +174,8 @@ try {
     Write-Win32ToolkitTestOutcome -ProjectPath $p -Scenario InstallUninstall -Backend HyperV -Verdict $false
     $rec2 = (Get-Win32ToolkitTestResult -ProjectPath $p)[-1]
     if (-not $rec2.PSObject.Properties['OldArpSurvivors'] -and -not $rec2.PSObject.Properties['Baseline']) { Ok 'InstallUninstall: no survivors, no Baseline (the old record shape)' } else { Bad 'IU record got Update fields' }
+    # Hyper-V speed-up PR 1 (guard): a call without -Timing / -Lane keeps the old shape.
+    if (-not $rec.PSObject.Properties['Timing'] -and -not $rec.PSObject.Properties['Lane'] -and -not $rec2.PSObject.Properties['Timing'] -and -not $rec2.PSObject.Properties['Lane']) { Ok 'no -Timing / -Lane: no Timing or Lane property (the old record shape)' } else { Bad 'Timing/Lane written without the parameters' }
     Set-Content -LiteralPath (Join-Path $p 'Sandbox\Logs\UpdateAssertions.log') -Encoding UTF8 -Value @($nppLine, '[t] ASSERT OldArpGone-PostUpdate = PASS', '[t] RESULT COMPLETE')
     Write-Win32ToolkitTestOutcome -ProjectPath $p -Scenario Update -Backend HyperV -Verdict $true
     $rec3 = (Get-Win32ToolkitTestResult -ProjectPath $p)[-1]

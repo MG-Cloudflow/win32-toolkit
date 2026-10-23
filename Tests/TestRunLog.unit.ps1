@@ -176,6 +176,15 @@ try {
     if ($recs.Count -eq 3 -and $recs[0].LogFolder -eq 'Sandbox\Logs\Runs\20261020-100000_Update_msi' -and @($recs[0].Assertions).Count -eq 1 -and
         -not $recs[1].PSObject.Properties['LogFolder'] -and -not $recs[2].PSObject.Properties['LogFolder']) { Ok 'Write-Win32ToolkitTestOutcome -LogFolder -> LogFolder; omitted or empty -> no property (the old shape)' }
     else { Bad "records: $($recs | ConvertTo-Json -Compress -Depth 4)" }
+    # Hyper-V speed-up PR 1 (guard): the unchanged calls write no Timing / Lane.
+    if (@($recs | Where-Object { $_.PSObject.Properties['Timing'] -or $_.PSObject.Properties['Lane'] }).Count -eq 0) { Ok 'no -Timing / -Lane: no Timing or Lane property (the old shape)' } else { Bad 'Timing/Lane written without the parameters' }
+    # ...and the real recorder passes a Hyper-V run's Timing / Lane through ($null ones are not written).
+    Write-Win32ToolkitTestOutcome -ProjectPath $p -Scenario InstallUninstall -Backend HyperV -Verdict $true -LogFileName 'InstallAssertions.log' -Timing @{ TotalSeconds = 12.34; Phases = @() } -Lane @{ VMName = 'vm'; ConcurrentLanes = 1 }
+    Write-Win32ToolkitTestOutcome -ProjectPath $p -Scenario InstallUninstall -Backend HyperV -Verdict $true -LogFileName 'InstallAssertions.log' -Timing $null -Lane $null
+    $recsT = @(Get-Win32ToolkitTestResult -ProjectPath $p | ForEach-Object { $_ })
+    if ($recsT.Count -eq 5 -and $recsT[3].Timing.TotalSeconds -eq 12.3 -and $recsT[3].Lane.VMName -eq 'vm' -and $recsT[3].Lane.ConcurrentLanes -eq 1 -and
+        -not $recsT[4].PSObject.Properties['Timing'] -and -not $recsT[4].PSObject.Properties['Lane']) { Ok 'Write-Win32ToolkitTestOutcome -Timing / -Lane reach the record; $null ones write no property' }
+    else { Bad "timing records: $($recsT | Select-Object -Skip 3 | ConvertTo-Json -Compress -Depth 4)" }
 
     # --- [6] Get-Win32ToolkitTestRunLogFolder -----------------------------------------------------------
     Write-Host '[6] Get-Win32ToolkitTestRunLogFolder: filters, and only the Runs shape' -ForegroundColor Cyan
