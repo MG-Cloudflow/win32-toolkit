@@ -6,6 +6,9 @@ function New-Win32ToolkitHyperVSession {
         The Hyper-V backend's "initialize" step. Restores the standard (memory-state) checkpoint — which
         returns the guest to a running, logged-in desktop with no boot — waits until PowerShell Direct is
         reachable, and returns an open PSSession for the run. HOST-ONLY (Hyper-V + elevation).
+        The restore goes through Restore-Win32ToolkitTestVMCheckpoint (speed-up PR 2: by default the VM is turned
+        off first, so Hyper-V does not save the memory it is about to discard). A VM found Saved is started
+        silently (resumed); one found in any other state but Running gets the cold-checkpoint warning and a start.
         See knowledge-base/designs/hyperv-backend-plan.md.
     .PARAMETER VMName
         The test VM name.
@@ -19,8 +22,10 @@ function New-Win32ToolkitHyperVSession {
         Optional hashtable the open fills for the caller's record and caches (Hyper-V speed-up PR 1):
         RevertSkipped ($true when no checkpoint was restored: the clean marker was used, or -SkipRevert),
         SecondsSinceTeardown (the marker's age when it was used, else $null), VM (the Get-VM object read after
-        the restore), VMId (its Id, or '') and Warm ($false when the VM was not Running after the restore and
-        had to be started). The output is unchanged: exactly the session.
+        the restore), VMId (its Id, or '') and Warm ($false when the checkpoint landed the VM Off, even when
+        Restore-Win32ToolkitTestVMCheckpoint then started it, or when the VM was not Running or Saved here and had
+        to be started). Speed-up PR 2: RevertMode (TurnOffFirst or Legacy, the mode the restore used; $null when
+        nothing was restored). The output is unchanged: exactly the session.
     .OUTPUTS
         A PSSession (System.Management.Automation.Runspaces.PSSession).
     #>
@@ -36,7 +41,7 @@ function New-Win32ToolkitHyperVSession {
         # screen, recover by rebooting to trigger AutoLogon (Confirm-Win32ToolkitGuestDesktop).
         [switch]$EnsureDesktop,
 
-        # Filled for the caller (speed-up PR 1): RevertSkipped, SecondsSinceTeardown, VM, VMId, Warm.
+        # Filled for the caller (speed-up PR 1): RevertSkipped, SecondsSinceTeardown, VM, VMId, Warm; PR 2: RevertMode.
         [hashtable]$Info
     )
 
@@ -44,6 +49,8 @@ function New-Win32ToolkitHyperVSession {
     $revertSkipped = [bool]$SkipRevert
     $sinceTeardown = $null
     $vm = $null
+    $revertMode = $null
+    $landedOff = $false
     if (-not $SkipRevert) {
         # Skip the open-revert only when THIS process verified a teardown revert of the SAME VM+checkpoint
         # moments ago (Remove-Win32ToolkitHyperVSession stamps $script:HyperVCleanMarker strictly AFTER a
@@ -86,7 +93,11 @@ function New-Win32ToolkitHyperVSession {
             $sinceTeardown = [math]::Round($age, 1)
         }
         else {
-            Restore-VMCheckpoint -VMName $VMName -Name $CheckpointName -Confirm:$false -ErrorAction Stop
+            # Speed-up PR 2 (D4): the restore helper turns the VM off first (HyperVRevertMode TurnOffFirst) and starts it
+            # again; a checkpoint that landed Off is cold even though the helper started it (V-4).
+            $restore = Restore-Win32ToolkitTestVMCheckpoint -VMName $VMName -CheckpointName $CheckpointName
+            $revertMode = if ($restore -and $restore.Mode) { [string]$restore.Mode } else { $null }
+            $landedOff = ($restore -and [string]$restore.Landed -eq 'Off')
         }
     }
     # From here the VM is in use — it can no longer be presumed clean, whatever happens to this run.
@@ -94,8 +105,14 @@ function New-Win32ToolkitHyperVSession {
 
     # After a restore (or with -SkipRevert) the VM is read once more; a used marker already read it.
     if ($null -eq $vm) { $vm = Get-VM -Name $VMName -ErrorAction Stop }
-    $warm = $true
-    if ($vm.State -ne 'Running') {
+    $warm = -not $landedOff
+    if ($vm.State -eq 'Saved') {
+        # A Standard checkpoint restored onto a VM that was off lands Saved: starting it resumes the checkpoint's memory
+        # state (expected, speed-up PR 2; also a marker-skip or -SkipRevert open that finds the VM saved).
+        Write-Verbose "'$VMName' was Saved after restoring '$CheckpointName': resumed."
+        $null = Start-VM -Name $VMName -ErrorAction Stop
+    }
+    elseif ($vm.State -ne 'Running') {
         # A Standard (memory-state) checkpoint restores a RUNNING guest; landing here means the checkpoint
         # was taken powered-off or as a Production checkpoint — every run is paying a full boot.
         Write-Warning "VM '$VMName' was not Running after restoring '$CheckpointName' — the checkpoint is not a warm memory-state one, so every run pays a full boot. Re-take it with the VM running at a logged-in desktop (Standard checkpoint type) to restore warm-revert speed."
@@ -108,6 +125,7 @@ function New-Win32ToolkitHyperVSession {
         $Info['VM']                   = $vm
         $Info['VMId']                 = if ($null -ne $vm -and $null -ne $vm.Id) { [string]$vm.Id } else { '' }
         $Info['Warm']                 = $warm
+        $Info['RevertMode']           = $revertMode
     }
 
     # Warm revert returns a running, logged-in guest; -SkipPrep because the golden image already set the

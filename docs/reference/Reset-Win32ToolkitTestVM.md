@@ -17,6 +17,14 @@ running, logged-in desktop - no OOBE, logon, or boot - so a test run can go stra
 PowerShell Direct.
 Uses the configured VM + checkpoint names by default.
 
+When the checkpoint was taken with automatic checkpoints off, the VM is turned off first, the checkpoint
+is restored and the VM is started again, so Hyper-V does not save the memory it is about to discard
+(the HyperVRevertMode setting: TurnOffFirst by default, Legacy for the plain restore); the VM is running
+afterwards.
+A checkpoint taken with automatic checkpoints on gets the plain restore and one warning.
+The plain restore keeps a running VM running, but leaves a VM that was off or saved before the reset in
+the Saved state: Start-VM resumes it.
+
 ## EXAMPLES
 
 ### Example 1

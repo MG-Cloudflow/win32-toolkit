@@ -86,7 +86,7 @@ function Invoke-Win32ToolkitHyperVRun {
     $timing = @{
         TotalSeconds = $null; OpenSeconds = $null; OpenRevertSkipped = $null; SecondsSinceTeardown = $null
         CopyInSeconds = $null; CopyInSha256 = $null; Phases = [System.Collections.Generic.List[object]]::new()
-        TeardownSeconds = $null; RevertMode = 'Legacy'; PrecheckSeconds = $null; PrecheckFromCache = $null
+        TeardownSeconds = $null; RevertMode = $null; PrecheckSeconds = $null; PrecheckFromCache = $null
     }
     $lane = $null
     $openInfo = @{}
@@ -426,7 +426,8 @@ function Invoke-Win32ToolkitHyperVRun {
         # The record's teardown and total timing, handed to the caller (speed-up PR 1): best effort, never throws.
         try {
             if ($null -ne $teardownWatch) { $timing.TeardownSeconds = [math]::Round($teardownWatch.Elapsed.TotalSeconds, 1) }
-            if ($tdInfo['Restored'] -ne $true) { $timing.RevertMode = $null }
+            # The mode the teardown restore used (speed-up PR 2); $null when no teardown restore ran.
+            $timing.RevertMode = if ($tdInfo['Restored'] -eq $true) { $tdInfo['RevertMode'] } else { $null }
             $timing.TotalSeconds = [math]::Round($runWatch.Elapsed.TotalSeconds, 1)
             if ($null -ne $RunInfo) {
                 $RunInfo['Timing'] = $timing
@@ -437,7 +438,7 @@ function Invoke-Win32ToolkitHyperVRun {
             if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
             Write-Verbose "Hyper-V run record: the timings could not be handed over ($($_.Exception.Message))."
         }
-        # Restore the caller's preference (the teardown Restore-VMCheckpoint above stays silenced), so this
+        # Restore the caller's preference (the teardown restore above stays silenced), so this
         # never leaks to a later Publish/Azure-upload bar. Runs on both the return and the catch paths.
         $ProgressPreference = $prevProgress
     }

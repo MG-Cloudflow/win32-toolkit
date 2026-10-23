@@ -5,7 +5,8 @@ function Remove-Win32ToolkitHyperVSession {
     .DESCRIPTION
         The Hyper-V backend's teardown. Always removes the PSSession. With -Revert (the default for a
         finished run) it restores the warm checkpoint so the VM is left clean and ready for the next run
-        — the untrusted, reused VM never accumulates state from a test.
+        — the untrusted, reused VM never accumulates state from a test. The restore goes through
+        Restore-Win32ToolkitTestVMCheckpoint (speed-up PR 2: by default turn off, restore, start).
     .PARAMETER Session
         The PSSession to close (may be $null if the run failed before it opened).
     .PARAMETER VMName
@@ -16,8 +17,8 @@ function Remove-Win32ToolkitHyperVSession {
         Restore the clean checkpoint after closing the session.
     .PARAMETER Info
         Optional hashtable the teardown fills for the caller's record (Hyper-V speed-up PR 1): Restored ($true
-        when the checkpoint was restored) and RevertMode ('Legacy' after a restore, else $null). Nothing is
-        written to the output.
+        when the checkpoint was restored) and RevertMode (after a restore the mode it used, TurnOffFirst or Legacy;
+        else $null). Nothing is written to the output.
     #>
     [CmdletBinding()]
     param(
@@ -37,9 +38,14 @@ function Remove-Win32ToolkitHyperVSession {
         # let the next run believe the VM is clean. Stamp the process-local clean marker STRICTLY after a
         # successful restore (New-Win32ToolkitHyperVSession consumes it to skip its then-redundant
         # open-revert); on failure clear it and warn, so the next run reverts before starting.
+        # Speed-up PR 2 (D4): the restore helper turns the VM off, restores and starts it again (HyperVRevertMode); it
+        # throws when any of these steps fails, so the marker is stamped only after the whole sequence succeeded.
         try {
-            Restore-VMCheckpoint -VMName $VMName -Name $CheckpointName -Confirm:$false -ErrorAction Stop
-            if ($null -ne $Info) { $Info['Restored'] = $true; $Info['RevertMode'] = 'Legacy' }
+            $restore = Restore-Win32ToolkitTestVMCheckpoint -VMName $VMName -CheckpointName $CheckpointName
+            if ($null -ne $Info) {
+                $Info['Restored'] = $true
+                $Info['RevertMode'] = if ($restore -and $restore.Mode) { [string]$restore.Mode } else { $null }
+            }
             # The marker carries the VM's Id (speed-up PR 1, D25): the next open uses it only for this very VM. When
             # the Id cannot be read there is no marker (one extra restore next time); the restore itself succeeded.
             $vmId = $null

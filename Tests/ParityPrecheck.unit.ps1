@@ -408,6 +408,25 @@ try {
     $x = & $preCase $pListed
     if ($script:cacheGets -eq 0 -and $script:cacheSets.Count -eq 0 -and $script:laneCalls -eq 0 -and $x.R.FromCache -eq $false -and $null -eq $x.R.Lane -and $x.R.Seconds -ge 0) { Ok 'not at risk: no lane, no cache call; FromCache $false, Lane $null' } else { Bad "not at risk: gets=$($script:cacheGets) lane=$($script:laneCalls) $($x.R | ConvertTo-Json -Compress -Depth 3)" }
     & $reset3b
+    # Speed-up PR 2 (V-4): the REAL New-Win32ToolkitHyperVSession (child scope) whose restore helper landed the VM Off and
+    # started it itself, so the open finds it Running: the open still reports a cold checkpoint (Warm $false), the probe
+    # runs, and its answer is not stored (it may predate AutoLogon).
+    $v4 = & {
+        . (Join-Path $repo 'Private\New-Win32ToolkitHyperVSession.ps1')
+        function Restore-VMCheckpoint { param([Parameter(ValueFromRemainingArguments)]$Rest) $script:log.Add('plain-restore') }
+        function Restore-Win32ToolkitTestVMCheckpoint { param($VMName, $CheckpointName, $Mode, [switch]$NoStart)
+            $script:log.Add("helper:${VMName}:$CheckpointName")
+            [pscustomobject]@{ Mode = 'TurnOffFirst'; Landed = 'Off'; TurnOffSeconds = 0.1; RestoreSeconds = 0.1; StartSeconds = 0.1; Started = $true } }
+        function Get-VM { param($Name, $ErrorAction) $script:log.Add("get-vm:$Name"); [pscustomobject]@{ Name = $Name; Id = [guid]$script:laneVmId; State = 'Running'; Uptime = [timespan]::FromSeconds(5) } }
+        function Start-VM { param([Parameter(ValueFromRemainingArguments)]$Rest) $script:log.Add('start') }
+        function Wait-Win32ToolkitVMReady { param($VMName, $Credential, [switch]$SkipPrep, [switch]$ReturnSession) if ($ReturnSession) { 'SESSION' } else { $true } }
+        & $preCase $pAtRisk
+    }
+    if (-not $v4.Threw -and $v4.R.Blocked -and ($v4.Log -join ' > ') -eq 'get-vm:vm-test > helper:vm-test:clean-base > get-vm:vm-test > query:SESSION > remove:SESSION:vm-test:clean-base:revert=True' -and
+        $script:cacheSets.Count -eq 0 -and $v4.Warnings.Count -eq 0) {
+        Ok 'the real open, helper Landed Off + Started (VM Running at the open''s check): asked live, blocked, NOT stored (Warm $false, V-4)'
+    } else { Bad "V-4: sets=$($script:cacheSets.Count) $($v4 | ConvertTo-Json -Compress -Depth 4)" }
+    & $reset3b
 
     # ============================== [3c] the checkpoint attestation (speed-up PR 1) ==============================
     Write-Host '[3c] the checkpoint attestation: a miss reuses the probe''s answer; a hit only reads the stored attestation' -ForegroundColor Cyan

@@ -37,6 +37,12 @@ function Get-Win32ToolkitCheckpointAttestation { param($Session, $VMName, $Check
 function Write-Win32ToolkitCheckpointAdvisory { param($Kind, $Key, $Message) }
 function Test-Win32ToolkitVMConnectOpen { param($VMName, $VMId) $false }
 function Get-Win32ToolkitCheckpointAutoSetting { param($CheckpointId) }
+# C-9 (speed-up PR 2): the real session helpers restore through Restore-Win32ToolkitTestVMCheckpoint. The double calls
+# whichever Restore-VMCheckpoint shadow a section defines (so [3]'s call log stays 'restore>get-vm>session') and returns
+# the helper's object without reading the VM.
+function Restore-Win32ToolkitTestVMCheckpoint { param($VMName, $CheckpointName, $Mode, [switch]$NoStart)
+    $null = Restore-VMCheckpoint -VMName $VMName -Name $CheckpointName -Confirm:$false -ErrorAction Stop
+    [pscustomobject]@{ Mode = 'TurnOffFirst'; Landed = 'Running'; TurnOffSeconds = $null; RestoreSeconds = 0.1; StartSeconds = $null; Started = $false } }
 
 Write-Host '[1] Invoke-Win32ToolkitGuestPhase runs as SYSTEM and returns ONLY the exit code' -ForegroundColor Cyan
 # Simulate a guest that emits output lines followed by the exit code (the shape that broke the [int] cast).
@@ -419,10 +425,13 @@ Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32Toolkit
 # C-12 static check (V-1): in the files below, every call of a helper this round added or changed is assigned or used
 # as an if/elseif condition within its own statement, so nothing it returns can join a caller's [bool] or session.
 $c12Files = @('Private\Invoke-Win32ToolkitHyperVRun.ps1', 'Private\New-Win32ToolkitHyperVSession.ps1', 'Private\Remove-Win32ToolkitHyperVSession.ps1',
-    'Private\Invoke-Win32ToolkitParityPrecheck.ps1', 'Private\Clear-Win32ToolkitHyperVStateCache.ps1')
+    'Private\Invoke-Win32ToolkitParityPrecheck.ps1', 'Private\Clear-Win32ToolkitHyperVStateCache.ps1',
+    # speed-up PR 2: the restore helper and its VM-command caller
+    'Private\Restore-Win32ToolkitTestVMCheckpoint.ps1', 'Public\Reset-Win32ToolkitTestVM.ps1')
 $c12Names = @('Get-Win32ToolkitHyperVLane', 'Get-Win32ToolkitZipContentHash', 'New-Win32ToolkitHyperVSession', 'Remove-Win32ToolkitHyperVSession',
     'Get-Win32ToolkitParityProbeCache', 'Set-Win32ToolkitParityProbeCache', 'Clear-Win32ToolkitParityProbeCache', 'Test-Win32ToolkitVMConnectOpen',
-    'Get-Win32ToolkitCheckpointAttestation', 'Write-Win32ToolkitCheckpointAdvisory', 'Get-Win32ToolkitCheckpointAutoSetting')
+    'Get-Win32ToolkitCheckpointAttestation', 'Write-Win32ToolkitCheckpointAdvisory', 'Get-Win32ToolkitCheckpointAutoSetting',
+    'Restore-Win32ToolkitTestVMCheckpoint')
 $c12Check = {
     param([string[]]$Files, [string[]]$Names)
     $bad = [System.Collections.Generic.List[string]]::new()
@@ -533,9 +542,29 @@ finally {
 }
 if ($out14f.Count -eq 1 -and $out14f[0] -is [bool] -and $ri14f['Timing'] -and $ri14f['Timing'].ContainsKey('RevertMode') -and $null -eq $ri14f['Timing']['RevertMode']) { Ok 'a failed teardown restore (Restored $false): Timing.RevertMode $null, the output exactly one [bool]' } else { Bad "failed teardown: out=$(@($out14f | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ') timing=$($ri14f['Timing'] | ConvertTo-Json -Compress -Depth 4)" }
 if ($out14g.Count -eq 1 -and $out14g[0] -is [bool] -and $ri14g['Timing'] -and $ri14g['Timing'].ContainsKey('RevertMode') -and $null -eq $ri14g['Timing']['RevertMode']) { Ok 'a teardown that reports nothing (no Restored key): Timing.RevertMode $null, the output exactly one [bool]' } else { Bad "silent teardown: out=$(@($out14g | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ') timing=$($ri14g['Timing'] | ConvertTo-Json -Compress -Depth 4)" }
+# Speed-up PR 2: Timing.RevertMode is the mode the teardown restore used (Remove-Win32ToolkitHyperVSession -Info), not a
+# constant: TurnOffFirst and Legacy both reach the record.
+${function:Remove-Win32ToolkitHyperVSession_Saved} = ${function:Remove-Win32ToolkitHyperVSession}
+$script:td14Mode = 'TurnOffFirst'
+function Remove-Win32ToolkitHyperVSession { param($Session, $VMName, $CheckpointName, [switch]$Revert, [hashtable]$Info)
+    if ($null -ne $Info) { $Info['Restored'] = $true; $Info['RevertMode'] = $script:td14Mode }
+    [pscustomobject]@{ Leak = 'teardown' }
+}
+try {
+    $ri14h = @{}
+    $out14h = @(Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(@{ Label = 'Install'; Command = '0' }) -RunInfo $ri14h 3>$null 6>$null)
+    $script:td14Mode = 'Legacy'
+    $ri14i = @{}
+    $out14i = @(Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(@{ Label = 'Install'; Command = '0' }) -RunInfo $ri14i 3>$null 6>$null)
+}
+finally {
+    ${function:Remove-Win32ToolkitHyperVSession} = ${function:Remove-Win32ToolkitHyperVSession_Saved}
+    Remove-Item Function:\Remove-Win32ToolkitHyperVSession_Saved
+}
+if ($out14h.Count -eq 1 -and $out14h[0] -is [bool] -and $ri14h['Timing']['RevertMode'] -ceq 'TurnOffFirst' -and $ri14i['Timing']['RevertMode'] -ceq 'Legacy') { Ok 'Timing.RevertMode comes from the teardown -Info (TurnOffFirst, Legacy), the output exactly one [bool]' } else { Bad "revert mode: out=$(@($out14h | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ') modes=$($ri14h['Timing']['RevertMode'])/$($ri14i['Timing']['RevertMode'])" }
 # C-12 static check.
 $c12 = & $c12Check $c12Files $c12Names
-if ($c12.Seen -ge 15 -and $c12.Bad.Count -eq 0) { Ok "C-12: all $($c12.Seen) calls of the round's helpers in the provider, the pre-check and the session helpers are assigned or tested" } else { Bad "C-12: seen=$($c12.Seen) unassigned: $($c12.Bad -join ', ')" }
+if ($c12.Seen -ge 24 -and $c12.Bad.Count -eq 0) { Ok "C-12: all $($c12.Seen) calls of the round's helpers in the provider, the pre-check, the session helpers, the restore helper and Reset are assigned or tested" } else { Bad "C-12: seen=$($c12.Seen) unassigned: $($c12.Bad -join ', ')" }
 
 Write-Host '[15] CopyInSha256: the copy-in zip''s content hash, computed in the prebuild thread job (A-3, V-8)' -ForegroundColor Cyan
 if (-not (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue)) { Bad 'Start-ThreadJob is not available: the prebuild cannot be tested' }

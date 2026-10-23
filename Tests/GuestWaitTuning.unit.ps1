@@ -176,6 +176,11 @@ function New-PSSession { param([Parameter(ValueFromRemainingArguments)]$Rest) $s
 $script:sessThrow = $false
 function Start-Sleep { param([int]$Seconds, [int]$Milliseconds) }
 function Restore-VMCheckpoint { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+# C-9 (speed-up PR 2): the open restores through Restore-Win32ToolkitTestVMCheckpoint; the double calls the shadow above
+# and returns the helper's object (never a real Get-VMCheckpoint / Stop-VM).
+function Restore-Win32ToolkitTestVMCheckpoint { param($VMName, $CheckpointName, $Mode, [switch]$NoStart)
+    $null = Restore-VMCheckpoint -VMName $VMName -Name $CheckpointName
+    [pscustomobject]@{ Mode = 'TurnOffFirst'; Landed = 'Saved'; TurnOffSeconds = 0.1; RestoreSeconds = 0.1; StartSeconds = 0.1; Started = $true } }
 function Get-VM { param([Parameter(ValueFromRemainingArguments)]$Rest) [pscustomobject]@{ State = 'Running' } }
 function Confirm-Win32ToolkitGuestDesktop { param([Parameter(ValueFromRemainingArguments)]$Rest) $script:calls += 'confirm'; $true }
 $cred = New-Object System.Management.Automation.PSCredential('u', (New-Object System.Security.SecureString))

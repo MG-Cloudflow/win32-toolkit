@@ -7,6 +7,10 @@
       skips its open-revert ONLY when the marker matches the same VM+checkpoint and is < 10 min old.
       Fail-safe: no marker / mismatch / stale / failed teardown ⇒ revert exactly as before.
 
+    Speed-up PR 2: both helpers restore through Restore-Win32ToolkitTestVMCheckpoint (a double here, see
+    HyperVRevertMode.unit for the helper itself). [e] (PR 2): a Saved VM is resumed silently, Off warns, Info.Warm
+    follows the helper's Landed (V-4). [j]: the teardown stamps the marker only after the whole helper succeeded.
+
     All Hyper-V cmdlets are shadowed; nothing touches a real VM.
 
     Run:  pwsh -File Tests\HyperVSessionRevert.unit.ps1
@@ -39,6 +43,18 @@ $script:vmId = [guid]'0e5f9e66-1111-2222-3333-444455556666'
 $script:vmUptime = [timespan]::FromDays(1)
 $script:started = 0
 function Start-VM { param([Parameter(ValueFromRemainingArguments)]$Rest) $script:started++ }
+# C-9 (speed-up PR 2): both session helpers restore through Restore-Win32ToolkitTestVMCheckpoint. The double calls the
+# Restore-VMCheckpoint shadow above (so every restore count below stays valid) and RETURNS AN OBJECT, as the real helper
+# does (an unassigned call would leak it): Mode $script:helperMode, Landed = the VM state unless $script:helperLanded
+# says otherwise, Started $script:helperStarted. $script:helperFail makes it throw (a failed turn-off, restore or start).
+$script:helperMode = 'TurnOffFirst'; $script:helperLanded = $null; $script:helperStarted = $false; $script:helperFail = ''; $script:helperCalls = 0
+function Restore-Win32ToolkitTestVMCheckpoint { param($VMName, $CheckpointName, $Mode, [switch]$NoStart)
+    $script:helperCalls++
+    if ($script:helperFail) { throw "simulated $($script:helperFail) failure" }
+    $null = Restore-VMCheckpoint -VMName $VMName -Name $CheckpointName -Confirm:$false -ErrorAction Stop
+    [pscustomobject]@{ Mode = $script:helperMode; Landed = $(if ($null -ne $script:helperLanded) { $script:helperLanded } else { [string]$script:vmState })
+        TurnOffSeconds = $null; RestoreSeconds = 0.1; StartSeconds = $null; Started = $script:helperStarted }
+}
 function Wait-Win32ToolkitVMReady { param([Parameter(ValueFromRemainingArguments)]$Rest) $true }
 function New-PSSession { param([Parameter(ValueFromRemainingArguments)]$Rest) 'fake-session' }
 function Remove-PSSession { param([Parameter(ValueFromRemainingArguments)]$Rest) }
@@ -51,7 +67,8 @@ function Remove-ItemProperty { throw 'real HKCU must not be touched' }
 
 $cred = New-Object System.Management.Automation.PSCredential('u', (ConvertTo-SecureString 'p' -AsPlainText -Force))
 function Reset-State { $script:restores = 0; $script:restoreFail = $false; $script:HyperVCleanMarker = $null; $script:started = 0; $script:vmState = 'Running'
-    $script:vmId = [guid]'0e5f9e66-1111-2222-3333-444455556666'; $script:vmUptime = [timespan]::FromDays(1); $script:vmGetThrows = $false }
+    $script:vmId = [guid]'0e5f9e66-1111-2222-3333-444455556666'; $script:vmUptime = [timespan]::FromDays(1); $script:vmGetThrows = $false
+    $script:helperMode = 'TurnOffFirst'; $script:helperLanded = $null; $script:helperStarted = $false; $script:helperFail = ''; $script:helperCalls = 0 }
 
 # ── (a) baseline: no marker ⇒ open reverts ─────────────────────────────────────────────────────────
 Write-Host '[a] no marker -> the open-revert runs (unchanged default)' -ForegroundColor Cyan
@@ -163,7 +180,8 @@ if ($o.Count -eq 1 -and [object]::ReferenceEquals($o[0], $sessionDouble)) { Ok '
 Reset-State
 $tm = @{}
 $o = @(Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert -Info $tm)
-if ($o.Count -eq 0 -and $tm['Restored'] -eq $true -and $tm['RevertMode'] -ceq 'Legacy') { Ok 'Remove- -Info after a restore: Restored $true, RevertMode Legacy; it emits nothing' } else { Bad "teardown: count=$($o.Count) info=$($tm | ConvertTo-Json -Compress)" }
+# Speed-up PR 2: RevertMode is the mode the restore helper used (the double's TurnOffFirst here; was the constant Legacy).
+if ($o.Count -eq 0 -and $tm['Restored'] -eq $true -and $tm['RevertMode'] -ceq $script:helperMode) { Ok "Remove- -Info after a restore: Restored `$true, RevertMode $($script:helperMode) (the helper's); it emits nothing" } else { Bad "teardown: count=$($o.Count) info=$($tm | ConvertTo-Json -Compress)" }
 Reset-State
 $script:restoreFail = $true
 $tm = @{}
@@ -239,6 +257,73 @@ $script:HyperVReadyCache  = @{ Reasons = @(); At = Get-Date }
 Clear-Win32ToolkitHyperVStateCache
 if ($null -eq $script:HyperVCleanMarker -and $null -eq $script:HyperVReadyCache) { Ok 'without -MarkerOnly: the marker and the readiness memo go' } else { Bad 'full clear left a cache' }
 if ($probeAfterMarkerOnly -eq 0 -and $script:probeClears -eq 1) { Ok 'the stored checkpoint answers are cleared by a full clear only (Clear-Win32ToolkitParityProbeCache once)' } else { Bad "probe clears: after -MarkerOnly $probeAfterMarkerOnly, after full $($script:probeClears)" }
+
+# ── (e) extended, Hyper-V speed-up PR 2 (B1, V-4): Saved is expected; a checkpoint that landed Off is cold ──────────────
+Write-Host '[e] (PR 2) the open: a Saved VM is resumed silently, Off still warns; Info.Warm follows the helper''s Landed' -ForegroundColor Cyan
+$sessionDouble = [pscustomobject]@{ Kind = 'session-double' }
+${function:Wait-Win32ToolkitVMReady_Saved} = ${function:Wait-Win32ToolkitVMReady}
+function Wait-Win32ToolkitVMReady { param($VMName, $Credential, [switch]$SkipPrep, [switch]$ReturnSession) if ($ReturnSession) { $sessionDouble } else { $true } }
+$openE = {
+    $info = @{}
+    $wv = $null
+    $o = @(New-Win32ToolkitHyperVSession -VMName 'vmA' -Credential $cred -CheckpointName 'clean-base' -Info $info -WarningVariable wv 3>$null)
+    [pscustomobject]@{ Info = $info; Warnings = @($wv | ForEach-Object { "$_" }); Exact = ($o.Count -eq 1 -and [object]::ReferenceEquals($o[0], $sessionDouble)) }
+}
+# A Saved VM after the restore (Legacy on a VM that was off, or a helper run with -NoStart): resumed, no warning.
+Reset-State; $script:vmState = 'Saved'; $script:helperMode = 'Legacy'
+$e = & $openE
+if ($e.Exact -and $script:started -eq 1 -and $e.Warnings.Count -eq 0 -and $e.Info['Warm'] -eq $true -and $e.Info['RevertMode'] -ceq 'Legacy') { Ok 'Saved after the restore -> Start-VM (resume) without the cold warning; Warm $true; RevertMode from the helper' } else { Bad "saved: exact=$($e.Exact) started=$($script:started) warnings=$($e.Warnings -join ' | ') info=$($e.Info | ConvertTo-Json -Compress -Depth 1)" }
+# Off after the restore: the cold warning (today's text) and a start.
+Reset-State; $script:vmState = 'Off'
+$e = & $openE
+if ($e.Exact -and $script:started -eq 1 -and $e.Warnings.Count -eq 1 -and $e.Warnings[0] -like "VM 'vmA' was not Running after restoring 'clean-base'*memory-state*" -and $e.Info['Warm'] -eq $false) { Ok 'Off after the restore -> the cold warning (unchanged text), Start-VM, Warm $false' } else { Bad "off: started=$($script:started) warnings=$($e.Warnings -join ' | ')" }
+# The helper turned the VM off, the checkpoint landed Off and the helper started it (the VM is Running here): still cold.
+Reset-State; $script:helperLanded = 'Off'; $script:helperStarted = $true; $script:vmState = 'Running'
+$e = & $openE
+if ($e.Exact -and $script:started -eq 0 -and $e.Warnings.Count -eq 0 -and $e.Info['Warm'] -eq $false -and $e.Info['RevertMode'] -ceq 'TurnOffFirst') { Ok 'helper Landed Off + Started $true (VM Running at the open''s check) -> Info.Warm $false (V-4); no second warning or start here' } else { Bad "landed off: started=$($script:started) warnings=$($e.Warnings -join ' | ') info=$($e.Info | ConvertTo-Json -Compress -Depth 1)" }
+foreach ($landed in 'Saved', 'Running') {
+    Reset-State; $script:helperLanded = $landed; $script:helperStarted = ($landed -eq 'Saved'); $script:vmState = 'Running'
+    $e = & $openE
+    if ($e.Exact -and $e.Info['Warm'] -eq $true -and $e.Warnings.Count -eq 0) { Ok "helper Landed $landed -> Info.Warm `$true" } else { Bad "landed ${landed}: info=$($e.Info | ConvertTo-Json -Compress -Depth 1)" }
+}
+# A marker-skip open restores nothing: RevertMode $null; a skipped open that finds the VM Saved resumes it silently.
+Reset-State
+$script:HyperVCleanMarker = @{ VMName = 'vmA'; VMId = [string]$script:vmId; CheckpointName = 'clean-base'; StampedAt = (Get-Date).AddSeconds(-30) }
+$e = & $openE
+if ($e.Exact -and $script:helperCalls -eq 0 -and $e.Info['RevertSkipped'] -eq $true -and $null -eq $e.Info['RevertMode']) { Ok 'a marker skip: no helper call, RevertMode $null' } else { Bad "skip: calls=$($script:helperCalls) info=$($e.Info | ConvertTo-Json -Compress -Depth 1)" }
+Reset-State; $script:vmState = 'Saved'
+$o = @(New-Win32ToolkitHyperVSession -VMName 'vmA' -Credential $cred -CheckpointName 'clean-base' -SkipRevert -WarningVariable wvS 3>$null)
+if ($o.Count -eq 1 -and $script:started -eq 1 -and @($wvS).Count -eq 0) { Ok '-SkipRevert onto a Saved VM -> resumed without the cold warning' } else { Bad "skiprevert saved: started=$($script:started) warnings=$(@($wvS).Count)" }
+
+# ── (j) Hyper-V speed-up PR 2: the teardown stamps only after the whole helper succeeded; nothing leaks (C-12) ──────────
+Write-Host '[j] (PR 2) teardown: marker only after the whole restore helper succeeded; a failed step -> no marker + warning; no output leaks' -ForegroundColor Cyan
+Reset-State
+$tj = @{}
+$o = @(Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert -Info $tj)
+if ($o.Count -eq 0 -and $script:helperCalls -eq 1 -and $script:HyperVCleanMarker -and $script:HyperVCleanMarker.VMName -eq 'vmA' -and $tj['Restored'] -eq $true -and $tj['RevertMode'] -ceq 'TurnOffFirst') {
+    Ok 'success: one helper call, the marker stamped, Info RevertMode TurnOffFirst; Remove- emits nothing although the helper double returns an object'
+} else { Bad "teardown ok: out=$($o.Count) calls=$($script:helperCalls) marker=$($null -ne $script:HyperVCleanMarker) info=$($tj | ConvertTo-Json -Compress)" }
+Reset-State; $script:helperMode = 'Legacy'
+$tj = @{}
+$null = Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert -Info $tj
+if ($tj['RevertMode'] -ceq 'Legacy') { Ok 'a Legacy restore: Info RevertMode Legacy' } else { Bad "legacy mode: $($tj | ConvertTo-Json -Compress)" }
+foreach ($step in 'turn-off', 'restore', 'start') {
+    Reset-State
+    $script:HyperVCleanMarker = @{ VMName = 'vmA'; VMId = [string]$script:vmId; CheckpointName = 'clean-base'; StampedAt = Get-Date }   # a prior stamp
+    $script:helperFail = $step
+    $tj = @{}; $wj = $null
+    $o = @(Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert -Info $tj -WarningVariable wj 3>$null)
+    if ($o.Count -eq 0 -and $null -eq $script:HyperVCleanMarker -and @($wj).Count -eq 1 -and "$wj" -match 'FAILED' -and "$wj" -match "simulated $step failure" -and $tj['Restored'] -eq $false -and $null -eq $tj['RevertMode']) {
+        Ok "the helper fails at the $step -> no marker, the FAILED warning, Restored `$false, RevertMode `$null"
+    } else { Bad "$step fails: out=$($o.Count) marker=$($null -ne $script:HyperVCleanMarker) warnings=$($wj -join ' | ') info=$($tj | ConvertTo-Json -Compress)" }
+}
+# The open after a failed teardown restores (fail-safe held) and returns exactly the session.
+Reset-State
+$e = & $openE
+if ($e.Exact -and $script:helperCalls -eq 1 -and $script:restores -eq 1) { Ok 'the open: one helper call; New- returns exactly the session double although the helper double returns an object' } else { Bad "open: exact=$($e.Exact) calls=$($script:helperCalls)" }
+${function:Wait-Win32ToolkitVMReady} = ${function:Wait-Win32ToolkitVMReady_Saved}
+Remove-Item Function:\Wait-Win32ToolkitVMReady_Saved
+Reset-State
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'ALL PASS' -ForegroundColor Green; exit 0 }
