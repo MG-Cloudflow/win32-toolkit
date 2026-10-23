@@ -44,6 +44,7 @@ Do **not** hand-edit `HyperVGuestUser` / `HyperVGuestSecret`. See [Guest credent
 | `HyperVGuestSecret` | *(not set)* | DPAPI blob | The guest admin password, encrypted. Never store a plain-text password here. |
 | `HyperVPrecheckCache` | `On` | `On`, `Off` | Keep the Intune-parity pre-check's answer per test VM checkpoint (see below). |
 | `HyperVPrecheckProbe` | *(not set)* | written by the toolkit | The stored pre-check answer. Never edit it; the VM commands delete it. |
+| `HyperVCheckpointAttestation` | *(not set)* | written by the toolkit | The stored sign-in and Defender state of the test VM's checkpoint ([Testing](testing.md)). Never edit it; the VM commands delete it. |
 
 ## BasePath
 

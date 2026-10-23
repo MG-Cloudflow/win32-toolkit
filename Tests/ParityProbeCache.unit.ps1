@@ -142,12 +142,12 @@ if ($probeHash -ceq $pinnedProbe) { Ok 'Get-Win32ToolkitGuestSignedInUser matche
 $lf = $probeText -replace "`r`n", "`n"
 $crlf = $lf -replace "`n", "`r`n"
 if ((Get-DefinitionHash $lf 'Get-Win32ToolkitGuestSignedInUser') -ceq (Get-DefinitionHash $crlf 'Get-Win32ToolkitGuestSignedInUser')) { Ok 'the hash of an LF and of a CRLF copy are equal (core.autocrlf does not matter)' } else { Bad 'line endings change the hash' }
-$defaults = foreach ($name in 'Get-Win32ToolkitParityProbeCache', 'Set-Win32ToolkitParityProbeCache') {
+$defaults = foreach ($name in 'Get-Win32ToolkitParityProbeCache', 'Set-Win32ToolkitParityProbeCache', 'Get-Win32ToolkitCheckpointAttestation') {
     $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repo "Private\$name.ps1"), [ref]$null, [ref]$null)
     $p = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.ParameterAst] -and $n.Name.VariablePath.UserPath -eq 'ProbeVersion' }, $true)
     if ($p -and $p.DefaultValue) { $p.DefaultValue.Extent.Text } else { '<none>' }
 }
-if (@($defaults | Select-Object -Unique).Count -eq 1 -and $defaults[0] -eq '1') { Ok "the -ProbeVersion defaults are equal ($($defaults -join ', '))" } else { Bad "ProbeVersion defaults: $($defaults -join ', ')" }
+if (@($defaults).Count -eq 3 -and @($defaults | Select-Object -Unique).Count -eq 1 -and $defaults[0] -eq '1') { Ok "the three -ProbeVersion defaults (Get-/Set-Win32ToolkitParityProbeCache, Get-Win32ToolkitCheckpointAttestation) are equal ($($defaults -join ', '))" } else { Bad "ProbeVersion defaults: $($defaults -join ', ')" }
 
 Write-Host '[4] Test-Win32ToolkitVMConnectOpen' -ForegroundColor Cyan
 $script:cimProcs = @(); $script:cimThrows = $false; $script:cimFilter = $null

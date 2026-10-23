@@ -263,6 +263,11 @@ try {
         $script:cacheSets.Add([pscustomobject]@{ VMId = $VMId; CheckpointId = $CheckpointId; Ticks = $CreationTimeUtcTicks; SignedIn = $SignedIn; SessionCount = $SessionCount }) }
     $script:vmcAnswers = [System.Collections.Generic.Queue[bool]]::new(); $script:vmcCalls = 0
     function Test-Win32ToolkitVMConnectOpen { param($VMName, $VMId) $script:vmcCalls++; if ($script:vmcAnswers.Count) { $script:vmcAnswers.Dequeue() } else { $false } }
+    # The checkpoint attestation (P1-4): records how it was asked, returns $script:attAnswer ($null by default).
+    $script:attCalls = [System.Collections.Generic.List[object]]::new(); $script:attAnswer = $null
+    function Get-Win32ToolkitCheckpointAttestation { param($Session, $VMName, $CheckpointName, $VMId, $CheckpointId, $CreationTimeUtcTicks, [switch]$AllowLive, [switch]$AllowStore, $SignedInAnswer)
+        $script:attCalls.Add([pscustomobject]@{ Session = $Session; AllowLive = [bool]$AllowLive; AllowStore = [bool]$AllowStore; SignedInAnswer = $SignedInAnswer; VMId = $VMId; CheckpointId = $CheckpointId; Ticks = $CreationTimeUtcTicks })
+        $script:attAnswer }
     $signedIn = [pscustomobject]@{ Checked = $true; SignedIn = $true; SessionCount = 1; Reason = '' }
     $nobody   = [pscustomobject]@{ Checked = $true; SignedIn = $false; SessionCount = 0; Reason = '' }
     $unknown  = [pscustomobject]@{ Checked = $false; SignedIn = $false; SessionCount = 0; Reason = 'the guest returned no answer' }
@@ -404,12 +409,52 @@ try {
     if ($script:cacheGets -eq 0 -and $script:cacheSets.Count -eq 0 -and $script:laneCalls -eq 0 -and $x.R.FromCache -eq $false -and $null -eq $x.R.Lane -and $x.R.Seconds -ge 0) { Ok 'not at risk: no lane, no cache call; FromCache $false, Lane $null' } else { Bad "not at risk: gets=$($script:cacheGets) lane=$($script:laneCalls) $($x.R | ConvertTo-Json -Compress -Depth 3)" }
     & $reset3b
 
+    # ============================== [3c] the checkpoint attestation (speed-up PR 1) ==============================
+    Write-Host '[3c] the checkpoint attestation: a miss reuses the probe''s answer; a hit only reads the stored attestation' -ForegroundColor Cyan
+    & $reset3b
+    $script:attCalls.Clear()
+    $script:attAnswer = [pscustomobject]@{ SignedIn = $true; DefenderRealTime = $true; DefenderExclusionCount = 0; SignatureAgeDays = 3; FromCache = $false }
+    $x = & $preCase $pAtRisk
+    $c = @($script:attCalls)
+    if ($c.Count -eq 1 -and $c[0].Session -eq 'SESSION' -and [object]::ReferenceEquals($c[0].SignedInAnswer, $signedIn) -and $c[0].AllowLive -and $c[0].AllowStore -and $c[0].VMId -eq $script:laneVmId -and
+        $c[0].CheckpointId -eq '29613cba-d62f-4998-a421-df2e124a2b4f' -and $c[0].Ticks -eq 638653893400000000 -and $x.R.Lane.Attestation -and $x.R.Lane.Attestation.SignatureAgeDays -eq 3 -and @($x.Log | Where-Object { $_ -like 'query:*' }).Count -eq 1) {
+        Ok 'miss: the attestation gets the session and the probe''s answer (-SignedInAnswer, no second sign-in probe), -AllowLive/-AllowStore, the lane identity; it reaches Lane.Attestation'
+    } else { Bad "miss: calls=$($c | ConvertTo-Json -Compress -Depth 2) lane=$($x.R.Lane | ConvertTo-Json -Compress -Depth 3)" }
+    foreach ($case in @(
+            @{ Tag = 'a console seen after the probe'; Set = { foreach ($b in $false, $true) { $script:vmcAnswers.Enqueue($b) } }; Live = $true; Store = $false }
+            @{ Tag = 'the open landed cold'; Set = { $script:openWarm = $false }; Live = $false; Store = $false }
+            @{ Tag = 'the open skipped its restore'; Set = { $script:openRevertSkipped = $true }; Live = $false; Store = $false })) {
+        & $reset3b
+        $script:attCalls.Clear()
+        & $case.Set
+        $null = & $preCase $pAtRisk
+        $c = @($script:attCalls)
+        if ($c.Count -eq 1 -and $c[0].AllowLive -eq $case.Live -and $c[0].AllowStore -eq $case.Store) { Ok "$($case.Tag): -AllowLive $($case.Live), -AllowStore $($case.Store)" } else { Bad "$($case.Tag): $($c | ConvertTo-Json -Compress -Depth 2)" }
+    }
+    & $reset3b
+    $script:attCalls.Clear()
+    $script:cacheAnswer = [pscustomobject]@{ SignedIn = $true; SessionCount = 1 }
+    $script:attAnswer = [pscustomobject]@{ SignedIn = $true; DefenderRealTime = $true; DefenderExclusionCount = 0; SignatureAgeDays = 3; FromCache = $true }
+    $x = & $preCase $pAtRisk
+    $c = @($script:attCalls)
+    if ($x.R.FromCache -and $c.Count -eq 1 -and $c[0].AllowLive -eq $false -and $c[0].AllowStore -eq $false -and $x.R.Lane.Attestation.FromCache -and @($x.Log | Where-Object { $_ -like 'query:*' -or $_ -like 'open:*' }).Count -eq 0) {
+        Ok 'hit: the attestation is only read from its store (-AllowLive off: no guest call), and reaches Lane.Attestation'
+    } else { Bad "hit: $($c | ConvertTo-Json -Compress -Depth 2)" }
+    ${function:Get-Win32ToolkitCheckpointAttestation_Saved} = ${function:Get-Win32ToolkitCheckpointAttestation}
+    function Get-Win32ToolkitCheckpointAttestation { param([Parameter(ValueFromRemainingArguments)]$Rest) throw 'attestation broke' }
+    & $reset3b
+    $x = & $preCase $pAtRisk
+    ${function:Get-Win32ToolkitCheckpointAttestation} = ${function:Get-Win32ToolkitCheckpointAttestation_Saved}
+    Remove-Item Function:\Get-Win32ToolkitCheckpointAttestation_Saved
+    if (-not $x.Threw -and $x.R.Blocked -and $x.Warnings.Count -eq 0 -and $script:cacheSets.Count -eq 1) { Ok 'a throwing attestation: the pre-check answer is unchanged (blocked, no warning, the probe answer still stored)' } else { Bad "attestation throws: $($x | ConvertTo-Json -Compress -Depth 3)" }
+    & $reset3b; $script:attAnswer = $null; $script:attCalls.Clear()
+
     # ============================== [4] file hygiene ==============================
     Write-Host '[4] the pre-check files: ASCII, one function, every catch starts with the C-2 line' -ForegroundColor Cyan
     $c2 = "if (`$_.FullyQualifiedErrorId -like 'W32T.*') { throw }"
     # Speed-up PR 1: the four helpers the pre-check now calls.
     foreach ($name in 'Get-Win32ToolkitParityDialogRisk', 'Get-Win32ToolkitGuestSignedInUser', 'Invoke-Win32ToolkitParityPrecheck',
-        'Get-Win32ToolkitHyperVLane', 'Get-Win32ToolkitParityProbeCache', 'Set-Win32ToolkitParityProbeCache', 'Test-Win32ToolkitVMConnectOpen') {
+        'Get-Win32ToolkitHyperVLane', 'Get-Win32ToolkitParityProbeCache', 'Set-Win32ToolkitParityProbeCache', 'Test-Win32ToolkitVMConnectOpen', 'Get-Win32ToolkitCheckpointAttestation') {
         $file = Join-Path $repo "Private\$name.ps1"
         $errs = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$errs)

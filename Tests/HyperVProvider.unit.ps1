@@ -32,6 +32,10 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 # double returns nothing (the run's Lane stays $null) and the hash double emits nothing (no CopyInSha256).
 function Get-Win32ToolkitHyperVLane { param($VMName, $CheckpointName, $VM) }
 function Get-Win32ToolkitZipContentHash { param($ZipPath) }
+# ...and the attestation, advisory and console helpers (P1-4): no attestation, nothing printed, no console.
+function Get-Win32ToolkitCheckpointAttestation { param($Session, $VMName, $CheckpointName, $VMId, $CheckpointId, $CreationTimeUtcTicks, [switch]$AllowLive, [switch]$AllowStore, $SignedInAnswer) }
+function Write-Win32ToolkitCheckpointAdvisory { param($Kind, $Key, $Message) }
+function Test-Win32ToolkitVMConnectOpen { param($VMName, $VMId) $false }
 
 Write-Host '[1] Invoke-Win32ToolkitGuestPhase runs as SYSTEM and returns ONLY the exit code' -ForegroundColor Cyan
 # Simulate a guest that emits output lines followed by the exit code (the shape that broke the [int] cast).
@@ -416,7 +420,8 @@ Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32Toolkit
 $c12Files = @('Private\Invoke-Win32ToolkitHyperVRun.ps1', 'Private\New-Win32ToolkitHyperVSession.ps1', 'Private\Remove-Win32ToolkitHyperVSession.ps1',
     'Private\Invoke-Win32ToolkitParityPrecheck.ps1', 'Private\Clear-Win32ToolkitHyperVStateCache.ps1')
 $c12Names = @('Get-Win32ToolkitHyperVLane', 'Get-Win32ToolkitZipContentHash', 'New-Win32ToolkitHyperVSession', 'Remove-Win32ToolkitHyperVSession',
-    'Get-Win32ToolkitParityProbeCache', 'Set-Win32ToolkitParityProbeCache', 'Clear-Win32ToolkitParityProbeCache', 'Test-Win32ToolkitVMConnectOpen')
+    'Get-Win32ToolkitParityProbeCache', 'Set-Win32ToolkitParityProbeCache', 'Clear-Win32ToolkitParityProbeCache', 'Test-Win32ToolkitVMConnectOpen',
+    'Get-Win32ToolkitCheckpointAttestation', 'Write-Win32ToolkitCheckpointAdvisory')
 $c12Check = {
     param([string[]]$Files, [string[]]$Names)
     $bad = [System.Collections.Generic.List[string]]::new()
@@ -529,7 +534,7 @@ if ($out14f.Count -eq 1 -and $out14f[0] -is [bool] -and $ri14f['Timing'] -and $r
 if ($out14g.Count -eq 1 -and $out14g[0] -is [bool] -and $ri14g['Timing'] -and $ri14g['Timing'].ContainsKey('RevertMode') -and $null -eq $ri14g['Timing']['RevertMode']) { Ok 'a teardown that reports nothing (no Restored key): Timing.RevertMode $null, the output exactly one [bool]' } else { Bad "silent teardown: out=$(@($out14g | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ') timing=$($ri14g['Timing'] | ConvertTo-Json -Compress -Depth 4)" }
 # C-12 static check.
 $c12 = & $c12Check $c12Files $c12Names
-if ($c12.Seen -ge 11 -and $c12.Bad.Count -eq 0) { Ok "C-12: all $($c12.Seen) calls of the round's helpers in the provider, the pre-check and the session helpers are assigned or tested" } else { Bad "C-12: seen=$($c12.Seen) unassigned: $($c12.Bad -join ', ')" }
+if ($c12.Seen -ge 15 -and $c12.Bad.Count -eq 0) { Ok "C-12: all $($c12.Seen) calls of the round's helpers in the provider, the pre-check and the session helpers are assigned or tested" } else { Bad "C-12: seen=$($c12.Seen) unassigned: $($c12.Bad -join ', ')" }
 
 Write-Host '[15] CopyInSha256: the copy-in zip''s content hash, computed in the prebuild thread job (A-3, V-8)' -ForegroundColor Cyan
 if (-not (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue)) { Bad 'Start-ThreadJob is not available: the prebuild cannot be tested' }
@@ -579,9 +584,103 @@ else {
         Remove-Item -LiteralPath $proj15, $base15 -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
-Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential, Function:\Read-Host
+
+Write-Host '[16] the checkpoint attestation: allowed only for a warm, restored, unattended open; advisories once, Notes every run (D34)' -ForegroundColor Cyan
+# The real advisory (it must emit nothing, V-1) and the safe-text helper; the attestation and console helpers shadowed.
+. (Join-Path $repo 'Private\Write-Win32ToolkitCheckpointAdvisory.ps1')
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+$script:HyperVAdvised = $null
+$script:skip14 = $false; $script:since14 = $null
+$script:warm16 = $true
+${function:New-Win32ToolkitHyperVSession} = {
+    param($VMName, $Credential, $CheckpointName, [switch]$SkipRevert, [switch]$EnsureDesktop, [hashtable]$Info)
+    if ($null -ne $Info) { $Info['RevertSkipped'] = $script:skip14; $Info['SecondsSinceTeardown'] = $script:since14; $Info['VM'] = [pscustomobject]@{ Id = $vmId14 }; $Info['VMId'] = $vmId14; $Info['Warm'] = $script:warm16 }
+    'SESS'
+}
+$script:age16 = 3
+${function:Get-Win32ToolkitHyperVLane} = { param($VMName, $CheckpointName, $VM) @{ VMName = $VMName; VMId = $vmId14; CheckpointName = $CheckpointName; CheckpointId = '29613cba-d62f-4998-a421-df2e124a2b4f'; CheckpointCreationTicks = 638653893400000000; CheckpointAgeDays = $script:age16; ConcurrentLanes = 1 } }
+$script:order16 = [System.Collections.Generic.List[string]]::new()
+$script:vmc16 = $false
+${function:Test-Win32ToolkitVMConnectOpen} = { param($VMName, $VMId) $script:order16.Add("vmc:$VMName"); $script:vmc16 }
+$script:att16 = $null; $script:attArgs16 = $null
+${function:Get-Win32ToolkitCheckpointAttestation} = {
+    param($Session, $VMName, $CheckpointName, $VMId, $CheckpointId, $CreationTimeUtcTicks, [switch]$AllowLive, [switch]$AllowStore, $SignedInAnswer)
+    $script:order16.Add('attest')
+    $script:attArgs16 = @{ AllowLive = [bool]$AllowLive; AllowStore = [bool]$AllowStore; VMId = $VMId; CheckpointId = $CheckpointId; Ticks = $CreationTimeUtcTicks; Session = $Session }
+    $script:att16
+}
+function Start-Process { param($FilePath, $ArgumentList, $ErrorAction) }
+$run16 = {
+    param([object[]]$Phases = @(@{ Label = 'Install (Intune parity)'; Command = '0' }))
+    $notes = [System.Collections.Generic.List[string]]::new()
+    $ri = @{}
+    $script:order16.Clear()
+    $all = @(Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase $Phases -ParityExitNote $notes -RunInfo $ri 3>&1 6>$null)
+    [pscustomobject]@{
+        Out = @($all | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })
+        Warnings = @($all | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { "$_" })
+        Notes = @($notes); RunInfo = $ri
+    }
+}
+# Every item failing: nobody signed in, real-time off, 2 exclusions, signatures 40 days old, a 36-day-old checkpoint.
+$script:att16 = [pscustomobject]@{ SignedIn = $false; DefenderRealTime = $false; DefenderExclusionCount = 2; SignatureAgeDays = 40; FromCache = $false }
+$script:age16 = 36
+$x16 = & $run16
+$want16 = @(
+    "The test VM's checkpoint 'clean-base' is 36 days old: every run first catches up on Windows and Defender updates. Re-take it (docs/hyperv-vm.md)."
+    "The test VM's checkpoint 'clean-base' restores with nobody signed in: Intune-parity runs then do not show PSADT's dialogs to a user. Re-take it at a signed-in desktop (docs/hyperv-vm.md)."
+    "Defender real-time protection is off in the test VM's checkpoint 'clean-base': installs are not scanned as on a device. Turn it on in the VM and re-take the checkpoint."
+    "The test VM's checkpoint 'clean-base' has 2 Defender exclusion(s): installs may skip scans that devices do. Remove them and re-take the checkpoint."
+    "Defender signatures in the test VM's checkpoint 'clean-base' are 40 days old. Update them (Update-MpSignature) and re-take the checkpoint."
+)
+if ($x16.Out.Count -eq 1 -and $x16.Out[0] -is [bool] -and $x16.Out[0]) { Ok 'the output is exactly one [bool] $true with the real advisory loaded (it emits nothing, V-1)' } else { Bad "output: $(@($x16.Out | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ')" }
+if (($x16.Warnings -join "`n") -ceq ($want16 -join "`n")) { Ok 'one warning per failing item: age, nobody signed in, real-time off, exclusions, old signatures' } else { Bad "warnings: $($x16.Warnings -join ' | ')" }
+if (($x16.Notes -join "`n") -ceq ($want16 -join "`n")) { Ok 'the same five sentences in -ParityExitNote (the record''s Notes)' } else { Bad "notes: $($x16.Notes -join ' | ')" }
+if ($x16.RunInfo['Lane']['Attestation'] -and $x16.RunInfo['Lane']['Attestation'].SignedIn -eq $false) { Ok 'the attestation reaches the record''s Lane' } else { Bad "lane: $($x16.RunInfo['Lane'] | ConvertTo-Json -Compress -Depth 3)" }
+$a16 = $script:attArgs16
+if ($a16.AllowLive -and $a16.AllowStore -and $a16.VMId -eq $vmId14 -and $a16.CheckpointId -eq '29613cba-d62f-4998-a421-df2e124a2b4f' -and $a16.Ticks -eq 638653893400000000 -and $a16.Session -eq 'SESS') { Ok 'unattended, restored, warm: -AllowLive and -AllowStore, the lane''s identity and the run''s session' } else { Bad "args: $($a16 | ConvertTo-Json -Compress)" }
+if (($script:order16 -join ' > ') -eq 'vmc:win32tk-golden > attest') { Ok 'the console check runs once, before the attestation (V-10)' } else { Bad "order: $($script:order16 -join ' > ')" }
+# A second run in the same process: no warning again (dedupe), the Notes again.
+$x16b = & $run16
+if ($x16b.Warnings.Count -eq 0 -and ($x16b.Notes -join "`n") -ceq ($want16 -join "`n") -and $x16b.Out.Count -eq 1 -and $x16b.Out[0] -eq $true) { Ok 'a second run in the process: no warning again, the Notes again, exactly $true' } else { Bad "second: warnings=$($x16b.Warnings.Count) notes=$($x16b.Notes.Count)" }
+# Never-updated signatures (V-11).
+$script:HyperVAdvised = $null
+$script:age16 = 0
+$script:att16 = [pscustomobject]@{ SignedIn = $true; DefenderRealTime = $true; DefenderExclusionCount = 0; SignatureAgeDays = $null; FromCache = $false }
+$x16c = & $run16
+if ($x16c.Warnings.Count -eq 1 -and $x16c.Warnings[0] -ceq "Defender signatures in the test VM's checkpoint 'clean-base' were never updated, or their age is unknown. Update them (Update-MpSignature) and re-take the checkpoint.") { Ok 'SignatureAgeDays $null: the "never updated, or their age is unknown" wording' } else { Bad "never updated: $($x16c.Warnings -join ' | ')" }
+# All good: no warning, no Notes sentence.
+$script:HyperVAdvised = $null
+$script:att16 = [pscustomobject]@{ SignedIn = $true; DefenderRealTime = $true; DefenderExclusionCount = 0; SignatureAgeDays = 2; FromCache = $true }
+$x16d = & $run16
+if ($x16d.Warnings.Count -eq 0 -and $x16d.Notes.Count -eq 0) { Ok 'a healthy, fresh checkpoint: no warning, no Notes sentence' } else { Bad "healthy: $($x16d.Warnings -join ' | ') / $($x16d.Notes -join ' | ')" }
+# -AllowLive off: an interactive phase list, a skipped open restore, a cold open (V-4).
+foreach ($case in @(
+        @{ Tag = 'an interactive (watched) phase list'; Phases = @(@{ Label = 'Install (GUI)'; Command = '0'; Interactive = $true }); Set = {} }
+        @{ Tag = 'the open skipped its restore'; Phases = $null; Set = { $script:skip14 = $true; $script:since14 = 12.0 } }
+        @{ Tag = 'the open landed cold (Warm $false)'; Phases = $null; Set = { $script:warm16 = $false } })) {
+    $script:skip14 = $false; $script:since14 = $null; $script:warm16 = $true; $script:attArgs16 = $null
+    & $case.Set
+    $x = if ($case.Phases) { & $run16 $case.Phases } else { & $run16 }
+    if ($script:attArgs16 -and $script:attArgs16.AllowLive -eq $false -and $script:attArgs16.AllowStore -eq $false -and $x.Out.Count -eq 1 -and $x.Out[0] -eq $true) { Ok "$($case.Tag): -AllowLive and -AllowStore off (the stored answer only)" } else { Bad "$($case.Tag): $($script:attArgs16 | ConvertTo-Json -Compress)" }
+}
+$script:skip14 = $false; $script:since14 = $null; $script:warm16 = $true
+# A console attached at the open: -AllowStore off, -AllowLive still on.
+$script:vmc16 = $true
+$null = & $run16
+$script:vmc16 = $false
+if ($script:attArgs16.AllowLive -eq $true -and $script:attArgs16.AllowStore -eq $false) { Ok 'a VM console seen before the attestation: -AllowStore off (V-10)' } else { Bad "console: $($script:attArgs16 | ConvertTo-Json -Compress)" }
+# A throwing attestation helper never changes the run.
+${function:Get-Win32ToolkitCheckpointAttestation} = { param($Session, $VMName, $CheckpointName, $VMId, $CheckpointId, $CreationTimeUtcTicks, [switch]$AllowLive, [switch]$AllowStore, $SignedInAnswer) throw 'attestation broke' }
+$x16e = & $run16
+if ($x16e.Out.Count -eq 1 -and $x16e.Out[0] -eq $true -and $x16e.Warnings.Count -eq 0) { Ok 'the attestation helper throws: the run is exactly $true, no warning (fail-open)' } else { Bad "throws: out=$($x16e.Out -join ',') warnings=$($x16e.Warnings -join ' | ')" }
+
+Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential, Function:\Read-Host, Function:\Start-Process
 function Get-Win32ToolkitHyperVLane { param($VMName, $CheckpointName, $VM) }
 function Get-Win32ToolkitZipContentHash { param($ZipPath) }
+function Get-Win32ToolkitCheckpointAttestation { param($Session, $VMName, $CheckpointName, $VMId, $CheckpointId, $CreationTimeUtcTicks, [switch]$AllowLive, [switch]$AllowStore, $SignedInAnswer) }
+function Write-Win32ToolkitCheckpointAdvisory { param($Kind, $Key, $Message) }
+function Test-Win32ToolkitVMConnectOpen { param($VMName, $VMId) $false }
 
 if ($fail -eq 0) {
     Write-Host "`nAll HyperVProvider tests passed." -ForegroundColor Green

@@ -138,7 +138,16 @@ test's own limit for the phase was reached) mean. The customer documentation doe
 The record of a Hyper-V run also keeps `Timing` (seconds per step: opening the VM, copying the project in,
 each phase that ran, the teardown, the whole run, and whether the run could skip its first checkpoint
 restore) and `Lane` (the VM and its checkpoint: names, Ids, the checkpoint's age, the VM's processors and
-memory). The customer documentation does not show them.
+memory, and a one-time check of the checkpoint's sign-in and Defender state). The customer documentation
+does not show them.
+
+**Checkpoint warnings.** What an unattended Hyper-V test proves depends on the checkpoint it restores. Once per
+checkpoint (the answer is stored, see `HyperVCheckpointAttestation` in [Configuration](configuration.md)), an
+unattended run checks in the guest that a user is signed in, that Defender real-time protection is on, that
+Defender has no exclusions and how old its signatures are. A checkpoint older than 35 days, nobody signed in,
+real-time protection off, an exclusion, or signatures older than 35 days (or never updated) each print one
+warning, once per PowerShell session, and add one sentence to the record's `Notes`; the test still runs. Re-take
+the checkpoint as [Hyper-V test VM](hyperv-vm.md) describes.
 
 ### One package, one process
 

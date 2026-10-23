@@ -201,6 +201,50 @@ function Invoke-Win32ToolkitHyperVRun {
             Write-Verbose "Hyper-V run record: the VM and checkpoint identity could not be read ($($_.Exception.Message))."
             $lane = $null
         }
+        # The checkpoint's sign-in and Defender state, once per checkpoint (speed-up PR 1, D34, A-4), and the
+        # non-blocking advisories about it (once per process and checkpoint, A-8; one Notes sentence per run). Asked live
+        # only for an unattended run whose open restored the checkpoint and landed warm; a watched run reads the stored
+        # answer only. The console check runs before the guest is asked (V-10). Fail-open.
+        try {
+            if ($lane) {
+                $allowLive = -not $needsDesktop -and $openInfo['RevertSkipped'] -eq $false -and $openInfo['Warm'] -eq $true
+                $allowStore = $allowLive -and -not (Test-Win32ToolkitVMConnectOpen -VMName $VMName -VMId ([string]$lane.VMId))
+                $lane['Attestation'] = Get-Win32ToolkitCheckpointAttestation -Session $session -VMName $VMName -CheckpointName $effectiveCheckpoint -VMId ([string]$lane.VMId) `
+                    -CheckpointId ([string]$lane.CheckpointId) -CreationTimeUtcTicks ([long]$lane.CheckpointCreationTicks) -AllowLive:$allowLive -AllowStore:$allowStore
+                $advKey = "$($lane.VMId)|$($lane.CheckpointId)"
+                $cpText = ConvertTo-Win32ToolkitSafeText -Text $effectiveCheckpoint -MaxLength 64
+                $advice = [System.Collections.Generic.List[object]]::new()
+                if ($null -ne $lane.CheckpointAgeDays -and $lane.CheckpointAgeDays -gt 35) {
+                    $advice.Add(@('Age', "The test VM's checkpoint '$cpText' is $($lane.CheckpointAgeDays) days old: every run first catches up on Windows and Defender updates. Re-take it (docs/hyperv-vm.md)."))
+                }
+                $att = $lane['Attestation']
+                if ($att) {
+                    if ($att.SignedIn -eq $false) {
+                        $advice.Add(@('SignedIn', "The test VM's checkpoint '$cpText' restores with nobody signed in: Intune-parity runs then do not show PSADT's dialogs to a user. Re-take it at a signed-in desktop (docs/hyperv-vm.md)."))
+                    }
+                    if ($att.DefenderRealTime -eq $false) {
+                        $advice.Add(@('RealTime', "Defender real-time protection is off in the test VM's checkpoint '$cpText': installs are not scanned as on a device. Turn it on in the VM and re-take the checkpoint."))
+                    }
+                    if ($att.DefenderExclusionCount -gt 0) {
+                        $advice.Add(@('Exclusions', "The test VM's checkpoint '$cpText' has $($att.DefenderExclusionCount) Defender exclusion(s): installs may skip scans that devices do. Remove them and re-take the checkpoint."))
+                    }
+                    if ($null -eq $att.SignatureAgeDays) {
+                        $advice.Add(@('Signatures', "Defender signatures in the test VM's checkpoint '$cpText' were never updated, or their age is unknown. Update them (Update-MpSignature) and re-take the checkpoint."))
+                    }
+                    elseif ($att.SignatureAgeDays -gt 35) {
+                        $advice.Add(@('Signatures', "Defender signatures in the test VM's checkpoint '$cpText' are $($att.SignatureAgeDays) days old. Update them (Update-MpSignature) and re-take the checkpoint."))
+                    }
+                }
+                foreach ($a in $advice) {
+                    $null = Write-Win32ToolkitCheckpointAdvisory -Kind $a[0] -Key $advKey -Message $a[1]
+                    if ($null -ne $ParityExitNote) { $ParityExitNote.Add($a[1]) }
+                }
+            }
+        }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Verbose "Hyper-V run record: the checkpoint attestation could not be read ($($_.Exception.Message))."
+        }
 
         Write-Verbose "Copying project into the guest (C:\PSADT)..."
         $copyWatch = [System.Diagnostics.Stopwatch]::StartNew()

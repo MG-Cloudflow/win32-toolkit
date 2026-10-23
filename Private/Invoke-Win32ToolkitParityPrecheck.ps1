@@ -106,6 +106,21 @@ function Invoke-Win32ToolkitParityPrecheck {
                     $guest = Get-Win32ToolkitGuestSignedInUser -Session $session
                     $vmcSeen = $vmcSeen -or (Test-Win32ToolkitVMConnectOpen -VMName $vm -VMId $laneVmId)
                 }
+                # The checkpoint attestation (speed-up PR 1, D34) for the record's Lane: on a miss the probe's answer is
+                # reused (one more guest call, for Defender); on a hit only the stored attestation is read. No advisory
+                # here: the run prints them. Fail-open: never turns the pre-check into "could not reach the VM".
+                if ($lane) {
+                    try {
+                        $allowLiveP = -not $fromCache -and $openInfo['RevertSkipped'] -eq $false -and $openInfo['Warm'] -eq $true
+                        $lane['Attestation'] = Get-Win32ToolkitCheckpointAttestation -Session $session -SignedInAnswer $guest -VMName $vm -CheckpointName $cp `
+                            -VMId ([string]$lane.VMId) -CheckpointId ([string]$lane.CheckpointId) -CreationTimeUtcTicks ([long]$lane.CheckpointCreationTicks) `
+                            -AllowLive:$allowLiveP -AllowStore:($allowLiveP -and -not $vmcSeen)
+                    }
+                    catch {
+                        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                        Write-Verbose "Intune-parity pre-check: the checkpoint attestation could not be read ($($_.Exception.Message))."
+                    }
+                }
             }
             catch {
                 if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }

@@ -27,6 +27,9 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 # C-9 (Hyper-V speed-up PR 1): the provider's record helpers, inert; none reaches Hyper-V.
 function Get-Win32ToolkitHyperVLane { param($VMName, $CheckpointName, $VM) }
 function Get-Win32ToolkitZipContentHash { param($ZipPath) }
+function Get-Win32ToolkitCheckpointAttestation { param($Session, $VMName, $CheckpointName, $VMId, $CheckpointId, $CreationTimeUtcTicks, [switch]$AllowLive, [switch]$AllowStore, $SignedInAnswer) }
+function Write-Win32ToolkitCheckpointAdvisory { param($Kind, $Key, $Message) }
+function Test-Win32ToolkitVMConnectOpen { param($VMName, $VMId) $false }
 
 # ── (a) HOST guard: silenced DURING the run, restored AFTER — even when the run fails ───────────────
 Write-Host '[a] Invoke-Win32ToolkitHyperVRun silences $ProgressPreference during the run and restores it' -ForegroundColor Cyan
