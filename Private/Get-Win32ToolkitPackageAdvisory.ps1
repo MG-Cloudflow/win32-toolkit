@@ -1,8 +1,8 @@
 function Get-Win32ToolkitPackageAdvisory {
     <#
     .SYNOPSIS
-        Collects the warnings to show before a package is exported or published: failed Update tests,
-        technology switches, identity checks and unsafe uninstall cleanup paths.
+        Collects the warnings to show before a package is exported or published: failed install/uninstall
+        and Update tests, technology switches, identity checks and unsafe uninstall cleanup paths.
     .DESCRIPTION
         Installer-identity PR 1, spec 2.13 (D1: warn only, never block). Read-only: it never writes a file
         and never throws; an unexpected error becomes one Warning finding 'Could not check the Update test
@@ -20,6 +20,14 @@ function Get-Win32ToolkitPackageAdvisory {
           UPDATE-INCONCLUSIVE  Info     the latest record of a family has no verdict
           ID-TECH-SWITCH       Warning  every Get-Win32ToolkitTechnologySwitch result
 
+        Install findings (TUI audit G1, Scenario InstallUninstall; Export, Publish and Tui): the latest record
+        wins (one track: backend and mode do not split it), so an older failure is hidden by a newer pass and an
+        older pass never hides a newer failure. A NotRun record is never judged; no record at all gives no
+        finding. They only warn and never block.
+          INSTALL-FAILED       Warning  the latest record failed (names the failed assertions and
+                                        <LogFolder>\InstallAssertions.log, else Sandbox\Logs\InstallAssertions.log)
+          INSTALL-INCONCLUSIVE Warning  the latest record has no verdict (names the command to run it again)
+
         Identity findings: Get-Win32ToolkitIdentityDelta -ReuseProbe re-evaluated in memory (a fresh
         predecessor lookup, the probe stored in Documentation\IdentityDelta.json), plus -NoProbe unless
         -ProbeIfMissing. On top of them:
@@ -34,8 +42,8 @@ function Get-Win32ToolkitPackageAdvisory {
                                         paths could not be checked (Windows PowerShell 5.1 on the device
                                         may still read it).
 
-        Order: UNSAFE-CLEANUP, UPDATE-FAILED, ID-TECH-SWITCH, ID-FAMILY, ID-SIBLING-UNTESTED,
-        ID-SIBLING-FAMILY, ID-NO-ANCHOR, ID-TATTOO, ID-SCOPE, ID-PROBE-UNAVAILABLE,
+        Order: UNSAFE-CLEANUP, INSTALL-FAILED, UPDATE-FAILED, ID-TECH-SWITCH, INSTALL-INCONCLUSIVE, ID-FAMILY,
+        ID-SIBLING-UNTESTED, ID-SIBLING-FAMILY, ID-NO-ANCHOR, ID-TATTOO, ID-SCOPE, ID-PROBE-UNAVAILABLE,
         ID-PREDECESSOR-AMBIGUOUS, other warnings, then every Info finding. Every untrusted value passes
         ConvertTo-Win32ToolkitSafeText.
     .PARAMETER ProjectPath
@@ -47,8 +55,9 @@ function Get-Win32ToolkitPackageAdvisory {
         Allow one sibling-probe request when no matching probe is stored (memoised per process).
     .OUTPUTS
         [pscustomobject] SchemaVersion, PackageType, PackageFamily, Update (BaselineFamily, BaselineType,
-        BaselineVersion, Verdict, FailedAssertions, TimestampUtc, Backend, Mode, Legacy, LogFolder), Findings (Code,
-        Severity, Source = UpdateTest|IdentityDelta|AppConfig, Message).
+        BaselineVersion, Verdict, FailedAssertions, TimestampUtc, Backend, Mode, Legacy, LogFolder), Install ($null,
+        or the latest judged install/uninstall record: Verdict, FailedAssertions, TimestampUtc, Backend, Mode,
+        LogFolder), Findings (Code, Severity, Source = UpdateTest|InstallTest|IdentityDelta|AppConfig, Message).
     .EXAMPLE
         (Get-Win32ToolkitPackageAdvisory -ProjectPath $proj -Context Publish -ProbeIfMissing).Findings
     #>
@@ -154,6 +163,7 @@ function Get-Win32ToolkitPackageAdvisory {
 
     # ---- Update records: the judged ones, then the latest per baseline family ----
     $judged = [System.Collections.Generic.List[object]]::new()
+    $install = $null
     try {
         $records = Get-Win32ToolkitTestResult -ProjectPath $ProjectPath
         $candidates = @(@($records) | Where-Object {
@@ -197,6 +207,25 @@ function Get-Win32ToolkitPackageAdvisory {
                     Date             = if ($when) { $when.ToString('yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture) } else { '' }
                 })
         }
+
+        # Install/uninstall records (TUI audit G1, S8-F1): one track, the latest record wins (file order = write order),
+        # so an older failure is hidden by a newer pass and an older pass never hides a newer failure. A NotRun record
+        # (the Intune-parity pre-check did not start the test) is never judged. No record at all: no finding.
+        $installRecords = @(@($records) | Where-Object { $_ -and [string](& $prop $_ 'Scenario') -eq 'InstallUninstall' -and -not (& $prop $_ 'NotRun') })
+        $installLatest  = if ($installRecords.Count) { $installRecords[-1] } else { $null }
+        if ($installLatest) {
+            $when = & $instant (& $prop $installLatest 'TimestampUtc')
+            $install = [pscustomobject]@{
+                Verdict          = & $safe (& $prop $installLatest 'Verdict') 32
+                FailedAssertions = [string[]]@(@(& $prop $installLatest 'Assertions') | Where-Object { $_ -and [string](& $prop $_ 'Result') -eq 'FAIL' } |
+                        ForEach-Object { & $safe (& $prop $_ 'Name') 128 })
+                TimestampUtc     = if ($when) { $when.ToString('o') } else { '' }
+                Backend          = & $safe (& $prop $installLatest 'Backend') 32
+                Mode             = & $safe (& $prop $installLatest 'Mode') 32
+                LogFolder        = & $logFolder $installLatest
+                Date             = if ($when) { $when.ToString('yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture) } else { '' }
+            }
+        }
     } catch {
         if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
         & $failOpen 'UpdateTest' $_
@@ -231,6 +260,23 @@ function Get-Win32ToolkitPackageAdvisory {
             & $add 'UPDATE-FAILED' 'Warning' 'UpdateTest' ('{0} FAILED: {1}. This only warns: {2}. Review {3} before you assign it.' -f (& $runText $entry), $names, $continues, $review)
         } elseif ($entry.Verdict -eq 'Inconclusive') {
             & $add 'UPDATE-INCONCLUSIVE' 'Info' 'UpdateTest' ('{0} gave no verdict (Inconclusive). Run it again to confirm that devices with the earlier version update cleanly.' -f (& $runText $entry))
+        }
+    }
+
+    # ---- The latest install/uninstall test (TUI audit G1): warn only, never block (like D1 for Update) ----
+    if ($install) {
+        $installWhere = [System.Collections.Generic.List[string]]::new()
+        if ($install.Backend -or $install.Mode) { $installWhere.Add("$($install.Backend)/$($install.Mode)") }
+        if ($install.Date) { $installWhere.Add($install.Date) }
+        $installRun = 'The latest install/uninstall test' + $(if ($installWhere.Count) { ' ({0})' -f ($installWhere -join ', ') } else { '' })
+        if ($install.Verdict -eq 'Failed') {
+            $names = if ($install.FailedAssertions.Count) { $install.FailedAssertions -join ', ' } else { 'no failed assertion was recorded' }
+            $review = if ($install.LogFolder) { '{0}\InstallAssertions.log' -f $install.LogFolder } else { 'Sandbox\Logs\InstallAssertions.log' }
+            & $add 'INSTALL-FAILED' 'Warning' 'InstallTest' ('{0} FAILED: {1}. This only warns: {2}. Review {3} before you assign it.' -f $installRun, $names, $continues, $review)
+        } elseif ($install.Verdict -eq 'Inconclusive') {
+            $project = (& $safe $ProjectPath 1024).Replace("'", "''")
+            & $add 'INSTALL-INCONCLUSIVE' 'Warning' 'InstallTest' (("{0} gave no verdict (Inconclusive): it did not show that the package installs and uninstalls. This only warns: {1}. " +
+                    "Run it again before you assign it: Test-Win32ToolkitProject -ProjectPath '{2}' -Scenario InstallUninstall") -f $installRun, $continues, $project)
         }
     }
 
@@ -329,9 +375,9 @@ function Get-Win32ToolkitPackageAdvisory {
     }
 
     $rank = @{
-        'UNSAFE-CLEANUP' = 0; 'UPDATE-FAILED' = 1; 'ID-TECH-SWITCH' = 2; 'ID-FAMILY' = 3; 'ID-SIBLING-UNTESTED' = 4
-        'ID-SIBLING-FAMILY' = 5; 'ID-NO-ANCHOR' = 6; 'ID-TATTOO' = 7; 'ID-SCOPE' = 8; 'ID-PROBE-UNAVAILABLE' = 9
-        'ID-PREDECESSOR-AMBIGUOUS' = 10
+        'UNSAFE-CLEANUP' = 0; 'INSTALL-FAILED' = 1; 'UPDATE-FAILED' = 2; 'ID-TECH-SWITCH' = 3; 'INSTALL-INCONCLUSIVE' = 4
+        'ID-FAMILY' = 5; 'ID-SIBLING-UNTESTED' = 6; 'ID-SIBLING-FAMILY' = 7; 'ID-NO-ANCHOR' = 8; 'ID-TATTOO' = 9; 'ID-SCOPE' = 10
+        'ID-PROBE-UNAVAILABLE' = 11; 'ID-PREDECESSOR-AMBIGUOUS' = 12
     }
     $ordered = @($findings | Sort-Object -Stable -Property @{
             Expression = { if ($_.Severity -ne 'Warning') { 1000 } elseif ($rank.ContainsKey($_.Code)) { $rank[$_.Code] } else { 500 } }
@@ -343,6 +389,7 @@ function Get-Win32ToolkitPackageAdvisory {
         PackageFamily = $packageFamily
         Update        = @($latest.Values | Select-Object -Property BaselineFamily, BaselineType, BaselineVersion, Verdict, FailedAssertions,
             TimestampUtc, Backend, Mode, Legacy, LogFolder)
+        Install       = if ($install) { $install | Select-Object -Property Verdict, FailedAssertions, TimestampUtc, Backend, Mode, LogFolder } else { $null }
         Findings      = $ordered
     }
 }

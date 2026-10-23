@@ -51,10 +51,10 @@ Runs IntuneWinAppUtil.exe against the Staging copy, outputting to IntuneWin\\\<T
 6.
 Renames the produced Invoke-AppDeployToolkit.intunewin → \<ProjectName\>.intunewin.
 6b.
-Warns (never stops) when the latest Update test failed, a technology switch was seen, or
-   identity checks found something (for example winget also ships another installer technology
-   for this app that no Update test has covered).
-Shown once per run, also when Export publishes.
+Warns (never stops) when the latest install/uninstall test failed or gave no verdict, the latest
+   Update test failed, a technology switch was seen, or identity checks found something (for example
+   winget also ships another installer technology for this app that no Update test has covered).
+   Shown once per run, also when Export publishes.
 
 -WhatIf is a dry run: the gate (step 1) and the warnings (6b) run, nothing is downloaded, staged,
 optimised or built (steps 2-6), an older .intunewin is not reported as created, and a requested

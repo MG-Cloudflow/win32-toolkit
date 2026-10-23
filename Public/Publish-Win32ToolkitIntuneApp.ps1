@@ -22,7 +22,8 @@ function Publish-Win32ToolkitIntuneApp {
     Requires the Microsoft.Graph.Authentication module (installed automatically on prompt).
 
     Before the -WhatIf gate (so a dry run shows them too), Publish warns, and never stops, when the
-    latest Update test of the project failed (naming the failed assertions), an Update test saw a
+    latest install/uninstall test of the project failed or gave no verdict, the latest Update test
+    failed (naming the failed assertions), an Update test saw a
     technology switch (the vendor's other installer stayed registered next to this package), or the
     identity checks found something, for example winget also ships another installer technology for
     this app that no Update test has covered. It also warns UNSAFE-CLEANUP when the project's

@@ -141,6 +141,8 @@ Packaging and publishing look at the project's test results and identity checks 
 
 | Warning | Meaning | What to do |
 |---|---|---|
+| `INSTALL-FAILED` | The latest install/uninstall test failed (for example the app's own uninstall entry stayed: `AppArpGone-PostUninstall`). The warning names the failed checks. | Read the `InstallAssertions.log` it names, fix the package, run the test again. |
+| `INSTALL-INCONCLUSIVE` | The latest install/uninstall test gave no verdict (closed early, timed out). | Run it again. |
 | `UPDATE-FAILED` | The latest Update test from that installer technology failed. The warning names the failed assertions (for example `OldArpGone-PostUpdate`). | Read the `UpdateAssertions.log` the warning names (in the failed run's own folder, `Sandbox\Logs\Runs\<run>\`, or `Sandbox\Logs\` for a run recorded before those folders existed) before you assign the app. |
 | `ID-TECH-SWITCH` | An Update test saw the vendor's other installer technology (for example its NSIS EXE) stay registered after this package installed. | **Do not publish this package to devices that have the other technology:** they would get two registrations over one folder. Package the technology your devices already have (see [Installer technology](packaging.md#installer-technology)). |
 | `ID-SIBLING-UNTESTED` | winget also ships another installer technology for this app, and the latest Update test from it did not pass (or none ran). | Run `Test-Win32ToolkitProject -Scenario Update -BaselineInstallerType Both`. Once the latest test from that technology passes, the warning goes away. |

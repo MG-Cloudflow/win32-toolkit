@@ -228,6 +228,11 @@ The host waits for the in-guest assertion log (`Sandbox\Logs\InstallAssertions.l
 `Documentation\TestResults.json`. In watched Sandbox mode the guest stays open; closing it early before
 the uninstall assertion leaves the verdict inconclusive.
 
+The latest result is also shown before you package or publish: a failed run as `INSTALL-FAILED`, a run
+without a verdict as `INSTALL-INCONCLUSIVE` (see
+[Warnings before you publish](publishing.md#warnings-before-you-publish)). They only warn and never stop a
+package or a publish.
+
 **Cleanup paths packaging refuses.** When the project's uninstall cleanup paths fail the check packaging
 enforces (see [the package check](packaging.md#the-package-check)), every test first prints one warning
 with packaging's own findings and then runs anyway: only packaging stops such a project. In the guest, the

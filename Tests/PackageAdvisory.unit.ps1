@@ -5,6 +5,8 @@
       Update    : the latest judged record per baseline family -> UPDATE-FAILED (Warning) or
                   UPDATE-INCONCLUSIVE (Info); an Unavailable record never hides an older failure; the
                   legacy (pre-PR-1) record and its Sandbox\OldVersion conditions.
+      Install   : the latest InstallUninstall record -> INSTALL-FAILED or INSTALL-INCONCLUSIVE (both Warning; NotRun
+                  never judged, no record no finding) and their rank (TUI audit G1).
       Identity  : the REAL Get-Win32ToolkitIdentityDelta over a stored IdentityDelta.json built from the
                   Tests\Fixtures\winget-manifests manifests (Invoke-WebRequest shadowed: no network);
                   ID-SIBLING-UNTESTED and the Info downgrade of ID-SIBLING-FAMILY.
@@ -243,7 +245,72 @@ try {
                                   Assertions = @([pscustomobject]@{ Name = 'Installed'; Result = 'FAIL' }); Notes = '' }
     Set-TestResultFile $npp @($install)
     $a = Get-Advisory $npp
-    if (-not (Find $a 'UPDATE-FAILED') -and @($a.Update).Count -eq 0) { Ok 'an InstallUninstall record is not an Update test' } else { Bad "InstallUninstall -> $(Codes $a)" }
+    # TUI audit G1 (S8-F1): a failed install/uninstall test is no Update test, but it now warns as INSTALL-FAILED.
+    $if1 = Find $a 'INSTALL-FAILED'
+    $wantIf1 = 'The latest install/uninstall test (Sandbox/Unattended, 2026-10-21) FAILED: Installed. This only warns: publishing continues. Review Sandbox\Logs\InstallAssertions.log before you assign it.'
+    if (-not (Find $a 'UPDATE-FAILED') -and @($a.Update).Count -eq 0 -and $if1 -and $if1.Severity -eq 'Warning' -and $if1.Source -eq 'InstallTest' -and $if1.Message -ceq $wantIf1 -and
+        $a.Install.Verdict -eq 'Failed' -and (@($a.Install.FailedAssertions) -join ',') -eq 'Installed' -and $a.Install.Backend -eq 'Sandbox' -and $a.Install.Mode -eq 'Unattended' -and
+        (Codes $a) -eq 'INSTALL-FAILED,ID-SIBLING-UNTESTED,ID-SIBLING-FAMILY,ID-NO-ANCHOR') {
+        Ok 'an InstallUninstall record is not an Update test (no UPDATE-FAILED, no Update entry); its failure is INSTALL-FAILED (Warning, InstallTest), first'
+    } else { Bad "InstallUninstall -> $(Codes $a) / $($if1 | ConvertTo-Json -Compress) / Install $($a.Install | ConvertTo-Json -Compress)" }
+
+    Write-Host '[2b] the latest install/uninstall test -> INSTALL-FAILED / INSTALL-INCONCLUSIVE (TUI audit G1)' -ForegroundColor Cyan
+    function New-IuRecord {
+        param([string]$Verdict = 'Failed', [string]$When = '2026-10-23T10:15:00Z', [string[]]$Fail = @('AppArpGone-PostUninstall'), [string[]]$Pass = @('Detected-PostInstall'),
+              [string]$LogFolder = '', [switch]$NotRun)
+        $assertions = @(@($Pass | ForEach-Object { [ordered]@{ Name = $_; Result = 'PASS' } }) + @($Fail | ForEach-Object { [ordered]@{ Name = $_; Result = 'FAIL' } }))
+        $r = [ordered]@{ Scenario = 'InstallUninstall'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = $When; Verdict = $Verdict; Assertions = $assertions; Notes = '' }
+        if ($LogFolder) { $r['LogFolder'] = $LogFolder }
+        if ($NotRun) {
+            $r.Verdict = 'Inconclusive'; $r.Assertions = @(); $r.Notes = 'Not run (Intune-parity pre-check): x'
+            $r['NotRun'] = [ordered]@{ Code = 'PARITY-DIALOG-WAIT'; Shape = 'Psadt41'; ProcessesToClose = 0; Welcome = 'OrgUi'; SignedInSessions = 1 }
+        }
+        [pscustomobject]$r
+    }
+    $installCodes = { param($a) (@($a.Findings) | Where-Object { $_.Code -like 'INSTALL-*' } | ForEach-Object Code) -join ',' }
+    Set-TestResultFile $npp @((New-IuRecord -When '2026-10-22T09:00:00Z'), (New-IuRecord -Verdict Passed -Fail @()))
+    $a = Get-Advisory $npp
+    if ((& $installCodes $a) -eq '' -and $a.Install.Verdict -eq 'Passed') { Ok 'an older FAIL followed by a newer PASS -> no INSTALL-* finding (Install.Verdict Passed)' } else { Bad "Failed then Passed -> $(Codes $a)" }
+    Set-TestResultFile $npp @((New-IuRecord -Verdict Passed -Fail @() -When '2026-10-22T09:00:00Z'), (New-IuRecord))
+    $a = Get-Advisory $npp
+    $wantIf = 'The latest install/uninstall test (HyperV/Unattended, 2026-10-23) FAILED: AppArpGone-PostUninstall. This only warns: publishing continues. Review Sandbox\Logs\InstallAssertions.log before you assign it.'
+    if ((& $installCodes $a) -eq 'INSTALL-FAILED' -and (Find $a 'INSTALL-FAILED').Message -ceq $wantIf) { Ok 'an older PASS never hides a newer FAIL -> INSTALL-FAILED names AppArpGone-PostUninstall' } else { Bad "Passed then Failed -> $(Codes $a) / $((Find $a 'INSTALL-FAILED').Message)" }
+    Set-TestResultFile $npp @((New-IuRecord -Verdict Inconclusive -Fail @() -Pass @()))
+    $a = Get-Advisory $npp
+    $ii = Find $a 'INSTALL-INCONCLUSIVE'
+    $wantIi = "The latest install/uninstall test (HyperV/Unattended, 2026-10-23) gave no verdict (Inconclusive): it did not show that the package installs and uninstalls. This only warns: publishing continues. Run it again before you assign it: Test-Win32ToolkitProject -ProjectPath '$npp' -Scenario InstallUninstall"
+    if ((& $installCodes $a) -eq 'INSTALL-INCONCLUSIVE' -and $ii.Severity -eq 'Warning' -and $ii.Source -eq 'InstallTest' -and $ii.Message -ceq $wantIi -and $a.Install.Verdict -eq 'Inconclusive') {
+        Ok 'the latest record Inconclusive -> INSTALL-INCONCLUSIVE (Warning) with the command to run it again'
+    } else { Bad "Inconclusive -> $(Codes $a) / $($ii | ConvertTo-Json -Compress)" }
+    Set-TestResultFile $npp @((New-IuRecord -When '2026-10-22T09:00:00Z'), (New-IuRecord -NotRun))
+    $a = Get-Advisory $npp
+    if ((& $installCodes $a) -eq 'INSTALL-FAILED' -and (Find $a 'INSTALL-FAILED').Message -match '2026-10-22\) FAILED' -and $a.Install.Verdict -eq 'Failed') { Ok 'a FAILED record followed by a NotRun one -> INSTALL-FAILED still reported (NotRun is never judged)' } else { Bad "Failed then NotRun -> $(Codes $a)" }
+    Set-TestResultFile $npp @((New-IuRecord -NotRun))
+    $a = Get-Advisory $npp
+    if ((& $installCodes $a) -eq '' -and $null -eq $a.Install) { Ok 'a NotRun record alone -> no INSTALL-* finding, Install $null' } else { Bad "NotRun only -> $(Codes $a) / $($a.Install | ConvertTo-Json -Compress)" }
+    Set-TestResultFile $npp @((New-Record))
+    $a = Get-Advisory $npp
+    if ((& $installCodes $a) -eq '' -and $null -eq $a.Install) { Ok 'no install/uninstall record at all (an untested package) -> no INSTALL-* finding, Install $null' } else { Bad "no IU record -> $(Codes $a)" }
+    Set-TestResultFile $npp @((New-IuRecord -LogFolder 'Sandbox\Logs\Runs\20261023-101500_InstallUninstall'))
+    $a = Get-Advisory $npp -Context Tui
+    if ((Find $a 'INSTALL-FAILED').Message -cmatch 'Review Sandbox\\Logs\\Runs\\20261023-101500_InstallUninstall\\InstallAssertions\.log before you assign it\.$' -and $a.Install.LogFolder -eq 'Sandbox\Logs\Runs\20261023-101500_InstallUninstall') {
+        Ok "-Context Tui: INSTALL-FAILED names the run's own InstallAssertions.log (Install.LogFolder)"
+    } else { Bad "LogFolder -> $((Find $a 'INSTALL-FAILED').Message)" }
+    foreach ($badFolder in '..\x', 'Sandbox\Logs\Runs\..\..\..\Windows') {
+        Set-TestResultFile $npp @((New-IuRecord -LogFolder $badFolder))
+        $a = Get-Advisory $npp
+        if ((Find $a 'INSTALL-FAILED').Message -cmatch 'Review Sandbox\\Logs\\InstallAssertions\.log before you assign it\.$' -and $a.Install.LogFolder -eq '') { Ok "a forged LogFolder ('$badFolder') -> Sandbox\Logs\InstallAssertions.log" } else { Bad "forged LogFolder -> $((Find $a 'INSTALL-FAILED').Message)" }
+    }
+    Set-TestResultFile $npp @((New-IuRecord))
+    $ae = Get-Advisory $npp -Context Export
+    if ((Find $ae 'INSTALL-FAILED').Message -match 'This only warns: it does not stop packaging\.') { Ok "-Context Export: INSTALL-FAILED says 'it does not stop packaging'" } else { Bad "Export wording: $((Find $ae 'INSTALL-FAILED').Message)" }
+    $esc0 = [char]0x1B
+    Set-TestResultFile $npp @((New-IuRecord -Fail @("Evil${esc0}[2J[red]X$([char]0x202E)")))
+    $a = Get-Advisory $npp
+    $hm = (Find $a 'INSTALL-FAILED').Message
+    if ($hm -and $hm.Contains('FAILED: Evil?[2J[red]X?.') -and $hm.IndexOf([char]0x1B) -lt 0 -and $hm.IndexOf([char]0x202E) -lt 0 -and (@($a.Install.FailedAssertions) -join '') -eq 'Evil?[2J[red]X?') {
+        Ok 'a hostile assertion name (ESC, U+202E) is sanitised in the message and in Install.FailedAssertions'
+    } else { Bad "hostile name -> $hm" }
 
     Write-Host '[3] Legacy record (no Baseline): the spec 2.12 conditions decide its technology' -ForegroundColor Cyan
     $old = Join-Path $npp 'Sandbox\OldVersion'
@@ -407,6 +474,20 @@ try {
     $a = Get-Advisory $npp
     $wantOrder = 'UNSAFE-CLEANUP,UPDATE-FAILED,ID-TECH-SWITCH,ID-FAMILY,ID-SIBLING-UNTESTED,ID-SIBLING-FAMILY,ID-NO-ANCHOR,ID-TATTOO,ID-SCOPE,ID-PROBE-UNAVAILABLE,ID-PREDECESSOR-AMBIGUOUS,ID-FUTURE-CODE,ID-VARIANT-SUBSTITUTE,ID-SIBLING-UNTESTABLE'
     if ((Codes $a) -eq $wantOrder) { Ok 'the spec 2.13 order; an unknown warning code after the known ones; Info last in arrival order' } else { Bad "order = $(Codes $a)" }
+    # TUI audit G1 (Dv2): INSTALL-FAILED right after UNSAFE-CLEANUP, INSTALL-INCONCLUSIVE right after ID-TECH-SWITCH (one
+    # install/uninstall track: the latest record gives one of them).
+    $iuFail = [pscustomobject]@{ Scenario = 'InstallUninstall'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-23T10:15:00Z'; Verdict = 'Failed'
+                                 Assertions = @([pscustomobject]@{ Name = 'AppArpGone-PostUninstall'; Result = 'FAIL' }); Notes = '' }
+    Set-TestResultFile $npp @((New-Record), $iuFail)
+    $a = Get-Advisory $npp -Context Tui
+    $wantIuOrder = 'UNSAFE-CLEANUP,INSTALL-FAILED,UPDATE-FAILED,ID-TECH-SWITCH,ID-FAMILY,ID-SIBLING-UNTESTED,ID-SIBLING-FAMILY,ID-NO-ANCHOR,ID-TATTOO,ID-SCOPE,ID-PROBE-UNAVAILABLE,ID-PREDECESSOR-AMBIGUOUS,ID-FUTURE-CODE,ID-VARIANT-SUBSTITUTE,ID-SIBLING-UNTESTABLE'
+    if ((Codes $a) -eq $wantIuOrder) { Ok 'Tui: UNSAFE-CLEANUP, INSTALL-FAILED, UPDATE-FAILED, ID-TECH-SWITCH, ...' } else { Bad "order with INSTALL-FAILED = $(Codes $a)" }
+    $iuInc = [pscustomobject]@{ Scenario = 'InstallUninstall'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-23T10:15:00Z'; Verdict = 'Inconclusive'; Assertions = @(); Notes = '' }
+    Set-TestResultFile $npp @((New-Record), $iuInc)
+    $a = Get-Advisory $npp -Context Tui
+    $wantIncOrder = 'UNSAFE-CLEANUP,UPDATE-FAILED,ID-TECH-SWITCH,INSTALL-INCONCLUSIVE,ID-FAMILY,ID-SIBLING-UNTESTED,ID-SIBLING-FAMILY,ID-NO-ANCHOR,ID-TATTOO,ID-SCOPE,ID-PROBE-UNAVAILABLE,ID-PREDECESSOR-AMBIGUOUS,ID-FUTURE-CODE,ID-VARIANT-SUBSTITUTE,ID-SIBLING-UNTESTABLE'
+    if ((Codes $a) -eq $wantIncOrder) { Ok 'Tui: ..., ID-TECH-SWITCH, INSTALL-INCONCLUSIVE, ID-FAMILY, ...' } else { Bad "order with INSTALL-INCONCLUSIVE = $(Codes $a)" }
+    Set-TestResultFile $npp @((New-Record))
     . $realDeltaFile
     $script:cleanup = @(); $script:switches = @()
 
