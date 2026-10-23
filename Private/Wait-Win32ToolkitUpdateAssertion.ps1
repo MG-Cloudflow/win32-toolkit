@@ -14,6 +14,10 @@ function Wait-Win32ToolkitUpdateAssertion {
     .PARAMETER TimeoutMinutes
         How long to wait for the sandbox run to finish (default 30 — old install + 2-min countdown +
         PSADT update can be slow on first sandbox boot).
+    .PARAMETER SinglePass
+        Read the log once, no polling, no deadline (Hyper-V speed-up PR 1, D24): a Hyper-V run's log came back
+        with the copy-out and cannot change. The verdict rules are the same (a FAIL is conclusive on a partial
+        log, a pass needs RESULT COMPLETE).
     .OUTPUTS
         $true  — assertions completed, none failed.
         $false — at least one assertion FAILED.
@@ -46,7 +50,10 @@ function Wait-Win32ToolkitUpdateAssertion {
         [string]$LogFileName = 'UpdateAssertions.log',
 
         [ValidateNotNullOrEmpty()]
-        [string]$Label = 'UPDATE TEST'
+        [string]$Label = 'UPDATE TEST',
+
+        # Read the log once (a Hyper-V run's log came back with the copy-out): no polling, no deadline.
+        [switch]$SinglePass
     )
 
     $logPath = Join-Path $ProjectPath (Join-Path 'Sandbox\Logs' $LogFileName)
@@ -62,7 +69,7 @@ function Wait-Win32ToolkitUpdateAssertion {
         Write-Host '  (The sandbox keeps running independently of this wait.)' -ForegroundColor Gray
     }
 
-    $deadline  = (Get-Date).AddMinutes($TimeoutMinutes)
+    $deadline  = if ($SinglePass) { [datetime]::MaxValue } else { (Get-Date).AddMinutes($TimeoutMinutes) }
     $announced = @{}
     $complete  = $false
 
@@ -83,12 +90,18 @@ function Wait-Win32ToolkitUpdateAssertion {
             }
             if (@($content | Where-Object { $_ -match '^\s*(?:\[[^\]]*\]\s+)?RESULT COMPLETE\s*$' }).Count -gt 0) { $complete = $true; break }
         }
+        if ($SinglePass) { break }
         Start-Sleep -Seconds $PollSeconds
     }
 
     Write-Host ''
     if (-not $complete -and $announced.Count -eq 0) {
-        Write-Warning "No assertion results appeared within $TimeoutMinutes minutes — the sandbox may have been closed early or the baseline install may have hung. Check $logPath and Sandbox\Logs."
+        if ($SinglePass) {
+            Write-Warning "No assertion results came back from the Hyper-V run — the assertions never ran, or the run stopped before them. Check $logPath and Sandbox\Logs."
+        }
+        else {
+            Write-Warning "No assertion results appeared within $TimeoutMinutes minutes — the sandbox may have been closed early or the baseline install may have hung. Check $logPath and Sandbox\Logs."
+        }
         return $null
     }
 

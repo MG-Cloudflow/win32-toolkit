@@ -242,7 +242,13 @@ What happens inside the guest, in order:
 The host waits for the in-guest assertion log (`Sandbox\Logs\InstallAssertions.log`), prints a
 **PASS/FAIL verdict**, and appends the outcome (scenario, backend, mode, verdict, timestamp) to
 `Documentation\TestResults.json`. In watched Sandbox mode the guest stays open; closing it early before
-the uninstall assertion leaves the verdict inconclusive.
+the uninstall assertion leaves the verdict inconclusive. A Hyper-V run copies the log back when it ends, so
+the host reads it once, without waiting: a failed assertion makes the test fail even when the run stopped
+early (for example a phase that did not finish), and a run that did not complete is never a pass (its
+assertions may all have passed; the verdict is then inconclusive, with a warning). The host deletes the
+previous run's log before the run starts. If it cannot (for example a log viewer has the file open), the
+Hyper-V verdict is inconclusive, with a warning and a note in the record, because that run's lines and this
+run's are in the same file: close the file and run the test again.
 
 In the menu (**Run a test**), the result is a panel: PASSED, FAILED (each failed check with its reason,
 and the run's own log folder) or Inconclusive.

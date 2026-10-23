@@ -171,6 +171,34 @@ try {
     New-AssertLog $pj @('[t] ASSERT Requirement-PreUpdate = FAIL (x)')
     if ((Wait-Win32ToolkitUpdateAssertion -ProjectPath $pj -TimeoutMinutes 0.04 -PollSeconds 1 6>$null 3>$null) -eq $false) { Ok 'partial run with FAIL -> $false (failures are conclusive)' } else { Bad 'partial FAIL not conclusive' }
 
+    # Hyper-V speed-up PR 1 (D24): a Hyper-V run's log came back with the copy-out and cannot change: one read, no sleep.
+    Write-Host "`n[3b] Wait-Win32ToolkitUpdateAssertion -SinglePass: one read, no polling, the same verdict rules" -ForegroundColor Cyan
+    $script:sleeps3b = 0
+    function Start-Sleep { param($Seconds, $Milliseconds) $script:sleeps3b++ }
+    try {
+        foreach ($case in @(
+                @{ Tag = 'a complete PASS log'; P = $pp; Want = $true }
+                @{ Tag = 'a partial log with a FAIL'; P = $pj; Want = $false }
+                @{ Tag = 'a partial PASS log (no RESULT COMPLETE)'; P = $pi; Want = $null }
+                @{ Tag = 'a SKIP-only log'; P = $ps; Want = $null })) {
+            $script:sleeps3b = 0
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $v = Wait-Win32ToolkitUpdateAssertion -ProjectPath $case.P -Backend HyperV -SinglePass 6>$null 3>$null
+            $sw.Stop()
+            if ($v -eq $case.Want -and ($null -ne $case.Want -or $null -eq $v) -and $script:sleeps3b -eq 0 -and $sw.Elapsed.TotalSeconds -lt 1) { Ok "$($case.Tag): $(if ($null -eq $v) { '$null' } else { "`$$v" }) at once (0 sleeps, $([int]$sw.Elapsed.TotalMilliseconds) ms)" } else { Bad "$($case.Tag): verdict=$v sleeps=$($script:sleeps3b) ms=$($sw.Elapsed.TotalMilliseconds)" }
+        }
+        $script:sleeps3b = 0
+        $w3b = $null
+        $v = Wait-Win32ToolkitUpdateAssertion -ProjectPath $pt -Backend HyperV -SinglePass -WarningVariable w3b 6>$null 3>$null
+        if ($null -eq $v -and $script:sleeps3b -eq 0 -and @($w3b).Count -eq 1 -and "$($w3b[0])" -like 'No assertion results came back from the Hyper-V run*' -and "$($w3b[0])" -notmatch 'minutes') {
+            Ok 'no log: $null at once, the "came back from the Hyper-V run" wording (no minutes)'
+        } else { Bad "missing log: verdict=$v sleeps=$($script:sleeps3b) warnings=$(@($w3b) -join ' | ')" }
+        $script:sleeps3b = 0
+        $v = Wait-Win32ToolkitUpdateAssertion -ProjectPath $pi -TimeoutMinutes 0.001 -PollSeconds 1 6>$null 3>$null
+        if ($null -eq $v -and $script:sleeps3b -ge 1) { Ok 'without -SinglePass the waiter still polls (Sandbox: unchanged)' } else { Bad "polling: verdict=$v sleeps=$($script:sleeps3b)" }
+    }
+    finally { Remove-Item Function:\Start-Sleep }
+
     Write-Host "`n[4] Get-Win32ToolkitBaselineInstallCommand" -ForegroundColor Cyan
     # Every form ends in the same FIXED suffix that records the exit code (test campaign 2026-10-21, H6-F7).
     $blSuffix = '; $w32tCls = ''Failed''; if ($w32tRc -eq 0 -or $w32tRc -eq 1707) { $w32tCls = ''Success'' } elseif ($w32tRc -eq 3010) { $w32tCls = ''SoftReboot'' } elseif ($w32tRc -eq 1641) { $w32tCls = ''HardReboot'' }; (''[{0}] baseline Install parent=vendor exit={1} result={2}'' -f ([DateTime]::UtcNow.ToString(''yyyy-MM-dd HH:mm:ss'', [Globalization.CultureInfo]::InvariantCulture) + ''Z''), $w32tRc, $w32tCls) | Add-Content -LiteralPath ''C:\PSADT\Sandbox\Logs\PsadtExitCodes.log'' -Encoding UTF8 -ErrorAction SilentlyContinue; $global:LASTEXITCODE = $w32tRc'

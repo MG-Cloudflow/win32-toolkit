@@ -834,6 +834,117 @@ if ($script:hvCalled -eq 0 -and $r18.Count -eq 1 -and $r18[0].NotRun -and $r18[0
 $script:preBlocked = $false; $script:preSeconds = 151.3; $script:preFromCache = $false
 Remove-Item -LiteralPath $base18 -Recurse -Force -ErrorAction SilentlyContinue
 
+# Hyper-V speed-up PR 1 (D24, V-12, V-13): a Hyper-V run's assertion log came back with the copy-out, so it is read ONCE
+# (-SinglePass: no polling, no 60 s of real time). A FAIL in the log of a run the provider called incomplete is Failed (it
+# was Inconclusive for IU); a PASS from such a run is Inconclusive (never Passed), with one warning.
+Write-Host '[19] Hyper-V verdicts: one read (-SinglePass, 0 sleeps); a FAIL from an incomplete run is Failed; a PASS from one Inconclusive; a log the clearing left Inconclusive' -ForegroundColor Cyan
+$savedWait19 = ${function:Wait-Win32ToolkitUpdateAssertion}
+. (Join-Path $repo 'Private\Wait-Win32ToolkitUpdateAssertion.ps1')   # the real waiter...
+${function:Wait-Win32ToolkitUpdateAssertion_Real19} = ${function:Wait-Win32ToolkitUpdateAssertion}
+$script:wait19 = [System.Collections.Generic.List[bool]]::new()
+# ...behind a proxy that records whether -SinglePass was bound.
+function Wait-Win32ToolkitUpdateAssertion {
+    [CmdletBinding()] param([string]$ProjectPath, [string]$Backend, [double]$TimeoutMinutes, [int]$PollSeconds, [string]$LogFileName, [string]$Label, [switch]$SinglePass)
+    $script:wait19.Add([bool]$SinglePass)
+    Wait-Win32ToolkitUpdateAssertion_Real19 @PSBoundParameters
+}
+$script:sleeps19 = 0
+function Start-Sleep { param($Seconds, $Milliseconds) $script:sleeps19++ }
+$script:techSwitch19 = 0
+$savedTech19 = ${function:Get-Win32ToolkitTechnologySwitch}
+function Get-Win32ToolkitTechnologySwitch { param($ProjectPath) $script:techSwitch19++; @() }
+$base19 = Join-Path ([System.IO.Path]::GetTempPath()) ('w32base_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $base19 -Force | Out-Null
+Set-Content -Path (Join-Path $base19 'Invoke-AppDeployToolkit.ps1') -Value '# psadt'
+$script:ran19 = $false; $script:log19 = $null; $script:logName19 = 'InstallAssertions.log'
+function Invoke-Win32ToolkitHyperVRun {
+    param($ProjectPath, $Phase, $Output, $BaselineProjectPath, [System.Collections.Generic.List[string]]$ParityExitNote, [hashtable]$RunInfo)
+    $script:hvCalled++
+    $ld = Join-Path $ProjectPath 'Sandbox\Logs'
+    New-Item -ItemType Directory -Path $ld -Force | Out-Null
+    # $null: the copy-out brought no new log back (whatever the host holds stays as it is).
+    if ($null -ne $script:log19) { Set-Content -LiteralPath (Join-Path $ld $script:logName19) -Value $script:log19 }
+    $script:ran19
+}
+$fail19 = '[2026-10-23 10:00:00Z] ASSERT InstallDetected-PostInstall = FAIL (tattoo missing)'
+$failUpd19 = '[2026-10-23 10:00:00Z] ASSERT OldArpGone-PostUpdate = FAIL (Notepad++)'
+$passAll19 = @('[2026-10-23 10:00:00Z] ASSERT InstallDetected-PostInstall = PASS', '[2026-10-23 10:00:01Z] ASSERT UninstallClean-PostUninstall = PASS', '[2026-10-23 10:00:02Z] RESULT COMPLETE')
+$script:backend = 'HyperV'; $script:procs = @(); $script:depCount = 0; $script:preBlocked = $false; $script:testMode = 'Interactive'
+foreach ($case in @(
+        @{ Tag = 'IU, the run did not complete, a FAIL line and no RESULT COMPLETE'; P = @{ Scenario = 'InstallUninstall'; Unattended = $true }; Ran = $false; Log = @($fail19); LogName = 'InstallAssertions.log'; Want = $false; Downgrade = 0; Tech = 0 }
+        @{ Tag = 'Update, the run did not complete, a FAIL line and no RESULT COMPLETE'; P = @{ Scenario = 'Update'; BaselineProjectPath = $base19; Unattended = $true }; Ran = $false; Log = @($failUpd19); LogName = 'UpdateAssertions.log'; Want = $false; Downgrade = 0; Tech = 1 }
+        @{ Tag = 'IU, the run did not complete, a complete all-PASS log (V-13, guard)'; P = @{ Scenario = 'InstallUninstall'; Unattended = $true }; Ran = $false; Log = $passAll19; LogName = 'InstallAssertions.log'; Want = $null; Downgrade = 1; Tech = 0 }
+        @{ Tag = 'IU, a completed run, a complete all-PASS log'; P = @{ Scenario = 'InstallUninstall'; Unattended = $true }; Ran = $true; Log = $passAll19; LogName = 'InstallAssertions.log'; Want = $true; Downgrade = 0; Tech = 0 })) {
+    $script:ran19 = $case.Ran; $script:log19 = $case.Log; $script:logName19 = $case.LogName
+    $script:wait19.Clear(); $script:sleeps19 = 0; $script:techSwitch19 = 0; $script:recorded = $null; $script:hvCalled = 0
+    $p19 = @{ ProjectPath = $proj } + $case.P
+    $w19 = $null; $v19 = 'not-set'
+    $sw19 = [System.Diagnostics.Stopwatch]::StartNew()
+    try { $v19 = Test-Win32ToolkitProject @p19 -WarningVariable w19 3>$null 6>$null } catch { Bad "$($case.Tag): threw $($_.Exception.Message)" }
+    $sw19.Stop()
+    $down19 = @($w19 | Where-Object { "$_" -ceq 'The assertions passed, but the Hyper-V run did not complete (see the warnings above): the result is Inconclusive, not a pass.' }).Count
+    $verdictOk = ($null -eq $case.Want -and $null -eq $v19 -and $null -eq $script:recorded.Verdict) -or ($null -ne $case.Want -and $v19 -eq $case.Want -and $script:recorded.Verdict -eq $case.Want)
+    if ($script:hvCalled -eq 1 -and $verdictOk -and $down19 -eq $case.Downgrade -and $script:techSwitch19 -eq $case.Tech) {
+        Ok "$($case.Tag): verdict $(if ($null -eq $v19) { '$null (Inconclusive)' } else { "`$$v19" }), recorded the same$(if ($case.Downgrade) { ', one downgrade warning' })$(if ($case.Tech) { ', the technology-switch check ran' })"
+    } else { Bad "$($case.Tag): verdict=$v19 recorded=$($script:recorded.Verdict) downgrade=$down19 tech=$($script:techSwitch19) hv=$($script:hvCalled)" }
+    if (($script:wait19 -join ',') -eq 'True' -and $script:sleeps19 -eq 0 -and $sw19.Elapsed.TotalSeconds -lt 5) { Ok "$($case.Tag): the waiter read the log once (-SinglePass, 0 sleeps, $([int]$sw19.Elapsed.TotalMilliseconds) ms)" } else { Bad "$($case.Tag): waits=$($script:wait19 -join ',') sleeps=$($script:sleeps19) s=$($sw19.Elapsed.TotalSeconds)" }
+}
+# The D24 premise ("cleared before the run, so any log here is this run's") holds only when the clearing worked. A previous
+# run's InstallAssertions.log the delete could not remove (a log viewer holding it open) goes into the guest with the project
+# and gets this run's lines appended: the verdict is Inconclusive whether or not the run completed, with one warning and a
+# note in the record, and the log is not read. The Remove-Item double leaves that one file (as a lock would, the call being
+# -ErrorAction SilentlyContinue) and passes every other delete through (defined through the function: drive, like the
+# runner-script double at the top).
+$script:lock19 = $false; $script:lockHits19 = 0
+${function:Remove-Item} = {
+    [CmdletBinding()] param([Parameter(Position = 0)][string[]]$Path, [string[]]$LiteralPath, [switch]$Force, [switch]$Recurse)
+    if ($script:lock19 -and @(@($LiteralPath) + @($Path) | Where-Object { $_ -and (Split-Path -Leaf $_) -eq 'InstallAssertions.log' }).Count -gt 0) { $script:lockHits19++; return }
+    Microsoft.PowerShell.Management\Remove-Item @PSBoundParameters
+}
+$staleWarn19 = "The previous run's InstallAssertions.log could not be removed before this run (is it open in a log viewer?): this run's assertions cannot be told apart from that run's, so the result is Inconclusive. Close the file and run the test again: $(Join-Path $proj 'Sandbox\Logs\InstallAssertions.log')"
+$staleNote19 = 'The previous run''s InstallAssertions.log could not be removed before the run: the result is Inconclusive.'
+$oldFail19 = '[2026-10-22 09:00:00Z] ASSERT InstallDetected-PostInstall = FAIL (tattoo missing)'
+try {
+    foreach ($case in @(
+            # The run did not complete and the copy-out brought nothing new: the host still holds the previous run's FAIL.
+            @{ Tag = 'IU, the previous log survived the clearing, the run did not complete, its FAIL line left'; Ran = $false; Log = $null }
+            # The run completed: the guest appended this run's all-PASS lines to the previous run's FAIL.
+            @{ Tag = 'IU, the previous log survived the clearing, a completed run appended an all-PASS log'; Ran = $true; Log = @($oldFail19) + $passAll19 })) {
+        $ld19 = Join-Path $proj 'Sandbox\Logs'
+        New-Item -ItemType Directory -Path $ld19 -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $ld19 'InstallAssertions.log') -Value $oldFail19
+        $script:lock19 = $true; $script:lockHits19 = 0
+        $script:ran19 = $case.Ran; $script:log19 = $case.Log; $script:logName19 = 'InstallAssertions.log'
+        $script:wait19.Clear(); $script:sleeps19 = 0; $script:recorded = $null; $script:hvCalled = 0
+        $w19 = $null; $v19 = 'not-set'
+        try { $v19 = Test-Win32ToolkitProject -ProjectPath $proj -Scenario InstallUninstall -Unattended -WarningVariable w19 3>$null 6>$null } catch { Bad "$($case.Tag): threw $($_.Exception.Message)" }
+        $script:lock19 = $false
+        $stale19 = @($w19 | Where-Object { "$_" -ceq $staleWarn19 }).Count
+        $down19 = @($w19 | Where-Object { "$_" -like 'The assertions passed, but the Hyper-V run did not complete*' }).Count
+        if ($script:hvCalled -eq 1 -and $script:lockHits19 -ge 1 -and $null -eq $v19 -and $script:recorded -and $null -eq $script:recorded.Verdict -and $stale19 -eq 1 -and $down19 -eq 0 -and
+            "$($script:recorded.Notes)".StartsWith($staleNote19, [System.StringComparison]::Ordinal) -and $script:wait19.Count -eq 0) {
+            Ok "$($case.Tag): verdict `$null (Inconclusive), recorded the same with the note, one warning, the log not read"
+        } else { Bad "$($case.Tag): verdict=$v19 recorded=$($script:recorded.Verdict) notes='$($script:recorded.Notes)' stale=$stale19 down=$down19 lockHits=$($script:lockHits19) reads=$($script:wait19.Count) hv=$($script:hvCalled) warnings=$(@($w19) -join ' | ')" }
+    }
+    # Control: the same previous log, but the clearing works -> this run's FAIL from an incomplete run is Failed, no stale warning.
+    $ld19 = Join-Path $proj 'Sandbox\Logs'
+    Set-Content -LiteralPath (Join-Path $ld19 'InstallAssertions.log') -Value $oldFail19
+    $script:ran19 = $false; $script:log19 = @($fail19); $script:logName19 = 'InstallAssertions.log'
+    $script:wait19.Clear(); $script:recorded = $null; $script:hvCalled = 0; $w19 = $null; $v19 = 'not-set'
+    try { $v19 = Test-Win32ToolkitProject -ProjectPath $proj -Scenario InstallUninstall -Unattended -WarningVariable w19 3>$null 6>$null } catch { Bad "control: threw $($_.Exception.Message)" }
+    if ($v19 -eq $false -and $script:recorded.Verdict -eq $false -and @($w19 | Where-Object { "$_" -ceq $staleWarn19 }).Count -eq 0 -and -not "$($script:recorded.Notes)".Contains($staleNote19) -and $script:wait19.Count -eq 1) {
+        Ok 'control: a previous log the clearing removed -> no stale warning or note; this run''s FAIL from an incomplete run is Failed'
+    } else { Bad "control: verdict=$v19 recorded=$($script:recorded.Verdict) notes='$($script:recorded.Notes)' reads=$($script:wait19.Count) warnings=$(@($w19) -join ' | ')" }
+}
+finally {
+    $script:lock19 = $false
+    Microsoft.PowerShell.Management\Remove-Item Function:\Remove-Item
+}
+${function:Wait-Win32ToolkitUpdateAssertion} = $savedWait19
+${function:Get-Win32ToolkitTechnologySwitch} = $savedTech19
+Remove-Item Function:\Wait-Win32ToolkitUpdateAssertion_Real19, Function:\Start-Sleep
+Remove-Item -LiteralPath $base19 -Recurse -Force -ErrorAction SilentlyContinue
+
 Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''

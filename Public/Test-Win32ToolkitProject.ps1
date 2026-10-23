@@ -524,6 +524,9 @@ function Test-Win32ToolkitProject {
                 # Clear a previous run's log so the verdict reflects THIS run only.
                 $installAssertLog = Join-Path $ProjectPath 'Sandbox\Logs\InstallAssertions.log'
                 if (Test-Path -LiteralPath $installAssertLog) { Remove-Item -LiteralPath $installAssertLog -Force -ErrorAction SilentlyContinue }
+                # A previous run's log the delete could not remove (a log viewer holding it open, say) goes into the guest
+                # with the project and gets this run's lines appended: the Hyper-V verdict below never reads it.
+                $staleInstallAssertLog = Test-Path -LiteralPath $installAssertLog
 
                 if ($resolvedBackend -eq 'HyperV') {
                     # Log collector runs inside the guest (copies PSADT/MSI logs to Sandbox\Logs).
@@ -590,17 +593,30 @@ function Test-Win32ToolkitProject {
                         Write-Warning 'Hyper-V install/uninstall run did not complete cleanly — see the warnings above.'
                     }
                     & $showExitCodes $runLog
-                    # Read the install/uninstall assertions the guest wrote (only if the log came back — no 30-min
-                    # hang if the run died before writing it), report a verdict, and record it for the docs.
+                    # Read the install/uninstall assertions the guest wrote (only if the log came back), once: the log came
+                    # back with the copy-out and cannot change (speed-up PR 1, D24). It was cleared before the run, so any
+                    # log here is this run's: a FAIL in it is conclusive even when the run did not complete (it used to be
+                    # Inconclusive), but a run the provider called incomplete is never Passed (V-13). That premise holds
+                    # only when the clearing worked: a previous run's log that survived it holds that run's lines too, so
+                    # the result is Inconclusive (complete run or not) with one warning and a note in the record.
                     $iuVerdict = $null
-                    if ($ran -and (Test-Path -LiteralPath $installAssertLog)) {
-                        $iuVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -TimeoutMinutes 1 -LogFileName 'InstallAssertions.log' -Label 'INSTALL/UNINSTALL TEST'
+                    $iuNotes = @($parityExitNotes)
+                    if ($staleInstallAssertLog) {
+                        Write-Warning "The previous run's InstallAssertions.log could not be removed before this run (is it open in a log viewer?): this run's assertions cannot be told apart from that run's, so the result is Inconclusive. Close the file and run the test again: $installAssertLog"
+                        $iuNotes = @('The previous run''s InstallAssertions.log could not be removed before the run: the result is Inconclusive.') + $iuNotes
+                    }
+                    elseif (Test-Path -LiteralPath $installAssertLog) {
+                        $iuVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -SinglePass -LogFileName 'InstallAssertions.log' -Label 'INSTALL/UNINSTALL TEST'
+                        if (-not $ran -and $iuVerdict -eq $true) {
+                            $iuVerdict = $null
+                            Write-Warning 'The assertions passed, but the Hyper-V run did not complete (see the warnings above): the result is Inconclusive, not a pass.'
+                        }
                     }
                     # The logs came back with the copy-out: nothing to wait for.
                     $runFolder = & $saveRunLog $runLog 0
                     Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'InstallUninstall' -Backend 'HyperV' `
                         -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $iuVerdict -LogFileName 'InstallAssertions.log' -LogFolder $runFolder `
-                        -Notes (@($parityExitNotes) -join ' ') -Timing (& $withPrecheck $runInfo.Timing) -Lane $runInfo.Lane
+                        -Notes (@($iuNotes) -join ' ') -Timing (& $withPrecheck $runInfo.Timing) -Lane $runInfo.Lane
                     return $iuVerdict
                 }
 
@@ -1165,7 +1181,7 @@ function Test-Win32ToolkitProject {
                     $runFolder = & $saveRunLog $runLog 0
 
                     # The Hyper-V run is SYNCHRONOUS: UpdateAssertions.log already came back with
-                    # Sandbox\Logs, so the waiter's first poll succeeds. If the copy-out silently failed
+                    # Sandbox\Logs, so the waiter reads it once (-SinglePass, speed-up PR 1 D24). If the copy-out silently failed
                     # there is nothing to wait FOR — bail instead of blocking the host for the 30-min default.
                     $assertLog = Join-Path $ProjectPath 'Sandbox\Logs\UpdateAssertions.log'
                     if (-not (Test-Path -LiteralPath $assertLog)) {
@@ -1173,7 +1189,7 @@ function Test-Win32ToolkitProject {
                         Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $null -Notes (@(@('Assertions log did not return from the VM.') + @($parityExitNotes)) -join ' ') -Baseline $baselineInfo -LogFolder $runFolder -Timing (& $withPrecheck $runInfo.Timing) -Lane $runInfo.Lane
                         return $null
                     }
-                    $updVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -TimeoutMinutes 1 -PollSeconds 1
+                    $updVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -SinglePass
                     Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict -Baseline $baselineInfo -LogFolder $runFolder `
                         -Notes (@($parityExitNotes) -join ' ') -Timing (& $withPrecheck $runInfo.Timing) -Lane $runInfo.Lane
                     if ($updVerdict -eq $false) { & $warnTechSwitch }
