@@ -302,7 +302,8 @@ function Show-Win32ToolkitProjectActions {
                     Clear-Host; Write-SpectreRule -Title 'Finalizing…' -Color Blue
                     try {
                         # Its result object decides the panel (TUI audit G2); captured, so it never prints raw.
-                        $out = @(Complete-Win32ToolkitManualApp -ProjectPath $project.Path)
+                        # -NoPublishPrompt: nothing is packaged here, but the menu never asks 'Upload ... now?' (TUI audit G5).
+                        $out = @(Complete-Win32ToolkitManualApp -ProjectPath $project.Path -NoPublishPrompt)
                         Show-Win32ToolkitRunResult -Result $out -Name $project.Name
                     }
                     catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }

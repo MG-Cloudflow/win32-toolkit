@@ -82,6 +82,9 @@ function New-Win32ToolkitManualApp {
     W32T.InvalidDependencyReference.
 .PARAMETER DependencyType
     How Intune treats the declared dependencies: 'autoInstall' (default) or 'detect'.
+.PARAMETER NoPublishPrompt
+    With -PackageIntune and neither -PublishIntune nor -PublishUpdate, do not ask 'Upload to Microsoft
+    Intune now? (Y/N)' after packaging. The menu always passes it: it asks about publishing itself.
 .EXAMPLE
     # Easy app, end to end
     New-Win32ToolkitManualApp -Name 'Acme Tool' -Version '3.1.0' -Architecture x64 `
@@ -136,7 +139,11 @@ function New-Win32ToolkitManualApp {
         [string[]]$DependsOn,
 
         [ValidateSet('autoInstall', 'detect')]
-        [string]$DependencyType = 'autoInstall'
+        [string]$DependencyType = 'autoInstall',
+
+        # No 'Upload to Microsoft Intune now?' question after packaging (TUI audit G5: the menu asks about
+        # publishing itself). Declared last.
+        [switch]$NoPublishPrompt
     )
 
     $runResult = $null
@@ -343,6 +350,7 @@ function New-Win32ToolkitManualApp {
             # BasePath: the capture and every test stage 'project:' dependencies from this run's base folder.
             $finalize = @{ ProjectPath = $projectFullPath; ProjectName = $projectName; AppInfo = $appInfo; BasePath = $BasePath; Result = $runResult }
             if ($RunTest) { $finalize['RunTest'] = $RunTest }   # omit when null (ValidateSet rejects $null)
+            if ($NoPublishPrompt) { $finalize['NoPublishPrompt'] = $true }   # only when set (TUI audit G5)
             Invoke-Win32ToolkitFinalize @finalize -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune -PublishUpdate:$PublishUpdate
             return (Complete-Win32ToolkitRunResult -Result $runResult)
         }

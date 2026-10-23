@@ -97,6 +97,9 @@ function Invoke-Win32Toolkit {
     a warning when the old version does not ship it; Both runs the Update test once per technology (one
     record each); Packaged uses the packaged technology only; a type (msi, wix, burn, nullsoft, inno, exe,
     msix) pins that technology.
+.PARAMETER NoPublishPrompt
+    With -PackageIntune and neither -PublishIntune nor -PublishUpdate, do not ask 'Upload to Microsoft
+    Intune now? (Y/N)' after packaging. The menu always passes it: it asks about publishing itself.
 .EXAMPLE
     Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force
 .EXAMPLE
@@ -195,7 +198,12 @@ function Invoke-Win32Toolkit {
         # Update-test baseline technology; passed on to Finalize -> Test-Win32ToolkitProject only when bound.
         [Parameter(Mandatory = $false)]
         [ValidateSet('Auto', 'Both', 'Packaged', 'msi', 'wix', 'burn', 'nullsoft', 'inno', 'exe', 'msix')]
-        [string]$UpdateBaselineInstallerType
+        [string]$UpdateBaselineInstallerType,
+
+        # No 'Upload to Microsoft Intune now?' question after packaging (TUI audit G5: the menu asks about
+        # publishing itself). Declared last.
+        [Parameter(Mandatory = $false)]
+        [switch]$NoPublishPrompt
     )
 
     $runResult = $null
@@ -449,6 +457,7 @@ function Invoke-Win32Toolkit {
                     if ($UpdateVersionsBack)    { $finalize['UpdateVersionsBack']    = $UpdateVersionsBack }
                     if ($UpdateSpecificVersion) { $finalize['UpdateSpecificVersion'] = $UpdateSpecificVersion }
                     if ($PSBoundParameters.ContainsKey('UpdateBaselineInstallerType')) { $finalize['UpdateBaselineInstallerType'] = $UpdateBaselineInstallerType }
+                    if ($NoPublishPrompt) { $finalize['NoPublishPrompt'] = $true }   # only when set (TUI audit G5)
                     Invoke-Win32ToolkitFinalize @finalize -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune -PublishUpdate:$PublishUpdate
                     return (Complete-Win32ToolkitRunResult -Result $runResult)
 

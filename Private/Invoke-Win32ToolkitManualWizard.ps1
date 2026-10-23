@@ -114,8 +114,9 @@ function Invoke-Win32ToolkitManualWizard {
         Write-SpectreHost '[yellow]Publish skipped.[/]'
     }
 
-    # Common params for New-Win32ToolkitManualApp
-    $p = @{ Name = $name; Version = $version; Architecture = $arch; SourcePath = $source; TemplateName = $template; BasePath = $BasePath; Force = $true }
+    # Common params for New-Win32ToolkitManualApp. NoPublishPrompt: the wizard asked about publishing above, so
+    # packaging never asks 'Upload ... now?' (TUI audit G5).
+    $p = @{ Name = $name; Version = $version; Architecture = $arch; SourcePath = $source; TemplateName = $template; BasePath = $BasePath; Force = $true; NoPublishPrompt = $true }
     if ($publisher) { $p.Publisher = $publisher }
     if ($descr)     { $p.Description = $descr }
     if ($infoUrl)   { $p.InformationUrl = $infoUrl }

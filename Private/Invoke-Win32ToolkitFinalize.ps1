@@ -42,6 +42,9 @@ function Invoke-Win32ToolkitFinalize {
         S8-F3). When given, Finalize records the capture state, one { Scenario; Verdict } per test, the
         .intunewin path, the published apps and a plain sentence per problem in it, and runs the export with
         -PassThru. Without it the behaviour and output are unchanged (nothing is emitted).
+    .PARAMETER NoPublishPrompt
+        Passed on to the export: no 'Upload to Microsoft Intune now? (Y/N)' question after packaging (TUI
+        audit G5; the menu asks about publishing itself).
     #>
     [CmdletBinding()]
     param(
@@ -85,7 +88,10 @@ function Invoke-Win32ToolkitFinalize {
         [string]$BasePath,
 
         # The calling command's run-result collector (TUI audit G2, S8-F3); declared last.
-        [pscustomobject]$Result
+        [pscustomobject]$Result,
+
+        # No 'Upload to Microsoft Intune now?' question after packaging (TUI audit G5); declared last.
+        [switch]$NoPublishPrompt
     )
 
     # Pre-flight (D15): never document, test, package or publish a deploy script win32-toolkit cannot
@@ -225,6 +231,7 @@ function Invoke-Win32ToolkitFinalize {
         $exportArgs = @{ ProjectPath = $ProjectPath; PublishIntune = [bool]$PublishIntune; PublishUpdate = [bool]$PublishUpdate; AllowLegacyScript = [bool]$AllowLegacyScript }
         # With a result collector the export returns its summary (-PassThru); without one it emits nothing, as before.
         if ($Result) { $exportArgs['PassThru'] = $true }
+        if ($NoPublishPrompt) { $exportArgs['NoPublishPrompt'] = $true }
         $exported = Export-Win32ToolkitIntuneWin @exportArgs
         if ($Result) {
             $summary = @($exported | Where-Object { $_ -and $_.PSObject.Properties['IntuneWinPath'] }) | Select-Object -Last 1

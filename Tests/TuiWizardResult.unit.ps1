@@ -73,6 +73,7 @@ function Read-SpectreSelection {
     }
     @($Choices)[0]
 }
+$script:selectionShadow = ${function:Read-SpectreSelection}   # [7] replaces it; later sections restore it
 $script:silentSwitch = '/S'   # the Easy wizard's silent-install answer ('' = blank switches)
 function Read-Win32ToolkitValidatedText {
     param($Message, $Validator, $ErrorMessage, [switch]$AllowEmpty)
@@ -96,6 +97,7 @@ function Get-Win32ToolkitPreviousProject { [CmdletBinding()] param($TemplateDire
 function Get-Win32ToolkitSelfAnchor { [CmdletBinding()] param($ProjectPath, $TenantId) $null }
 function Get-Win32ToolkitSiblingInstaller { [CmdletBinding()] param($WingetId, $Version, $Architecture, $PackagedType, $TimeoutSec, $BaseUri, [switch]$NoMemo) $null }
 function Get-PSADTProjects { param($BasePath) @([pscustomobject]@{ Template = 'Contoso'; Name = 'Tool_x64_1.0'; Path = (Join-Path $BASE 'Projects\Contoso\Tool_x64_1.0'); ScriptPath = '' }) }
+$script:projectsShadow = ${function:Get-PSADTProjects}   # [7] replaces it; later sections restore it
 function Get-Win32ToolkitDependencies { param($ProjectPath) @() }
 
 # --- the commands: scripted output ------------------------------------------------------------------------
@@ -103,7 +105,7 @@ function Get-Win32ToolkitDependencies { param($ProjectPath) @() }
 $script:output = @(); $script:throwThis = $null; $script:beforeRun = $null   # beforeRun: what the command does first (e.g. writes a marker)
 $script:invokeArgs = $null; $script:newArgs = $null; $script:completeArgs = $null
 function Invoke-Win32Toolkit {
-    param($Id, $Architecture, $TemplateName, $BasePath, [switch]$Force, $DependsOn, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, $InstallerType)
+    param($Id, $Architecture, $TemplateName, $BasePath, [switch]$Force, $DependsOn, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, $InstallerType, [switch]$NoPublishPrompt)
     $script:invokeArgs = $PSBoundParameters
     if ($script:beforeRun) { & $script:beforeRun }
     if ($script:throwThis) { throw $script:throwThis }
@@ -111,14 +113,14 @@ function Invoke-Win32Toolkit {
 }
 function New-Win32ToolkitManualApp {
     param($Name, $Version, $Architecture, $SourcePath, $TemplateName, $BasePath, [switch]$Force, $Publisher, $Description, $InformationUrl, $IconPath, $DependsOn,
-        [switch]$Advanced, $SilentArgs, [switch]$Continue, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune)
+        [switch]$Advanced, $SilentArgs, [switch]$Continue, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, [switch]$NoPublishPrompt)
     $script:newArgs = $PSBoundParameters
     if ($script:beforeRun) { & $script:beforeRun }
     if ($script:throwThis) { throw $script:throwThis }
     $script:output
 }
 function Complete-Win32ToolkitManualApp {
-    param($ProjectPath, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript)
+    param($ProjectPath, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript, [switch]$NoPublishPrompt)
     $script:completeArgs = $PSBoundParameters
     if ($script:throwThis) { throw $script:throwThis }
     $script:output
@@ -358,6 +360,46 @@ try {
     }
     Show-Win32ToolkitProjectActions -BasePath $BASE 6>$null 3>$null
     if (($script:labelsSeen -join '|') -ceq 'Contoso  /  Tool_x64_1.0  (not configured)|Contoso  /  Zed_x64_1.0') { Ok "the project list: 'Contoso  /  Tool_x64_1.0  (not configured)'" } else { Bad "labels: $($script:labelsSeen -join '|')" }
+
+    # == [8] the menu never reaches the raw 'Upload to Microsoft Intune now?' prompt (TUI audit G5) ==========
+    # The wizards ask about publishing themselves; a build with 'Package to .intunewin' ticked and publish not
+    # ticked must not stop at Export's Read-Host. Every TUI caller passes -NoPublishPrompt.
+    Write-Host '[8] the wizards, Advanced finish and Finalize / refresh pass -NoPublishPrompt' -ForegroundColor Cyan
+    ${function:Read-SpectreSelection} = $script:selectionShadow
+    ${function:Get-PSADTProjects} = $script:projectsShadow
+    $script:apps = @([pscustomobject]@{ Name = 'Git[x]'; Id = 'Git.Git'; Version = '2.55.0'; Source = 'winget' })   # [7] reused $apps
+    $script:multi = @('Package*')
+    try {
+        Reset-Run @(New-RR)
+        Invoke-Win32ToolkitWingetWizard -BasePath $BASE 6>$null 3>$null
+        $ia = $script:invokeArgs
+        if ($ia -and $ia['PackageIntune'] -and -not $ia['PublishIntune'] -and $ia.ContainsKey('NoPublishPrompt') -and $ia['NoPublishPrompt']) { Ok 'winget wizard, Package ticked, Publish not: Invoke-Win32Toolkit gets -NoPublishPrompt' } else { Bad "invoke args: $(if ($ia) { ($ia.Keys | Sort-Object) -join ',' })" }
+
+        Reset-Run @(New-RR -Command 'New-Win32ToolkitManualApp')
+        $script:keys.Enqueue('easy')
+        Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null
+        $na = $script:newArgs
+        if ($na -and $na['PackageIntune'] -and $na.ContainsKey('NoPublishPrompt') -and $na['NoPublishPrompt']) { Ok 'manual wizard (Easy), Package ticked: New-Win32ToolkitManualApp gets -NoPublishPrompt' } else { Bad "new args: $(if ($na) { ($na.Keys | Sort-Object) -join ',' })" }
+
+        Reset-Run @(New-RR -Command 'New-Win32ToolkitManualApp' -Scaffolded -ProjectPath $proj)
+        $script:keys.Enqueue('advanced')
+        Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null
+        $na = $script:newArgs
+        if ($na -and $na['Advanced'] -and $na['NoPublishPrompt']) { Ok 'manual wizard (Advanced): the scaffold call gets -NoPublishPrompt too (the same common parameters)' } else { Bad "new args: $(if ($na) { ($na.Keys | Sort-Object) -join ',' })" }
+
+        Reset-Run @(New-RR -Command 'Complete-Win32ToolkitManualApp' -ProjectPath $proj)
+        $script:keys.Enqueue('finish')
+        Show-Win32ToolkitAdvancedFinish -ProjectPath $proj -DoPackage 6>$null 3>$null
+        $ca = $script:completeArgs
+        if ($ca -and $ca['PackageIntune'] -and $ca.ContainsKey('NoPublishPrompt') -and $ca['NoPublishPrompt']) { Ok 'Advanced finish with Package: Complete-Win32ToolkitManualApp gets -NoPublishPrompt' } else { Bad "complete args: $(if ($ca) { ($ca.Keys | Sort-Object) -join ',' })" }
+
+        Reset-Run @(New-RR -Command 'Complete-Win32ToolkitManualApp' -ProjectPath $proj)
+        $script:keys.Enqueue('finish')
+        $null = @(Show-Win32ToolkitProjectActions -BasePath $BASE 6>$null 3>$null)
+        $ca = $script:completeArgs
+        if ($ca -and $ca.ContainsKey('NoPublishPrompt') -and $ca['NoPublishPrompt']) { Ok 'Project actions > Finalize / refresh: Complete-Win32ToolkitManualApp gets -NoPublishPrompt (uniform)' } else { Bad "complete args: $(if ($ca) { ($ca.Keys | Sort-Object) -join ',' })" }
+    }
+    finally { $script:multi = @() }
 }
 finally {
     Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue

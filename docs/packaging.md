@@ -169,7 +169,7 @@ So the edit loop is simply: change the project under `Projects\`, re-run `Export
 
 ## Publishing straight after packaging
 
-When the package is built and neither `-PublishIntune` nor `-PublishUpdate` was passed, you are asked interactively: `Upload to Microsoft Intune now? (Y/N)`. Answer `Y` to hand off to [Publish-Win32ToolkitIntuneApp](reference/Publish-Win32ToolkitIntuneApp.md) immediately.
+When the package is built and neither `-PublishIntune` nor `-PublishUpdate` was passed, you are asked interactively: `Upload to Microsoft Intune now? (Y/N)` (`Invoke-Win32Toolkit`, `New-Win32ToolkitManualApp` and `Complete-Win32ToolkitManualApp` ask too when they package; pass `-NoPublishPrompt` to skip it; the menu never asks). Answer `Y` to hand off to [Publish-Win32ToolkitIntuneApp](reference/Publish-Win32ToolkitIntuneApp.md) immediately.
 
 To skip the question:
 

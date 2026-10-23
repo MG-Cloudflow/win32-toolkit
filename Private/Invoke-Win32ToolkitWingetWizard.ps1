@@ -257,7 +257,8 @@ function Invoke-Win32ToolkitWingetWizard {
     # 8. Run (Invoke shows its own progress; the capture/test run in the resolved backend)
     Clear-Host
     Write-SpectreRule -Title "Building $(Get-SpectreEscapedText -Text $picked.Name)…" -Color Blue
-    $p = @{ Id = $picked.Id; Architecture = $arch; TemplateName = $template; BasePath = $BasePath; Force = $true }
+    # NoPublishPrompt: the wizard asked about publishing above, so packaging never asks 'Upload ... now?' (TUI audit G5).
+    $p = @{ Id = $picked.Id; Architecture = $arch; TemplateName = $template; BasePath = $BasePath; Force = $true; NoPublishPrompt = $true }
     if ($techPin)   { $p.InstallerType = $techPin }
     if ($deps)      { $p.DependsOn = $deps }
     if ($doTest)    { $p.RunTest = 'InstallUninstall' }

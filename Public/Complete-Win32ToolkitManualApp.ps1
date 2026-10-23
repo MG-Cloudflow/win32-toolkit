@@ -35,6 +35,9 @@ function Complete-Win32ToolkitManualApp {
     Finalise a deploy script that win32-toolkit never patched (no AppConfig loader) or whose template
     layout this version does not support; the package is built as-is. Projects patched by older
     win32-toolkit versions do not need it.
+.PARAMETER NoPublishPrompt
+    With -PackageIntune and neither -PublishIntune nor -PublishUpdate, do not ask 'Upload to Microsoft
+    Intune now? (Y/N)' after packaging. The menu always passes it: it asks about publishing itself.
 .EXAMPLE
     Complete-Win32ToolkitManualApp -ProjectPath 'C:\Win32Apps\Projects\Contoso\Legacy_CAD_x64_12.0' -RunTest InstallUninstall -PublishIntune
 .OUTPUTS
@@ -62,7 +65,11 @@ function Complete-Win32ToolkitManualApp {
         [switch]$PublishUpdate,
 
         # D15 override: finalise a script without the AppConfig loader / with an unsupported layout as-is.
-        [switch]$AllowLegacyScript
+        [switch]$AllowLegacyScript,
+
+        # No 'Upload to Microsoft Intune now?' question after packaging (TUI audit G5: the menu asks about
+        # publishing itself). Declared last.
+        [switch]$NoPublishPrompt
     )
 
     $runResult = $null
@@ -96,6 +103,7 @@ function Complete-Win32ToolkitManualApp {
         Write-Host "Finalising project: $projectName" -ForegroundColor Cyan
         $finalize = @{ ProjectPath = $ProjectPath; ProjectName = $projectName; AppInfo = $appInfo; Result = $runResult }
         if ($RunTest) { $finalize['RunTest'] = $RunTest }   # omit when null (ValidateSet rejects $null)
+        if ($NoPublishPrompt) { $finalize['NoPublishPrompt'] = $true }   # only when set (TUI audit G5)
         Invoke-Win32ToolkitFinalize @finalize -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune -PublishUpdate:$PublishUpdate -AllowLegacyScript:$AllowLegacyScript
         return (Complete-Win32ToolkitRunResult -Result $runResult)
     }

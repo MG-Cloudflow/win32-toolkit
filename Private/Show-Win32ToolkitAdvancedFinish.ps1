@@ -38,7 +38,8 @@ function Show-Win32ToolkitAdvancedFinish {
             'finish' {
                 Clear-Host
                 Write-SpectreRule -Title 'Finishing setup…' -Color Blue
-                $cp = @{ ProjectPath = $ProjectPath }
+                # NoPublishPrompt: the publish choice was made in the wizard (TUI audit G5).
+                $cp = @{ ProjectPath = $ProjectPath; NoPublishPrompt = $true }
                 if ($DoTest)    { $cp.RunTest = 'InstallUninstall' }
                 if ($DoPackage) { $cp.PackageIntune = $true }
                 if ($DoPublish) { $cp.PublishIntune = $true }

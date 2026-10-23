@@ -202,6 +202,8 @@ function Export-Win32ToolkitIntuneWin {
     param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript, [switch]$NoPublishPrompt, [switch]$PassThru)
     $script:Calls.Add("export:$([bool]$AllowLegacyScript)")
     $script:ExportPassThru = [bool]$PassThru
+    # TUI audit G5: bound only when the caller passed -NoPublishPrompt ($null = not called).
+    $script:ExportNoPrompt = if ($PSBoundParameters.ContainsKey('NoPublishPrompt')) { [bool]$NoPublishPrompt } else { 'unbound' }
     if ($script:Mode.ExportThrows) { throw $script:Mode.ExportThrows }
     if ($PassThru) {
         if ($script:Mode.ExportSummary) { return $script:Mode.ExportSummary }
@@ -702,6 +704,27 @@ if (-not (Test-Path -LiteralPath (Join-Path $toolProj 'Documentation\NotConfigur
 Clear-Project $toolProj; Reset-Case @{}
 $r = Invoke-Case $runManual
 if (-not $r.Fqid -and (Test-Path -LiteralPath $toolProj) -and $null -eq (Get-Marker $toolProj)) { Ok 'New-: a configured project is not marked' } else { Bad "fqid='$($r.Fqid)' marker=$(& $markerText (Get-Marker $toolProj))" }
+
+# == [NP] -NoPublishPrompt reaches the export (TUI audit G5) =======================================
+# The menu asks about publishing itself: with -NoPublishPrompt the packaging step never asks 'Upload to Microsoft
+# Intune now? (Y/N)'. Without it the export gets no NoPublishPrompt at all (the command-line behaviour is unchanged).
+Write-Host '[NP] -NoPublishPrompt on Invoke-Win32Toolkit, New- and Complete-Win32ToolkitManualApp reaches Export-Win32ToolkitIntuneWin' -ForegroundColor Cyan
+$npCases = [ordered]@{
+    'Invoke-Win32Toolkit'            = { param([hashtable]$X) Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -PackageIntune @X -ErrorAction SilentlyContinue -ErrorVariable ev }
+    'New-Win32ToolkitManualApp'      = { param([hashtable]$X) New-Win32ToolkitManualApp -Name 'Tool' -Version '1.0' -Architecture x64 -SourcePath (Join-Path $src 'tool.msi') -TemplateName 'Contoso' -Force -Continue -PackageIntune @X -ErrorAction SilentlyContinue -ErrorVariable ev }
+    'Complete-Win32ToolkitManualApp' = { param([hashtable]$X) Complete-Win32ToolkitManualApp -ProjectPath $toolProj -PackageIntune @X -ErrorAction SilentlyContinue -ErrorVariable ev }
+}
+foreach ($npName in $npCases.Keys) {
+    $npRun = $npCases[$npName]
+    Reset-Case @{}
+    $script:ExportNoPrompt = $null
+    $r = Invoke-Case { & $npRun @{ NoPublishPrompt = $true } }
+    if (-not $r.Fqid -and $script:ExportNoPrompt -eq $true) { Ok "$npName -PackageIntune -NoPublishPrompt -> the export gets -NoPublishPrompt (no 'Upload ... now?' question)" } else { Bad "${npName}: fqid='$($r.Fqid)' export NoPublishPrompt=$script:ExportNoPrompt calls=[$($script:Calls -join ',')]" }
+    Reset-Case @{}
+    $script:ExportNoPrompt = $null
+    $r = Invoke-Case { & $npRun @{} }
+    if (-not $r.Fqid -and $script:ExportNoPrompt -eq 'unbound') { Ok "$npName -PackageIntune without it -> NoPublishPrompt is not bound on the export (the CLI keeps its question)" } else { Bad "${npName}: fqid='$($r.Fqid)' export NoPublishPrompt=$script:ExportNoPrompt" }
+}
 
 Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''

@@ -10,8 +10,8 @@ New-Win32ToolkitManualApp [[-Name] <String>] [[-Version] <String>] [[-Architectu
  [[-SourcePath] <String>] [[-Publisher] <String>] [[-Description] <String>] [[-InformationUrl] <String>]
  [[-SilentArgs] <String>] [[-IconPath] <String>] [[-TemplateName] <String>] [[-BasePath] <String>]
  [-Reconfigure] [-Advanced] [-Force] [-Continue] [[-RunTest] <String[]>] [-PackageIntune] [-PublishIntune]
- [-PublishUpdate] [[-DependsOn] <String[]>] [[-DependencyType] <String>] [-ProgressAction <ActionPreference>]
- [<CommonParameters>]
+ [-PublishUpdate] [[-DependsOn] <String[]>] [[-DependencyType] <String>] [-NoPublishPrompt]
+ [-ProgressAction <ActionPreference>] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -400,6 +400,24 @@ Aliases:
 Required: False
 Position: 14
 Default value: AutoInstall
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -NoPublishPrompt
+With -PackageIntune and neither -PublishIntune nor -PublishUpdate, do not ask 'Upload to Microsoft
+Intune now?
+(Y/N)' after packaging.
+The menu always passes it: it asks about publishing itself.
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
 Accept pipeline input: False
 Accept wildcard characters: False
 ```

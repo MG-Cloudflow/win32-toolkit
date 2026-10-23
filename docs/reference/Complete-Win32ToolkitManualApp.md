@@ -7,7 +7,7 @@ Finalises a scaffolded project: sandbox capture → uninstall automation → tes
 
 ```
 Complete-Win32ToolkitManualApp [-ProjectPath] <String> [[-RunTest] <String[]>] [-PackageIntune]
- [-PublishIntune] [-PublishUpdate] [-AllowLegacyScript] [-ProgressAction <ActionPreference>]
+ [-PublishIntune] [-PublishUpdate] [-AllowLegacyScript] [-NoPublishPrompt] [-ProgressAction <ActionPreference>]
  [<CommonParameters>]
 ```
 
@@ -125,6 +125,24 @@ Finalise a deploy script that win32-toolkit never patched (no AppConfig loader) 
 layout this version does not support; the package is built as-is.
 Projects patched by older
 win32-toolkit versions do not need it.
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -NoPublishPrompt
+With -PackageIntune and neither -PublishIntune nor -PublishUpdate, do not ask 'Upload to Microsoft
+Intune now?
+(Y/N)' after packaging.
+The menu always passes it: it asks about publishing itself.
 
 ```yaml
 Type: SwitchParameter

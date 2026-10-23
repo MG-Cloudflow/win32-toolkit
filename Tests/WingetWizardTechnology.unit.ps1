@@ -151,7 +151,8 @@ function Get-Win32ToolkitSiblingInstaller {
 }
 $script:invokeArgs = $null
 function Invoke-Win32Toolkit {
-    param($Id, $Architecture, $TemplateName, $BasePath, [switch]$Force, $DependsOn, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, $InstallerType)
+    # C-9 (TUI audit G5): the wizard always passes -NoPublishPrompt.
+    param($Id, $Architecture, $TemplateName, $BasePath, [switch]$Force, $DependsOn, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, $InstallerType, [switch]$NoPublishPrompt)
     $script:invokeArgs = $PSBoundParameters
 }
 
