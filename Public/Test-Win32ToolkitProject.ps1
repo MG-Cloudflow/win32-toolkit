@@ -8,12 +8,14 @@ function Test-Win32ToolkitProject {
     ProjectPath is supplied, an interactive menu lists all PSADT projects found under BasePath.
 
     Tests run WATCHED by default (a countdown/pause gives you a verification window) or
-    UNATTENDED via -Unattended / the SandboxTestMode & HyperVTestMode config values (back-to-back,
-    no operator needed: under Sandbox PSADT runs -DeployMode Silent and the guest shuts itself down
-    afterwards so chained runs proceed; under Hyper-V the install, uninstall and update run as the
-    Intune-parity phase). Watched runs use PSADT's Auto mode: on PSADT 4.2 the dialogs appear only
+    UNATTENDED via -Unattended or -TestMode Unattended, or the SandboxTestMode & HyperVTestMode config
+    values (back-to-back, no operator needed: under Sandbox PSADT runs -DeployMode Silent and the guest
+    shuts itself down afterwards so chained runs proceed; under Hyper-V the install, uninstall and update
+    run as the Intune-parity phase). Watched runs use PSADT's Auto mode: on PSADT 4.2 the dialogs appear only
     when one of the app's listed processes is running (otherwise the run is silent); on 4.1.x Auto
     shows PSADT's dialogs. (The watched Hyper-V GUI phases force -DeployMode Interactive.)
+    -TestMode Interactive runs one test watched although the config value says Unattended (a host that
+    cannot prompt still runs it unattended).
 
     Before a test runs, it warns once when the project's uninstall cleanup paths fail the check
     Export-Win32ToolkitIntuneWin enforces, with Export's own findings, and then runs anyway: Export is
@@ -59,7 +61,8 @@ function Test-Win32ToolkitProject {
     than the currently packaged version (e.g. 1 = the immediately previous release).
     Mutually exclusive intent with SpecificVersion; SpecificVersion takes priority.
     When neither is given, an interactive run shows a list of older versions to pick from; an unattended
-    run (-Unattended, or the SandboxTestMode / HyperVTestMode config value) or a host that cannot prompt
+    run (-Unattended, -TestMode Unattended, or the SandboxTestMode / HyperVTestMode config value when
+    -TestMode is not given) or a host that cannot prompt
     (a service, redirected input, or a console started with pwsh -NonInteractive) uses the previous
     version (as -VersionsBack 1) and says so in a warning.
 .PARAMETER SpecificVersion
@@ -109,7 +112,7 @@ function Test-Win32ToolkitProject {
     Run back-to-back on either backend with no countdown or pause; under Sandbox the guest shuts
     itself down afterwards (and, after a completed run, a window Windows Sandbox leaves open after
     that is closed before the command returns), so chained runs proceed unaided. The default is
-    watched/interactive. Overrides the SandboxTestMode / HyperVTestMode config values; on a
+    watched/interactive. Overrides the SandboxTestMode / HyperVTestMode config values and -TestMode; on a
     non-interactive host Unattended is auto-selected with a warning. Note the context difference:
     Sandbox-unattended runs the package -DeployMode Silent as the sandbox admin user, while
     HyperV-unattended runs an INTUNE-PARITY phase for install, uninstall and update: the exact
@@ -127,6 +130,13 @@ function Test-Win32ToolkitProject {
     is not started while a user is signed in to the VM, which the toolkit's VM always is (it would wait
     on the dialog until the 25-minute limit): it is recorded as Inconclusive (not run) with the reason.
     Run it watched, or list the app's process in ProcessesToClose.
+.PARAMETER TestMode
+    This run's test mode, on either backend: Interactive (watched) or Unattended (the same as -Unattended). It takes
+    precedence over the SandboxTestMode / HyperVTestMode config value for this run only, so -TestMode Interactive runs
+    one test watched while the config value says Unattended (for example after the Intune-parity pre-check did not
+    start an unattended Hyper-V test). A host that cannot prompt (a service, redirected input, or a console started
+    with pwsh -NonInteractive) still runs Unattended, with a warning. -Unattended together with -TestMode Interactive
+    is refused before any prompt. Omit it to use -Unattended or the config value.
 .EXAMPLE
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario Update -VersionsBack 1 -SkipRequirementCheck
 .EXAMPLE
@@ -152,6 +162,9 @@ function Test-Win32ToolkitProject {
 .EXAMPLE
     # Pin the old version to the vendor EXE (NSIS) technology
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario Update -SpecificVersion '8.8.9' -BaselineInstallerType nullsoft
+.EXAMPLE
+    # Run one test watched although HyperVTestMode is Unattended (for example after the Intune-parity pre-check did not start it)
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario InstallUninstall -Backend HyperV -TestMode Interactive
 #>
     [CmdletBinding()]
     param(
@@ -213,10 +226,23 @@ function Test-Win32ToolkitProject {
         # runs the Intune-parity phases (published command line, 32-bit parent, SYSTEM) — not equivalent
         # evidence.
         [Parameter(Mandatory = $false)]
-        [switch]$Unattended
+        [switch]$Unattended,
+
+        # This run's test mode (TUI audit G3): above the HyperVTestMode / SandboxTestMode value, below -Unattended; a
+        # non-interactive host still forces Unattended (Get-Win32ToolkitTestMode).
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Interactive', 'Unattended')]
+        [string]$TestMode
     )
 
     try {
+        # Per-run test mode (TUI audit G3): passed to every Get-Win32ToolkitTestMode call below.
+        if ($Unattended -and $TestMode -eq 'Interactive') {
+            throw '-Unattended and -TestMode Interactive contradict each other: pass one of them.'
+        }
+        $modeArgs = @{ Unattended = [bool]$Unattended }
+        if ($TestMode) { $modeArgs['TestMode'] = $TestMode }
+
         # Prompt for scenario if not explicitly supplied
         if (-not $PSBoundParameters.ContainsKey('Scenario')) {
             $Scenario = Show-ScenarioSelection
@@ -377,7 +403,7 @@ function Test-Win32ToolkitProject {
         # never ask. The mode is read without its non-interactive warning, which the scenario prints once when it runs.
         $parityPre = $null
         if ($resolvedBackend -eq 'HyperV' -and $null -eq $script:W32TUpdateLegContext -and
-            (Get-Win32ToolkitTestMode -Backend HyperV -Unattended:$Unattended -WarningAction SilentlyContinue) -eq 'Unattended') {
+            (Get-Win32ToolkitTestMode -Backend HyperV @modeArgs -WarningAction SilentlyContinue) -eq 'Unattended') {
             $parityPre = Invoke-Win32ToolkitParityPrecheck -ProjectPath $ProjectPath -Scenario $Scenario
             if ($parityPre -and $parityPre.Blocked) {
                 Write-Warning $parityPre.Message
@@ -492,10 +518,10 @@ function Test-Win32ToolkitProject {
                     $null = New-LogCollectorScript -ProjectPath $ProjectPath
 
                     # Interactive (default) shows the PSADT GUI in the VM console for hands-on testing;
-                    # -Unattended (or HyperVTestMode=Unattended, or a non-interactive host) runs the
+                    # -Unattended / -TestMode (or HyperVTestMode=Unattended, or a non-interactive host) runs the
                     # Intune-parity phases back-to-back (published command line from a 32-bit cmd.exe
                     # parent, as SYSTEM, no -DeployMode). One resolver for both backends (Get-Win32ToolkitTestMode).
-                    $interactive = (Get-Win32ToolkitTestMode -Backend HyperV -Unattended:$Unattended) -eq 'Interactive'
+                    $interactive = (Get-Win32ToolkitTestMode -Backend HyperV @modeArgs) -eq 'Interactive'
                     # An unattended run got here only past the Intune-parity pre-check (asked before anything was written;
                     # $parityDialogHint is its 1460 hint).
 
@@ -570,7 +596,7 @@ function Test-Win32ToolkitProject {
                 # single-instance guard clears on its own. NOTE the mode divergence: Sandbox-unattended
                 # runs as the WDAG interactive admin user, HyperV-unattended as SYSTEM/session-0 — their
                 # verdicts are not equivalent evidence (the recorded Mode/Backend make this visible).
-                $sbInteractive = (Get-Win32ToolkitTestMode -Backend Sandbox -Unattended:$Unattended) -eq 'Interactive'
+                $sbInteractive = (Get-Win32ToolkitTestMode -Backend Sandbox @modeArgs) -eq 'Interactive'
 
                 if ($sbInteractive) {
                     # Create the countdown helper script inside Sandbox\ (watched mode only)
@@ -791,7 +817,7 @@ function Test-Win32ToolkitProject {
 
                         # A run nobody can answer never reaches the version picker (test campaign F5): under
                         # -NonInteractive its Read-Host threw, the test had no verdict and packaging went on
-                        # UNTESTED. An unattended run (-Unattended, SandboxTestMode / HyperVTestMode) or a host
+                        # UNTESTED. An unattended run (-Unattended, -TestMode, SandboxTestMode / HyperVTestMode) or a host
                         # that cannot prompt (a service or redirected input, or a console started with
                         # -NonInteractive) uses the previous version, as -VersionsBack 1, and says so. A prompt
                         # the host still refuses (NonInteractive mode under a host not recognised here) does the same.
@@ -799,7 +825,7 @@ function Test-Win32ToolkitProject {
                         $noPromptWarning = 'No baseline version was given (-VersionsBack or -SpecificVersion) and this run cannot ask for one (an unattended run or a non-interactive host): the Update test uses the previous version (-VersionsBack 1). Pass -VersionsBack or -SpecificVersion to test from another version.'
                         if ($versionsBackToUse -le 0) {
                             $cannotAsk = [bool]$Unattended -or (Test-Win32ToolkitHostNonInteractive) -or (Test-Win32ToolkitNonInteractiveSwitch) -or
-                                ((Get-Win32ToolkitTestMode -Backend $resolvedBackend -WarningAction SilentlyContinue) -eq 'Unattended')
+                                ((Get-Win32ToolkitTestMode -Backend $resolvedBackend @modeArgs -WarningAction SilentlyContinue) -eq 'Unattended')
                             if ($cannotAsk) {
                                 Write-Warning $noPromptWarning
                                 $versionsBackToUse = 1
@@ -837,7 +863,7 @@ function Test-Win32ToolkitProject {
                         Write-Host "Both technologies: $($legs.Count) Update run(s) of v$targetVersion, one per installer technology, each recorded separately:" -ForegroundColor Cyan
                         for ($i = 1; $i -le $legs.Count; $i++) { Write-Host ('  {0}. {1}' -f $i, $legs[$i - 1].Label) -ForegroundColor Cyan }
                         $sandboxWatched = $resolvedBackend -eq 'Sandbox' -and
-                            (Get-Win32ToolkitTestMode -Backend Sandbox -Unattended:$Unattended) -eq 'Interactive'
+                            (Get-Win32ToolkitTestMode -Backend Sandbox @modeArgs) -eq 'Interactive'
                         $legVerdicts = [System.Collections.Generic.List[object]]::new()
                         for ($i = 1; $i -le $legs.Count; $i++) {
                             $leg = $legs[$i - 1]
@@ -964,7 +990,7 @@ function Test-Win32ToolkitProject {
                         }
                         try {
                             $null = Add-Win32ToolkitTestResult -ProjectPath $ProjectPath -Scenario 'Update' -Backend $resolvedBackend `
-                                -Mode (Get-Win32ToolkitTestMode -Backend $resolvedBackend -Unattended:$Unattended) -Verdict 'Inconclusive' `
+                                -Mode (Get-Win32ToolkitTestMode -Backend $resolvedBackend @modeArgs) -Verdict 'Inconclusive' `
                                 -Assertions @() -Notes "Baseline unavailable: $unavailable" -Baseline $baselineInfo
                         }
                         catch {
@@ -1005,7 +1031,7 @@ function Test-Win32ToolkitProject {
                 # pauses instead (a Pause phase); an UNATTENDED Sandbox run drops the countdown entirely.
                 $sbInteractive = $true
                 if ($resolvedBackend -eq 'Sandbox') {
-                    $sbInteractive = (Get-Win32ToolkitTestMode -Backend Sandbox -Unattended:$Unattended) -eq 'Interactive'
+                    $sbInteractive = (Get-Win32ToolkitTestMode -Backend Sandbox @modeArgs) -eq 'Interactive'
                     if ($sbInteractive) {
                         Write-Verbose 'Creating countdown script...'
                         $countdownPath = New-CountdownScript -ProjectPath $ProjectPath
@@ -1068,10 +1094,10 @@ function Test-Win32ToolkitProject {
 
                 # ── Step 6 (Hyper-V): run the update sequence in the VM over PowerShell Direct ────
                 # Exactly the Sandbox LogonCommand sequence, expressed as provider phases. The in-guest
-                # WinForms Countdown becomes a HOST pause (dropped under -Unattended / HyperVTestMode).
+                # WinForms Countdown becomes a HOST pause (dropped under -Unattended / -TestMode / HyperVTestMode).
                 # The baseline project is copied to C:\PSADTOld by the provider (-BaselineProjectPath).
                 if ($resolvedBackend -eq 'HyperV') {
-                    $interactive = (Get-Win32ToolkitTestMode -Backend HyperV -Unattended:$Unattended) -eq 'Interactive'
+                    $interactive = (Get-Win32ToolkitTestMode -Backend HyperV @modeArgs) -eq 'Interactive'
 
                     # Dependencies FIRST — and before the PreBaseline snapshot, so the dependency's own
                     # Add/Remove-Programs entry is part of the baseline rather than looking like something

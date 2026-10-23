@@ -62,8 +62,10 @@ Pass `-Unattended` for back-to-back automation:
 
 To make unattended the default per backend, set the `SandboxTestMode` and/or `HyperVTestMode` config
 value to `Unattended` in the same registry key. An explicit `-Unattended` switch always overrides the
-config. On a **non-interactive host** (CI pipeline, redirected stdin), the toolkit auto-selects
-Unattended and prints a loud warning. Interactive mode would block forever on prompts nobody can see.
+config. `-TestMode Interactive` runs one test watched although the config value says `Unattended`;
+`-TestMode Unattended` is the same as `-Unattended`. On a **non-interactive host** (CI pipeline,
+redirected stdin), the toolkit auto-selects Unattended and prints a loud warning, also over
+`-TestMode Interactive`. Interactive mode would block forever on prompts nobody can see.
 
 > **Context caveat.** A Sandbox-unattended run executes as the sandbox's interactive admin user, while a
 > HyperV-unattended run executes as **SYSTEM, with the same launcher, bitness and command line Intune

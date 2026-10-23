@@ -1,8 +1,8 @@
 <#
     R1 + R3 — Sandbox unattended mode, the guard-wait, and the mode-gated auto-close.
 
-      (a) Get-Win32ToolkitTestMode precedence: -Unattended > config Unattended > non-interactive host
-          (forced Unattended + warning) > Interactive default.
+      (a) Get-Win32ToolkitTestMode precedence: -Unattended > -TestMode > config Unattended > non-interactive host
+          (forced Unattended + warning, also over -TestMode Interactive) > Interactive default.
       (b) Wait-Win32ToolkitSandboxFree: free -> immediate $true; frees mid-wait -> $true; never ->
           $false at the 90 s ceiling (no throw). Without a wsb answer (shadowed $null), as here, only the
           process check decides; the wsb-based close of a leftover client window: SandboxStaleClient.unit.ps1.
@@ -36,7 +36,7 @@ Write-Host '[a] Get-Win32ToolkitTestMode precedence' -ForegroundColor Cyan
 $script:cfg = @{}
 function Get-Win32ToolkitConfigValue { param($Name, $Default) if ($script:cfg.ContainsKey($Name)) { $script:cfg[$Name] } else { $Default } }
 function Test-Win32ToolkitHostNonInteractive { $script:hostNonInteractive }
-function Test-Win32ToolkitNonInteractiveSwitch { $false }   # C-9: the Update version choice (test campaign F5)
+function Test-Win32ToolkitNonInteractiveSwitch { [bool]$script:noniSwitch }   # C-9: the Update version choice (test campaign F5); -TestMode Interactive (G3); $false unless set
 $script:hostNonInteractive = $false
 
 if ((Get-Win32ToolkitTestMode -Backend Sandbox) -eq 'Interactive') { Ok 'default: Interactive (human-in-the-loop unchanged)' } else { Bad 'default not Interactive' }
@@ -46,6 +46,28 @@ if ((Get-Win32ToolkitTestMode -Backend Sandbox) -eq 'Unattended') { Ok 'SandboxT
 $script:cfg.Clear(); $script:cfg['HyperVTestMode'] = 'Unattended'
 if ((Get-Win32ToolkitTestMode -Backend HyperV) -eq 'Unattended') { Ok 'HyperVTestMode=Unattended honored' } else { Bad 'HyperV config ignored' }
 if ((Get-Win32ToolkitTestMode -Backend Sandbox) -eq 'Interactive') { Ok 'config values are PER BACKEND (HyperV setting does not leak to Sandbox)' } else { Bad 'config leaked across backends' }
+# -TestMode (TUI audit G3): the run's own choice, above the config value, below -Unattended.
+if ((Get-Win32ToolkitTestMode -Backend HyperV -TestMode Interactive) -eq 'Interactive') { Ok '-TestMode Interactive + HyperVTestMode=Unattended -> Interactive (the run''s choice wins over the config value)' } else { Bad '-TestMode Interactive lost to HyperVTestMode' }
+$script:cfg.Clear(); $script:cfg['SandboxTestMode'] = 'Unattended'
+if ((Get-Win32ToolkitTestMode -Backend Sandbox -TestMode Interactive) -eq 'Interactive') { Ok '-TestMode Interactive + SandboxTestMode=Unattended (Sandbox) -> Interactive' } else { Bad '-TestMode Interactive lost to SandboxTestMode' }
+$script:cfg.Clear()
+if ((Get-Win32ToolkitTestMode -Backend HyperV -TestMode Unattended) -eq 'Unattended' -and (Get-Win32ToolkitTestMode -Backend Sandbox -TestMode Unattended) -eq 'Unattended') { Ok '-TestMode Unattended without a config value -> Unattended (both backends)' } else { Bad '-TestMode Unattended ignored' }
+if ((Get-Win32ToolkitTestMode -Backend HyperV -Unattended -TestMode Interactive) -eq 'Unattended') { Ok '-Unattended -TestMode Interactive at the resolver -> Unattended (the switch wins; the command refuses the pair)' } else { Bad '-Unattended lost to -TestMode Interactive' }
+$script:hostNonInteractive = $true
+$warnTm = @()
+$m = Get-Win32ToolkitTestMode -Backend HyperV -TestMode Interactive -WarningVariable warnTm 3>$null
+if ($m -eq 'Unattended' -and @($warnTm).Count -eq 1 -and "$warnTm" -match 'non-interactive' -and "$warnTm" -match 'Intune-parity') { Ok '-TestMode Interactive on a non-interactive host -> Unattended with the existing warning, once' } else { Bad "non-interactive host + -TestMode Interactive: mode=$m warnings=$(@($warnTm).Count) '$warnTm'" }
+$script:hostNonInteractive = $false
+# Dv16: a console started with pwsh -NonInteractive cannot answer the Hyper-V host pause: for an EXPLICIT -TestMode
+# Interactive it counts as a host that cannot prompt; a run without -TestMode keeps today's resolution.
+$script:noniSwitch = $true
+$warnTm = @()
+$m = Get-Win32ToolkitTestMode -Backend HyperV -TestMode Interactive -WarningVariable warnTm 3>$null
+if ($m -eq 'Unattended' -and @($warnTm).Count -eq 1 -and "$warnTm" -match 'non-interactive') { Ok '-TestMode Interactive in a pwsh -NonInteractive console -> Unattended with the warning, once' } else { Bad "-NonInteractive console + -TestMode Interactive: mode=$m warnings=$(@($warnTm).Count) '$warnTm'" }
+$warnTm = @()
+$m = Get-Win32ToolkitTestMode -Backend HyperV -WarningVariable warnTm 3>$null
+if ($m -eq 'Interactive' -and @($warnTm).Count -eq 0) { Ok 'no -TestMode in a pwsh -NonInteractive console (config Interactive) -> Interactive, no warning (resolution unchanged)' } else { Bad "-NonInteractive console without -TestMode: mode=$m warnings=$(@($warnTm).Count)" }
+$script:noniSwitch = $false
 $script:cfg.Clear()
 $script:hostNonInteractive = $true
 $warnings = @()

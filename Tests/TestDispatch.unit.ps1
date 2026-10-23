@@ -36,7 +36,7 @@ $script:collectWaits = @()
 # Deterministic mode resolution regardless of the host running the tests (CI stdin is redirected,
 # which would otherwise force Unattended and flip the interactive-default assertions below).
 function Test-Win32ToolkitHostNonInteractive { $false }
-function Test-Win32ToolkitNonInteractiveSwitch { $false }   # C-9: the Update version choice (test campaign F5)
+function Test-Win32ToolkitNonInteractiveSwitch { [bool]$script:noniSwitch }   # C-9: the Update version choice (test campaign F5); -TestMode Interactive (G3); $false unless set
 
 # --- shadows --------------------------------------------------------------------------------------
 $script:backend  = 'HyperV'
@@ -156,6 +156,42 @@ $script:backend = 'HyperV'; $script:procs = @(); $script:testMode = 'Unattended'
 Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
 if ((Pauses) -eq 0 -and (Inters) -eq 0) { Ok 'config Unattended honored' } else { Bad "pauses=$(Pauses) inter=$(Inters)" }
 
+# TUI audit G3: -TestMode is the run's own choice, above HyperVTestMode and below -Unattended.
+Write-Host '[4b] HyperVTestMode=Unattended + -TestMode Interactive = WATCHED (GUI phases, no pre-check)' -ForegroundColor Cyan
+$script:backend = 'HyperV'; $script:procs = @(); $script:testMode = 'Unattended'; $script:preCalls = @(); $script:recorded = $null
+Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall'; TestMode = 'Interactive' }
+if ((Pauses) -ge 1 -and (Inters) -ge 1 -and $script:hvCalled -eq 1) { Ok '-TestMode Interactive overrides HyperVTestMode=Unattended: a Pause + GUI phases' } else { Bad "pauses=$(Pauses) inter=$(Inters) hv=$script:hvCalled" }
+if (@($script:preCalls).Count -eq 0) { Ok 'a watched run asks no Intune-parity pre-check' } else { Bad "pre-check calls: $($script:preCalls -join ';')" }
+if ($script:recorded -and $script:recorded.Mode -eq 'Interactive') { Ok 'the record says Mode Interactive' } else { Bad "recorded mode: '$($script:recorded.Mode)'" }
+
+Write-Host '[4c] config Interactive + -TestMode Unattended = Intune-parity phases, pre-check asked' -ForegroundColor Cyan
+$script:backend = 'HyperV'; $script:procs = @(); $script:testMode = 'Interactive'; $script:preCalls = @(); $script:recorded = $null
+Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall'; TestMode = 'Unattended' }
+if ((Pauses) -eq 0 -and (Inters) -eq 0 -and ($script:hvPhase.Label -contains 'Install (Intune parity)')) { Ok '-TestMode Unattended runs the Intune-parity phases (no pause)' } else { Bad "pauses=$(Pauses) inter=$(Inters) labels=$($script:hvPhase.Label -join ',')" }
+if (@($script:preCalls).Count -eq 1) { Ok 'the Intune-parity pre-check is asked once' } else { Bad "pre-check calls: $(@($script:preCalls).Count)" }
+if ($script:recorded -and $script:recorded.Mode -eq 'Unattended') { Ok 'the record says Mode Unattended' } else { Bad "recorded mode: '$($script:recorded.Mode)'" }
+
+Write-Host '[4d] -Unattended -TestMode Interactive = refused before any prompt' -ForegroundColor Cyan
+$script:promptCalls = @{ Scenario = 0; Project = 0; Projects = 0; BasePath = 0 }
+function Show-ScenarioSelection { $script:promptCalls.Scenario++; 'InstallUninstall' }
+function Show-ProjectSelection { param($Projects) $script:promptCalls.Project++; [pscustomobject]@{ Path = $proj } }
+${function:Get-PSADTProjects} = { param($BasePath) $null = $BasePath; $script:promptCalls.Projects++; @([pscustomobject]@{ Path = $proj }) }
+function Get-Win32ToolkitBasePath { param($BasePath, [switch]$NonInteractive) $script:promptCalls.BasePath++; [System.IO.Path]::GetTempPath() }
+$script:backend = 'HyperV'; $script:procs = @(); $script:testMode = 'Interactive'
+$script:hvCalled = 0; $script:hvPhase = $null; $script:runnerGen = 0; $script:launched = 0
+$err4d = $null
+try { $null = Test-Win32ToolkitProject -Unattended -TestMode Interactive 6>$null 3>$null } catch { $err4d = $_ }
+if ($err4d -and $err4d.Exception.Message -match [regex]::Escape('-Unattended and -TestMode Interactive contradict each other: pass one of them.')) { Ok 'the contradiction is refused with the parameter error' } else { Bad "error: '$($err4d.Exception.Message)'" }
+if (($script:promptCalls.Values | Measure-Object -Sum).Sum -eq 0) { Ok 'refused before the scenario prompt, the project picker and the BasePath lookup (no prompt shadow called)' } else { Bad "prompts called: $($script:promptCalls | ConvertTo-Json -Compress)" }
+if ($script:hvCalled -eq 0 -and $null -eq $script:hvPhase -and $script:runnerGen -eq 0 -and $script:launched -eq 0) { Ok 'no phase built, no runner written, nothing launched' } else { Bad "hv=$script:hvCalled runner=$script:runnerGen launched=$script:launched" }
+
+Write-Host '[4e] -TestMode Interactive in a pwsh -NonInteractive console = Unattended (Dv16)' -ForegroundColor Cyan
+$script:backend = 'HyperV'; $script:procs = @(); $script:testMode = 'Interactive'; $script:preCalls = @(); $script:recorded = $null; $script:noniSwitch = $true
+Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall'; TestMode = 'Interactive' }
+$script:noniSwitch = $false
+if ((Pauses) -eq 0 -and (Inters) -eq 0 -and ($script:hvPhase.Label -contains 'Install (Intune parity)')) { Ok 'the console cannot answer the host pause: Intune-parity phases, no Pause phase' } else { Bad "pauses=$(Pauses) inter=$(Inters) labels=$($script:hvPhase.Label -join ',')" }
+if ($script:recorded -and $script:recorded.Mode -eq 'Unattended') { Ok 'the record says Mode Unattended' } else { Bad "recorded mode: '$($script:recorded.Mode)'" }
+
 Write-Host '[5] Sandbox + a running sandbox = guard fires (no Hyper-V run, no launch)' -ForegroundColor Cyan
 $script:backend = 'Sandbox'; $script:procs = @([pscustomobject]@{ Name = 'WindowsSandbox' })
 Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
@@ -234,6 +270,22 @@ if ($upd7.ParityHint -eq 'Dialog41' -and $hinted7.Count -eq 1) { Ok "only the Up
 # F2 raises the limit of the Intune-parity UNINSTALL only: the Update phases keep the runner's 25 minutes.
 $rtm7 = @($script:hvPhase | Where-Object { $_.ContainsKey('RunnerTimeoutMinutes') -or ([string]$_.Command) -match '-TimeoutMinutes' })
 if ($rtm7.Count -eq 0) { Ok 'no Update phase carries RunnerTimeoutMinutes or passes -TimeoutMinutes to the runner' } else { Bad "raised: $(@($rtm7.Label) -join ',')" }
+
+# TUI audit G3: the Update arm resolves its own mode with the run's -TestMode too (the TUI's Hyper-V Update pick). If it
+# did not, an Interactive pick under HyperVTestMode=Unattended would skip the pre-check (watched) and then build the
+# Intune-parity update (unattended): a parity run nobody checked.
+Write-Host '[7b] Update + HyperV: -TestMode decides the phases and the record over HyperVTestMode, both ways' -ForegroundColor Cyan
+$script:backend = 'HyperV'; $script:procs = @(); $script:depCount = 0
+$script:testMode = 'Unattended'; $script:preCalls = @(); $script:recorded = $null
+Run @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProjectPath = $base; TestMode = 'Interactive' }
+$lbl7b = @($script:hvPhase.Label)
+if ($script:hvCalled -eq 1 -and (Pauses) -eq 1 -and $lbl7b -contains 'Update (PSADT GUI)' -and $lbl7b -notcontains 'Update (Intune parity)') { Ok 'HyperVTestMode=Unattended + -TestMode Interactive: the host pause and the GUI update, no parity update' } else { Bad "labels=$($lbl7b -join ',') pauses=$(Pauses) hv=$script:hvCalled" }
+if (@($script:preCalls).Count -eq 0) { Ok 'a watched Update asks no Intune-parity pre-check' } else { Bad "pre-check calls: $($script:preCalls -join ';')" }
+if ($script:recorded -and $script:recorded.Scenario -eq 'Update' -and $script:recorded.Mode -eq 'Interactive') { Ok 'the Update record says Mode Interactive' } else { Bad "recorded: $($script:recorded.Scenario)/$($script:recorded.Mode)" }
+$script:testMode = 'Interactive'; $script:preCalls = @(); $script:recorded = $null
+Run @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProjectPath = $base; TestMode = 'Unattended' }
+$lbl7c = @($script:hvPhase.Label)
+if ($script:hvCalled -eq 1 -and (Pauses) -eq 0 -and $lbl7c -contains 'Update (Intune parity)' -and @($script:preCalls).Count -eq 1 -and $script:recorded.Mode -eq 'Unattended') { Ok 'HyperVTestMode=Interactive + -TestMode Unattended: the parity update after one pre-check, record Mode Unattended' } else { Bad "labels=$($lbl7c -join ',') pauses=$(Pauses) pre=$(@($script:preCalls).Count) mode=$($script:recorded.Mode)" }
 
 Write-Host '[8] Update + HyperV but the assertions log never came back -> no 30-min hang' -ForegroundColor Cyan
 $script:backend = 'HyperV'; $script:hvCopiesLog = $false; $script:waitArgs = $null
@@ -401,6 +453,29 @@ $script:depCount = 1
 $script:depCount = 0
 Run @{ ProjectPath = $proj; Scenario = 'InstallUninstall' }
 if ($script:logon -notmatch 'InstallDependencies') { Ok 'none declared -> no dependency step in the .wsb' } else { Bad 'phantom dependency step' }
+
+# TUI audit G3: both Sandbox arms resolve their mode with the run's -TestMode too, over SandboxTestMode, both ways.
+Write-Host '[10b] Sandbox: -TestMode decides the LogonCommand, the countdown and the record over SandboxTestMode' -ForegroundColor Cyan
+$script:depCount = 0; $script:backend = 'Sandbox'; $script:procs = @()
+foreach ($case in @(
+        @{ Tag = 'InstallUninstall'; P = @{ Scenario = 'InstallUninstall' } }
+        @{ Tag = 'Update';           P = @{ Scenario = 'Update'; BaselineProjectPath = $base } })) {
+    $script:testMode = 'Unattended'; $script:logon = $null; $script:recorded = $null; $script:countdownMade = 0
+    Run (@{ ProjectPath = $proj; TestMode = 'Interactive' } + $case.P)
+    $lw = [string]$script:logon
+    if ($lw.StartsWith('powershell.exe -NoExit ') -and $lw.Contains('C:\PSADT\Sandbox\Countdown.ps1') -and -not $lw.Contains('Stop-Computer') -and
+        $script:countdownMade -eq 1 -and $script:recorded.Scenario -eq $case.Tag -and $script:recorded.Mode -eq 'Interactive') {
+        Ok "$($case.Tag), SandboxTestMode=Unattended + -TestMode Interactive: the watched LogonCommand (-NoExit, Countdown.ps1), record Mode Interactive"
+    } else { Bad "$($case.Tag) watched: countdown=$script:countdownMade mode=$($script:recorded.Mode) logon=$lw" }
+    $script:testMode = 'Interactive'; $script:logon = $null; $script:recorded = $null; $script:countdownMade = 0
+    Run (@{ ProjectPath = $proj; TestMode = 'Unattended' } + $case.P)
+    $lu = [string]$script:logon
+    if ($lu.StartsWith('powershell.exe -ExecutionPolicy Bypass ') -and -not $lu.Contains('Countdown.ps1') -and $lu.Contains('Stop-Computer -Force') -and
+        $script:countdownMade -eq 0 -and $script:recorded.Scenario -eq $case.Tag -and $script:recorded.Mode -eq 'Unattended') {
+        Ok "$($case.Tag), SandboxTestMode=Interactive + -TestMode Unattended: the silent LogonCommand (no countdown, Stop-Computer), record Mode Unattended"
+    } else { Bad "$($case.Tag) unattended: countdown=$script:countdownMade mode=$($script:recorded.Mode) logon=$lu" }
+}
+$script:testMode = 'Interactive'
 
 Write-Host '[11] InstallUninstall now has real PASS/FAIL assertions wired on both backends' -ForegroundColor Cyan
 # HyperV: the assertion script is generated, PostInstall/PostUninstall phases surround the install/uninstall,

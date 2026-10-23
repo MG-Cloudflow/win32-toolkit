@@ -532,7 +532,8 @@ try {
             @{ Label = 'HyperVTestMode=Unattended'; Cfg = 'Unattended'; NonInteractiveHost = $false; Extra = @{} }
             @{ Label = '-Unattended'; Cfg = 'Interactive'; NonInteractiveHost = $false; Extra = @{ Unattended = $true } }
             @{ Label = 'a non-interactive host'; Cfg = 'Interactive'; NonInteractiveHost = $true; Extra = @{} }
-            @{ Label = 'a console started with pwsh -NonInteractive'; Cfg = 'Interactive'; NonInteractiveHost = $false; NoniSwitch = $true; Extra = @{} })) {
+            @{ Label = 'a console started with pwsh -NonInteractive'; Cfg = 'Interactive'; NonInteractiveHost = $false; NoniSwitch = $true; Extra = @{} }
+            @{ Label = '-TestMode Unattended'; Cfg = 'Interactive'; NonInteractiveHost = $false; Extra = @{ TestMode = 'Unattended' } })) {
         Clear-RunState
         $script:testModeCfg = $case.Cfg; $script:hostNonInteractive = $case.NonInteractiveHost; $script:noniSwitch = [bool]$case.NoniSwitch
         $extra = $case.Extra
@@ -543,6 +544,13 @@ try {
         } else { Bad "F5 $($case.Label): picker=$($script:pickerCalls) version=$($c0['Version']) values=$($o.Values -join ',') warnings=$($o.Warnings -join ' | ')" }
     }
     $script:testModeCfg = 'Unattended'; $script:hostNonInteractive = $false; $script:noniSwitch = $false
+    # TUI audit G3: -TestMode Interactive is this run's choice over HyperVTestMode=Unattended, so the run can ask: the
+    # version picker is called once and the F5 default (previous version + warning) does not apply.
+    Clear-RunState
+    $script:testModeCfg = 'Unattended'
+    $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -TestMode Interactive 6>&1 3>&1)
+    if ($script:pickerCalls -eq 1 -and @($o.Warnings | Where-Object { $_ -eq $f5Warn }).Count -eq 0) { Ok 'HyperVTestMode=Unattended + -TestMode Interactive: the version picker is asked once, no F5 warning' }
+    else { Bad "-TestMode Interactive: picker=$($script:pickerCalls) warnings=$($o.Warnings -join ' | ')" }
     # A prompt the host still refuses (pwsh -NonInteractive under a host the predicates do not recognise): Read-Host's own
     # InvalidOperation from the picker -> the same warning and the previous version, with a verdict. Any other picker error
     # is not swallowed (no verdict, as before).
@@ -640,6 +648,18 @@ try {
     $script:dlAnswer = { 'ivu' }
     $null = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -SpecificVersion '8.8.9' 6>$null 3>$null
     if ($script:dlCalls.Count -eq 2 -and $script:records.Count -eq 1 -and $script:records[0].Baseline.UsedFallback -eq $true -and $script:records[0].Baseline.RequestedInstallerType -eq 'nullsoft') { Ok 'Auto: the fallback unavailable too -> one Unavailable record (UsedFallback recorded)' } else { Bad "fallback unavailable: calls $($script:dlCalls.Count) records $($script:records.Count)" }
+    # TUI audit G3: the Unavailable record's Mode is the run's own mode, -TestMode over HyperVTestMode, both ways.
+    foreach ($case in @(@{ Cfg = 'Unattended'; TestMode = 'Interactive'; Pre = 0 }, @{ Cfg = 'Interactive'; TestMode = 'Unattended'; Pre = 1 })) {
+        Clear-RunState
+        $script:testModeCfg = $case.Cfg
+        $script:dlAnswer = { 'ivu' }
+        $null = Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -SpecificVersion '8.8.9' -BaselineInstallerType nullsoft -TestMode $case.TestMode 6>$null 3>$null
+        $r = if ($script:records.Count) { $script:records[0] } else { $null }
+        if ($script:records.Count -eq 1 -and $r.Baseline.Unavailable -eq $true -and $r.Mode -eq $case.TestMode -and $script:preCalls.Count -eq $case.Pre) {
+            Ok "HyperVTestMode=$($case.Cfg) + -TestMode $($case.TestMode), baseline unavailable: the record says Mode $($case.TestMode) ($($case.Pre) pre-check call)"
+        } else { Bad "unavailable -TestMode $($case.TestMode): records=$($script:records.Count) mode=$($r.Mode) pre=$($script:preCalls.Count)" }
+    }
+    $script:testModeCfg = 'Unattended'
     Clear-RunState
     $script:dlAnswer = { 'boom' }
     $threw = $null
@@ -856,6 +876,17 @@ try {
     $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -SpecificVersion '8.8.9' 6>&1 3>&1)
     if ($script:watchedOwnRuns.Count -eq 0 -and $script:outcomes.Count -eq 1 -and @($o.Values) -contains $true) { Ok 'watched Sandbox Update (F10): launched with a verdict, no own-sandbox wait (-OwnRun)' }
     else { Bad "watched single own-sandbox waits: $($script:watchedOwnRuns -join ',') outcomes=$($script:outcomes.Count) values=$($o.Values -join ',')" }
+    # TUI audit G3: the Both run's watched check follows the run's -TestMode too. SandboxTestMode=Unattended + -TestMode
+    # Interactive = watched legs: close the previous leg's sandbox first (up to 600 s); no own-sandbox wait after leg 1.
+    $script:testModeCfg = 'Unattended'
+    Clear-RunState; $script:freeCalls.Clear(); $script:watchedOwnRuns.Clear()
+    $script:verdictQueue.Enqueue($true)   # leg 1 launched with a verdict
+    $o = Split-Out @(Test-Win32ToolkitProject -ProjectPath $np -Scenario Update -BaselineInstallerType Both -SpecificVersion '8.8.9' -TestMode Interactive 6>&1 3>&1)
+    if ($script:freeCalls -contains 600 -and @($o.Info | Where-Object { $_ -eq 'Close the Windows Sandbox of the previous leg to start the exe leg' }).Count -eq 1 -and
+        $script:dlCalls.Count -eq 1 -and $script:outcomes.Count -eq 1 -and $script:watchedOwnRuns.Count -eq 0) {
+        Ok 'SandboxTestMode=Unattended + -TestMode Interactive, Both: the watched path (close the previous sandbox, 600 s), no own-sandbox wait'
+    } else { Bad "-TestMode Interactive Both: waits=$($script:freeCalls -join ',') downloads=$($script:dlCalls.Count) outcomes=$($script:outcomes.Count) own=$($script:watchedOwnRuns -join ',')" }
+    $script:testModeCfg = 'Interactive'
     # F5 on the Sandbox backend with SandboxTestMode=Unattended (the campaign's configuration): no version given ->
     # the previous version with one warning, never the picker, and a verdict.
     $script:testModeCfg = 'Unattended'

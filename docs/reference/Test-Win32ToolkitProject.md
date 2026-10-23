@@ -9,7 +9,8 @@ Tests a PSADT project in a disposable guest: Windows Sandbox or the Hyper-V test
 Test-Win32ToolkitProject [[-ProjectPath] <String>] [[-BasePath] <String>] [[-Scenario] <String>]
  [[-VersionsBack] <Int32>] [[-SpecificVersion] <String>] [-SkipRequirementCheck]
  [[-BaselineProjectPath] <String>] [[-BaselineProject] <String>] [[-BaselineInstallerType] <String>]
- [[-Backend] <String>] [-Unattended] [-ProgressAction <ActionPreference>] [<CommonParameters>]
+ [[-Backend] <String>] [-Unattended] [[-TestMode] <String>] [-ProgressAction <ActionPreference>]
+ [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -19,14 +20,16 @@ If no
 ProjectPath is supplied, an interactive menu lists all PSADT projects found under BasePath.
 
 Tests run WATCHED by default (a countdown/pause gives you a verification window) or
-UNATTENDED via -Unattended / the SandboxTestMode & HyperVTestMode config values (back-to-back,
-no operator needed: under Sandbox PSADT runs -DeployMode Silent and the guest shuts itself down
-afterwards so chained runs proceed; under Hyper-V the install, uninstall and update run as the
-Intune-parity phase).
+UNATTENDED via -Unattended or -TestMode Unattended, or the SandboxTestMode & HyperVTestMode config
+values (back-to-back, no operator needed: under Sandbox PSADT runs -DeployMode Silent and the guest
+shuts itself down afterwards so chained runs proceed; under Hyper-V the install, uninstall and update
+run as the Intune-parity phase).
 Watched runs use PSADT's Auto mode: on PSADT 4.2 the dialogs appear only
 when one of the app's listed processes is running (otherwise the run is silent); on 4.1.x Auto
 shows PSADT's dialogs.
 (The watched Hyper-V GUI phases force -DeployMode Interactive.)
+-TestMode Interactive runs one test watched although the config value says Unattended (a host that
+cannot prompt still runs it unattended).
 
 Before a test runs, it warns once when the project's uninstall cleanup paths fail the check
 Export-Win32ToolkitIntuneWin enforces, with Export's own findings, and then runs anyway: Export is
@@ -115,6 +118,12 @@ Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x
 Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario Update -SpecificVersion '8.8.9' -BaselineInstallerType nullsoft
 ```
 
+### EXAMPLE 11
+```
+# Run one test watched although HyperVTestMode is Unattended (for example after the Intune-parity pre-check did not start it)
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario InstallUninstall -Backend HyperV -TestMode Interactive
+```
+
 ## PARAMETERS
 
 ### -ProjectPath
@@ -181,7 +190,8 @@ than the currently packaged version (e.g.
 1 = the immediately previous release).
 Mutually exclusive intent with SpecificVersion; SpecificVersion takes priority.
 When neither is given, an interactive run shows a list of older versions to pick from; an unattended
-run (-Unattended, or the SandboxTestMode / HyperVTestMode config value) or a host that cannot prompt
+run (-Unattended, -TestMode Unattended, or the SandboxTestMode / HyperVTestMode config value when
+-TestMode is not given) or a host that cannot prompt
 (a service, redirected input, or a console started with pwsh -NonInteractive) uses the previous
 version (as -VersionsBack 1) and says so in a warning.
 
@@ -334,7 +344,7 @@ itself down afterwards (and, after a completed run, a window Windows Sandbox lea
 that is closed before the command returns), so chained runs proceed unaided.
 The default is
 watched/interactive.
-Overrides the SandboxTestMode / HyperVTestMode config values; on a
+Overrides the SandboxTestMode / HyperVTestMode config values and -TestMode; on a
 non-interactive host Unattended is auto-selected with a warning.
 Note the context difference:
 Sandbox-unattended runs the package -DeployMode Silent as the sandbox admin user, while
@@ -362,6 +372,30 @@ Aliases:
 Required: False
 Position: Named
 Default value: False
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -TestMode
+This run's test mode, on either backend: Interactive (watched) or Unattended (the same as -Unattended).
+It takes
+precedence over the SandboxTestMode / HyperVTestMode config value for this run only, so -TestMode Interactive runs
+one test watched while the config value says Unattended (for example after the Intune-parity pre-check did not
+start an unattended Hyper-V test).
+A host that cannot prompt (a service, redirected input, or a console started
+with pwsh -NonInteractive) still runs Unattended, with a warning.
+-Unattended together with -TestMode Interactive
+is refused before any prompt.
+Omit it to use -Unattended or the config value.
+
+```yaml
+Type: String
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: 10
+Default value: None
 Accept pipeline input: False
 Accept wildcard characters: False
 ```

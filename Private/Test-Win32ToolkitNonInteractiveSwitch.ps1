@@ -15,8 +15,9 @@ function Test-Win32ToolkitNonInteractiveSwitch {
         that switch: another host can still prompt (the VS Code integrated console runs in a process started
         with -NonInteractive), so the answer there is $false. Never throws.
 
-        Not used by Get-Win32ToolkitTestMode (that would change which test mode a -NonInteractive console
-        gets); only by the Update test's baseline-version choice.
+        Used by Get-Win32ToolkitTestMode only for an explicit -TestMode Interactive (a run without -TestMode
+        keeps its mode: consulting it there would change which test mode a -NonInteractive console gets), and by
+        the Update test's baseline-version choice.
     .PARAMETER CommandLineArgs
         The command line to read, first entry the executable (test seam). Default:
         [Environment]::GetCommandLineArgs().

@@ -75,11 +75,12 @@ One PowerShell session can only hold one PSAppDeployToolkit version. If a differ
 Per-run precedence, resolved identically for both backends:
 
 1. An explicit `-Unattended` switch on [Test-Win32ToolkitProject](reference/Test-Win32ToolkitProject.md) always wins.
-2. The config value (`Unattended` opts in).
-3. A non-interactive host (redirected stdin, `pwsh -NonInteractive`) forces `Unattended` with a loud warning: interactive pauses would hang or throw there.
-4. Otherwise: `Interactive`.
+2. `-TestMode`, the run's own choice: `-TestMode Unattended` is the same as `-Unattended`; `-TestMode Interactive` ignores the config value for this run.
+3. The config value (`Unattended` opts in), when `-TestMode` is not given.
+4. A non-interactive host (a service, CI job or redirected stdin) forces `Unattended` with a loud warning, also over `-TestMode Interactive`: interactive pauses would hang or throw there. For `-TestMode Interactive`, a console started with `pwsh -NonInteractive` counts as such a host too.
+5. Otherwise: `Interactive`.
 
-Set the config value when you *always* run unattended (for example on a build server); use the switch for one-off unattended runs.
+Set the config value when you *always* run unattended (for example on a build server); use `-Unattended` or `-TestMode` for one run.
 
 ## Performance switches
 
