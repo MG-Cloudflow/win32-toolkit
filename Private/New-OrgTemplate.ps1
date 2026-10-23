@@ -173,26 +173,45 @@ function New-OrgTemplate {
         Write-Host '    PSAppDeployToolkit.Contoso\PSAppDeployToolkit.Contoso.psd1' -ForegroundColor DarkGray
         Write-Host '  whose RootModule (e.g. PSAppDeployToolkit.Contoso.psm1) exists in the same folder.' -ForegroundColor DarkGray
         Write-Host '  PSADT 4.2 imports that .psd1: a .psm1-only folder or a Save-Module 1.0.0\ layout fails every deployment.' -ForegroundColor DarkGray
+        Write-Host '  A RequiredModules entry for PSAppDeployToolkit must be valid for Windows PowerShell 5.1 and must not pin a version.' -ForegroundColor DarkGray
+        # The same project-independent rules as Assert-Win32ToolkitOrgExtensionModule (same texts), so the operator
+        # learns now what applying the template would refuse (TUI audit G4).
         $extDirs = @(Get-ChildItem -LiteralPath $tplFolder -Directory -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match '^PSAppDeployToolkit\..+' })
+        $range = $script:PsadtSupportedRange
         foreach ($ed in $extDirs) {
-            $manifest = Join-Path $ed.FullName "$($ed.Name).psd1"
-            if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
-                Write-Warning "Org extension module '$($ed.Name)' has no $($ed.Name).psd1 directly in its folder (a .psm1-only folder or a Save-Module 1.0.0\ layout is not supported). Add the manifest, or applying this template will fail."
-                continue
+            foreach ($finding in @(Get-Win32ToolkitOrgExtensionLayoutFinding -ModuleFolder $ed)) {
+                Write-Warning "Org extension module '$($finding.Folder)' cannot be used: $($finding.Why) Applying this template will fail until you fix it."
             }
-            $data = $null
-            try { $data = Import-PowerShellDataFile -LiteralPath $manifest -ErrorAction Stop }
+            # The version range (Dv15): the bundled PSADT is not known yet, but a pin, a cap or a minimum above the
+            # range's floor fails every project of the other supported version. One warning per entry.
+            if (-not $range -or -not $range.Min) { Write-Verbose 'PSADT supported range not set: the RequiredModules version rule is skipped.'; continue }
+            $manifest = $null
+            try { $manifest = Import-PowerShellDataFile -LiteralPath (Join-Path $ed.FullName "$($ed.Name).psd1") -ErrorAction Stop }
             catch {
-                Write-Warning "Org extension module manifest '$manifest' could not be read: $($_.Exception.Message)"
+                if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                Write-Verbose "Org extension module '$($ed.Name)': manifest not read for the version rule ($($_.Exception.Message))"
                 continue
             }
-            $root = [string]$data['RootModule']
-            if ([string]::IsNullOrWhiteSpace($root)) {
-                Write-Warning "Org extension module manifest '$manifest' has no RootModule. Set RootModule = '$($ed.Name).psm1' (the module file in the same folder), or applying this template will fail."
-            }
-            elseif (-not (Test-Path -LiteralPath (Join-Path $ed.FullName $root) -PathType Leaf)) {
-                Write-Warning "Org extension module manifest '$manifest' names RootModule '$root', which does not exist in '$($ed.FullName)'. Fix the name or add the file, or applying this template will fail."
+            foreach ($req in @($manifest['RequiredModules'])) {
+                if ($null -eq $req -or $req -isnot [hashtable] -or [string]$req['ModuleName'] -ne 'PSAppDeployToolkit') { continue }
+                # An entry Windows PowerShell 5.1 rejects is already a finding above.
+                try { $null = [Microsoft.PowerShell.Commands.ModuleSpecification]::new($req) }
+                catch {
+                    if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                    continue
+                }
+                $given = (@($req.Keys | Where-Object { $_ -ne 'ModuleName' } | Sort-Object | ForEach-Object { "$_ = '$($req[$_])'" }) -join '; ')
+                $fix = "Declare ModuleVersion = '$($range.Min)' (a minimum) or no version."
+                if ($req.ContainsKey('RequiredVersion') -or $req.ContainsKey('MaximumVersion')) {
+                    Write-Warning "Org extension module '$($ed.Name)' pins PSAppDeployToolkit ($given): win32-toolkit builds $($range.Display) projects side by side, so projects that bundle a version outside it fail every deployment. $fix"
+                }
+                elseif ($req.ContainsKey('ModuleVersion')) {
+                    $v = $null
+                    if ([version]::TryParse([string]$req['ModuleVersion'], [ref]$v) -and $v -gt [version]$range.Min) {
+                        Write-Warning "Org extension module '$($ed.Name)' requires PSAppDeployToolkit $v or later ($given): win32-toolkit builds $($range.Display) projects side by side, so projects that bundle a PSAppDeployToolkit older than $v fail every deployment. $fix"
+                    }
+                }
             }
         }
     }

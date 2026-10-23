@@ -37,12 +37,15 @@ foreach ($f in @(
     'Private\Get-Win32ToolkitPaths.ps1',
     'Private\ConvertTo-Win32ToolkitAccentLiteral.ps1',
     'Private\Update-OrgTemplateIfNeeded.ps1',
+    'Private\Get-Win32ToolkitOrgExtensionLayoutFinding.ps1',   # C-9 (TUI audit G4): the wizard's extension module check
     'Private\New-OrgTemplate.ps1',
     'Private\Get-OrgTemplate.ps1',
     'Public\Connect-Win32ToolkitIntune.ps1')) {
     . (Join-Path $repo $f)
 }
 $script:TemplateSchemaVersion = '4.0'
+# The supported PSADT range (a copy of win32-toolkit.psm1): the template wizard's RequiredModules version rule reads it.
+$script:PsadtSupportedRange = [pscustomobject]@{ Min = [version]'4.1.0'; MaxExclusive = [version]'4.3.0'; Display = '4.1.x and 4.2.x' }
 
 # ---- shadows -----------------------------------------------------------------------------------
 # Shadows take no parameters they do not read: a simple function puts any extra named argument in $args.
@@ -506,10 +509,11 @@ try {
         Set-Content -LiteralPath (Join-Path $d 'PSAppDeployToolkit.Contoso.psm1') 'function Get-ContosoThing { 1 }'
         Set-Content -LiteralPath (Join-Path $d 'PSAppDeployToolkit.Contoso.psd1') "@{ RootModule = 'PSAppDeployToolkit.Contoso.psm1'; ModuleVersion = '1.0.0'; RequiredModules = @('PSAppDeployToolkit') }" }
     $extCases = [ordered]@{
-        'ExtPsm1Only'    = 'has no PSAppDeployToolkit\.Contoso\.psd1'
-        'ExtSaveModule'  = 'has no PSAppDeployToolkit\.Contoso\.psd1.*Save-Module'
+        # The Assert's texts (TUI audit G4: the wizard runs Get-Win32ToolkitOrgExtensionLayoutFinding, the Assert's rules).
+        'ExtPsm1Only'    = "it has no 'PSAppDeployToolkit\.Contoso\\PSAppDeployToolkit\.Contoso\.psd1' manifest"
+        'ExtSaveModule'  = "it has no 'PSAppDeployToolkit\.Contoso\\PSAppDeployToolkit\.Contoso\.psd1' manifest.*A Save-Module '1\.0\.0\\' version-folder layout is not supported"
         'ExtNoRoot'      = 'has no RootModule'
-        'ExtMissingRoot' = "RootModule 'PSAppDeployToolkit\.Contoso\.psm1', which does not exist"
+        'ExtMissingRoot' = "the RootModule 'PSAppDeployToolkit\.Contoso\.psm1' of 'PSAppDeployToolkit\.Contoso\.psd1' does not exist in the folder"
         'ExtValid'       = $null
     }
     foreach ($name in $extCases.Keys) {
@@ -528,6 +532,58 @@ try {
     Use-ScriptedAnswer @{ 'Ship an org PSADT extension module' = 'n' }
     $wn = Invoke-Wizard 'ExtPsm1Only'
     if (-not $wn.Error -and $wn.Warnings.Count -eq 0 -and @($wn.Info | Where-Object { $_ -match 'RootModule' }).Count -eq 0) { Ok 'extension module disabled -> no rule text, no check' } else { Bad "disabled: warnings=$($wn.Warnings -join ' | ')" }
+
+    # 4f (TUI audit G4): the same rules as Assert-Win32ToolkitOrgExtensionModule, and the RequiredModules version range.
+    Use-ScriptedAnswer @{ 'Ship an org PSADT extension module' = 'y' }
+    $we = Invoke-Wizard 'ExtPsm1Only'
+    $why = @(Get-Win32ToolkitOrgExtensionLayoutFinding -ModuleFolder (Get-Item -LiteralPath (Join-Path $wizBase 'Templates\ExtPsm1Only\PSAppDeployToolkit.Contoso')))
+    if ($why.Count -eq 1 -and $we.Warnings.Count -eq 1 -and $we.Warnings[0] -ceq "Org extension module 'PSAppDeployToolkit.Contoso' cannot be used: $($why[0].Why) Applying this template will fail until you fix it.") {
+        Ok 'a psm1-only folder -> the warning carries the shared rule''s Why text (the one the Assert throws), then ''Applying this template will fail until you fix it.'''
+    } else { Bad "psm1-only: $($we.Warnings -join ' | ')" }
+    if (@($we.Info | Where-Object { $_ -ceq '  A RequiredModules entry for PSAppDeployToolkit must be valid for Windows PowerShell 5.1 and must not pin a version.' }).Count -eq 1) { Ok 'the RequiredModules rule is explained' } else { Bad "info: $($we.Info -join ' | ')" }
+    $reqCases = [ordered]@{
+        'ExtPin'    = @("@{ ModuleName = 'PSAppDeployToolkit'; RequiredVersion = '4.2.0' }", "Org extension module 'PSAppDeployToolkit.Contoso' pins PSAppDeployToolkit (RequiredVersion = '4.2.0'): win32-toolkit builds 4.1.x and 4.2.x projects side by side, so projects that bundle a version outside it fail every deployment. Declare ModuleVersion = '4.1.0' (a minimum) or no version.")
+        'ExtCap'    = @("@{ ModuleName = 'PSAppDeployToolkit'; ModuleVersion = '4.1.0'; MaximumVersion = '4.1.*' }", "Org extension module 'PSAppDeployToolkit.Contoso' pins PSAppDeployToolkit (MaximumVersion = '4.1.*'; ModuleVersion = '4.1.0'): win32-toolkit builds 4.1.x and 4.2.x projects side by side, so projects that bundle a version outside it fail every deployment. Declare ModuleVersion = '4.1.0' (a minimum) or no version.")
+        'ExtMin42'  = @("@{ ModuleName = 'PSAppDeployToolkit'; ModuleVersion = '4.2.0' }", "Org extension module 'PSAppDeployToolkit.Contoso' requires PSAppDeployToolkit 4.2.0 or later (ModuleVersion = '4.2.0'): win32-toolkit builds 4.1.x and 4.2.x projects side by side, so projects that bundle a PSAppDeployToolkit older than 4.2.0 fail every deployment. Declare ModuleVersion = '4.1.0' (a minimum) or no version.")
+        'ExtMin41'  = @("@{ ModuleName = 'PSAppDeployToolkit'; ModuleVersion = '4.1.0' }", $null)
+        'ExtBare'   = @("'PSAppDeployToolkit'", $null)
+    }
+    foreach ($name in $reqCases.Keys) {
+        $psd1Text = "@{ RootModule = 'PSAppDeployToolkit.Contoso.psm1'; ModuleVersion = '1.0.0'; RequiredModules = @($($reqCases[$name][0])) }"
+        Add-ExtensionCase $name { param($d)
+            Set-Content -LiteralPath (Join-Path $d 'PSAppDeployToolkit.Contoso.psm1') 'function Get-ContosoThing { 1 }'
+            Set-Content -LiteralPath (Join-Path $d 'PSAppDeployToolkit.Contoso.psd1') $psd1Text }
+        Use-ScriptedAnswer @{ 'Ship an org PSADT extension module' = 'y' }
+        $we = Invoke-Wizard $name
+        $want = $reqCases[$name][1]
+        if ($we.Error) { Bad "$name : wizard threw: $($we.Error)"; continue }
+        if ($null -eq $want) {
+            if ($we.Warnings.Count -eq 0) { Ok "$name ($($reqCases[$name][0])) -> no warning" } else { Bad "$name : $($we.Warnings -join ' | ')" }
+        }
+        elseif ($we.Warnings.Count -eq 1 -and $we.Warnings[0] -ceq $want) { Ok "$name -> exactly: $want" }
+        else { Bad "$name : warnings = $($we.Warnings -join ' | ')" }
+    }
+    # The shared helper itself: every finding of a folder, in rule order; GUID; an unreadable manifest.
+    $hDir = Join-Path $root 'helper\PSAppDeployToolkit.Contoso'
+    New-Item -ItemType Directory -Path $hDir -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $hDir 'PSAppDeployToolkit.Contoso.psd1') "@{ ModuleVersion = '1.0.0'; RequiredModules = @(@{ ModuleName = 'PSAppDeployToolkit'; ModuleVersion = '4.2.0-rc2' }, @{ ModuleName = 'PSAppDeployToolkit'; ModuleVersion = '4.1.0'; Guid = '11111111-2222-3333-4444-555555555555' }) }"
+    $hf = @(Get-Win32ToolkitOrgExtensionLayoutFinding -ModuleFolder (Get-Item -LiteralPath $hDir))
+    if ($hf.Count -eq 3 -and $hf[0].Why -like "its manifest 'PSAppDeployToolkit.Contoso.psd1' has no RootModule.*" -and
+        $hf[1].Why -like "its RequiredModules entry for PSAppDeployToolkit (ModuleVersion = '4.2.0-rc2') is not valid for Windows PowerShell 5.1: *" -and
+        $hf[2].Why -like "its RequiredModules entry for PSAppDeployToolkit has GUID 11111111-2222-3333-4444-555555555555, which is not PSAppDeployToolkit's (8c3c366b-8606-4576-9f2d-4051144f7ca2)*" -and
+        @($hf | Where-Object { $_.Folder -ne 'PSAppDeployToolkit.Contoso' }).Count -eq 0) {
+        Ok 'Get-Win32ToolkitOrgExtensionLayoutFinding: no RootModule, an entry 5.1 rejects, a foreign GUID -> three findings in rule order'
+    } else { Bad "helper findings: $($hf | ConvertTo-Json -Compress)" }
+    Set-Content -LiteralPath (Join-Path $hDir 'PSAppDeployToolkit.Contoso.psd1') '@{ this is not a data file'
+    $hf = @(Get-Win32ToolkitOrgExtensionLayoutFinding -ModuleFolder (Get-Item -LiteralPath $hDir))
+    if ($hf.Count -eq 1 -and $hf[0].Why -like "its manifest 'PSAppDeployToolkit.Contoso.psd1' could not be read: *") { Ok 'an unreadable manifest -> one finding, nothing else checked, no throw' } else { Bad "unreadable: $($hf | ConvertTo-Json -Compress)" }
+
+    # A suite that forgot the range: the version rule is skipped (never 'builds  projects').
+    $savedRange = $script:PsadtSupportedRange; $script:PsadtSupportedRange = $null
+    Use-ScriptedAnswer @{ 'Ship an org PSADT extension module' = 'y' }
+    $we = Invoke-Wizard 'ExtPin'
+    $script:PsadtSupportedRange = $savedRange
+    if (-not $we.Error -and $we.Warnings.Count -eq 0) { Ok 'no supported range -> the version rule is skipped (no warning)' } else { Bad "no range: $($we.Error) $($we.Warnings -join ' | ')" }
 
     # =============================================================================================
     Write-Host "`n[5] Get-OrgTemplate re-validates stored JSON on every load path" -ForegroundColor Cyan

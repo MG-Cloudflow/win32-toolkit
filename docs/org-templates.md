@@ -194,9 +194,11 @@ Templates\Contoso\PSAppDeployToolkit.Contoso\
 ```
 
 A `.psm1`-only folder, or a `Save-Module` layout with a version subfolder (`1.0.0\`), fails every
-deployment on PSADT 4.2 (exit code 60001). The toolkit therefore checks the layout: the wizard warns
-when you enable the module, and applying the template **stops** with a `W32T.OrgExtensionInvalid`
-error that names the fix. If the manifest declares `RequiredModules` for `PSAppDeployToolkit`, the
+deployment on PSADT 4.2 (exit code 60001). The toolkit therefore checks the layout and the
+`RequiredModules` entry: the wizard warns when you enable the module (with the same text the error
+gives, and also when the entry pins a version or requires one above 4.1.0), and applying the template
+**stops** with a `W32T.OrgExtensionInvalid` error that names the fix. If the manifest declares
+`RequiredModules` for `PSAppDeployToolkit`, the
 PSADT bundled in each project must satisfy it, and win32-toolkit builds 4.1.x and 4.2.x projects side
 by side. So declare a minimum of `ModuleVersion = '4.1.0'` or leave the version out. Don't use
 `RequiredVersion` (an exact pin) or `MaximumVersion` (an upper bound): they fail every deployment of a

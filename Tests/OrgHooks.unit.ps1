@@ -21,7 +21,8 @@ function Test-Win32ToolkitPsadtVersionSupported {
 }
 foreach ($f in 'Get-Win32ToolkitDeployScriptShape', 'Set-Win32ToolkitPhaseBlock', 'Remove-Win32ToolkitPhaseBlock',
     'Remove-Win32ToolkitPhaseDefaultUi', 'Get-Win32ToolkitDeployScriptBlock', 'Write-Win32ToolkitDeployScript',
-    'Test-Win32ToolkitPS51Syntax', 'Set-PSADTDataDrivenScript', 'Add-Win32ToolkitOrgHooks', 'Assert-Win32ToolkitOrgExtensionModule') {
+    'Test-Win32ToolkitPS51Syntax', 'Set-PSADTDataDrivenScript', 'Add-Win32ToolkitOrgHooks', 'Assert-Win32ToolkitOrgExtensionModule',
+    'Get-Win32ToolkitOrgExtensionLayoutFinding') {   # C-9 (TUI audit G4): the Assert's project-independent rules
     . (Join-Path $repo "Private\$f.ps1")
 }
 

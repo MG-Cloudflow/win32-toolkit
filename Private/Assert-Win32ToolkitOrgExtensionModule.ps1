@@ -21,6 +21,10 @@ function Assert-Win32ToolkitOrgExtensionModule {
             wildcard, as in PowerShell). Versions compare as plain [version] values (4.2.0.0 is not 4.2.0
             on the device either). A GUID, when given, must be PSAppDeployToolkit's.
 
+        The project-independent rules (the manifest and RootModule layout, a RequiredModules entry valid for
+        Windows PowerShell 5.1, PSAppDeployToolkit's GUID) come from Get-Win32ToolkitOrgExtensionLayoutFinding,
+        which the org template wizard runs too; the version checks against the bundled module stay here.
+
         Called by Apply-OrgTemplate before its first write and again by Add-Win32ToolkitOrgHooks before it
         places, copies or writes anything (defence in depth). A template without ExtensionModule, or whose
         asset folder cannot be resolved, has nothing to validate.
@@ -59,50 +63,32 @@ function Assert-Win32ToolkitOrgExtensionModule {
     $modDirs = @(Get-ChildItem -LiteralPath $assetFolder -Directory -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -match '^PSAppDeployToolkit\..+' })
 
-    $psadtGuid = [guid]'8c3c366b-8606-4576-9f2d-4051144f7ca2'
     $versionHint = "Fix: declare ModuleVersion = '4.1.0' (a minimum) or no version, and drop RequiredVersion/MaximumVersion - win32-toolkit builds PSADT 4.1.x and 4.2.x projects side by side."
     $bundledVersion = $null
     foreach ($md in $modDirs) {
         $dir = $md.Name
-        $layoutHint = "A Save-Module '1.0.0\' version-folder layout is not supported - put the module files directly in Templates\<name>\$dir\."
         $fail = {
             param([string]$Why)
             [System.Management.Automation.ErrorRecord]::new(
                 [System.InvalidOperationException]::new("Org extension module '$dir' cannot be used: $Why"),
                 'W32T.OrgExtensionInvalid', [System.Management.Automation.ErrorCategory]::InvalidData, $md.FullName)
         }
+        # The project-independent rules (layout, manifest, RootModule, a RequiredModules entry valid for Windows
+        # PowerShell 5.1 with PSAppDeployToolkit's GUID) are shared with the org template wizard; the first finding
+        # is thrown with the same text as before.
+        $layoutFindings = @(Get-Win32ToolkitOrgExtensionLayoutFinding -ModuleFolder $md)
+        if ($layoutFindings.Count -gt 0) { throw (& $fail $layoutFindings[0].Why) }
         $psd1 = Join-Path $md.FullName "$dir.psd1"
-        if (-not (Test-Path -LiteralPath $psd1 -PathType Leaf)) {
-            throw (& $fail "it has no '$dir\$dir.psd1' manifest. PSADT 4.2 imports extensions by that manifest, so a psm1-only folder fails every deployment of a PSADT 4.2 project (PSADT 4.1 still loads it by folder, but an org template must work for both: win32-toolkit builds PSADT 4.1.x and 4.2.x projects side by side). Fix: rename/add '$dir.psd1' (named exactly like the folder) with RootModule = '$dir.psm1'. $layoutHint")
-        }
         try { $manifest = Import-PowerShellDataFile -LiteralPath $psd1 -ErrorAction Stop }
         catch { throw (& $fail "its manifest '$dir.psd1' could not be read: $($_.Exception.Message)") }
-        $root = if ($manifest.ContainsKey('RootModule')) { [string]$manifest['RootModule'] } else { '' }
-        if ([string]::IsNullOrWhiteSpace($root)) {
-            throw (& $fail "its manifest '$dir.psd1' has no RootModule. Fix: set RootModule = '$dir.psm1' and put that file next to the manifest. $layoutHint")
-        }
-        if (-not (Test-Path -LiteralPath (Join-Path $md.FullName $root) -PathType Leaf)) {
-            throw (& $fail "the RootModule '$root' of '$dir.psd1' does not exist in the folder. Fix: set RootModule to the module file next to the manifest (e.g. '$dir.psm1'). $layoutHint")
-        }
 
         foreach ($req in @($manifest['RequiredModules'])) {
             # A bare 'PSAppDeployToolkit' string carries no version; only a hashtable can pin one.
             if ($null -eq $req -or $req -isnot [hashtable]) { continue }
             if ([string]$req['ModuleName'] -ne 'PSAppDeployToolkit') { continue }
             $given = (@($req.Keys | Where-Object { $_ -ne 'ModuleName' } | Sort-Object | ForEach-Object { "$_ = '$($req[$_])'" }) -join '; ')
-
-            # The same constructor Windows PowerShell 5.1 uses for RequiredModules: it rejects a prerelease
-            # label, ModuleVersion with RequiredVersion, unknown keys and an entry without any version.
-            try { $spec = [Microsoft.PowerShell.Commands.ModuleSpecification]::new($req) }
-            catch {
-                $inner = $_.Exception
-                while ($inner.InnerException) { $inner = $inner.InnerException }
-                throw (& $fail "its RequiredModules entry for PSAppDeployToolkit ($given) is not valid for Windows PowerShell 5.1: $($inner.Message) Every deployment would fail. $versionHint")
-            }
-
-            if ($spec.Guid -and $spec.Guid -ne $psadtGuid) {
-                throw (& $fail "its RequiredModules entry for PSAppDeployToolkit has GUID $($spec.Guid), which is not PSAppDeployToolkit's ($psadtGuid), so every deployment would fail. Fix: use Guid = '$psadtGuid' or drop the GUID.")
-            }
+            # Valid for Windows PowerShell 5.1 with PSAppDeployToolkit's GUID (checked by the layout finding above).
+            $spec = [Microsoft.PowerShell.Commands.ModuleSpecification]::new($req)
 
             if ($null -eq $bundledVersion) {
                 $bundledPsd1 = Join-Path $ProjectPath 'PSAppDeployToolkit\PSAppDeployToolkit.psd1'

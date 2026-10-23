@@ -47,7 +47,7 @@ function Test-Win32ToolkitPsadtVersionSupported {
 foreach ($f in 'Get-Win32ToolkitDeployScriptShape', 'Set-Win32ToolkitPhaseBlock', 'Remove-Win32ToolkitPhaseBlock',
     'Remove-Win32ToolkitPhaseDefaultUi', 'Get-Win32ToolkitDeployScriptBlock', 'Write-Win32ToolkitDeployScript',
     'Test-Win32ToolkitPS51Syntax', 'Set-PSADTDataDrivenScript', 'Set-Win32ToolkitTextBlock', 'Apply-OrgTemplate',
-    'Add-Win32ToolkitOrgHooks', 'Assert-Win32ToolkitOrgExtensionModule', 'Get-Win32ToolkitAppConfig', 'Set-Win32ToolkitAppConfig',
+    'Add-Win32ToolkitOrgHooks', 'Assert-Win32ToolkitOrgExtensionModule', 'Get-Win32ToolkitOrgExtensionLayoutFinding', 'Get-Win32ToolkitAppConfig', 'Set-Win32ToolkitAppConfig',
     'ConvertTo-PSSingleQuoted') {
     . (Join-Path $repo "Private\$f.ps1")
 }

@@ -16,7 +16,7 @@ $fail = 0
 function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
-foreach ($f in 'Get-Win32ToolkitPaths', 'Get-Win32ToolkitTemplateAssetFolder', 'Assert-Win32ToolkitOrgExtensionModule', 'Add-Win32ToolkitTemplateAssets') {
+foreach ($f in 'Get-Win32ToolkitPaths', 'Get-Win32ToolkitTemplateAssetFolder', 'Get-Win32ToolkitOrgExtensionLayoutFinding', 'Assert-Win32ToolkitOrgExtensionModule', 'Add-Win32ToolkitTemplateAssets') {
     . (Join-Path $repo "Private\$f.ps1")
 }
 
