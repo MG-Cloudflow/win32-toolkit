@@ -57,6 +57,8 @@ foreach ($rel in 'Public\Invoke-Win32Toolkit.ps1', 'Public\New-Win32ToolkitManua
 . (Join-Path $repo 'Private\Assert-Win32ToolkitDependencyRef.ps1')   # C-9: -DependsOn pre-flight + Set-Win32ToolkitAppDependency (B3 r2.1)
 . (Join-Path $repo 'Private\Get-Win32ToolkitDependencies.ps1')
 . (Join-Path $repo 'Public\Set-Win32ToolkitAppDependency.ps1')
+. (Join-Path $repo 'Private\Initialize-Win32ToolkitRunResult.ps1')   # C-9: the result object (TUI audit G2, S8-F3)
+. (Join-Path $repo 'Private\Complete-Win32ToolkitRunResult.ps1')
 . (Join-Path $repo 'Public\New-Win32ToolkitManualApp.ps1')
 
 # shadow only what is NOT under test (mirrors Tests\ManualApp.integration.ps1)
@@ -75,7 +77,7 @@ function Create-PSADTProject {
     return $true
 }
 function Set-PSADTDataDrivenScript { param($ScriptPath, [switch]$ManualInstall) $true }
-function Invoke-Win32ToolkitFinalize { param($ProjectPath, $ProjectName, $AppInfo, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate, $BasePath) $null = $BasePath }
+function Invoke-Win32ToolkitFinalize { param($ProjectPath, $ProjectName, $AppInfo, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate, $BasePath, $Result) $null = $BasePath, $Result }
 
 function New-Src { param([string]$Name) $d = Join-Path $BASE ('src_' + [guid]::NewGuid().ToString('N').Substring(0, 6)); New-Item -ItemType Directory -Path $d -Force | Out-Null; $f = Join-Path $d $Name; Set-Content -LiteralPath $f 'binary'; $f }
 

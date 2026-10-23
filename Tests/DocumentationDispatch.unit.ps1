@@ -44,7 +44,7 @@ function Save-Win32ToolkitTestRunLog { param($Run) $script:cap.Saves++; [string]
 function Wait-Win32ToolkitCollectedLog { param($ProjectPath, $TimeoutSeconds) $script:cap.Waits++; $true }
 function Import-Win32ToolkitCapturedIcon { param($ProjectPath) }
 function Get-InstallerFileInfo { param($FilesPath) [pscustomobject]@{ Type = 'exe' } }
-function Export-Win32ToolkitIntuneWin { param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript) $script:exportAllowLegacy = [bool]$AllowLegacyScript }
+function Export-Win32ToolkitIntuneWin { param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript, [switch]$NoPublishPrompt, [switch]$PassThru) $script:exportAllowLegacy = [bool]$AllowLegacyScript; $null = $NoPublishPrompt, $PassThru }
 # Finalize pre-flight (WP-C contract, spec 2.11): passes unless the case says otherwise.
 $script:assertFails = $false
 function Assert-Win32ToolkitPackageReady {

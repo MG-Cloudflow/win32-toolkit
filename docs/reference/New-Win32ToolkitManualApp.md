@@ -42,6 +42,13 @@ Fails closed: when the project cannot be created, its deploy script uses a templ
 version does not support, or the org template cannot be applied, the command stops with a
 terminating error.
 
+Returns a result object (Win32Toolkit.RunResult): ProjectPath, ProjectName and Mode (Easy or Advanced)
+as before, plus Status (Succeeded, CompletedWithProblems, Failed, or Scaffolded when the project still
+has to be finished with Complete-Win32ToolkitManualApp), the capture state, the test verdicts, the
+package built, the apps published and one plain sentence per problem.
+A W32T.* error is thrown
+instead and no object is returned.
+
 ## EXAMPLES
 
 ### EXAMPLE 1
@@ -58,6 +65,13 @@ New-Win32ToolkitManualApp -Name 'Acme Tool' -Version '3.1.0' -Architecture x64 `
 New-Win32ToolkitManualApp -Name 'Legacy CAD' -Version '12.0' -Architecture x64 `
     -SourcePath 'C:\src\LegacyCAD\' -Advanced -TemplateName 'Contoso'
 Complete-Win32ToolkitManualApp -ProjectPath 'C:\Win32Apps\Projects\Contoso\Legacy_CAD_x64_12.0' -RunTest InstallUninstall
+```
+
+### EXAMPLE 3
+```
+# Scripted: finish the project only when the scaffold worked (check .Status, not the object)
+$r = New-Win32ToolkitManualApp -Name 'Legacy CAD' -Version '12.0' -Architecture x64 -SourcePath 'C:\src\LegacyCAD\' -Advanced -TemplateName 'Contoso'
+if ($r.Status -eq 'Scaffolded') { Complete-Win32ToolkitManualApp -ProjectPath $r.ProjectPath -RunTest InstallUninstall }
 ```
 
 ## PARAMETERS
@@ -408,7 +422,11 @@ This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable
 
 ## OUTPUTS
 
-### System.Management.Automation.PSObject
+### Win32Toolkit.RunResult: Command, ProjectPath, ProjectName, Mode (Easy, Advanced; empty when the command
+### stopped before the scaffold), Status (Succeeded, CompletedWithProblems, Failed or Scaffolded), Capture
+### (Done, Problems or NotRun), Tests ({ Scenario; Verdict }), IntuneWinPath, Published and Problems. A W32T.*
+### error is thrown instead and no object is returned. Check .Status, not whether an object came back: a
+### failed run that stopped on a non-W32T error returns an object with Status Failed (and writes the error).
 ## NOTES
 
 ## RELATED LINKS

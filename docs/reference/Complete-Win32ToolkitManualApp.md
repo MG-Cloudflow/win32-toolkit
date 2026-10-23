@@ -29,6 +29,11 @@ A project whose layout is not supported must be re-created - copy any hand-writt
 code out of Invoke-AppDeployToolkit.ps1 first, because re-creating a project deletes its folder - or
 finalised unchanged with -AllowLegacyScript.
 
+Returns a result object (Win32Toolkit.RunResult): Status (Succeeded, CompletedWithProblems or Failed),
+the capture state, the test verdicts, the .intunewin built, the apps published and one plain sentence
+per problem.
+A W32T.* error is thrown instead and no object is returned.
+
 ## EXAMPLES
 
 ### EXAMPLE 1
@@ -155,6 +160,11 @@ This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable
 
 ## OUTPUTS
 
+### Win32Toolkit.RunResult: Command, ProjectPath, ProjectName, Mode (Finalize), Status (Succeeded,
+### CompletedWithProblems or Failed), Capture (Done, Problems or NotRun), Tests ({ Scenario; Verdict }),
+### IntuneWinPath, Published and Problems. A W32T.* error is thrown instead and no object is returned.
+### Check .Status, not whether an object came back: a failed run that stopped on a non-W32T error returns an
+### object with Status Failed (and writes the error).
 ## NOTES
 
 ## RELATED LINKS

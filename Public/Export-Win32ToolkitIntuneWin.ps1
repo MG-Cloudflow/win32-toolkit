@@ -89,6 +89,18 @@ function Export-Win32ToolkitIntuneWin {
 .EXAMPLE
     # A hand-maintained deploy script that win32-toolkit never patched
     Export-Win32ToolkitIntuneWin -ProjectPath $proj -NoPublishPrompt -AllowLegacyScript
+.PARAMETER PassThru
+    Return a summary object instead of nothing: ProjectPath, IntuneWinPath (the .intunewin built; empty
+    under -WhatIf or when IntuneWinAppUtil.exe wrote none), Published (the objects
+    Publish-Win32ToolkitIntuneApp returned) and Problems (what went wrong without stopping the export: no
+    package built, the update app skipped). Invoke-Win32Toolkit, New-Win32ToolkitManualApp and
+    Complete-Win32ToolkitManualApp use it for their result object.
+.EXAMPLE
+    # Package, publish, and keep what happened
+    $r = Export-Win32ToolkitIntuneWin -ProjectPath $proj -PublishIntune -PassThru
+    $r.IntuneWinPath; $r.Published.PortalUri; $r.Problems
+.OUTPUTS
+    None by default. With -PassThru, one [pscustomobject] { ProjectPath; IntuneWinPath; Published; Problems }.
 #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -121,7 +133,12 @@ function Export-Win32ToolkitIntuneWin {
         # support, as-is (the gate warns instead of stopping). Complete-Win32ToolkitManualApp -AllowLegacyScript
         # reaches it through Invoke-Win32ToolkitFinalize.
         [Parameter(Mandatory = $false)]
-        [switch]$AllowLegacyScript
+        [switch]$AllowLegacyScript,
+
+        # Return { ProjectPath; IntuneWinPath; Published; Problems } instead of nothing (TUI audit G2, S8-F3:
+        # the result objects of Invoke-Win32Toolkit, New- and Complete-Win32ToolkitManualApp). Declared last.
+        [Parameter(Mandatory = $false)]
+        [switch]$PassThru
     )
 
     # Silence stock-cmdlet progress bars (Copy-Item / Remove-Item on the Staging copy) for the packaging
@@ -135,6 +152,10 @@ function Export-Win32ToolkitIntuneWin {
     $ownsAdvisoryRun = $null -eq $script:W32TAdvisoryRun
     if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = @{} }
     try {
+        # -PassThru summary (TUI audit G2): the apps published and the problems that did not stop the export.
+        $published      = [System.Collections.Generic.List[object]]::new()
+        $exportProblems = [System.Collections.Generic.List[string]]::new()
+
         # Captured BEFORE the picker branch below overwrites $BasePath with the resolved/registry value:
         # only a base the CALLER actually passed may override the layout derived from the project path.
         $explicitBasePath = -not [string]::IsNullOrWhiteSpace($BasePath)
@@ -333,6 +354,7 @@ function Export-Win32ToolkitIntuneWin {
             }
             else {
                 Write-Warning 'IntuneWinAppUtil.exe completed but the expected .intunewin file was not found.'
+                $exportProblems.Add("IntuneWinAppUtil.exe finished, but $renamedFile was not found: no package was built$(if ($PublishIntune -or $PublishUpdate) { ', so nothing was published' }).")
             }
         }
         else {
@@ -373,25 +395,37 @@ function Export-Win32ToolkitIntuneWin {
 
             if ($doInstall) {
                 # Publish now EMITS a result object ({ AppId; DisplayName; ... }) so dependencies can be
-                # related to the app it just created. Export's contract is to emit NOTHING, and it is called
-                # bare from Invoke-Win32ToolkitFinalize and the TUI — so capture it instead of leaking it
-                # into their pipelines.
-                $null = Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath @publishArgs
+                # related to the app it just created. Export's contract is to emit NOTHING (without -PassThru),
+                # and it is called bare from the TUI — so capture it instead of leaking it into the pipeline;
+                # -PassThru returns it in its summary.
+                $pub = Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath @publishArgs
+                foreach ($p in @($pub)) { if ($null -ne $p) { $published.Add($p) } }
             }
             if ($doUpdate) {
                 # Pre-check: if no reliable "already installed" signal exists (e.g. an MSI with no
                 # UpgradeCode), skip the update gracefully with a warning instead of throwing — which
                 # matters most in "both" mode, where the install app has already uploaded.
                 if (Get-Win32ToolkitRequirementRule -ProjectPath $ProjectPath) {
-                    $null = Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath -AsUpdate @publishArgs
+                    $pub = Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath -AsUpdate @publishArgs
+                    foreach ($p in @($pub)) { if ($null -ne $p) { $published.Add($p) } }
                 }
                 else {
                     Write-Warning 'Skipped the update app: this project has no reliable "already installed" signal (no install tattoo, MSI UpgradeCode, or app name). Publish the install app, or use supersedence.'
+                    $exportProblems.Add("The update app was not published: this project has no reliable 'already installed' signal (no install tattoo, MSI UpgradeCode or app name).")
                 }
             }
         }
         elseif (-not $doPackage -and ($PublishIntune -or $PublishUpdate)) {
             Write-Host "WhatIf: would publish to Intune after packaging ($(@($(if ($PublishIntune) { 'install app' }), $(if ($PublishUpdate) { 'update app' }) | Where-Object { $_ }) -join ' and '))." -ForegroundColor Yellow
+        }
+
+        if ($PassThru) {
+            [pscustomobject]@{
+                ProjectPath   = $ProjectPath
+                IntuneWinPath = $(if ($intuneWinFile) { $intuneWinFile.FullName } else { '' })
+                Published     = [object[]]@($published)
+                Problems      = [string[]]@($exportProblems)
+            }
         }
     }
     catch {

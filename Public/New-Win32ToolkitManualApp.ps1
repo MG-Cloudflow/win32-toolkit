@@ -26,7 +26,11 @@ function New-Win32ToolkitManualApp {
     version does not support, or the org template cannot be applied, the command stops with a
     terminating error.
 
-   
+    Returns a result object (Win32Toolkit.RunResult): ProjectPath, ProjectName and Mode (Easy or Advanced)
+    as before, plus Status (Succeeded, CompletedWithProblems, Failed, or Scaffolded when the project still
+    has to be finished with Complete-Win32ToolkitManualApp), the capture state, the test verdicts, the
+    package built, the apps published and one plain sentence per problem. A W32T.* error is thrown
+    instead and no object is returned.
 .PARAMETER Name
     Application display name (required; prompted if omitted).
 .PARAMETER Version
@@ -85,6 +89,16 @@ function New-Win32ToolkitManualApp {
     New-Win32ToolkitManualApp -Name 'Legacy CAD' -Version '12.0' -Architecture x64 `
         -SourcePath 'C:\src\LegacyCAD\' -Advanced -TemplateName 'Contoso'
     Complete-Win32ToolkitManualApp -ProjectPath 'C:\Win32Apps\Projects\Contoso\Legacy_CAD_x64_12.0' -RunTest InstallUninstall
+.EXAMPLE
+    # Scripted: finish the project only when the scaffold worked (check .Status, not the object)
+    $r = New-Win32ToolkitManualApp -Name 'Legacy CAD' -Version '12.0' -Architecture x64 -SourcePath 'C:\src\LegacyCAD\' -Advanced -TemplateName 'Contoso'
+    if ($r.Status -eq 'Scaffolded') { Complete-Win32ToolkitManualApp -ProjectPath $r.ProjectPath -RunTest InstallUninstall }
+.OUTPUTS
+    Win32Toolkit.RunResult: Command, ProjectPath, ProjectName, Mode (Easy, Advanced; empty when the command
+    stopped before the scaffold), Status (Succeeded, CompletedWithProblems, Failed or Scaffolded), Capture
+    (Done, Problems or NotRun), Tests ({ Scenario; Verdict }), IntuneWinPath, Published and Problems. A W32T.*
+    error is thrown instead and no object is returned. Check .Status, not whether an object came back: a
+    failed run that stopped on a non-W32T error returns an object with Status Failed (and writes the error).
 #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -122,7 +136,11 @@ function New-Win32ToolkitManualApp {
         [string]$DependencyType = 'autoInstall'
     )
 
+    $runResult = $null
     try {
+        # The run's result object (TUI audit G2, S8-F3); Mode is set once the scaffold decides Easy or Advanced.
+        $runResult = Initialize-Win32ToolkitRunResult -Command 'New-Win32ToolkitManualApp'
+
         Write-Host 'Manual Win32 App Packager (non-winget)' -ForegroundColor Cyan
         Write-Host '======================================' -ForegroundColor Cyan
 
@@ -176,6 +194,8 @@ function New-Win32ToolkitManualApp {
                 'W32T.ProjectCreationFailed', [System.Management.Automation.ErrorCategory]::InvalidResult, $projectName)
         }
         $projectFullPath = Join-Path $projectsDir $projectName
+        $runResult.ProjectName = $projectName
+        $runResult.ProjectPath = $projectFullPath
         $filesPath       = Join-Path $projectFullPath 'Files'
 
         # ── Copy installer + detect type ──────────────────────────────────────────
@@ -292,27 +312,33 @@ function New-Win32ToolkitManualApp {
             Write-Host '  2. Then finalise (auto uninstall + test):' -ForegroundColor White
             Write-Host "     Complete-Win32ToolkitManualApp -ProjectPath '$projectFullPath' -RunTest InstallUninstall" -ForegroundColor Cyan
             Write-Host '     Add -PackageIntune to build the .intunewin, or -PublishIntune to also upload it to Intune.' -ForegroundColor Gray
-            return [pscustomobject]@{ ProjectPath = $projectFullPath; ProjectName = $projectName; Mode = 'Advanced' }
+            $runResult.Mode = 'Advanced'
+            return (Complete-Win32ToolkitRunResult -Result $runResult -Scaffolded)
         }
 
         # ── Easy app: finalise inline if asked ────────────────────────────────────
+        $runResult.Mode = 'Easy'
         if ($Continue -or $RunTest -or $PackageIntune -or $PublishIntune -or $PublishUpdate) {
             # BasePath: the capture and every test stage 'project:' dependencies from this run's base folder.
-            $finalize = @{ ProjectPath = $projectFullPath; ProjectName = $projectName; AppInfo = $appInfo; BasePath = $BasePath }
+            $finalize = @{ ProjectPath = $projectFullPath; ProjectName = $projectName; AppInfo = $appInfo; BasePath = $BasePath; Result = $runResult }
             if ($RunTest) { $finalize['RunTest'] = $RunTest }   # omit when null (ValidateSet rejects $null)
             Invoke-Win32ToolkitFinalize @finalize -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune -PublishUpdate:$PublishUpdate
+            return (Complete-Win32ToolkitRunResult -Result $runResult)
         }
-        else {
-            Write-Host "`nEasy app scaffolded. Finalise with:" -ForegroundColor Cyan
-            Write-Host "  Complete-Win32ToolkitManualApp -ProjectPath '$projectFullPath' -RunTest InstallUninstall" -ForegroundColor Cyan
-            Write-Host '  (or re-run this command with -Continue).' -ForegroundColor Gray
-            Write-Host '  Add -PackageIntune to build the .intunewin, or -PublishIntune to also upload it to Intune.' -ForegroundColor Gray
-        }
-        return [pscustomobject]@{ ProjectPath = $projectFullPath; ProjectName = $projectName; Mode = 'Easy' }
+        Write-Host "`nEasy app scaffolded. Finalise with:" -ForegroundColor Cyan
+        Write-Host "  Complete-Win32ToolkitManualApp -ProjectPath '$projectFullPath' -RunTest InstallUninstall" -ForegroundColor Cyan
+        Write-Host '  (or re-run this command with -Continue).' -ForegroundColor Gray
+        Write-Host '  Add -PackageIntune to build the .intunewin, or -PublishIntune to also upload it to Intune.' -ForegroundColor Gray
+        return (Complete-Win32ToolkitRunResult -Result $runResult -Scaffolded)
     }
     catch {
         # Fail-closed errors (W32T.*) reach the caller as terminating errors; the TUI shows them.
         if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+        # Any other error: the result object says the run stopped (Status Failed), then the error is written.
+        if ($runResult) {
+            $runResult.Problems.Add([string]$_.Exception.Message)
+            Complete-Win32ToolkitRunResult -Result $runResult -Failed
+        }
         Write-Error "New-Win32ToolkitManualApp failed: $($_.Exception.Message)"
     }
     finally {

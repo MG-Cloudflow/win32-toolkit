@@ -426,7 +426,7 @@ try {
     function Initialize-Win32ToolkitTestRunLog { param($ProjectPath, $Scenario, $Family) $null }
     function Save-Win32ToolkitTestRunLog { param($Run) $null }
     function Wait-Win32ToolkitCollectedLog { param($ProjectPath, $TimeoutSeconds) $true }
-    function Export-Win32ToolkitIntuneWin { param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript) }
+    function Export-Win32ToolkitIntuneWin { param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript, [switch]$NoPublishPrompt, [switch]$PassThru) }
     $script:testCalls = [System.Collections.Generic.List[hashtable]]::new()
     function Test-Win32ToolkitProject {
         param($ProjectPath, $Scenario, $SpecificVersion, $VersionsBack, $BaselineInstallerType, $BasePath)

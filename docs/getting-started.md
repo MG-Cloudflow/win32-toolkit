@@ -164,6 +164,8 @@ Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -TemplateName 'YourTemplate'
 
 Add `-RunTest InstallUninstall` to also test the package, or `-PublishIntune` to upload it. See
 [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md) for the full parameter reference.
+The command returns a result object whose `Status` (Succeeded, CompletedWithProblems or Failed) and
+`Problems` say what happened, so a script does not have to read the console.
 
 ## Staying up to date
 

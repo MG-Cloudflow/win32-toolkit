@@ -13,6 +13,12 @@ function Invoke-Win32Toolkit {
     (W32T.DownloadFailed; the warnings name every option that was skipped and the project folder is
     kept for a retry), the command stops with a terminating error and the project is NOT documented,
     tested, packaged or published.
+
+    Returns a result object (Win32Toolkit.RunResult): Status (Succeeded, CompletedWithProblems or Failed),
+    the capture state, the test verdicts, the .intunewin built, the apps published and one plain sentence
+    per problem (a failed or inconclusive test, an incomplete capture, no package built, the update app
+    skipped, or the error that stopped the run). A W32T.* error is thrown instead and no object is
+    returned. -NewTemplate returns nothing.
 .PARAMETER SearchTerm
     Term to search for in the Winget repository.
 .PARAMETER Id
@@ -105,8 +111,20 @@ function Invoke-Win32Toolkit {
 .EXAMPLE
     # Update test from each installer technology winget ships (one run and one test record per technology)
     Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -RunTest Update -UpdateVersionsBack 1 -UpdateBaselineInstallerType Both
+.EXAMPLE
+    # Check what happened without reading the console
+    $r = Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -PackageIntune
+    if ($r.Status -ne 'Succeeded') { $r.Problems }
+.OUTPUTS
+    Win32Toolkit.RunResult: Command, ProjectPath, ProjectName, Mode (Winget), Status (Succeeded,
+    CompletedWithProblems or Failed), Capture (Done, Problems or NotRun), Tests ({ Scenario; Verdict }
+    per -RunTest scenario), IntuneWinPath, Published (the objects Publish-Win32ToolkitIntuneApp returned)
+    and Problems. A W32T.* error is thrown instead and no object is returned. Check .Status, not whether an
+    object came back: a failed run that stopped on a non-W32T error returns an object with Status Failed
+    (and writes the error).
 #>
     [CmdletBinding()]
+    [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory = $false)]
         [string]$SearchTerm,
@@ -177,7 +195,11 @@ function Invoke-Win32Toolkit {
         [string]$UpdateBaselineInstallerType
     )
 
+    $runResult = $null
     try {
+        # The run's result object (TUI audit G2, S8-F3): filled by this command and Finalize, returned at the end.
+        $runResult = Initialize-Win32ToolkitRunResult -Command 'Invoke-Win32Toolkit' -Mode 'Winget'
+
         Write-Host 'Winget App Downloader + PSADT Project Creator' -ForegroundColor Cyan
         Write-Host '===========================================' -ForegroundColor Cyan
 
@@ -214,8 +236,9 @@ function Invoke-Win32Toolkit {
             Write-Verbose "Resolving package ID: $Id"
             $selectedApp = Resolve-Win32ToolkitWingetId -Id $Id
             if (-not $selectedApp) {
+                $runResult.Problems.Add("Package ID '$Id' was not found in winget.")
                 Write-Error "Package ID '$Id' not found in winget. Verify the ID and try again."
-                return
+                return (Complete-Win32ToolkitRunResult -Result $runResult -Failed)
             }
             Write-Host "`nSelected: $($selectedApp.Name) v$($selectedApp.Version)" -ForegroundColor Cyan
         }
@@ -234,7 +257,8 @@ function Invoke-Win32Toolkit {
 
             if ($apps.Count -eq 0) {
                 Write-Warning "No applications found matching: $SearchTerm"
-                return
+                $runResult.Problems.Add("No applications found matching: $SearchTerm")
+                return (Complete-Win32ToolkitRunResult -Result $runResult -Failed)
             }
 
             Write-Host "Found $($apps.Count) applications" -ForegroundColor Green
@@ -263,7 +287,8 @@ function Invoke-Win32Toolkit {
 
             if (-not $selectedApp) {
                 Write-Warning 'No application selected'
-                return
+                $runResult.Problems.Add('No application selected.')
+                return (Complete-Win32ToolkitRunResult -Result $runResult -Failed)
             }
 
             Write-Host "`nSelected: $($selectedApp.Name) v$($selectedApp.Version)" -ForegroundColor Cyan
@@ -293,6 +318,7 @@ function Invoke-Win32Toolkit {
         $versionClean = Sanitize-ProjectName -Name $selectedApp.Version
         $archClean    = Sanitize-ProjectName -Name $selectedArch
         $projectName  = "${appNameClean}_${archClean}_${versionClean}"
+        $runResult.ProjectName = $projectName
 
         Write-Host "`nProject name will be: $projectName" -ForegroundColor Cyan
 
@@ -315,6 +341,7 @@ function Invoke-Win32Toolkit {
         # its Intune\Publications.json (the Intune app it records still exists) so the rebuilt version still
         # anchors later versions and dependency lookups.
         $projectFullPath   = Join-Path $projectsDir $projectName
+        $runResult.ProjectPath = $projectFullPath
         $tenantId          = if ($script:OrgTemplate -and $script:OrgTemplate.PSObject.Properties['TenantId'] -and $script:OrgTemplate.TenantId) { [string]$script:OrgTemplate.TenantId } else { '' }
         $selfAnchor        = Get-Win32ToolkitSelfAnchor -ProjectPath $projectFullPath -TenantId $tenantId
         # Absolute (a relative -BasePath is used as-is): [System.IO.File] resolves against the process directory.
@@ -406,13 +433,13 @@ function Invoke-Win32Toolkit {
                 # Documentation capture, uninstall automation, and optional test/package/publish
                 # (shared with the manual-app flow — see Invoke-Win32ToolkitFinalize).
                 # BasePath: the capture and every test stage 'project:' dependencies from this run's base folder.
-                $finalize = @{ ProjectPath = $projectFullPath; ProjectName = $projectName; AppInfo = $selectedApp; BasePath = $BasePath }
+                $finalize = @{ ProjectPath = $projectFullPath; ProjectName = $projectName; AppInfo = $selectedApp; BasePath = $BasePath; Result = $runResult }
                 if ($RunTest) { $finalize['RunTest'] = $RunTest }   # omit when null (ValidateSet rejects $null)
                 if ($UpdateVersionsBack)    { $finalize['UpdateVersionsBack']    = $UpdateVersionsBack }
                 if ($UpdateSpecificVersion) { $finalize['UpdateSpecificVersion'] = $UpdateSpecificVersion }
                 if ($PSBoundParameters.ContainsKey('UpdateBaselineInstallerType')) { $finalize['UpdateBaselineInstallerType'] = $UpdateBaselineInstallerType }
                 Invoke-Win32ToolkitFinalize @finalize -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune -PublishUpdate:$PublishUpdate
-
+                return (Complete-Win32ToolkitRunResult -Result $runResult)
 
             }
             else {
@@ -471,6 +498,11 @@ function Invoke-Win32Toolkit {
     catch {
         # Fail-closed errors (W32T.*) reach the caller as terminating errors; the TUI shows them.
         if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+        # Any other error: the result object says the run stopped (Status Failed), then the error is written.
+        if ($runResult) {
+            $runResult.Problems.Add([string]$_.Exception.Message)
+            Complete-Win32ToolkitRunResult -Result $runResult -Failed
+        }
         Write-Error "Script execution failed: $($_.Exception.Message)"
     }
     finally {

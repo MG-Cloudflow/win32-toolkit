@@ -7,7 +7,7 @@ Packages a PSADT project into a .intunewin file for Intune deployment.
 
 ```
 Export-Win32ToolkitIntuneWin [[-ProjectPath] <String>] [[-BasePath] <String>] [-PublishIntune] [-PublishUpdate]
- [-NoPublishPrompt] [[-PublishTimeoutSeconds] <Int32>] [-AllowLegacyScript]
+ [-NoPublishPrompt] [[-PublishTimeoutSeconds] <Int32>] [-AllowLegacyScript] [-PassThru]
  [-ProgressAction <ActionPreference>] [-WhatIf] [-Confirm] [<CommonParameters>]
 ```
 
@@ -99,6 +99,13 @@ Export-Win32ToolkitIntuneWin -ProjectPath $proj -PublishIntune -PublishTimeoutSe
 ```
 # A hand-maintained deploy script that win32-toolkit never patched
 Export-Win32ToolkitIntuneWin -ProjectPath $proj -NoPublishPrompt -AllowLegacyScript
+```
+
+### EXAMPLE 8
+```
+# Package, publish, and keep what happened
+$r = Export-Win32ToolkitIntuneWin -ProjectPath $proj -PublishIntune -PassThru
+$r.IntuneWinPath; $r.Published.PortalUri; $r.Problems
 ```
 
 ## PARAMETERS
@@ -236,6 +243,26 @@ Accept pipeline input: False
 Accept wildcard characters: False
 ```
 
+### -PassThru
+Return a summary object instead of nothing: ProjectPath, IntuneWinPath (the .intunewin built; empty
+under -WhatIf or when IntuneWinAppUtil.exe wrote none), Published (the objects
+Publish-Win32ToolkitIntuneApp returned) and Problems (what went wrong without stopping the export: no
+package built, the update app skipped).
+Invoke-Win32Toolkit, New-Win32ToolkitManualApp and
+Complete-Win32ToolkitManualApp use it for their result object.
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
 ### -WhatIf
 Shows what would happen if the cmdlet runs.
 The cmdlet is not run.
@@ -289,6 +316,7 @@ This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable
 
 ## OUTPUTS
 
+### None by default. With -PassThru, one [pscustomobject] { ProjectPath; IntuneWinPath; Published; Problems }.
 ## NOTES
 
 ## RELATED LINKS

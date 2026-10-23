@@ -58,6 +58,11 @@ applied, or if the winget download fails (`W32T.DownloadFailed`), the command st
 before anything is captured, tested, packaged or published.
 It never ships a deploy script it could not generate correctly.
 
+Each pipeline command returns a result object (`Status`: Succeeded, CompletedWithProblems, Failed or
+Scaffolded; the test verdicts, the `.intunewin` path, the published apps and a list of problems), so a
+script can check what happened without reading the console. Check `Status`, not whether an object came
+back: a run that stopped on an error also returns one (`Status Failed`).
+
 ### Two guest backends, one contract
 
 Captures and tests run in one of two disposable guests. Which one is a per-machine choice stored

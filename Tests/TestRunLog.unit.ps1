@@ -212,7 +212,7 @@ try {
     function Assert-Win32ToolkitPackageReady { param($ProjectPath, $Stage, [switch]$AllowLegacyScript) [pscustomobject]@{ Ready = $true } }
     function Get-Win32ToolkitTestBackend { 'Sandbox' }
     ${function:New-TargetedDocumentation} = { param($ProjectPath, $ProjectName, $AppInfo, $Backend) $false }
-    function Export-Win32ToolkitIntuneWin { param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript) }
+    function Export-Win32ToolkitIntuneWin { param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript, [switch]$NoPublishPrompt, [switch]$PassThru) }
     $script:legFolders = @()
     function Test-Win32ToolkitProject {
         param($ProjectPath, $Scenario, $SpecificVersion, $VersionsBack, $BaselineInstallerType, $BasePath)

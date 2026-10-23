@@ -89,6 +89,11 @@ Complete-Win32ToolkitManualApp -ProjectPath 'C:\Win32Apps\Projects\Contoso\Legac
     -RunTest InstallUninstall -PackageIntune
 ```
 
+Both commands return a result object (`Status`, `ProjectPath`, `Problems`, ...). In a script, check
+`.Status`, not whether an object came back: a failed run that stopped on a non-W32T error returns an object
+with `Status Failed` (and writes the error). After step 1, `Status` is `Scaffolded` and `ProjectPath` is the
+folder to pass to step 3.
+
 Where to write it: in the Install phase, **between** the block that starts with
 `## win32-toolkit:Install:manual-install (begin)` and the `## win32-toolkit:Install:install-done (begin)`
 block below it. On PSADT 4.2 that is inside the `## MARK: Install` section

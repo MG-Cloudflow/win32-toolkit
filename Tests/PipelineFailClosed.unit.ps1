@@ -50,6 +50,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 # C-9: the -DependsOn pre-flight of Invoke-Win32Toolkit / New-Win32ToolkitManualApp (B3 r2.1; real, pure).
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitDependencyRef.ps1')
 . (Join-Path $repo 'Private\Assert-Win32ToolkitDependencyRef.ps1')
+. (Join-Path $repo 'Private\Initialize-Win32ToolkitRunResult.ps1')   # C-9: the result object (TUI audit G2, S8-F3)
+. (Join-Path $repo 'Private\Complete-Win32ToolkitRunResult.ps1')
 . (Join-Path $repo 'Public\Invoke-Win32Toolkit.ps1')
 . (Join-Path $repo 'Public\New-Win32ToolkitManualApp.ps1')
 . (Join-Path $repo 'Public\Complete-Win32ToolkitManualApp.ps1')
@@ -77,7 +79,8 @@ function Get-OrgTemplate {
     if ($script:Mode.TenantId) { $t | Add-Member -NotePropertyName TenantId -NotePropertyValue $script:Mode.TenantId }
     $t
 }
-function Resolve-Win32ToolkitWingetId { param($Id) $script:ResolveCalls++; [pscustomobject]@{ Name = 'Git'; Id = $Id; Version = '2.45.0'; Source = 'winget' } }
+function Resolve-Win32ToolkitWingetId { param($Id) $script:ResolveCalls++; if ($script:Mode.ResolveNull) { return $null }; [pscustomobject]@{ Name = 'Git'; Id = $Id; Version = '2.45.0'; Source = 'winget' } }
+function Search-WingetApps { param($SearchTerm) @() }
 $script:DetailsCalls = 0
 function Get-WingetAppDetails { param($AppId) $script:DetailsCalls++; if ($script:Mode.DetailsThrows) { throw 'winget exploded' }; @('x64') }
 function Select-Architecture { param($Architectures, $AppName, $PreSelected) 'x64' }
@@ -162,16 +165,45 @@ function Assert-Win32ToolkitPackageReady {
     [pscustomobject]@{ Ready = $true; Shape = 'Psadt41'; VersionText = '4.1.8'; Warnings = @() }
 }
 function Get-Win32ToolkitTestBackend { if ($script:Mode.BackendThrows) { throw 'backend exploded' }; 'Sandbox' }
-function New-TargetedDocumentation { param($ProjectPath, $ProjectName, $AppInfo, $Backend, $BasePath) $script:Calls.Add('document'); $script:DocBase = $BasePath; return $false }
+# The capture: $false (did not complete) unless the case sets CapturePath, the expected-JSON path a completed capture
+# returns; Wait-ForDocumentationAndProcess (C-9) then processes it per CaptureProcessed (default $true).
+function New-TargetedDocumentation {
+    param($ProjectPath, $ProjectName, $AppInfo, $Backend, $BasePath)
+    $script:Calls.Add('document'); $script:DocBase = $BasePath
+    if ($script:Mode.CapturePath) { return $script:Mode.CapturePath }
+    return $false
+}
 function Invoke-Win32ToolkitHyperVRun { param($ProjectPath, $Phase, $Output) $true }
-function Wait-ForDocumentationAndProcess { param($ProjectPath, $InstallerType, $ExpectedJsonPath) $true }
+$script:WaitSeen = $null
+function Wait-ForDocumentationAndProcess {
+    param($ProjectPath, $InstallerType, $ExpectedJsonPath)
+    $script:Calls.Add('process'); $script:WaitSeen = $PSBoundParameters
+    if ($script:Mode.ContainsKey('CaptureProcessed')) { return [bool]$script:Mode.CaptureProcessed }
+    $true
+}
 function Import-Win32ToolkitCapturedIcon { param($ProjectPath) }
 # C-9: the capture run-log helpers Finalize calls (test campaign 2026-10-21, H5-F5/H7-F1); no disk writes.
 function Initialize-Win32ToolkitTestRunLog { param($ProjectPath, $Scenario, $Family) $null }
 function Save-Win32ToolkitTestRunLog { param($Run) $null }
 function Wait-Win32ToolkitCollectedLog { param($ProjectPath, $TimeoutSeconds) $true }
-function Test-Win32ToolkitProject { param($ProjectPath, $Scenario, $SpecificVersion, $VersionsBack, $BasePath) $script:Calls.Add('test'); $true }
-function Export-Win32ToolkitIntuneWin { param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript) $script:Calls.Add("export:$([bool]$AllowLegacyScript)") }
+function Test-Win32ToolkitProject {
+    param($ProjectPath, $Scenario, $SpecificVersion, $VersionsBack, $BasePath)
+    $script:Calls.Add('test')
+    if ($script:Mode.ContainsKey('TestVerdict')) { return $script:Mode.TestVerdict }
+    $true
+}
+# A failed verdict names the run's own log folder (Finalize); none here -> the flat Sandbox\Logs fallback.
+function Get-Win32ToolkitTestRunLogFolder { param($ProjectPath, $Scenario, $SinceUtc) }
+function Export-Win32ToolkitIntuneWin {
+    param($ProjectPath, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript, [switch]$NoPublishPrompt, [switch]$PassThru)
+    $script:Calls.Add("export:$([bool]$AllowLegacyScript)")
+    $script:ExportPassThru = [bool]$PassThru
+    if ($script:Mode.ExportThrows) { throw $script:Mode.ExportThrows }
+    if ($PassThru) {
+        if ($script:Mode.ExportSummary) { return $script:Mode.ExportSummary }
+        [pscustomobject]@{ IntuneWinPath = ''; Published = @(); Problems = @() }
+    }
+}
 
 # Runs an action; returns @{ Fqid; Message; Errors (non-terminating) }.
 function Invoke-Case([scriptblock]$Action) {
@@ -371,11 +403,12 @@ $finalizeRun = {
     param([hashtable]$Extra)
     function Invoke-Win32ToolkitFinalize {
         param($ProjectPath, $ProjectName, $AppInfo, $RunTest, $UpdateVersionsBack, $UpdateSpecificVersion, $UpdateBaselineInstallerType,
-            [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate, $BasePath)
+            [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate, $BasePath, $Result)
         $script:FinalizeSeen = $PSBoundParameters
     }
     $script:FinalizeSeen = $null
-    Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force @Extra 6>$null 3>$null
+    # Invoke-Win32Toolkit returns its result object (TUI audit G2): discard it, only the Finalize arguments count.
+    $null = Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force @Extra 6>$null 3>$null
     $script:FinalizeSeen
 }
 Reset-Case @{}
@@ -386,6 +419,8 @@ if ($fs -and -not $fs.ContainsKey('UpdateBaselineInstallerType')) { Ok 'not boun
 # The run's base folder reaches Finalize (re-verification 2026-10-21, B3 #4): its capture and tests stage
 # 'project:' dependencies from it, not from the registry base folder.
 if ($fs -and $fs['BasePath'] -eq $BASE) { Ok 'Invoke-Win32Toolkit passes its resolved -BasePath to Invoke-Win32ToolkitFinalize' } else { Bad "finalize BasePath: '$(if ($fs) { $fs['BasePath'] })'" }
+$fs = & $finalizeRun @{}
+if (@($fs).Count -eq 1 -and $fs -is [System.Collections.IDictionary] -and $fs['Result'] -and $fs['Result'].Command -eq 'Invoke-Win32Toolkit') { Ok '$finalizeRun returns exactly the Finalize arguments (one dictionary), with the run-result collector as -Result' } else { Bad "finalizeRun returned $(@($fs).Count) object(s): $(@($fs) | ForEach-Object { $_.GetType().Name })" }
 
 # W32T.InstallerVariantUnavailable from the download passes Invoke unchanged; nothing downstream runs.
 Reset-Case @{ DownloadUnavailable = $true }
@@ -451,6 +486,141 @@ $r = Invoke-Case { & $manualDeps "project:$fresh\Tool_x64_1.0" }
 if ($r.Fqid -eq 'W32T.InvalidDependencyReference' -and $r.Message -ceq "An app cannot depend on itself ('$fresh\Tool_x64_1.0')." -and $script:Calls.Count -eq 0 -and $null -eq $script:SetDepSeen -and -not (Test-Path -LiteralPath $freshDir)) {
     Ok "New-Win32ToolkitManualApp -DependsOn 'project:$fresh\Tool_x64_1.0' (the app itself) -> W32T.InvalidDependencyReference; no template folder, no scaffold"
 } else { Bad "Manual self: fqid='$($r.Fqid)' msg='$($r.Message)' calls=[$($script:Calls -join ',')] folder=$(Test-Path -LiteralPath $freshDir)" }
+
+# == [RR] the result object (TUI audit G2, S8-F3) ===================================================
+Write-Host '[RR] Invoke-Win32Toolkit / New- / Complete-Win32ToolkitManualApp return a Win32Toolkit.RunResult' -ForegroundColor Cyan
+# Runs an action and keeps its output objects (also those written before a terminating error).
+function Invoke-Collect([scriptblock]$Action) {
+    $ev = $null
+    $out = [System.Collections.Generic.List[object]]::new()
+    $fqid = ''
+    try { . $Action 3>$null 6>$null | ForEach-Object { $out.Add($_) } }
+    catch { $fqid = $_.FullyQualifiedErrorId }
+    [pscustomobject]@{
+        Out     = @($out)
+        Results = @($out | Where-Object { $null -ne $_ -and $_.PSObject.TypeNames -contains 'Win32Toolkit.RunResult' })
+        Fqid    = $fqid
+        Errors  = @($ev)
+    }
+}
+
+Reset-Case @{}
+$c = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -PackageIntune -PublishIntune -ErrorAction SilentlyContinue -ErrorVariable ev }
+$rr = $c.Results | Select-Object -First 1
+if ($c.Out.Count -eq 1 -and $c.Results.Count -eq 1) { Ok 'Invoke-Win32Toolkit: exactly one object in the output, a Win32Toolkit.RunResult' } else { Bad "output: $($c.Out.Count) object(s), $($c.Results.Count) RunResult(s); fqid='$($c.Fqid)'" }
+$capText = 'The install capture did not complete: the uninstall, the processes to close and the capture-based detection rule were not updated (see the warnings above).'
+if ($rr -and $rr.Command -eq 'Invoke-Win32Toolkit' -and $rr.Mode -eq 'Winget' -and $rr.Capture -eq 'Problems' -and $rr.Status -eq 'CompletedWithProblems' -and
+    $rr.ProjectName -eq 'Git_x64_2.45.0' -and $rr.ProjectPath -eq $newProj -and @($rr.Problems) -ccontains $capText -and $script:ExportPassThru) {
+    Ok 'a capture that did not complete -> Capture Problems, its problem text, Status CompletedWithProblems; Export was called with -PassThru'
+} else { Bad "result: $(if ($rr) { $rr | Select-Object Command, Mode, Capture, Status, ProjectName, ProjectPath | ConvertTo-Json -Compress }) problems=[$(if ($rr) { $rr.Problems -join ' | ' })] passthru=$script:ExportPassThru" }
+$propOrder = 'Command,ProjectPath,ProjectName,Mode,Status,Capture,Tests,IntuneWinPath,Published,Problems'
+if ($rr -and ($rr.PSObject.Properties.Name -join ',') -eq $propOrder -and $rr.Problems -is [string[]] -and $rr.Tests -is [object[]] -and $rr.Published -is [object[]]) { Ok 'the properties are always present, in the contract order, with arrays (not lists)' } else { Bad "properties: $(if ($rr) { $rr.PSObject.Properties.Name -join ',' })" }
+
+# A completed capture (New-TargetedDocumentation returns the expected-JSON path) that Wait-ForDocumentationAndProcess
+# processed, a passed test and an export without problems: the only way a run reads as a green Done in the TUI.
+$capJson = Join-Path $newProj 'Documentation\InstallationChanges_test.json'
+Reset-Case @{ CapturePath = $capJson; CaptureProcessed = $true; TestVerdict = $true }
+$script:WaitSeen = $null
+$c = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -PackageIntune -ErrorAction SilentlyContinue -ErrorVariable ev }
+$rr = $c.Results | Select-Object -First 1
+if ($c.Results.Count -eq 1 -and $rr.Capture -eq 'Done' -and $rr.Status -eq 'Succeeded' -and @($rr.Problems).Count -eq 0 -and @($rr.Tests).Count -eq 1 -and $rr.Tests[0].Verdict -eq 'Passed' -and
+    $script:WaitSeen -and $script:WaitSeen['ExpectedJsonPath'] -eq $capJson -and ($script:Calls -join ',') -match 'document,process,test,export:False') {
+    Ok 'a processed capture, a passed test and a clean export -> one RunResult: Capture Done, Status Succeeded, Problems empty'
+} else { Bad "results=$($c.Results.Count) result: $(if ($rr) { $rr | Select-Object Capture, Status, Problems, Tests | ConvertTo-Json -Compress -Depth 3 }) wait=$(if ($script:WaitSeen) { $script:WaitSeen['ExpectedJsonPath'] }) calls=[$($script:Calls -join ',')]" }
+
+Reset-Case @{ CapturePath = $capJson; CaptureProcessed = $false }
+$c = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -ErrorAction SilentlyContinue -ErrorVariable ev }
+$rr = $c.Results | Select-Object -First 1
+$procText = 'The install capture could not be processed cleanly: review the uninstall and the processes to close (see the warnings above).'
+if ($c.Results.Count -eq 1 -and $rr.Capture -eq 'Problems' -and @($rr.Problems).Count -eq 1 -and $rr.Problems[0] -ceq $procText -and $rr.Status -eq 'CompletedWithProblems' -and 'process' -in $script:Calls) {
+    Ok 'a completed capture that could not be processed -> Capture Problems and exactly the "could not be processed cleanly" problem'
+} else { Bad "results=$($c.Results.Count) result: $(if ($rr) { $rr | Select-Object Capture, Status | ConvertTo-Json -Compress }) problems=[$(if ($rr) { $rr.Problems -join ' | ' })] calls=[$($script:Calls -join ',')]" }
+
+Reset-Case @{ TestVerdict = $false }
+$c = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -ErrorAction SilentlyContinue -ErrorVariable ev }
+$rr = $c.Results | Select-Object -First 1
+$failText = "The InstallUninstall test FAILED: review $newProj\Sandbox\Logs\InstallAssertions.log."
+if ($rr -and @($rr.Tests).Count -eq 1 -and $rr.Tests[0].Scenario -eq 'InstallUninstall' -and $rr.Tests[0].Verdict -eq 'Failed' -and @($rr.Problems) -ccontains $failText -and $rr.Status -eq 'CompletedWithProblems') {
+    Ok '-RunTest InstallUninstall with a failed verdict -> Tests[0] Failed and the FAILED problem naming the log'
+} else { Bad "tests=$(if ($rr) { $rr.Tests | ConvertTo-Json -Compress }) problems=[$(if ($rr) { $rr.Problems -join ' | ' })]" }
+
+Reset-Case @{ TestVerdict = $null }
+$c = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -ErrorAction SilentlyContinue -ErrorVariable ev }
+$rr = $c.Results | Select-Object -First 1
+if ($rr -and $rr.Tests[0].Verdict -eq 'Inconclusive' -and @($rr.Problems) -ccontains 'The InstallUninstall test gave no verdict (Inconclusive): the package was not shown to install and uninstall.') { Ok 'no verdict -> Tests[0] Inconclusive and its problem text' } else { Bad "tests=$(if ($rr) { $rr.Tests | ConvertTo-Json -Compress }) problems=[$(if ($rr) { $rr.Problems -join ' | ' })]" }
+
+Reset-Case @{ TestVerdict = $true; ExportSummary = [pscustomobject]@{ IntuneWinPath = 'C:\out\Git_x64_2.45.0.intunewin'; Published = @([pscustomobject]@{ AppId = 'app-1'; DisplayName = 'Git'; IsUpdateApp = $false; PortalUri = 'https://x' }); Problems = @('The update app was not published: test.') } }
+$c = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -PackageIntune -ErrorAction SilentlyContinue -ErrorVariable ev }
+$rr = $c.Results | Select-Object -First 1
+if ($rr -and $rr.Tests[0].Verdict -eq 'Passed' -and $rr.IntuneWinPath -eq 'C:\out\Git_x64_2.45.0.intunewin' -and @($rr.Published).Count -eq 1 -and $rr.Published[0].AppId -eq 'app-1' -and
+    $rr.Problems[-1] -ceq 'The update app was not published: test.') {
+    Ok "a passed test -> Verdict Passed; the export summary's .intunewin path, published app and problems are copied into the result"
+} else { Bad "result: $(if ($rr) { $rr | ConvertTo-Json -Compress -Depth 4 })" }
+
+Reset-Case @{ TestVerdict = $false; ExportThrows = 'boom' }
+$c = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -PackageIntune -ErrorAction SilentlyContinue -ErrorVariable ev }
+$rr = $c.Results | Select-Object -First 1
+if ($c.Results.Count -eq 1 -and $rr.Status -eq 'Failed' -and $rr.Problems[-1] -ceq 'boom' -and $rr.Tests[0].Verdict -eq 'Failed' -and
+    ($c.Errors | ForEach-Object { "$_" }) -contains 'Script execution failed: boom' -and -not $c.Fqid) {
+    Ok 'an export that throws a plain error -> Status Failed, Problems ends with it, the verdict recorded before it stays, and the Write-Error is still written'
+} else { Bad "results=$($c.Results.Count) status=$(if ($rr) { $rr.Status }) problems=[$(if ($rr) { $rr.Problems -join ' | ' })] errors=[$($c.Errors -join ' | ')] fqid='$($c.Fqid)'" }
+
+Reset-Case @{ ApplyFails = $true }
+$c = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -PackageIntune -ErrorAction SilentlyContinue -ErrorVariable ev }
+if ($c.Fqid -eq 'W32T.PipelineAborted' -and $c.Results.Count -eq 0) { Ok 'a W32T.* error is thrown and no result object is emitted' } else { Bad "fqid='$($c.Fqid)' results=$($c.Results.Count)" }
+
+Reset-Case @{ ResolveNull = $true }
+$c = Invoke-Collect { Invoke-Win32Toolkit -Id 'No.Such' -Architecture x64 -Force -ErrorAction SilentlyContinue -ErrorVariable ev }
+$rr = $c.Results | Select-Object -First 1
+if ($c.Results.Count -eq 1 -and $rr.Status -eq 'Failed' -and $rr.Problems[-1] -ceq "Package ID 'No.Such' was not found in winget." -and $rr.ProjectPath -eq '' -and
+    ($c.Errors | ForEach-Object { "$_" }) -match "Package ID 'No.Such' not found in winget" -and 'create' -notin $script:Calls) {
+    Ok 'a package id winget does not know -> Status Failed with its problem; the Write-Error is unchanged; nothing created'
+} else { Bad "results=$($c.Results.Count) result: $(if ($rr) { $rr | Select-Object Status, ProjectPath, Problems | ConvertTo-Json -Compress }) errors=[$($c.Errors -join ' | ')]" }
+
+Reset-Case @{}
+$c = Invoke-Collect { Invoke-Win32Toolkit -SearchTerm 'nothing-matches' -Architecture x64 -Force -ErrorAction SilentlyContinue -ErrorVariable ev }
+$rr = $c.Results | Select-Object -First 1
+if ($c.Results.Count -eq 1 -and $rr.Status -eq 'Failed' -and $rr.Problems[-1] -ceq 'No applications found matching: nothing-matches' -and 'create' -notin $script:Calls) { Ok 'a search without results -> Status Failed with its problem' } else { Bad "results=$($c.Results.Count) result: $(if ($rr) { $rr | Select-Object Status, Problems | ConvertTo-Json -Compress })" }
+
+Reset-Case @{}
+$c = Invoke-Collect { New-Win32ToolkitManualApp -Name 'Tool' -Version '1.0' -Architecture x64 -SourcePath (Join-Path $src 'tool.msi') -TemplateName 'Contoso' -Force -Advanced -ErrorAction SilentlyContinue -ErrorVariable ev }
+$rr = $c.Results | Select-Object -First 1
+if ($c.Out.Count -eq 1 -and $rr -and $rr.Status -eq 'Scaffolded' -and $rr.Mode -eq 'Advanced' -and $rr.ProjectPath -eq (Join-Path $BASE 'Projects\Contoso\Tool_x64_1.0') -and $rr.ProjectName -eq 'Tool_x64_1.0' -and $rr.Capture -eq 'NotRun') {
+    Ok 'New-Win32ToolkitManualApp -Advanced -> one RunResult: Status Scaffolded, Mode Advanced, ProjectPath set, Capture NotRun'
+} else { Bad "out=$($c.Out.Count) result: $(if ($rr) { $rr | Select-Object Status, Mode, ProjectPath, Capture | ConvertTo-Json -Compress })" }
+
+Reset-Case @{}
+$c = Invoke-Collect { New-Win32ToolkitManualApp -Name 'Tool' -Version '1.0' -Architecture x64 -SourcePath (Join-Path $src 'tool.msi') -TemplateName 'Contoso' -Force -ErrorAction SilentlyContinue -ErrorVariable ev }
+$rr = $c.Results | Select-Object -First 1
+if ($rr -and $rr.Status -eq 'Scaffolded' -and $rr.Mode -eq 'Easy' -and 'document' -notin $script:Calls) { Ok 'an Easy app without -Continue -> Status Scaffolded, Mode Easy, nothing finalised' } else { Bad "result: $(if ($rr) { $rr | Select-Object Status, Mode | ConvertTo-Json -Compress }) calls=[$($script:Calls -join ',')]" }
+
+Reset-Case @{}
+$c = Invoke-Collect $runManual
+$rr = $c.Results | Select-Object -First 1
+if ($c.Out.Count -eq 1 -and $rr -and $rr.Mode -eq 'Easy' -and $rr.Status -eq 'CompletedWithProblems' -and $rr.Capture -eq 'Problems') { Ok 'an Easy app with -Continue -> one RunResult, Mode Easy, the capture problem recorded' } else { Bad "out=$($c.Out.Count) result: $(if ($rr) { $rr | Select-Object Status, Mode, Capture | ConvertTo-Json -Compress })" }
+
+Reset-Case @{}
+$c = Invoke-Collect { New-Win32ToolkitManualApp -Name 'Tool' -Version '1.0' -Architecture x64 -SourcePath (Join-Path $BASE 'nope.msi') -Force -ErrorAction SilentlyContinue -ErrorVariable ev }
+$rr = $c.Results | Select-Object -First 1
+if ($c.Results.Count -eq 1 -and $rr.Status -eq 'Failed' -and $rr.ProjectPath -eq '' -and $rr.Mode -eq '' -and $rr.Problems[-1] -like 'Source path not found: *' -and
+    ($c.Errors | ForEach-Object { "$_" }) -match 'New-Win32ToolkitManualApp failed: Source path not found') {
+    Ok 'a New-Win32ToolkitManualApp failure before the scaffold -> one RunResult (Status Failed, ProjectPath empty, Mode empty) and the Write-Error'
+} else { Bad "results=$($c.Results.Count) result: $(if ($rr) { $rr | Select-Object Status, ProjectPath, Mode | ConvertTo-Json -Compress }) errors=[$($c.Errors -join ' | ')]" }
+
+Reset-Case @{}
+$c = Invoke-Collect { Complete-Win32ToolkitManualApp -ProjectPath $proj -PackageIntune -ErrorAction SilentlyContinue -ErrorVariable ev }
+$rr = $c.Results | Select-Object -First 1
+if ($c.Out.Count -eq 1 -and $rr -and $rr.Command -eq 'Complete-Win32ToolkitManualApp' -and $rr.Mode -eq 'Finalize' -and $rr.ProjectPath -eq $proj -and $rr.ProjectName -eq 'Tool_x64_1.0') { Ok 'Complete-Win32ToolkitManualApp -> one RunResult, Mode Finalize, the project path and name' } else { Bad "out=$($c.Out.Count) result: $(if ($rr) { $rr | Select-Object Command, Mode, ProjectPath | ConvertTo-Json -Compress })" }
+
+Reset-Case @{ AssertFails = $true }
+$c = Invoke-Collect { Complete-Win32ToolkitManualApp -ProjectPath $proj -PackageIntune -ErrorAction SilentlyContinue -ErrorVariable ev }
+if ($c.Fqid -eq 'W32T.PackageNotReady' -and $c.Results.Count -eq 0) { Ok 'Complete: a W32T.* error -> thrown, no result object' } else { Bad "fqid='$($c.Fqid)' results=$($c.Results.Count)" }
+
+function New-OrgTemplate { param($ExistingTemplate, $TemplateName, $BasePath) $script:NewTemplateCalls++; [pscustomobject]@{ TemplateName = 'Contoso' } }
+Reset-Case @{}
+$script:NewTemplateCalls = 0
+$c = Invoke-Collect { Invoke-Win32Toolkit -NewTemplate -TemplateName 'Contoso' -ErrorAction SilentlyContinue -ErrorVariable ev }
+if ($script:NewTemplateCalls -eq 1 -and $c.Results.Count -eq 0 -and $c.Out.Count -eq 0 -and $c.Errors.Count -eq 0) { Ok 'Invoke-Win32Toolkit -NewTemplate returns no result object' } else { Bad "template calls=$script:NewTemplateCalls out=$($c.Out.Count) results=$($c.Results.Count) errors=[$($c.Errors -join ' | ')]" }
 
 Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''

@@ -40,6 +40,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 # C-9: a -DependsOn run validates its references before anything is downloaded or created (B3 r2.1; real, pure).
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitDependencyRef.ps1')
 . (Join-Path $repo 'Private\Assert-Win32ToolkitDependencyRef.ps1')
+. (Join-Path $repo 'Private\Initialize-Win32ToolkitRunResult.ps1')   # C-9: the result object (TUI audit G2, S8-F3)
+. (Join-Path $repo 'Private\Complete-Win32ToolkitRunResult.ps1')
 . (Join-Path $repo 'Public\Invoke-Win32Toolkit.ps1')
 
 # ── shadows: everything that would touch winget / the registry / the disk / Intune ───────────────
@@ -91,7 +93,7 @@ function Download-WingetApp { param($AppId, $AppName, $DownloadPath, $Architectu
 # Anything downstream of the download must never run on this path — if it does, the test explodes loudly.
 function Invoke-Win32ToolkitFinalize {
     param($ProjectPath, $ProjectName, $AppInfo, $RunTest, $UpdateVersionsBack, $UpdateSpecificVersion, $UpdateBaselineInstallerType,
-        [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate, $BasePath)
+        [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate, $BasePath, $Result)
     throw 'Invoke-Win32ToolkitFinalize ran even though the download failed'
 }
 function Write-Win32ToolkitIdentityDelta {

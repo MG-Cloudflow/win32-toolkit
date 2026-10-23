@@ -25,6 +25,14 @@ configuration or the org template cannot be applied, or when the winget download
 kept for a retry), the command stops with a terminating error and the project is NOT documented,
 tested, packaged or published.
 
+Returns a result object (Win32Toolkit.RunResult): Status (Succeeded, CompletedWithProblems or Failed),
+the capture state, the test verdicts, the .intunewin built, the apps published and one plain sentence
+per problem (a failed or inconclusive test, an incomplete capture, no package built, the update app
+skipped, or the error that stopped the run).
+A W32T.* error is thrown instead and no object is
+returned.
+-NewTemplate returns nothing.
+
 ## EXAMPLES
 
 ### EXAMPLE 1
@@ -63,6 +71,13 @@ Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -Installe
 ```
 # Update test from each installer technology winget ships (one run and one test record per technology)
 Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -RunTest Update -UpdateVersionsBack 1 -UpdateBaselineInstallerType Both
+```
+
+### EXAMPLE 8
+```
+# Check what happened without reading the console
+$r = Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -PackageIntune
+if ($r.Status -ne 'Succeeded') { $r.Problems }
 ```
 
 ## PARAMETERS
@@ -417,6 +432,12 @@ This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable
 
 ## OUTPUTS
 
+### Win32Toolkit.RunResult: Command, ProjectPath, ProjectName, Mode (Winget), Status (Succeeded,
+### CompletedWithProblems or Failed), Capture (Done, Problems or NotRun), Tests ({ Scenario; Verdict }
+### per -RunTest scenario), IntuneWinPath, Published (the objects Publish-Win32ToolkitIntuneApp returned)
+### and Problems. A W32T.* error is thrown instead and no object is returned. Check .Status, not whether an
+### object came back: a failed run that stopped on a non-W32T error returns an object with Status Failed
+### (and writes the error).
 ## NOTES
 
 ## RELATED LINKS
