@@ -98,29 +98,39 @@ function Show-Win32Toolkit {
             Show-Win32ToolkitHealth -BasePath $base
             Show-Win32ToolkitUpdateNotice
 
-            switch (Show-Win32ToolkitMainMenu) {
-                'winget'    { Invoke-Win32ToolkitWingetWizard -BasePath $base }
-                'manual'    { Invoke-Win32ToolkitManualWizard -BasePath $base }
-                'project'   { Show-Win32ToolkitProjectActions -BasePath $base }
-                'browse'    { Show-Win32ToolkitBrowse   -BasePath $base }
-                'templates' { Show-Win32ToolkitTemplates -BasePath $base }
-                'intune'    { Show-Win32ToolkitIntuneConnection -BasePath $base }
-                'settings'  {
-                    # NEVER capture a TUI screen's output (issue #67): PwshSpectreConsole 2.6.x render
-                    # commands RETURN their rendered ANSI text — it only displays when the stream
-                    # reaches Out-Default — so capturing a screen both blanks its rendering and turns
-                    # the captured "value" into an array (the next Show-Win32ToolkitHealth -BasePath
-                    # then failed to bind [string]). Settings persists a base-folder change to the
-                    # registry; adopt it by re-reading, so an unchanged registry keeps a session
-                    # -BasePath override intact.
-                    $before = Get-Win32ToolkitBasePath -NonInteractive
-                    Show-Win32ToolkitSettings -BasePath $base
-                    $after = Get-Win32ToolkitBasePath -NonInteractive
-                    if ($after -and $after -ne $before) { $base = $after }
+            $choice = Show-Win32ToolkitMainMenu
+            # Only the screen dispatch is guarded (TUI audit G7): an error a screen did not handle (an unreadable
+            # AppConfig.json, a failing helper) shows a red panel and the menu comes back, instead of ending the
+            # TUI. The header, health check, update notice and the menu stay OUTSIDE the try: an error there fails
+            # every pass the same way, so catching it would loop forever with 'exit' unreachable; it ends the TUI
+            # as before, through the finally below. W32T.* errors are shown too (the TUI is the display sink,
+            # Dv8). Ctrl+C (a pipeline stop) is not caught and still ends the TUI.
+            try {
+                switch ($choice) {
+                    'winget'    { Invoke-Win32ToolkitWingetWizard -BasePath $base }
+                    'manual'    { Invoke-Win32ToolkitManualWizard -BasePath $base }
+                    'project'   { Show-Win32ToolkitProjectActions -BasePath $base }
+                    'browse'    { Show-Win32ToolkitBrowse   -BasePath $base }
+                    'templates' { Show-Win32ToolkitTemplates -BasePath $base }
+                    'intune'    { Show-Win32ToolkitIntuneConnection -BasePath $base }
+                    'settings'  {
+                        # NEVER capture a TUI screen's output (issue #67): PwshSpectreConsole 2.6.x render
+                        # commands RETURN their rendered ANSI text — it only displays when the stream
+                        # reaches Out-Default — so capturing a screen both blanks its rendering and turns
+                        # the captured "value" into an array (the next Show-Win32ToolkitHealth -BasePath
+                        # then failed to bind [string]). Settings persists a base-folder change to the
+                        # registry; adopt it by re-reading, so an unchanged registry keeps a session
+                        # -BasePath override intact.
+                        $before = Get-Win32ToolkitBasePath -NonInteractive
+                        Show-Win32ToolkitSettings -BasePath $base
+                        $after = Get-Win32ToolkitBasePath -NonInteractive
+                        if ($after -and $after -ne $before) { $base = $after }
+                    }
+                    'exit'      { Write-SpectreHost '[grey]Goodbye.[/]'; return }
+                    default     { return }
                 }
-                'exit'      { Write-SpectreHost '[grey]Goodbye.[/]'; return }
-                default     { return }
             }
+            catch { Show-Win32ToolkitScreenError -ErrorRecord $_ }
         }
     }
     finally {

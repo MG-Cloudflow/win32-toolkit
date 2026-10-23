@@ -36,10 +36,21 @@ function Show-Win32ToolkitProjectActions {
             Clear-Host
             Write-SpectreRule -Title (Get-SpectreEscapedText -Text ('{0} / {1}' -f $project.Template, $project.Name)) -Color Blue
 
-            $depNow = @(Get-Win32ToolkitDependencies -ProjectPath $project.Path)
+            # An unreadable SupportFiles\AppConfig.json must not end the screen (TUI audit G7): one red line, and the
+            # action menu still comes up. Every error is handled the same way here (the TUI is the display sink, Dv8).
+            try {
+                $depNow = @(Get-Win32ToolkitDependencies -ProjectPath $project.Path)
+                $depText = if ($depNow.Count) { "$($depNow.Count) declared" } else { 'none' }
+            }
+            catch {
+                $depNow = @()
+                $depText = 'unknown: AppConfig.json cannot be read'
+                $depWhy = ([string]$_.Exception.Message).TrimEnd('.', ' ')
+                Write-SpectreHost "[red]$(Get-SpectreEscapedText -Text "SupportFiles\AppConfig.json of this project cannot be read: $depWhy. Fix the JSON or re-create the project; Package and Publish refuse it until then.")[/]"
+            }
             $act = Read-SpectreSelection -Message 'What would you like to do?' -Choices @(
                 [pscustomobject]@{ Key = 'test';    Label = 'Run a test (Windows Sandbox or Hyper-V VM)' }
-                [pscustomobject]@{ Key = 'deps';    Label = "Dependencies — apps installed BEFORE this one ($(if ($depNow.Count) { "$($depNow.Count) declared" } else { 'none' }))" }
+                [pscustomobject]@{ Key = 'deps';    Label = "Dependencies — apps installed BEFORE this one ($depText)" }
                 [pscustomobject]@{ Key = 'finish';  Label = "Finalize / refresh ($((Get-Win32ToolkitBackendInfo).Label) capture -> auto uninstall)" }
                 [pscustomobject]@{ Key = 'package'; Label = 'Package to .intunewin' }
                 [pscustomobject]@{ Key = 'publish'; Label = 'Publish to Intune' }
@@ -319,8 +330,11 @@ function Show-Win32ToolkitProjectActions {
                     Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
                 }
                 'publish' {
-                    $cfg = Get-Win32ToolkitAppConfig -ProjectPath $project.Path
-                    $app = if ($cfg.PSObject.Properties.Name -contains 'App') { $cfg.App } else { $null }
+                    # An unreadable AppConfig.json must not end the screen (TUI audit G7): the summary then shows the
+                    # project name only, and the advisory below reports UNSAFE-CLEANUP ('could not be read').
+                    try { $cfg = Get-Win32ToolkitAppConfig -ProjectPath $project.Path }
+                    catch { $cfg = $null }
+                    $app = if ($cfg -and $cfg.PSObject.Properties.Name -contains 'App') { $cfg.App } else { $null }
                     $summary = @(
                         "Application : $(if ($app.Name) { $app.Name } else { $project.Name })"
                         "Version     : $($app.Version)"

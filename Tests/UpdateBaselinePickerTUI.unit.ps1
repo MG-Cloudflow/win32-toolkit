@@ -586,6 +586,36 @@ if (-not @($script:prompts | Where-Object Message -eq 'Publish which app?').Coun
 if (@($script:prompts | Where-Object Message -eq 'What would you like to do?').Count -eq 2) { Ok 'back in the action menu after the panel (the screen did not return)' } else { Bad "action menus shown: $(@($script:prompts | Where-Object Message -eq 'What would you like to do?').Count)" }
 $script:notConfiguredPath = $null; $script:projects = @($under, $cand); $script:advisory = $null
 
+# ══ M. an unreadable AppConfig.json does not end the screen (TUI audit G7) ═══════════════════════════════
+Write-Host '[M] an unreadable AppConfig.json: a red line and the action menu; Publish shows the project name' -ForegroundColor Cyan
+$depsShadow = ${function:Get-Win32ToolkitDependencies}
+$cfgShadow = ${function:Get-Win32ToolkitAppConfig}
+try {
+    function Get-Win32ToolkitDependencies { param($ProjectPath) $null = $ProjectPath; throw 'Conversion from JSON failed [with] error: Unexpected character.' }
+    $script:hostLines.Clear(); $script:prompts.Clear(); $threw = $null
+    $script:keys = New-Object System.Collections.Queue
+    $script:keys.Enqueue('back')
+    try { Show-Win32ToolkitProjectActions -BasePath 'C:\Base' 6>$null 3>$null | Out-Null } catch { $threw = $_ }
+    $wantM = '[red]SupportFiles\AppConfig.json of this project cannot be read: Conversion from JSON failed [[with]] error: Unexpected character. Fix the JSON or re-create the project; Package and Publish refuse it until then.[/]'
+    if (-not $threw -and $script:hostLines -ccontains $wantM) { Ok 'Get-Win32ToolkitDependencies throws -> one red, escaped line; the screen does not throw' } else { Bad "threw=$threw lines=$($script:hostLines -join ' | ')" }
+    $menu = @($script:prompts | Where-Object Message -eq 'What would you like to do?')
+    $depLabel = if ($menu.Count) { @($menu[0].Choices | Where-Object Key -eq 'deps')[0].Label } else { '' }
+    if ($menu.Count -eq 1 -and $depLabel -ceq 'Dependencies — apps installed BEFORE this one (unknown: AppConfig.json cannot be read)') { Ok "the action menu is still shown; its Dependencies entry says 'unknown: AppConfig.json cannot be read'; back returns" } else { Bad "menus=$($menu.Count) deps label='$depLabel'" }
+    ${function:Get-Win32ToolkitDependencies} = $depsShadow
+
+    function Get-Win32ToolkitAppConfig { param($ProjectPath) $null = $ProjectPath; throw 'Conversion from JSON failed' }
+    $script:panels.Clear(); $threw = $null
+    $script:keys = New-Object System.Collections.Queue
+    foreach ($k in 'publish', 'cancel', 'back') { $script:keys.Enqueue($k) }
+    try { Show-Win32ToolkitProjectActions -BasePath 'C:\Base' 6>$null 3>$null | Out-Null } catch { $threw = $_ }
+    $sum = @($script:panels | Where-Object Header -eq 'About to PUBLISH to Intune')
+    if (-not $threw -and $sum.Count -eq 1 -and $sum[0].Data -match '^Application : App_x64_2\.0\nVersion     : \nPublisher   : $') { Ok 'Get-Win32ToolkitAppConfig throws on Publish -> no exception; the summary shows the project name, empty version and publisher' } else { Bad "threw=$threw summary=$($sum | ConvertTo-Json -Compress)" }
+}
+finally {
+    ${function:Get-Win32ToolkitDependencies} = $depsShadow
+    ${function:Get-Win32ToolkitAppConfig} = $cfgShadow
+}
+
 # The invariant over every Update run this suite drove: a winget baseline always carries a version.
 $wingetSplats = @($script:updateSplats | Where-Object { -not $_.ContainsKey('BaselineProjectPath') })
 $noVersion = @($wingetSplats | Where-Object { -not ($_.ContainsKey('SpecificVersion') -or $_.ContainsKey('VersionsBack')) })
