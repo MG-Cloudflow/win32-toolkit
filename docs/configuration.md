@@ -45,6 +45,7 @@ Do **not** hand-edit `HyperVGuestUser` / `HyperVGuestSecret`. See [Guest credent
 | `HyperVPrecheckCache` | `On` | `On`, `Off` | Keep the Intune-parity pre-check's answer per test VM checkpoint (see below). |
 | `HyperVPrecheckProbe` | *(not set)* | written by the toolkit | The stored pre-check answer. Never edit it; the VM commands delete it. |
 | `HyperVCheckpointAttestation` | *(not set)* | written by the toolkit | The stored sign-in and Defender state of the test VM's checkpoint ([Testing](testing.md)). Never edit it; the VM commands delete it. |
+| `HyperVRevertMode` | `TurnOffFirst` | `TurnOffFirst`, `Legacy` | How the test VM's checkpoint is restored: turn the VM off first, or the plain restore (see below). |
 
 ## BasePath
 
@@ -106,6 +107,12 @@ The [Intune-parity pre-check](testing.md#watched-vs-unattended) restores the tes
 An answer is not stored when the guest could not be read, when the check did not restore the checkpoint itself (the VM was already left clean by the run before), when the checkpoint did not restore to a running VM, or when a VM console (`vmconnect`) is attached to the VM: someone at the console could change what the answer depends on. Every VM command (provisioning, [Reset-Win32ToolkitTestVM](reference/Reset-Win32ToolkitTestVM.md), [Set-Win32ToolkitTestVMResource](reference/Set-Win32ToolkitTestVMResource.md), the checkpoint repair and [Remove-Win32ToolkitTestVM](reference/Remove-Win32ToolkitTestVM.md)) deletes the stored answer.
 
 Set `Off` to ask the guest every time (and store nothing). This value has no TUI control: set it in the registry.
+
+### `HyperVRevertMode` (default `TurnOffFirst`)
+
+Every Hyper-V test run restores the test VM's checkpoint before and after the test, and [Reset-Win32ToolkitTestVM](reference/Reset-Win32ToolkitTestVM.md) restores it too. Restoring a checkpoint of a running VM makes Hyper-V save the VM's memory to disk first, only to discard it. With `TurnOffFirst` the toolkit turns the VM off, restores the checkpoint and starts the VM again (it resumes the checkpoint's memory state): nothing is saved, and on a nested host this is about a minute faster per run (estimate; the record's `Timing` shows your numbers).
+
+`TurnOffFirst` is used only for a checkpoint taken with Hyper-V automatic checkpoints off. A checkpoint taken with them on, or whose setting cannot be read, gets the plain restore and a warning once per PowerShell session; re-take it as described in [Make Hyper-V tests faster](hyperv-vm.md#make-hyper-v-tests-faster). `Legacy` uses the plain restore for every checkpoint. Any other value counts as `TurnOffFirst`. This value has no TUI control: set it in the registry.
 
 ## Guest credential
 
