@@ -120,8 +120,9 @@ The build runs on its own from here. This is what happens, in order:
   - the list of app processes to close before install/uninstall;
   - the app icon (from winget, or extracted from the actual install when winget has none).
 
-When the wizard reports **Done**, the project is complete. Use **Browse projects** from the main
-menu to inspect it.
+When the wizard reports **Done**, the project is complete. When a step failed (a test, the capture, the
+upload), it shows **Finished with problems** in red and names what failed. Use **Browse projects** from the
+main menu to inspect it.
 
 ## 4. Where your .intunewin lands
 

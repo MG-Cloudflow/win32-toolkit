@@ -262,8 +262,9 @@ function Invoke-Win32ToolkitWingetWizard {
     if ($doPackage) { $p.PackageIntune = $true }
     if ($doPublish) { $p.PublishIntune = $true }
     try {
-        Invoke-Win32Toolkit @p
-        Format-SpectrePanel -Data "Finished [green]$(Get-SpectreEscapedText -Text $picked.Name)[/].`nUse [blue]Browse projects[/] to find it; review the messages above for details." -Header 'Done' -Border Rounded -Color Green
+        # The run is judged by its result object (TUI audit G2): Done only when it Succeeded.
+        $out = @(Invoke-Win32Toolkit @p)
+        Show-Win32ToolkitRunResult -Result $out -Name $picked.Name
     }
     catch {
         Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Something went wrong' -Border Rounded -Color Red

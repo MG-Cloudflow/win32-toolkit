@@ -43,8 +43,9 @@ function Show-Win32ToolkitAdvancedFinish {
                 if ($DoPackage) { $cp.PackageIntune = $true }
                 if ($DoPublish) { $cp.PublishIntune = $true }
                 try {
-                    Complete-Win32ToolkitManualApp @cp
-                    Format-SpectrePanel -Data 'Finished. Review the messages above for details.' -Header 'Done' -Border Rounded -Color Green
+                    # The run is judged by its result object (TUI audit G2): Done only when it Succeeded.
+                    $out = @(Complete-Win32ToolkitManualApp @cp)
+                    Show-Win32ToolkitRunResult -Result $out -Name (Split-Path -Leaf $ProjectPath)
                 }
                 catch {
                     Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Something went wrong' -Border Rounded -Color Red

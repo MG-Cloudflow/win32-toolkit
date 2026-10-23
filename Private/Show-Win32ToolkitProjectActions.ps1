@@ -299,7 +299,11 @@ function Show-Win32ToolkitProjectActions {
                 }
                 'finish' {
                     Clear-Host; Write-SpectreRule -Title 'Finalizing…' -Color Blue
-                    try { Complete-Win32ToolkitManualApp -ProjectPath $project.Path }
+                    try {
+                        # Its result object decides the panel (TUI audit G2); captured, so it never prints raw.
+                        $out = @(Complete-Win32ToolkitManualApp -ProjectPath $project.Path)
+                        Show-Win32ToolkitRunResult -Result $out -Name $project.Name
+                    }
                     catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
                     Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
                 }

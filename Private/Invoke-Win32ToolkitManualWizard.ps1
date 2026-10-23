@@ -144,8 +144,9 @@ function Invoke-Win32ToolkitManualWizard {
         Clear-Host
         Write-SpectreRule -Title "Building $(Get-SpectreEscapedText -Text $name)…" -Color Blue
         try {
-            New-Win32ToolkitManualApp @p | Out-Null
-            Format-SpectrePanel -Data "Finished [green]$(Get-SpectreEscapedText -Text $name)[/].`nUse [blue]Browse projects[/] to find it; review the messages above for details." -Header 'Done' -Border Rounded -Color Green
+            # The run is judged by its result object (TUI audit G2): Done only when it Succeeded.
+            $out = @(New-Win32ToolkitManualApp @p)
+            Show-Win32ToolkitRunResult -Result $out -Name $name
         }
         catch {
             Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Something went wrong' -Border Rounded -Color Red
