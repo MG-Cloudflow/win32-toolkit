@@ -259,7 +259,38 @@ function Show-Win32ToolkitProjectActions {
                                                   else { 'One or more assertions FAILED - see Sandbox\Logs\UpdateAssertions.log in the project folder.' }
                                     Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $failedText) -Header 'UPDATE TEST FAILED' -Border Rounded -Color Red
                                 }
-                                else                         { Format-SpectrePanel -Data 'No conclusive assertion results (sandbox closed early, timeout, or everything skipped).' -Header 'Inconclusive' -Border Rounded -Color Yellow }
+                                else {
+                                    $incText = 'No conclusive assertion results (sandbox closed early, timeout, or everything skipped).'
+                                    if ($testSplat['TestMode'] -eq 'Unattended') { $incText += "`nIf the Intune-parity pre-check did not start it, run it again with the Interactive Hyper-V run mode." }
+                                    Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $incText) -Header 'Inconclusive' -Border Rounded -Color Yellow
+                                }
+                            }
+                            else {
+                                # InstallUninstall (TUI audit G1): PASSED / FAILED (each failed check with its reason, and
+                                # the run's own log folder) / Inconclusive. Test-Win32ToolkitProject returns the verdict.
+                                if ($verdict -eq $true) { Format-SpectrePanel -Data 'All install and uninstall assertions passed.' -Header 'INSTALL/UNINSTALL TEST PASSED' -Border Rounded -Color Green }
+                                elseif ($verdict -eq $false) {
+                                    $iuLogs = @(Get-Win32ToolkitTestRunLogFolder -ProjectPath $project.Path -Scenario 'InstallUninstall' -SinceUtc $testStartUtc |
+                                            ForEach-Object { Join-Path $_ 'InstallAssertions.log' })
+                                    if ($iuLogs.Count) { $iuLog = $iuLogs[-1]; $iuLogText = $iuLog }
+                                    else { $iuLog = Join-Path $project.Path 'Sandbox\Logs\InstallAssertions.log'; $iuLogText = 'Sandbox\Logs\InstallAssertions.log in the project folder' }
+                                    $iuLines = [System.Collections.Generic.List[string]]::new()
+                                    $iuLines.Add("One or more assertions FAILED - see $iuLogText.")
+                                    # Name and Reason come from the guest log, already through ConvertTo-Win32ToolkitSafeText.
+                                    $iuFailures = @(Get-Win32ToolkitAssertionFailure -LogPath $iuLog)
+                                    foreach ($iuFailure in $iuFailures) {
+                                        $iuLines.Add(('- {0}: {1}' -f $iuFailure.Name, $(if ($iuFailure.Reason) { $iuFailure.Reason } else { 'no reason given' })))
+                                    }
+                                    if ($iuFailures.Count -eq 0) { $iuLines.Add("- no FAIL line was found in $iuLogText") }
+                                    $iuLines.Add('')
+                                    $iuLines.Add('Do not publish this package until you know why: Publish to Intune shows this failure again under "Review before you publish" (a warning; it does not block).')
+                                    Format-SpectrePanel -Data (Get-SpectreEscapedText -Text ($iuLines -join "`n")) -Header 'INSTALL/UNINSTALL TEST FAILED' -Border Rounded -Color Red
+                                }
+                                else {
+                                    $incText = 'No conclusive assertion results (the run was closed early, timed out, skipped every assertion, or was not started; see the messages above).'
+                                    if ($testSplat['TestMode'] -eq 'Unattended') { $incText += "`nIf the Intune-parity pre-check did not start it, run it again with the Interactive Hyper-V run mode." }
+                                    Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $incText) -Header 'Inconclusive' -Border Rounded -Color Yellow
+                                }
                             }
                         }
                         catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
@@ -296,13 +327,14 @@ function Show-Win32ToolkitProjectActions {
                     $ownsAdvisoryRun = $null -eq $script:W32TAdvisoryRun
                     if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = @{} }
                     try {
-                        # Package advisory (D1: warn, never block): red when an Update test failed, a technology
-                        # switch was seen or the uninstall cleanup paths are unsafe; yellow for other warnings.
+                        # Package advisory (D1: warn, never block): red when an install/uninstall test failed or gave no
+                        # verdict, an Update test failed, a technology switch was seen or the uninstall cleanup paths are
+                        # unsafe (TUI audit G1); yellow for other warnings.
                         try {
                             $advisory = Get-Win32ToolkitPackageAdvisory -ProjectPath $project.Path -Context Tui -ProbeIfMissing
                             $advWarnings = @($advisory.Findings | Where-Object { $_ -and $_.Severity -eq 'Warning' })
                             if ($advWarnings.Count -gt 0) {
-                                $severe = @($advWarnings | Where-Object { $_.Code -in @('UNSAFE-CLEANUP', 'UPDATE-FAILED', 'ID-TECH-SWITCH') }).Count -gt 0
+                                $severe = @($advWarnings | Where-Object { $_.Code -in @('UNSAFE-CLEANUP', 'INSTALL-FAILED', 'UPDATE-FAILED', 'ID-TECH-SWITCH', 'INSTALL-INCONCLUSIVE') }).Count -gt 0
                                 $advText = @($advWarnings | ForEach-Object { [string]$_.Message }) -join "`n`n"
                                 $advHeader = if ($severe) { 'Review before you publish' } else { 'Check before you publish' }
                                 $advColor  = if ($severe) { 'Red' } else { 'Yellow' }

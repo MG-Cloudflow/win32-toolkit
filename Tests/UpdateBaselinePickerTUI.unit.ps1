@@ -23,6 +23,9 @@
                                                     folder (Sandbox\Logs\Runs\<run>, test campaign F2)
       I. publish                                 -> the advisory panel (red / yellow), printed once: Export
                                                     under the TUI publish action prints no second advisory
+      K. install/uninstall test                  -> PASSED / FAILED (each failed check with its reason, the run's log)
+                                                    / Inconclusive panels; INSTALL-FAILED and INSTALL-INCONCLUSIVE
+                                                    make the publish panel red (TUI audit G1)
       J. winget baseline                         -> the TUI asks the baseline VERSION itself (previous version
                                                     first) and passes -SpecificVersion, also for a Hyper-V
                                                     'Unattended' run (test campaign F5: the test would otherwise
@@ -49,6 +52,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 # Real: the Export-side writer (I proves it stays quiet under the TUI publish action) and its sanitiser.
 . (Join-Path $repo 'Private\Write-Win32ToolkitPackageAdvisory.ps1')
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+# Real (C-9, TUI audit G1): the FAILED install/uninstall panel reads the failed checks and their reasons from the run's log.
+. (Join-Path $repo 'Private\Get-Win32ToolkitAssertionFailure.ps1')
 
 # --- Spectre / rendering shadows (recorded, nothing renders) ---------------------------------------
 $script:panels = New-Object System.Collections.Generic.List[object]
@@ -456,7 +461,8 @@ $script:panels.Clear()
 DriveUpdate @('publish', 'install', 'back')
 $ap = @($script:panels | Where-Object { $_.Header -in 'Review before you publish', 'Check before you publish' })
 if ($ap.Count -eq 1 -and $ap[0].Color -eq 'Yellow' -and $ap[0].Header -eq 'Check before you publish') { Ok 'other warnings only -> a YELLOW panel' } else { Bad "yellow: $($ap | ConvertTo-Json -Compress)" }
-foreach ($code in 'UPDATE-FAILED', 'ID-TECH-SWITCH') {
+# TUI audit G1: a failed install/uninstall test, or one without a verdict, is red too (decision: red in the panel).
+foreach ($code in 'UPDATE-FAILED', 'ID-TECH-SWITCH', 'INSTALL-FAILED', 'INSTALL-INCONCLUSIVE') {
     $script:advisory = [pscustomobject]@{ Findings = @((F $code 'Warning' "$code text")) }
     $script:panels.Clear()
     DriveUpdate @('publish', 'install', 'back')
@@ -476,6 +482,76 @@ if (@($w | Where-Object { "$_" -match '^Could not check the Update test and iden
     Ok 'a failing advisory -> one "Could not check ..." warning, the publish still goes ahead'
 } else { Bad "advisory failure: warnings=$(@($w).Count) export=$($script:exportCalls)" }
 $script:advisory = $null
+
+# ══ K. install/uninstall verdict panels (TUI audit G1) ═══════════════════════════════════════════════
+Write-Host '[K] install/uninstall test: PASSED / FAILED (each failed check with its reason, the run folder) / Inconclusive' -ForegroundColor Cyan
+$kRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('w32tuik_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$underK = [pscustomobject]@{ Template = 'A_App'; Name = 'App_x64_2.0'; Path = (Join-Path $kRoot 'Projects\A_App\App_x64_2.0') }
+$kRun = Join-Path $underK.Path 'Sandbox\Logs\Runs\20261023-101500_InstallUninstall'
+$kTop = Join-Path $underK.Path 'Sandbox\Logs'
+New-Item -ItemType Directory -Path $kRun -Force | Out-Null
+$kTs = '[2026-10-23 10:15:00Z]'
+$writeLog = { param($Path, [string[]]$Lines) Set-Content -LiteralPath $Path -Value $Lines -Encoding UTF8 }
+$iuPanel = { param($Header) @($script:panels | Where-Object Header -eq $Header) }
+$kSentence = 'Do not publish this package until you know why: Publish to Intune shows this failure again under "Review before you publish" (a warning; it does not block).'
+try {
+    $script:projects = @($underK, $cand)
+    $script:wingetId = 'Publisher.App'
+
+    $script:verdict = $true; $script:panels.Clear(); $script:runFolders = @()
+    DriveUpdate @('test', 'Sandbox', 'InstallUninstall', 'back')
+    $kp = @(& $iuPanel 'INSTALL/UNINSTALL TEST PASSED')
+    if ($script:called -eq 1 -and $kp.Count -eq 1 -and $kp[0].Color -eq 'Green' -and $kp[0].Data -ceq 'All install and uninstall assertions passed.') { Ok 'PASSED -> a green INSTALL/UNINSTALL TEST PASSED panel' } else { Bad "passed -> $($script:panels | ConvertTo-Json -Compress)" }
+
+    & $writeLog (Join-Path $kRun 'InstallAssertions.log') @(
+        "$kTs ASSERT Detected-PostInstall = PASS"
+        "$kTs ASSERT AppArpGone-PostUninstall = FAIL (app still in Add/Remove Programs after uninstall: Contoso [x] 1.0)"
+        "$kTs RESULT COMPLETE")
+    $script:verdict = $false; $script:panels.Clear(); $script:runFolders = @($kRun); $script:runFolderCalls.Clear()
+    DriveUpdate @('test', 'Sandbox', 'InstallUninstall', 'back')
+    $kf = @(& $iuPanel 'INSTALL/UNINSTALL TEST FAILED')
+    $wantKf = ("One or more assertions FAILED - see $kRun\InstallAssertions.log.`n- AppArpGone-PostUninstall: app still in Add/Remove Programs after uninstall: Contoso [x] 1.0`n`n$kSentence").Replace('[', '[[').Replace(']', ']]')
+    if ($kf.Count -eq 1 -and $kf[0].Color -eq 'Red' -and $kf[0].Data -ceq $wantKf) { Ok 'FAILED with a run folder -> a red panel: the run''s InstallAssertions.log, each failed check with its reason (escaped), the "shown again before you publish" sentence' } else { Bad "failed -> $($kf | ConvertTo-Json -Compress)" }
+    if ($script:runFolderCalls.Count -ge 1 -and $script:runFolderCalls[-1].Scenario -eq 'InstallUninstall' -and $script:runFolderCalls[-1].ProjectPath -eq $underK.Path -and $script:runFolderCalls[-1].SinceUtc -is [datetime]) { Ok 'the run folder is looked up for InstallUninstall records since the test started' } else { Bad "run folder calls: $($script:runFolderCalls | ConvertTo-Json -Compress)" }
+
+    & $writeLog (Join-Path $kTop 'InstallAssertions.log') @("$kTs ASSERT Detected-PostInstall = FAIL")
+    $script:panels.Clear(); $script:runFolders = @()
+    DriveUpdate @('test', 'Sandbox', 'InstallUninstall', 'back')
+    $kf = @(& $iuPanel 'INSTALL/UNINSTALL TEST FAILED')
+    $wantKf2 = "One or more assertions FAILED - see Sandbox\Logs\InstallAssertions.log in the project folder.`n- Detected-PostInstall: no reason given`n`n$kSentence"
+    if ($kf.Count -eq 1 -and $kf[0].Data -ceq $wantKf2) { Ok 'FAILED without a run folder -> names Sandbox\Logs\InstallAssertions.log in the project folder and reads its FAIL lines (no reason -> "no reason given")' } else { Bad "no run folder -> $($kf | ConvertTo-Json -Compress)" }
+
+    foreach ($noFail in @(@{ Tag = 'only PASS lines'; Lines = @("$kTs ASSERT Detected-PostInstall = PASS") },
+            @{ Tag = 'a PASS before a FAIL of the same name'; Lines = @("$kTs ASSERT Detected-PostInstall = PASS", "$kTs ASSERT Detected-PostInstall = FAIL (later)") })) {
+        & $writeLog (Join-Path $kRun 'InstallAssertions.log') $noFail.Lines
+        $script:panels.Clear(); $script:runFolders = @($kRun)
+        DriveUpdate @('test', 'Sandbox', 'InstallUninstall', 'back')
+        $kf = @(& $iuPanel 'INSTALL/UNINSTALL TEST FAILED')
+        $wantKf3 = "One or more assertions FAILED - see $kRun\InstallAssertions.log.`n- no FAIL line was found in $kRun\InstallAssertions.log`n`n$kSentence"
+        if ($kf.Count -eq 1 -and $kf[0].Data -ceq $wantKf3) { Ok "FAILED, the log has $($noFail.Tag) -> '- no FAIL line was found in <log>', never an empty list" } else { Bad "$($noFail.Tag) -> $($kf | ConvertTo-Json -Compress)" }
+    }
+
+    $hint = 'If the Intune-parity pre-check did not start it, run it again with the Interactive Hyper-V run mode.'
+    $script:verdict = $null; $script:panels.Clear(); $script:runFolders = @()
+    DriveUpdate @('test', 'HyperV', 'InstallUninstall', 'unattended', 'back')
+    $ki = @(& $iuPanel 'Inconclusive')
+    $wantKi = "No conclusive assertion results (the run was closed early, timed out, skipped every assertion, or was not started; see the messages above).`n$hint"
+    if ($ki.Count -eq 1 -and $ki[0].Color -eq 'Yellow' -and $ki[0].Data -ceq $wantKi) { Ok 'no verdict, Hyper-V Unattended -> a yellow Inconclusive panel with the Interactive-run-mode hint' } else { Bad "inconclusive hv -> $($ki | ConvertTo-Json -Compress)" }
+    $script:panels.Clear()
+    DriveUpdate @('test', 'Sandbox', 'InstallUninstall', 'back')
+    $ki = @(& $iuPanel 'Inconclusive')
+    if ($ki.Count -eq 1 -and $ki[0].Data -notmatch 'Intune-parity' -and $ki[0].Data -match '^No conclusive assertion results') { Ok 'no verdict on Sandbox -> the Inconclusive panel without the Hyper-V hint' } else { Bad "inconclusive sandbox -> $($ki | ConvertTo-Json -Compress)" }
+    # Dv14: the Update branch's Inconclusive panel gets the same hint for a Hyper-V Unattended run.
+    $script:panels.Clear()
+    DriveUpdate @('test', 'HyperV', 'Update', 'unattended', 'winget', 'back')
+    $ku = @(& $iuPanel 'Inconclusive')
+    if ($ku.Count -eq 1 -and $ku[0].Data -ceq "No conclusive assertion results (sandbox closed early, timeout, or everything skipped).`n$hint") { Ok 'Update, no verdict, Hyper-V Unattended -> the same hint (Dv14)' } else { Bad "update inconclusive -> $($ku | ConvertTo-Json -Compress)" }
+    if (@($script:panels | Where-Object { $_.Header -like 'UPDATE TEST*' -or $_.Header -like 'INSTALL/UNINSTALL*' }).Count -eq 0) { Ok 'an Update run shows no install/uninstall panel' } else { Bad "update panels: $($script:panels.Header -join ',')" }
+}
+finally {
+    $script:verdict = $true; $script:runFolders = @(); $script:projects = @($under, $cand)
+    Remove-Item -LiteralPath $kRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 # The invariant over every Update run this suite drove: a winget baseline always carries a version.
 $wingetSplats = @($script:updateSplats | Where-Object { -not $_.ContainsKey('BaselineProjectPath') })

@@ -137,7 +137,9 @@ this version (see below) still count as "already installed".
 ## Warnings before you publish
 
 Packaging and publishing look at the project's test results and identity checks once more and
-**warn**. They never stop a package or a publish, so read them before you assign the app:
+**warn**. They never stop a package or a publish, so read them before you assign the app. Each warning is
+a sentence that starts with the project folder's name (`Publishing '<app>':` when you publish); the codes
+below name the kinds of warning in these docs, and the warning text does not print them:
 
 | Warning | Meaning | What to do |
 |---|---|---|
@@ -151,8 +153,9 @@ Packaging and publishing look at the project's test results and identity checks 
 
 They are shown **once per action**: `Export-Win32ToolkitIntuneWin -PublishIntune -PublishUpdate` prints
 them once, not once per app, and a dry run (`-WhatIf`) prints them too. In the TUI, **Publish to
-Intune** shows them in a panel before you pick which app to publish: red when an Update test failed,
-a technology switch was seen or the cleanup paths are unsafe, yellow for the other warnings.
+Intune** shows them in a panel before you pick which app to publish: red when an install/uninstall test
+failed or gave no verdict, an Update test failed, a technology switch was seen or the cleanup paths are
+unsafe, yellow for the other warnings.
 **Package and upload now?** still defaults to No.
 
 **Packages exported before this version:** re-export them before you publish. Packaging now refuses a
