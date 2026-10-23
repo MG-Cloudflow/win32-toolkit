@@ -42,7 +42,8 @@ the terminating error `W32T.InvalidDependencyReference`, which names the referen
 - `Set-Win32ToolkitAppDependency` writes nothing.
 
 Or in the **TUI**: both wizards ask *"Does this app need another app installed FIRST?"*, and every project
-has a **Dependencies** action.
+has a **Dependencies** action. The picker never offers the project you are working on (an app cannot depend
+on itself).
 
 <!-- SCREENSHOT: the TUI project actions menu showing the Dependencies action -->
 

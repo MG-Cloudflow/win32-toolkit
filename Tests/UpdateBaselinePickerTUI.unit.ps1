@@ -39,6 +39,7 @@
     Run:  pwsh -File Tests\UpdateBaselinePickerTUI.unit.ps1
 #>
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '', Justification = 'Get-WingetVersions is shadowed by its real name')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Set-Win32ToolkitAppDependency is shadowed by its real name (N)')]
 [CmdletBinding()]
 param()
 
@@ -615,6 +616,17 @@ finally {
     ${function:Get-Win32ToolkitDependencies} = $depsShadow
     ${function:Get-Win32ToolkitAppConfig} = $cfgShadow
 }
+
+# ══ N. the dependency picker leaves out the project being edited (TUI audit G9) ═══════════════════════════
+Write-Host '[N] Dependencies: the picker gets -ExcludeProject <Template>\<Name> of the project being edited' -ForegroundColor Cyan
+$script:pickerArgs = $null; $script:setDepArgs = $null
+function Show-Win32ToolkitDependencyPicker { param($BasePath, $Existing, $ExcludeProject) $script:pickerArgs = $PSBoundParameters; @('winget:Microsoft.VCRedist.2015+.x64') }
+function Set-Win32ToolkitAppDependency { param($ProjectPath, $DependsOn, [switch]$Clear) $script:setDepArgs = $PSBoundParameters }
+$script:projects = @($under, $cand)
+DriveUpdate @('deps', 'back')
+if ($script:pickerArgs -and (@($script:pickerArgs['ExcludeProject']) -join '|') -ceq 'A_App\App_x64_2.0' -and $script:setDepArgs -and $script:setDepArgs['ProjectPath'] -eq $under.Path) {
+    Ok "the deps action passes -ExcludeProject 'A_App\App_x64_2.0' (the project being edited); the choice is saved for it"
+} else { Bad "picker args: $(if ($script:pickerArgs) { ($script:pickerArgs.Keys | ForEach-Object { "$_=$($script:pickerArgs[$_])" }) -join '; ' })" }
 
 # The invariant over every Update run this suite drove: a winget baseline always carries a version.
 $wingetSplats = @($script:updateSplats | Where-Object { -not $_.ContainsKey('BaselineProjectPath') })

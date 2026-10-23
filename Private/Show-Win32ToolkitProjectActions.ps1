@@ -65,7 +65,8 @@ function Show-Win32ToolkitProjectActions {
                     Clear-Host; Write-SpectreRule -Title 'Dependencies' -Color Blue
                     Write-SpectreHost '[grey]Intune installs these BEFORE this app. They are also installed first in the test/capture run, so the app is never tested without its runtime.[/]'
                     $current = @($depNow | ForEach-Object { "$($_.Source):$($_.Ref)" })
-                    $chosen  = @(Show-Win32ToolkitDependencyPicker -BasePath $BasePath -Existing $current)
+                    # The project being edited is never offered (TUI audit G9: an app cannot depend on itself).
+                    $chosen  = @(Show-Win32ToolkitDependencyPicker -BasePath $BasePath -Existing $current -ExcludeProject "$($project.Template)\$($project.Name)")
                     try {
                         # The picker returns the AUTHORITATIVE list, so -Clear first and re-declare it.
                         if ($chosen.Count -eq 0) { $null = Set-Win32ToolkitAppDependency -ProjectPath $project.Path -Clear }

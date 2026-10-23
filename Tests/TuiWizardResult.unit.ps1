@@ -62,7 +62,8 @@ function Get-SpectreEscapedText { param($Text) ([string]$Text).Replace('[', '[['
 $script:multi = @()
 function Read-SpectreMultiSelection { param($Message, $Choices, $Color, [switch]$AllowEmpty) @($Choices | Where-Object { $p = $_; @($script:multi | Where-Object { $p -like $_ }).Count }) }
 $script:confirmPublish = $false   # [9]: also say yes to the 'Publishing UPLOADS ...' gate
-function Read-SpectreConfirm { param($Message, $DefaultAnswer) ($Message -in @('Build this now?', 'Continue?')) -or ($script:confirmPublish -and $Message -like 'Publishing UPLOADS*') }
+$script:confirmDeps = $false      # [10]: also say yes to 'Does this app need another app installed FIRST ...?'
+function Read-SpectreConfirm { param($Message, $DefaultAnswer) ($Message -in @('Build this now?', 'Continue?')) -or ($script:confirmPublish -and $Message -like 'Publishing UPLOADS*') -or ($script:confirmDeps -and $Message -like 'Does this app need*') }
 # Object choices take the next queued key; when none is left: 'back' / 'later' in the menus, else the first one.
 $script:keys = [System.Collections.Queue]::new()
 function Read-SpectreSelection {
@@ -90,7 +91,8 @@ function Read-Win32ToolkitValidatedText {
 # --- menu / domain shadows ---------------------------------------------------------------------------------
 function Get-WingetAppDetails { param($AppId) 'x64' }
 function Get-Win32ToolkitTemplateChoice { param($BasePath) 'Contoso' }
-function Show-Win32ToolkitDependencyPicker { param($BasePath, $Existing) @() }
+$script:pickerArgs = $null   # [10]: what the wizards pass to the dependency picker
+function Show-Win32ToolkitDependencyPicker { param($BasePath, $Existing, $ExcludeProject) $script:pickerArgs = $PSBoundParameters; @() }
 function Get-Win32ToolkitBackendInfo { [pscustomobject]@{ Label = 'Windows Sandbox'; Resolved = 'Sandbox'; FellBack = $false; Reasons = @() } }
 function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }
 function Get-Win32ToolkitTestMode { param($Backend, [switch]$Unattended, $TestMode) 'Interactive' }
@@ -495,6 +497,23 @@ try {
         }
     }
     finally { $script:silentSwitch = '/S'; $script:manualSource = Join-Path $BASE 'src\tool.exe' }
+
+    # == [10] the wizards leave the project they build out of the dependency picker (TUI audit G9) ===========
+    Write-Host '[10] the wizards pass the project they build as -ExcludeProject to the dependency picker' -ForegroundColor Cyan
+    $script:confirmDeps = $true
+    try {
+        Reset-Run @(New-RR); $script:pickerArgs = $null
+        Invoke-Win32ToolkitWingetWizard -BasePath $BASE 6>$null 3>$null
+        $wantW = 'Contoso\{0}_x64_2.55.0' -f (Sanitize-ProjectName -Name 'Git[x]')
+        if ($script:pickerArgs -and (@($script:pickerArgs['ExcludeProject']) -join '|') -ceq $wantW) { Ok "winget wizard -> -ExcludeProject '$wantW' (the template folder and the project it builds)" } else { Bad "picker args: $(if ($script:pickerArgs) { ($script:pickerArgs.Keys | ForEach-Object { "$_=$($script:pickerArgs[$_])" }) -join '; ' })" }
+
+        Reset-Run @(New-RR -Command 'New-Win32ToolkitManualApp'); $script:pickerArgs = $null
+        $script:keys.Enqueue('easy')
+        Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null
+        $wantM = 'Contoso\{0}_x64_1.0' -f (Sanitize-ProjectName -Name 'Tool[1]')
+        if ($script:pickerArgs -and (@($script:pickerArgs['ExcludeProject']) -join '|') -ceq $wantM) { Ok "manual wizard -> -ExcludeProject '$wantM'" } else { Bad "picker args: $(if ($script:pickerArgs) { ($script:pickerArgs.Keys | ForEach-Object { "$_=$($script:pickerArgs[$_])" }) -join '; ' })" }
+    }
+    finally { $script:confirmDeps = $false }
 
     # == [12] blank problems and warnings never reach Get-SpectreEscapedText (it refuses an empty string) =====
     Write-Host '[12] the scaffold panels skip blank problems and warnings (faithful Get-SpectreEscapedText)' -ForegroundColor Cyan

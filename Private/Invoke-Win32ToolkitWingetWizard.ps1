@@ -212,7 +212,8 @@ function Invoke-Win32ToolkitWingetWizard {
     # Sourced from winget or an already-packaged project; stored as data in AppConfig.json.
     $deps = @()
     if (Read-SpectreConfirm -Message 'Does this app need another app installed FIRST (e.g. a VC++ redistributable)?' -DefaultAnswer 'n') {
-        $deps = @(Show-Win32ToolkitDependencyPicker -BasePath $BasePath)
+        # The project this build creates or replaces is never offered (TUI audit G9).
+        $deps = @(Show-Win32ToolkitDependencyPicker -BasePath $BasePath -ExcludeProject "$templateSeg\$(Split-Path -Leaf $wouldBe)")
     }
 
     # 5. What to do after building. NOTE: the documentation capture ALWAYS runs, and both it and the

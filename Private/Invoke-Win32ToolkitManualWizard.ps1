@@ -61,7 +61,8 @@ function Invoke-Win32ToolkitManualWizard {
     # into the test/capture guest so the run installs them first, like Intune does on a device.
     $deps = @()
     if (Read-SpectreConfirm -Message 'Does this app need another app installed FIRST (e.g. a VC++ redistributable)?' -DefaultAnswer 'n') {
-        $deps = @(Show-Win32ToolkitDependencyPicker -BasePath $BasePath)
+        # The project this build creates or replaces is never offered (TUI audit G9).
+        $deps = @(Show-Win32ToolkitDependencyPicker -BasePath $BasePath -ExcludeProject "$templateSeg\$projName")
     }
 
     # After-build options. The documentation capture ALWAYS runs, and both it and the optional test follow

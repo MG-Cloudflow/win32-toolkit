@@ -103,7 +103,7 @@ function Read-SpectreMultiSelection { param($Message, $Choices, $Color, [switch]
 function Read-SpectreConfirm { param($Message, $DefaultAnswer) $Message -eq 'Build this now?' }
 function Get-WingetAppDetails { param($AppId) 'x64' }
 function Get-Win32ToolkitTemplateChoice { param($BasePath) 'Contoso' }
-function Show-Win32ToolkitDependencyPicker { param($BasePath) @() }
+function Show-Win32ToolkitDependencyPicker { param($BasePath, $Existing, $ExcludeProject) @() }   # C-9 (TUI audit G9): -ExcludeProject
 $script:biResolved = 'Sandbox'
 function Get-Win32ToolkitBackendInfo { [pscustomobject]@{ Label = $(if ($script:biResolved -eq 'HyperV') { 'Hyper-V VM (vm-test)' } else { 'Windows Sandbox' }); Resolved = $script:biResolved; FellBack = $false; Reasons = @() } }
 # TUI audit G3 (C-9): the Review panel names the ticked test's effective mode (config value per backend; shadowed).
