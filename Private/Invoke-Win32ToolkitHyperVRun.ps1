@@ -213,6 +213,12 @@ function Invoke-Win32ToolkitHyperVRun {
                     -CheckpointId ([string]$lane.CheckpointId) -CreationTimeUtcTicks ([long]$lane.CheckpointCreationTicks) -AllowLive:$allowLive -AllowStore:$allowStore
                 $advKey = "$($lane.VMId)|$($lane.CheckpointId)"
                 $cpText = ConvertTo-Win32ToolkitSafeText -Text $effectiveCheckpoint -MaxLength 64
+                # A checkpoint taken with automatic checkpoints on brings the setting back with every restore (D5): one
+                # readiness advisory (warning only, not a Notes sentence: it changes no test result).
+                if ((Get-Win32ToolkitCheckpointAutoSetting -CheckpointId ([string]$lane.CheckpointId)) -eq $true) {
+                    $vmText = ConvertTo-Win32ToolkitSafeText -Text $VMName -MaxLength 64
+                    $null = Write-Win32ToolkitCheckpointAdvisory -Kind AutoCheckpoints -Key $advKey -Message "The test VM's checkpoint '$cpText' was taken with automatic checkpoints on. Turn them off (Set-VM -Name '$vmText' -AutomaticCheckpointsEnabled `$false) and re-take the checkpoint (docs/hyperv-vm.md)."
+                }
                 $advice = [System.Collections.Generic.List[object]]::new()
                 if ($null -ne $lane.CheckpointAgeDays -and $lane.CheckpointAgeDays -gt 35) {
                     $advice.Add(@('Age', "The test VM's checkpoint '$cpText' is $($lane.CheckpointAgeDays) days old: every run first catches up on Windows and Defender updates. Re-take it (docs/hyperv-vm.md)."))
@@ -369,7 +375,8 @@ function Invoke-Win32ToolkitHyperVRun {
                     Get-VMCheckpoint -VMName $VMName -ErrorAction SilentlyContinue |
                         Where-Object { $_.Name -like 'clean-base+deps-*' } |
                         Remove-VMCheckpoint -ErrorAction SilentlyContinue
-                    Set-VM -Name $VMName -CheckpointType Standard -ErrorAction Stop
+                    # The checkpoint keeps the VM's automatic-checkpoint setting: off, like every checkpoint the toolkit takes (D5).
+                    Set-VM -Name $VMName -CheckpointType Standard -AutomaticCheckpointsEnabled $false -ErrorAction Stop
                     Checkpoint-VM -VMName $VMName -SnapshotName $depsCpName -ErrorAction Stop
                     $effectiveCheckpoint  = $depsCpName
                     $createDepsCheckpoint = $false

@@ -34,6 +34,7 @@ function Get-Win32ToolkitZipContentHash { param($ZipPath) }
 function Get-Win32ToolkitCheckpointAttestation { param($Session, $VMName, $CheckpointName, $VMId, $CheckpointId, $CreationTimeUtcTicks, [switch]$AllowLive, [switch]$AllowStore, $SignedInAnswer) }
 function Write-Win32ToolkitCheckpointAdvisory { param($Kind, $Key, $Message) }
 function Test-Win32ToolkitVMConnectOpen { param($VMName, $VMId) $false }
+function Get-Win32ToolkitCheckpointAutoSetting { param($CheckpointId) }
 
 function New-Proj {
     param([switch]$WithDeps)
@@ -99,7 +100,9 @@ function Copy-Win32ToolkitResultsFromGuest { param([Parameter(ValueFromRemaining
 $script:cpCreated = @()
 function Checkpoint-VM { param($VMName, $SnapshotName, [Parameter(ValueFromRemainingArguments)]$Rest) $script:cpCreated += $SnapshotName; if ($script:cpFail) { throw 'cp failed' } }
 $script:cpFail = $false
-function Set-VM { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+# Speed-up PR 1 (D5): records how the deps checkpoint's Set-VM was called.
+$script:setVm = @()
+function Set-VM { param($Name, $CheckpointType, $AutomaticCheckpointsEnabled, [Parameter(ValueFromRemainingArguments)]$Rest) $script:setVm += [pscustomobject]@{ CheckpointType = $CheckpointType; Auto = $AutomaticCheckpointsEnabled } }
 $script:cpRemoved = @()
 function Remove-VMCheckpoint { param([Parameter(ValueFromPipeline = $true)]$InputObject, [Parameter(ValueFromRemainingArguments)]$Rest) process { $script:cpRemoved += $InputObject.Name } }
 
@@ -130,6 +133,7 @@ if ($script:opened[0] -eq 'clean-base' -and $script:phasesRun -contains 'Install
 if (@($script:cpCreated) -contains $key) { Ok "ON+miss: '$key' created after the successful dep install" } else { Bad "created: $($script:cpCreated) expected $key" }
 if ($script:cpRemoved -contains 'clean-base+deps-oldoldoldold') { Ok 'ON+miss: stale deps checkpoints pruned (cap: one retained)' } else { Bad "removed: $($script:cpRemoved)" }
 if ($script:reverted[0] -eq $key) { Ok 'ON+miss: teardown reverts to the deps checkpoint (clean-with-deps)' } else { Bad "reverted: $($script:reverted)" }
+if (@($script:setVm).Count -ge 1 -and $script:setVm[-1].CheckpointType -eq 'Standard' -and $script:setVm[-1].Auto -eq $false) { Ok 'ON+miss: the deps checkpoint''s Set-VM is Standard with automatic checkpoints off (speed-up PR 1, D5)' } else { Bad "Set-VM: $($script:setVm | ConvertTo-Json -Compress)" }
 
 # b3: ON + existing checkpoint => opens it, dep phase skipped, guest installer script removed.
 Reset-Run

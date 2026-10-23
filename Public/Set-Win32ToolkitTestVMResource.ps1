@@ -11,8 +11,12 @@ function Set-Win32ToolkitTestVMResource {
     memory state — so a change would be silently reverted by the next Reset-Win32ToolkitTestVM unless the
     checkpoint is recreated. This command therefore:
 
-        Stop-VM -TurnOff  ->  remove checkpoints  ->  Set-VMProcessor / Set-VMMemory  ->  Start-VM
-        ->  wait for the AutoLogon desktop  ->  re-take the Standard 'clean-base' checkpoint  ->  persist
+        Stop-VM -TurnOff  ->  automatic checkpoints off  ->  remove checkpoints  ->  Set-VMProcessor / Set-VMMemory
+        ->  Start-VM  ->  wait for the AutoLogon desktop  ->  re-take the Standard 'clean-base' checkpoint  ->  persist
+
+    Hyper-V automatic checkpoints are turned off before the VM starts, and the checkpoint is re-taken with them
+    off: with them on, every start from Off adds an 'Automatic Checkpoint', and the checkpoint would bring the
+    setting back with every restore.
 
     The chosen values are saved (HyperVProcessorCount / HyperVMemoryStartupBytes) and become the defaults for the
     next New-Win32ToolkitTestVM. Requested CPU/RAM above the host's capacity is REFUSED.
@@ -126,6 +130,8 @@ function Set-Win32ToolkitTestVMResource {
     if ((Get-VM -Name $Name -ErrorAction SilentlyContinue).State -ne 'Off') {
         throw "Could not power off VM '$Name' — refusing to remove its clean-base checkpoint. Stop it manually (Stop-VM -Name '$Name' -TurnOff) and retry."
     }
+    # Automatic checkpoints off before the start below (speed-up PR 1, D5).
+    $null = Set-VM -Name $Name -AutomaticCheckpointsEnabled $false -ErrorAction Stop
 
     # 2. Remove ALL checkpoints — a Standard checkpoint encodes the OLD memory state, so keeping it would let
     #    the next Reset revert the change (and can block the memory reconfigure).
@@ -154,7 +160,7 @@ function Set-Win32ToolkitTestVMResource {
     }
 
     # 5. Re-freeze the clean base at the new hardware level.
-    Set-VM -Name $Name -CheckpointType Standard
+    $null = Set-VM -Name $Name -CheckpointType Standard -AutomaticCheckpointsEnabled $false
     Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName
     Write-Host "✓ '$CheckpointName' checkpoint recreated at $newCpu vCPU / $([math]::Round($newMem / 1GB, 2)) GB." -ForegroundColor Green
 

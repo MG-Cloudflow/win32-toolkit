@@ -36,6 +36,7 @@ function Get-Win32ToolkitZipContentHash { param($ZipPath) }
 function Get-Win32ToolkitCheckpointAttestation { param($Session, $VMName, $CheckpointName, $VMId, $CheckpointId, $CreationTimeUtcTicks, [switch]$AllowLive, [switch]$AllowStore, $SignedInAnswer) }
 function Write-Win32ToolkitCheckpointAdvisory { param($Kind, $Key, $Message) }
 function Test-Win32ToolkitVMConnectOpen { param($VMName, $VMId) $false }
+function Get-Win32ToolkitCheckpointAutoSetting { param($CheckpointId) }
 
 Write-Host '[1] Invoke-Win32ToolkitGuestPhase runs as SYSTEM and returns ONLY the exit code' -ForegroundColor Cyan
 # Simulate a guest that emits output lines followed by the exit code (the shape that broke the [int] cast).
@@ -421,7 +422,7 @@ $c12Files = @('Private\Invoke-Win32ToolkitHyperVRun.ps1', 'Private\New-Win32Tool
     'Private\Invoke-Win32ToolkitParityPrecheck.ps1', 'Private\Clear-Win32ToolkitHyperVStateCache.ps1')
 $c12Names = @('Get-Win32ToolkitHyperVLane', 'Get-Win32ToolkitZipContentHash', 'New-Win32ToolkitHyperVSession', 'Remove-Win32ToolkitHyperVSession',
     'Get-Win32ToolkitParityProbeCache', 'Set-Win32ToolkitParityProbeCache', 'Clear-Win32ToolkitParityProbeCache', 'Test-Win32ToolkitVMConnectOpen',
-    'Get-Win32ToolkitCheckpointAttestation', 'Write-Win32ToolkitCheckpointAdvisory')
+    'Get-Win32ToolkitCheckpointAttestation', 'Write-Win32ToolkitCheckpointAdvisory', 'Get-Win32ToolkitCheckpointAutoSetting')
 $c12Check = {
     param([string[]]$Files, [string[]]$Names)
     $bad = [System.Collections.Generic.List[string]]::new()
@@ -675,12 +676,34 @@ ${function:Get-Win32ToolkitCheckpointAttestation} = { param($Session, $VMName, $
 $x16e = & $run16
 if ($x16e.Out.Count -eq 1 -and $x16e.Out[0] -eq $true -and $x16e.Warnings.Count -eq 0) { Ok 'the attestation helper throws: the run is exactly $true, no warning (fail-open)' } else { Bad "throws: out=$($x16e.Out -join ',') warnings=$($x16e.Warnings -join ' | ')" }
 
+Write-Host '[17] a checkpoint taken with automatic checkpoints on: one readiness advisory; the output stays one [bool] (D5, V-1)' -ForegroundColor Cyan
+# The real advisory stays loaded from [16]: the leak V-1 found fires exactly here, on the first run of a process.
+$script:att16 = [pscustomobject]@{ SignedIn = $true; DefenderRealTime = $true; DefenderExclusionCount = 0; SignatureAgeDays = 1; FromCache = $true }
+${function:Get-Win32ToolkitCheckpointAttestation} = { param($Session, $VMName, $CheckpointName, $VMId, $CheckpointId, $CreationTimeUtcTicks, [switch]$AllowLive, [switch]$AllowStore, $SignedInAnswer) $script:att16 }
+$script:age16 = 0
+$script:auto17 = $null; $script:autoIds17 = [System.Collections.Generic.List[string]]::new()
+${function:Get-Win32ToolkitCheckpointAutoSetting} = { param($CheckpointId) $script:autoIds17.Add([string]$CheckpointId); $script:auto17 }
+$want17 = "The test VM's checkpoint 'clean-base' was taken with automatic checkpoints on. Turn them off (Set-VM -Name 'win32tk-golden' -AutomaticCheckpointsEnabled `$false) and re-take the checkpoint (docs/hyperv-vm.md)."
+foreach ($case in @(@{ Tag = 'True'; Auto = $true; Want = 1 }, @{ Tag = 'False'; Auto = $false; Want = 0 }, @{ Tag = 'unknown ($null)'; Auto = $null; Want = 0 })) {
+    $script:HyperVAdvised = $null; $script:auto17 = $case.Auto; $script:autoIds17.Clear()
+    $x17 = & $run16
+    $w17 = @($x17.Warnings | Where-Object { $_ -ceq $want17 })
+    if ($x17.Out.Count -eq 1 -and $x17.Out[0] -is [bool] -and $x17.Out[0] -and $w17.Count -eq $case.Want -and $x17.Warnings.Count -eq $case.Want -and ($script:autoIds17 -join ',') -eq '29613cba-d62f-4998-a421-df2e124a2b4f' -and $x17.Notes.Count -eq 0) {
+        Ok "automatic checkpoints $($case.Tag): $($case.Want) warning(s), no Notes sentence, the run exactly `$true; the checkpoint's Id was asked"
+    } else { Bad "$($case.Tag): out=$($x17.Out -join ',') warnings=$($x17.Warnings -join ' | ') ids=$($script:autoIds17 -join ',')" }
+}
+$script:HyperVAdvised = $null; $script:auto17 = $true
+$null = & $run16
+$x17b = & $run16
+if ($x17b.Warnings.Count -eq 0) { Ok 'a second run in the process: the advisory is not repeated' } else { Bad "repeat: $($x17b.Warnings -join ' | ')" }
+
 Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential, Function:\Read-Host, Function:\Start-Process
 function Get-Win32ToolkitHyperVLane { param($VMName, $CheckpointName, $VM) }
 function Get-Win32ToolkitZipContentHash { param($ZipPath) }
 function Get-Win32ToolkitCheckpointAttestation { param($Session, $VMName, $CheckpointName, $VMId, $CheckpointId, $CreationTimeUtcTicks, [switch]$AllowLive, [switch]$AllowStore, $SignedInAnswer) }
 function Write-Win32ToolkitCheckpointAdvisory { param($Kind, $Key, $Message) }
 function Test-Win32ToolkitVMConnectOpen { param($VMName, $VMId) $false }
+function Get-Win32ToolkitCheckpointAutoSetting { param($CheckpointId) }
 
 if ($fail -eq 0) {
     Write-Host "`nAll HyperVProvider tests passed." -ForegroundColor Green

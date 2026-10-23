@@ -91,6 +91,20 @@ Write-Host '[5] Show-Win32ToolkitTestVM trims the pasted ISO path' -ForegroundCo
 $tui = Get-Content -Raw (Join-Path $repo 'Private\Show-Win32ToolkitTestVM.ps1')
 if ($tui -match '\$iso\s*=\s*\$iso\.Trim\(\)\.Trim\(''"''\)') { Ok 'TUI provision branch normalizes the pasted path' } else { Bad 'TUI trim missing from the provision branch' }
 
+# ══ [6] speed-up PR 1 (D5): provisioning turns automatic checkpoints off before the first start ═══════════════════
+Write-Host '[6] provisioning: Set-VM -AutomaticCheckpointsEnabled $false before the first Start-VM and on the checkpoint''s Set-VM' -ForegroundColor Cyan
+function Start-VM { param($Name, $ErrorAction) Log 'Start-VM' }
+function Set-VM { param($Name, $CheckpointType, $AutomaticCheckpointsEnabled, $ErrorAction)
+    $entry = 'Set-VM'
+    if ($CheckpointType) { $entry += ":CheckpointType=$CheckpointType" }
+    if ($null -ne $AutomaticCheckpointsEnabled) { $entry += ":Auto=$AutomaticCheckpointsEnabled" }
+    Log $entry }
+Run @{ IsoPath = 'C:\iso\Win11_x64.iso'; Credential = $cred; Unattended = $true }
+$iAuto = [array]::IndexOf($script:calls, 'Set-VM:Auto=False'); $iStart = [array]::IndexOf($script:calls, 'Start-VM')
+$iCpSet = [array]::IndexOf($script:calls, 'Set-VM:CheckpointType=Standard:Auto=False'); $iCp = [array]::IndexOf($script:calls, 'Checkpoint-VM')
+if (-not $script:err -and $iAuto -ge 0 -and $iStart -gt $iAuto -and [array]::IndexOf($script:calls, 'New-VM') -lt $iAuto) { Ok 'after New-VM, automatic checkpoints off BEFORE the first Start-VM' } else { Bad "order: err='$script:err' $($script:calls -join ' > ')" }
+if ($iCpSet -gt $iStart -and $iCp -gt $iCpSet) { Ok 'the checkpoint''s Set-VM: Standard type and automatic checkpoints off' } else { Bad "checkpoint Set-VM: $($script:calls -join ' > ')" }
+
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All TestVMPathQuote tests passed.' -ForegroundColor Green; exit 0 }
 else { Write-Host "$fail TestVMPathQuote test(s) FAILED." -ForegroundColor Red; exit 1 }

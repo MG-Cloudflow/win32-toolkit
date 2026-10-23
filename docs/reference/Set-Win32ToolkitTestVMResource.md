@@ -22,8 +22,12 @@ memory state - so a change would be silently reverted by the next Reset-Win32Too
 checkpoint is recreated.
 This command therefore:
 
-    Stop-VM -TurnOff  -\>  remove checkpoints  -\>  Set-VMProcessor / Set-VMMemory  -\>  Start-VM
-    -\>  wait for the AutoLogon desktop  -\>  re-take the Standard 'clean-base' checkpoint  -\>  persist
+    Stop-VM -TurnOff  -\>  automatic checkpoints off  -\>  remove checkpoints  -\>  Set-VMProcessor / Set-VMMemory
+    -\>  Start-VM  -\>  wait for the AutoLogon desktop  -\>  re-take the Standard 'clean-base' checkpoint  -\>  persist
+
+Hyper-V automatic checkpoints are turned off before the VM starts, and the checkpoint is re-taken with them
+off: with them on, every start from Off adds an 'Automatic Checkpoint', and the checkpoint would bring the
+setting back with every restore.
 
 The chosen values are saved (HyperVProcessorCount / HyperVMemoryStartupBytes) and become the defaults for the
 next New-Win32ToolkitTestVM.

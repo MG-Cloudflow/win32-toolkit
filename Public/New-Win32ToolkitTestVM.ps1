@@ -11,7 +11,9 @@ function New-Win32ToolkitTestVM {
         -Unattended — it PAUSES and hands you the VM console so you can sign in, run Windows Update and
         let all reboots finish; once you confirm, it freezes a STANDARD (memory-state) checkpoint so later
         runs revert to that warm, fully-patched, logged-in desktop with no boot. The VM name, checkpoint
-        name, and guest credential are saved to config for the resolver/provider.
+        name, and guest credential are saved to config for the resolver/provider. Hyper-V automatic
+        checkpoints are turned off before the VM's first start, so the checkpoint is taken with them off
+        (with them on, every start from Off would add an 'Automatic Checkpoint').
     .PARAMETER IsoPath
         Build the golden VHDX from this Windows 11 x64 ISO. Mutually exclusive with -VhdxPath.
     .PARAMETER VhdxPath
@@ -180,6 +182,10 @@ function New-Win32ToolkitTestVM {
         # checkpoint so reverts have internet for the test workload (winget).
         Disconnect-VMNetworkAdapter -VMName $Name -ErrorAction SilentlyContinue
 
+        # Automatic checkpoints off before the first start (speed-up PR 1, D5): with them on, Hyper-V takes an
+        # 'Automatic Checkpoint' at every start from Off, and the clean-base checkpoint would keep the setting on.
+        $null = Set-VM -Name $Name -AutomaticCheckpointsEnabled $false -ErrorAction Stop
+
         Write-Verbose "Starting VM '$Name' for first boot (unattended OOBE, NIC unplugged)..."
         Start-VM -Name $Name -ErrorAction Stop
         Wait-Win32ToolkitVMReady -VMName $Name -Credential $Credential | Out-Null
@@ -279,7 +285,8 @@ function New-Win32ToolkitTestVM {
             if (-not $shellUp) { Write-Warning 'Desktop shell not detected (guest may be mid-reboot) — checkpointing anyway.' }
         }
 
-        Set-VM -Name $Name -CheckpointType Standard
+        # The checkpoint keeps the VM's settings: Standard type, automatic checkpoints off (D5).
+        $null = Set-VM -Name $Name -CheckpointType Standard -AutomaticCheckpointsEnabled $false
         Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName
         Write-Host "✓ Warm '$CheckpointName' checkpoint taken." -ForegroundColor Green
 

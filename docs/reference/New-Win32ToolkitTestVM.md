@@ -28,6 +28,9 @@ let all reboots finish; once you confirm, it freezes a STANDARD (memory-state) c
 runs revert to that warm, fully-patched, logged-in desktop with no boot.
 The VM name, checkpoint
 name, and guest credential are saved to config for the resolver/provider.
+Hyper-V automatic
+checkpoints are turned off before the VM's first start, so the checkpoint is taken with them off
+(with them on, every start from Off would add an 'Automatic Checkpoint').
 
 ## EXAMPLES
 

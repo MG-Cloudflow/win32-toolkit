@@ -54,7 +54,10 @@ function Get-VMCheckpoint { param($VMName, $Name, $ErrorAction) if ($script:cpEx
 # an explicit $ErrorAction alongside it is a "defined multiple times" bind error).
 function Remove-VMCheckpoint { param([Parameter(ValueFromPipeline)]$InputObject) process { if ($null -ne $InputObject) { Log 'Remove-VMCheckpoint' } } }
 function Start-VM { param($Name, $ErrorAction) Log 'Start-VM' }
-function Set-VM { param($Name, $CheckpointType) Log "Set-VM:CheckpointType=$CheckpointType" }
+# Speed-up PR 1 (D5): -AutomaticCheckpointsEnabled is logged as its own entry; the checkpoint-time call logs both.
+function Set-VM { param($Name, $CheckpointType, $AutomaticCheckpointsEnabled, $ErrorAction)
+    if ($CheckpointType) { Log "Set-VM:CheckpointType=$CheckpointType" }
+    if ($null -ne $AutomaticCheckpointsEnabled) { Log "Set-VM:Auto=$AutomaticCheckpointsEnabled$(if ($CheckpointType) { '+CheckpointType' })" } }
 function Checkpoint-VM { param($VMName, $SnapshotName) Log "Checkpoint-VM:$SnapshotName" }
 
 # 6> silences the helper's Write-Host progress without eating the [bool] return value (Ok/Bad keep Write-Host).
@@ -122,6 +125,34 @@ Run
 if ($script:err -like "*does not exist*") { Ok 'clear error pointing at provisioning' } else { Bad "err='$script:err'" }
 if ($script:calls.Count -eq 0) { Ok 'nothing else ran' } else { Bad "calls=$($script:calls -join ',')" }
 $script:vmExists = $true
+
+# ══ [7] speed-up PR 1 (D5, V-19): automatic checkpoints off before a start from Off; every re-take carries it ════════
+Write-Host '[7] automatic checkpoints: off before Start-VM from Off, never Set-VM on a Saved/Paused VM, every re-take carries it' -ForegroundColor Cyan
+$script:cpExists = $false; $script:storedCred = $typedCred; $script:desktopUp = $true; $script:waitThrows = $false
+$script:vmState = 'Off'
+$out7 = $null
+$script:calls = @(); $script:cfg = @{}; $script:err = $null
+try { $out7 = @(Repair-Win32ToolkitTestVMCheckpoint 6>$null 3>$null) } catch { $script:err = $_.Exception.Message }
+$iAuto = Index 'Set-VM:Auto=False'; $iStart = Index 'Start-VM'
+if (-not $script:err -and $iAuto -ge 0 -and $iStart -gt $iAuto) { Ok 'no checkpoint + VM Off: Set-VM -AutomaticCheckpointsEnabled $false before Start-VM' } else { Bad "off: err='$script:err' calls=$($script:calls -join ' > ')" }
+if ((Index 'Set-VM:Auto=False+CheckpointType') -gt $iStart -and (Index 'Checkpoint-VM:clean-base') -gt (Index 'Set-VM:Auto=False+CheckpointType')) { Ok 'the re-take''s Set-VM carries -AutomaticCheckpointsEnabled $false' } else { Bad "re-take: $($script:calls -join ' > ')" }
+if ($out7.Count -eq 1 -and $out7[0] -is [bool] -and $out7[0]) { Ok 'the repair returns exactly one [bool] $true (C-12)' } else { Bad "output: $(@($out7 | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ')" }
+foreach ($state in 'Saved', 'Paused') {
+    $script:vmState = $state
+    $script:calls = @(); $script:cfg = @{}; $script:err = $null
+    $all7 = @(Repair-Win32ToolkitTestVMCheckpoint -Verbose 4>&1 6>$null 3>$null)
+    $verb7 = @($all7 | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] -and $_.Message -like "*is $state*automatic checkpoints are turned off when the checkpoint is re-taken*" })
+    $ret7 = @($all7 | Where-Object { $_ -isnot [System.Management.Automation.VerboseRecord] })
+    $iStart = Index 'Start-VM'
+    $before = @($script:calls | Select-Object -First ([Math]::Max(0, $iStart)) | Where-Object { $_ -like 'Set-VM*' })
+    if ($iStart -ge 0 -and $before.Count -eq 0 -and $verb7.Count -eq 1 -and $ret7.Count -eq 1 -and $ret7[0] -eq $true -and (Index 'Set-VM:Auto=False+CheckpointType') -gt $iStart) {
+        Ok "no checkpoint + VM ${state}: no Set-VM before Start-VM (resume), one verbose line, the re-take still sets it, `$true"
+    } else { Bad "${state}: calls=$($script:calls -join ' > ') verbose=$($verb7.Count) ret=$($ret7 -join ',')" }
+}
+$script:cpExists = $true; $script:vmState = 'Running'
+Run
+if ($script:ret -eq $true -and (Index 'Set-VM:Auto=False+CheckpointType') -ge 0 -and @($script:calls | Where-Object { $_ -eq 'Set-VM:Auto=False' }).Count -eq 0) { Ok 'checkpoint present (Reset path): no start from Off, the re-take carries the setting' } else { Bad "reset path: $($script:calls -join ' > ')" }
+$script:vmState = 'Running'; $script:cpExists = $false; $script:storedCred = $null
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All TestVMCheckpointRepair tests passed.' -ForegroundColor Green; exit 0 }

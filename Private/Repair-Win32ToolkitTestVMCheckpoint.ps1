@@ -19,8 +19,9 @@ function Repair-Win32ToolkitTestVMCheckpoint {
              other checkpoint-taking flow runs).
           4. Set-Win32ToolkitGuestAutoLogon, then Confirm-Win32ToolkitGuestDesktop (reboots into
              AutoLogon if the guest sits at a login screen).
-          5. Drop ALL old checkpoints and freeze a STANDARD checkpoint at the logged-in desktop; clear
-             the readiness cache and re-affirm the config identity keys.
+          5. Drop ALL old checkpoints and freeze a STANDARD checkpoint at the logged-in desktop, with Hyper-V
+             automatic checkpoints off (also turned off before a start from Off in step 2); clear the
+             readiness cache and re-affirm the config identity keys.
     .PARAMETER Name
         VM name (default: the stored HyperVVMName, else 'win32tk-golden').
     .PARAMETER CheckpointName
@@ -67,6 +68,10 @@ function Repair-Win32ToolkitTestVMCheckpoint {
     elseif ($vm.State -ne 'Running') {
         Write-Host "No '$CheckpointName' checkpoint to revert to — booting the VM instead..." -ForegroundColor Yellow
         Clear-Win32ToolkitHyperVStateCache
+        # Automatic checkpoints off before a start from Off (speed-up PR 1, D5; the only start that takes an automatic
+        # checkpoint). A Saved or Paused VM is only resumed here: the re-take below sets the value anyway (V-19).
+        if ($vm.State -eq 'Off') { $null = Set-VM -Name $Name -AutomaticCheckpointsEnabled $false -ErrorAction Stop }
+        else { Write-Verbose "VM '$Name' is $($vm.State): automatic checkpoints are turned off when the checkpoint is re-taken." }
         Start-VM -Name $Name -ErrorAction Stop
     }
 
@@ -88,7 +93,7 @@ function Repair-Win32ToolkitTestVMCheckpoint {
 
     # 5. Freeze the logged-in desktop as the new clean base and make the readiness banner see it.
     Get-VMCheckpoint -VMName $Name -ErrorAction SilentlyContinue | Remove-VMCheckpoint -ErrorAction SilentlyContinue
-    Set-VM -Name $Name -CheckpointType Standard
+    $null = Set-VM -Name $Name -CheckpointType Standard -AutomaticCheckpointsEnabled $false
     Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName
     Clear-Win32ToolkitHyperVStateCache
     Set-Win32ToolkitConfigValue -Name 'HyperVVMName'     -Value $Name

@@ -8,9 +8,9 @@ to a warm checkpoint instead of cold-booting a fresh Sandbox.
 
 | | Windows Sandbox | Hyper-V test VM |
 |---|---|---|
-| Start of each run | Cold boot of a fresh sandbox, every time | **Revert to a memory-state ("Standard") checkpoint**. The VM resumes on an already running, logged-in desktop in seconds |
+| Start of each run | Cold boot of a fresh sandbox, every time | **Revert to a memory-state ("Standard") checkpoint**. The VM resumes on an already running, logged-in desktop. A restore costs from seconds on a host with fast local disks to about a minute on a nested VM (for example a Windows 365 Cloud PC) |
 | Test context | Sandbox's built-in user | **Every phase runs as SYSTEM**, the account Intune uses on real devices. Unattended runs also start the package exactly as Intune does (the published command line from a 32-bit parent), so install/uninstall behavior matches deployment (see [Testing](testing.md#watched-vs-unattended)) |
-| Base image | Always the pristine Sandbox image | A **fully patched** Windows 11 you prepared once (no Windows Update noise during test runs) |
+| Base image | Always the pristine Sandbox image | A **fully patched** Windows 11 you prepared once: patched when you took the checkpoint; it ages, so re-take it regularly ([below](#re-checkpoint-after-windows-updates)) |
 | Extras | None | Optional deps checkpoint that skips repeated dependency installs (see [Configuration](configuration.md)) |
 
 The backend is resolved **per run**: if the VM, its checkpoint, or the stored guest credential is
@@ -87,6 +87,11 @@ the old Standard checkpoint encodes the old memory state, so keeping it would si
 hardware change on the next reset. Requests above the host's CPU/RAM are refused. Details:
 [Set-Win32ToolkitTestVMResource](reference/Set-Win32ToolkitTestVMResource.md).
 
+Provisioning, the resource change and the checkpoint repair turn Hyper-V **automatic checkpoints** off
+before they start the VM, and take `clean-base` with them off. With them on, Hyper-V adds an
+`Automatic Checkpoint` every time the VM starts from Off, and a checkpoint keeps the setting, so every
+restore would bring it back. A test run whose checkpoint was taken with them on prints one warning.
+
 ### Reset, remove
 
 - [Reset-Win32ToolkitTestVM](reference/Reset-Win32ToolkitTestVM.md) manually reverts the VM to `clean-base` (test runs do this for you).
@@ -100,8 +105,17 @@ let reboots finish, then replace the checkpoint at the idle desktop:
 ```powershell
 Get-VMCheckpoint -VMName 'win32tk-golden' | Remove-VMCheckpoint
 Set-VM -Name 'win32tk-golden' -CheckpointType Standard
+Set-VM -Name 'win32tk-golden' -AutomaticCheckpointsEnabled $false
 Checkpoint-VM -VMName 'win32tk-golden' -SnapshotName 'clean-base'
 ```
+
+Turn automatic checkpoints off before `Checkpoint-VM`: a checkpoint keeps this setting, every restore
+brings it back, and a test run warns about a checkpoint taken with it on.
+
+Re-take the checkpoint at least every 35 days: an unattended test run warns about an older checkpoint,
+about one restored with nobody signed in, and about Defender real-time protection off, Defender exclusions
+or old Defender signatures in it (see [Testing](testing.md)). Leave a user signed in to the desktop,
+Defender real-time protection on and no exclusions, and run `Update-MpSignature` in the guest first.
 
 ### Tip: stop Edge and WebView2 from updating in the VM
 
@@ -142,8 +156,11 @@ you freeze it into the checkpoint, the same way as after Windows Updates (above)
 ```powershell
 Get-VMCheckpoint -VMName $vm | Remove-VMCheckpoint
 Set-VM -Name $vm -CheckpointType Standard
+Set-VM -Name $vm -AutomaticCheckpointsEnabled $false
 Checkpoint-VM -VMName $vm -SnapshotName 'clean-base'
 ```
+
+As above, automatic checkpoints are turned off before `Checkpoint-VM`: a checkpoint keeps this setting.
 
 Edge and WebView2 now stay at the version in the checkpoint. When you next update the VM (Windows
 Update, above), update them by hand as well if your apps depend on a recent WebView2.

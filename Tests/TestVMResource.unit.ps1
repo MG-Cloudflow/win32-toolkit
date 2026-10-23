@@ -49,7 +49,10 @@ function Set-VMMemory { param($VMName, $DynamicMemoryEnabled, $StartupBytes) Log
 function Start-VM { param($Name, $ErrorAction) Log 'Start-VM' }
 function Wait-Win32ToolkitVMReady { param($VMName, $Credential) Log 'Wait-VMReady'; $true }
 function Invoke-Command { param($VMName, $Credential, $ScriptBlock, $ErrorAction) $script:desktopUp }
-function Set-VM { param($Name, $CheckpointType) Log "Set-VM:CheckpointType=$CheckpointType" }
+# Speed-up PR 1 (D5): -AutomaticCheckpointsEnabled is logged as its own entry; the checkpoint-time call logs both.
+function Set-VM { param($Name, $CheckpointType, $AutomaticCheckpointsEnabled, $ErrorAction)
+    if ($CheckpointType) { Log "Set-VM:CheckpointType=$CheckpointType" }
+    if ($null -ne $AutomaticCheckpointsEnabled) { Log "Set-VM:Auto=$AutomaticCheckpointsEnabled$(if ($CheckpointType) { '+CheckpointType' })" } }
 function Checkpoint-VM { param($VMName, $SnapshotName) Log "Checkpoint-VM:$SnapshotName" }
 function Start-Sleep { param($Seconds) }
 # C-5/C-9 (speed-up PR 1): the real Clear-Win32ToolkitHyperVStateCache also clears the stored checkpoint answers;
@@ -137,6 +140,19 @@ if (ExpectThrow @{ ProcessorCount = 4 } 'Could not power off') { Ok 'refuses whe
 if (-not ($script:calls -contains 'Remove-VMCheckpoint') -and -not ($script:calls | Where-Object { $_ -like 'Set-VMProcessor*' })) {
     Ok 'the clean-base checkpoint is NOT removed and no hardware is changed (recoverable)'
 } else { Bad "destructive steps ran anyway: $($script:calls -join ',')" }
+$script:vmState = 'Off'
+
+# ══ [8] speed-up PR 1 (D5): automatic checkpoints off before the start, and in the re-taken checkpoint ═══════════════
+Write-Host '[8] automatic checkpoints are turned off before Start-VM and carried by the checkpoint-time Set-VM' -ForegroundColor Cyan
+$script:vmState = 'Off'; $script:desktopUp = $true; $script:curCpu = 2; $script:curMem = [uint64]4GB
+Run @{ ProcessorCount = 4 }
+$iAuto = [array]::IndexOf($script:calls, 'Set-VM:Auto=False'); $iStart = [array]::IndexOf($script:calls, 'Start-VM'); $iStop = [array]::IndexOf($script:calls, 'Stop-VM')
+if ($iAuto -ge 0 -and $iStart -gt $iAuto -and $iAuto -gt $iStop) { Ok 'Set-VM -AutomaticCheckpointsEnabled $false after the power-off and BEFORE Start-VM' } else { Bad "order: $($script:calls -join ' > ')" }
+$iCpSet = [array]::IndexOf($script:calls, 'Set-VM:Auto=False+CheckpointType'); $iCp = [array]::IndexOf($script:calls, 'Checkpoint-VM:clean-base')
+if ($iCpSet -gt $iStart -and $iCp -gt $iCpSet) { Ok 'the checkpoint-time Set-VM carries -AutomaticCheckpointsEnabled $false (the checkpoint keeps the setting)' } else { Bad "checkpoint Set-VM: $($script:calls -join ' > ')" }
+$script:vmState = 'Running'
+$null = ExpectThrow @{ ProcessorCount = 4 } 'Could not power off'
+if (-not ($script:calls | Where-Object { $_ -like 'Set-VM*' })) { Ok 'a VM that will not power off: no Set-VM at all (as [7])' } else { Bad "set-vm on refusal: $($script:calls -join ',')" }
 $script:vmState = 'Off'
 
 Write-Host ''

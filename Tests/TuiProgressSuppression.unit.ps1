@@ -30,6 +30,7 @@ function Get-Win32ToolkitZipContentHash { param($ZipPath) }
 function Get-Win32ToolkitCheckpointAttestation { param($Session, $VMName, $CheckpointName, $VMId, $CheckpointId, $CreationTimeUtcTicks, [switch]$AllowLive, [switch]$AllowStore, $SignedInAnswer) }
 function Write-Win32ToolkitCheckpointAdvisory { param($Kind, $Key, $Message) }
 function Test-Win32ToolkitVMConnectOpen { param($VMName, $VMId) $false }
+function Get-Win32ToolkitCheckpointAutoSetting { param($CheckpointId) }
 
 # ── (a) HOST guard: silenced DURING the run, restored AFTER — even when the run fails ───────────────
 Write-Host '[a] Invoke-Win32ToolkitHyperVRun silences $ProgressPreference during the run and restores it' -ForegroundColor Cyan
