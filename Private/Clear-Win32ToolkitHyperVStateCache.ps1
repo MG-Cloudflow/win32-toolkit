@@ -12,9 +12,11 @@ function Clear-Win32ToolkitHyperVStateCache {
         the worst outcome is one extra revert / one extra readiness probe.
 
         Two modes (Hyper-V speed-up PR 1, A-6):
-          * without -MarkerOnly (every VM-management command): everything above.
-          * -MarkerOnly: the clean marker only, so the next run restores the checkpoint; the readiness memo
-            stays (a queue runner or a test harness that wants a fresh restore between runs).
+          * without -MarkerOnly (every VM-management command): everything above, plus the stored checkpoint
+            answers (the Intune-parity pre-check answer and the checkpoint attestation, through
+            Clear-Win32ToolkitParityProbeCache): the VM they describe is about to change.
+          * -MarkerOnly: the clean marker only, so the next run restores the checkpoint; the readiness memo and
+            the stored answers stay (a queue runner or a test harness that wants a fresh restore between runs).
     .PARAMETER MarkerOnly
         Clear only $script:HyperVCleanMarker.
     #>
@@ -26,5 +28,10 @@ function Clear-Win32ToolkitHyperVStateCache {
     $script:HyperVCleanMarker = $null
     if (-not $MarkerOnly) {
         $script:HyperVReadyCache = $null
+        try { $null = Clear-Win32ToolkitParityProbeCache }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Verbose "The stored test-VM checkpoint answers could not be cleared ($($_.Exception.Message))."
+        }
     }
 }

@@ -20,6 +20,14 @@ function Invoke-Win32ToolkitParityPrecheck {
            test record's Notes) and NotRun (the record's NotRun facts: Code PARITY-DIALOG-WAIT, Shape,
            ProcessesToClose, Welcome, SignedInSessions) are set.
 
+        Cache (Hyper-V speed-up PR 1, D3; HyperVPrecheckCache, default On): the answer depends only on the checkpoint,
+        so it is kept per checkpoint (Get-/Set-Win32ToolkitParityProbeCache: the VM Id, the checkpoint Id and creation
+        time, the probe version). A later at-risk pre-check of the same checkpoint uses the stored answer: nothing is
+        restored, no host line is printed (one verbose line), and the result is the same as the live one. An answer is
+        stored only when it is complete (Checked), the open restored the checkpoint and landed warm, and no VM console
+        (vmconnect) was seen right after the open, right after the probe and when storing. HyperVPrecheckCache Off asks
+        the guest every time and stores nothing. Every VM-management command clears the stored answer.
+
         Risk is returned on every path: the caller derives the exit-code-1460 hint of the parity phases from
         Risk.AtRisk (L16): the PSADT 4.1 welcome text only for an at-risk project the check did not block.
     .PARAMETER ProjectPath
@@ -27,7 +35,9 @@ function Invoke-Win32ToolkitParityPrecheck {
     .PARAMETER Scenario
         InstallUninstall or Update (names the test in the message).
     .OUTPUTS
-        [pscustomobject] Blocked [bool], Risk, Guest, Message [string], Notes [string], NotRun [hashtable or $null].
+        [pscustomobject] Blocked [bool], Risk, Guest, Message [string], Notes [string], NotRun [hashtable or $null],
+        FromCache [bool] (the answer came from the cache), Seconds [double] (the pre-check's own duration) and Lane
+        (Get-Win32ToolkitHyperVLane of the checkpoint, or $null when the VM was not looked at).
     .EXAMPLE
         $pre = Invoke-Win32ToolkitParityPrecheck -ProjectPath $proj -Scenario InstallUninstall
         if ($pre.Blocked) { Write-Warning $pre.Message }
@@ -45,6 +55,9 @@ function Invoke-Win32ToolkitParityPrecheck {
     )
 
     $blocked = $false; $guest = $null; $message = ''; $notes = ''; $notRun = $null
+    # Speed-up PR 1 (D3, V-10): $vmcSeen starts $true, so nothing is stored unless the miss path's console checks ran
+    # and saw none.
+    $fromCache = $false; $preWatch = [System.Diagnostics.Stopwatch]::StartNew(); $lane = $null; $vmcSeen = $true
     $risk = Get-Win32ToolkitParityDialogRisk -ProjectPath $ProjectPath
     if ($risk -and $risk.AtRisk) {
         # The run's effective base checkpoint (L18): the same expressions as Invoke-Win32ToolkitHyperVRun, so
@@ -56,18 +69,43 @@ function Invoke-Win32ToolkitParityPrecheck {
             Write-Verbose 'Intune-parity pre-check skipped: no Hyper-V guest credential is configured.'
         }
         else {
-            # One host line first: the two checkpoint restores and the PowerShell Direct wait take minutes with no other
-            # output (live P5: 3 minutes of silence before the warning).
-            Write-Host "Intune-parity pre-check: checking whether a user is signed in to the test VM '$vm' (restores checkpoint '$cp' before and after; this can take a few minutes)..." -ForegroundColor Cyan
+            # The stored answer for this checkpoint (speed-up PR 1, D3): anything but HyperVPrecheckCache Off uses it.
+            $cacheOn = ([string](Get-Win32ToolkitConfigValue -Name 'HyperVPrecheckCache' -Default 'On')).Trim() -ne 'Off'
             # No host progress bars from the checkpoint cmdlets (they tear the TUI, as in Invoke-Win32ToolkitHyperVRun);
             # a local variable: it ends with this function.
             $ProgressPreference = 'SilentlyContinue'
-            $vmFound = $false; $session = $null
+            $vmFound = $false; $session = $null; $openInfo = @{}
             try {
-                $null = Get-VM -Name $vm -ErrorAction Stop
+                $vmObj = Get-VM -Name $vm -ErrorAction Stop
                 $vmFound = $true
-                $session = New-Win32ToolkitHyperVSession -VMName $vm -Credential $cred -CheckpointName $cp
-                $guest = Get-Win32ToolkitGuestSignedInUser -Session $session
+                # The checkpoint's identity keys the cache (and the run record's Lane); unreadable -> a live probe, not stored.
+                try { $lane = Get-Win32ToolkitHyperVLane -VMName $vm -CheckpointName $cp -VM $vmObj }
+                catch {
+                    if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                    Write-Verbose "Intune-parity pre-check: the checkpoint identity could not be read ($($_.Exception.Message)); asking the guest."
+                    $lane = $null
+                }
+                $cached = $null
+                if ($cacheOn -and $lane -and $lane.VMId -and $lane.CheckpointId -and $lane.CheckpointCreationTicks) {
+                    $cached = Get-Win32ToolkitParityProbeCache -VMId $lane.VMId -CheckpointId $lane.CheckpointId -CreationTimeUtcTicks $lane.CheckpointCreationTicks
+                }
+                if ($cached) {
+                    $guest = [pscustomobject]@{ Checked = $true; SignedIn = [bool]$cached.SignedIn; SessionCount = [int]$cached.SessionCount; Reason = '' }
+                    $fromCache = $true
+                    $cpText = ConvertTo-Win32ToolkitSafeText -Text $cp -MaxLength 64
+                    Write-Verbose "Intune-parity pre-check: using the stored answer for checkpoint '$cpText' ($($lane.CheckpointId)); nothing was restored."
+                }
+                else {
+                    # One host line first: the two checkpoint restores and the PowerShell Direct wait take minutes with no
+                    # other output (live P5: 3 minutes of silence before the warning).
+                    Write-Host "Intune-parity pre-check: checking whether a user is signed in to the test VM '$vm' (restores checkpoint '$cp' before and after; this can take a few minutes)..." -ForegroundColor Cyan
+                    $laneVmId = if ($lane) { [string]$lane.VMId } else { '' }
+                    $session = New-Win32ToolkitHyperVSession -VMName $vm -Credential $cred -CheckpointName $cp -Info $openInfo
+                    # A VM console seen right after the open or right after the probe: the answer is not stored (V-10).
+                    $vmcSeen = Test-Win32ToolkitVMConnectOpen -VMName $vm -VMId $laneVmId
+                    $guest = Get-Win32ToolkitGuestSignedInUser -Session $session
+                    $vmcSeen = $vmcSeen -or (Test-Win32ToolkitVMConnectOpen -VMName $vm -VMId $laneVmId)
+                }
             }
             catch {
                 if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
@@ -76,7 +114,23 @@ function Invoke-Win32ToolkitParityPrecheck {
                 $guest = $null
             }
             finally {
-                if ($vmFound) { Remove-Win32ToolkitHyperVSession -Session $session -VMName $vm -CheckpointName $cp -Revert }
+                if ($vmFound -and -not $fromCache) { $null = Remove-Win32ToolkitHyperVSession -Session $session -VMName $vm -CheckpointName $cp -Revert }
+            }
+            # Store a live answer (speed-up PR 1, D3): complete, from an open that restored the checkpoint and landed warm,
+            # no console seen at the open or after the probe, and none now, after the teardown restore (V-10).
+            if ($cacheOn -and -not $fromCache -and $guest -and $guest.Checked -and $openInfo['RevertSkipped'] -eq $false -and $openInfo['Warm'] -eq $true -and
+                -not $vmcSeen -and $lane -and $lane.VMId -and $lane.CheckpointId -and $lane.CheckpointCreationTicks) {
+                try {
+                    $vmcAtStore = Test-Win32ToolkitVMConnectOpen -VMName $vm -VMId ([string]$lane.VMId)
+                    if (-not $vmcAtStore) {
+                        $null = Set-Win32ToolkitParityProbeCache -VMId $lane.VMId -CheckpointId $lane.CheckpointId -CreationTimeUtcTicks $lane.CheckpointCreationTicks `
+                            -SignedIn ([bool]$guest.SignedIn) -SessionCount ([int]$guest.SessionCount)
+                    }
+                }
+                catch {
+                    if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                    Write-Verbose "Intune-parity pre-check: the answer was not stored ($($_.Exception.Message))."
+                }
             }
 
             if ($guest -and -not $guest.Checked) {
@@ -111,11 +165,14 @@ function Invoke-Win32ToolkitParityPrecheck {
     }
 
     [pscustomobject]@{
-        Blocked = [bool]$blocked
-        Risk    = $risk
-        Guest   = $guest
-        Message = $message
-        Notes   = $notes
-        NotRun  = $notRun
+        Blocked   = [bool]$blocked
+        Risk      = $risk
+        Guest     = $guest
+        Message   = $message
+        Notes     = $notes
+        NotRun    = $notRun
+        FromCache = [bool]$fromCache
+        Seconds   = [math]::Round($preWatch.Elapsed.TotalSeconds, 1)
+        Lane      = $lane
     }
 }

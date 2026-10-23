@@ -43,6 +43,11 @@ function Wait-Win32ToolkitVMReady { param([Parameter(ValueFromRemainingArguments
 function New-PSSession { param([Parameter(ValueFromRemainingArguments)]$Rest) 'fake-session' }
 function Remove-PSSession { param([Parameter(ValueFromRemainingArguments)]$Rest) }
 function Confirm-Win32ToolkitGuestDesktop { param([Parameter(ValueFromRemainingArguments)]$Rest) $true }
+# C-5/C-9 (speed-up PR 1): the real Clear-Win32ToolkitHyperVStateCache now clears the stored checkpoint answers; the
+# developer's real HKCU must never be touched.
+$script:probeClears = 0
+function Clear-Win32ToolkitParityProbeCache { $script:probeClears++ }
+function Remove-ItemProperty { throw 'real HKCU must not be touched' }
 
 $cred = New-Object System.Management.Automation.PSCredential('u', (ConvertTo-SecureString 'p' -AsPlainText -Force))
 function Reset-State { $script:restores = 0; $script:restoreFail = $false; $script:HyperVCleanMarker = $null; $script:started = 0; $script:vmState = 'Running'
@@ -227,8 +232,13 @@ $script:HyperVReadyCache  = @{ Reasons = @(); At = Get-Date }
 Clear-Win32ToolkitHyperVStateCache -MarkerOnly
 if ($null -eq $script:HyperVCleanMarker -and $null -ne $script:HyperVReadyCache) { Ok '-MarkerOnly: the marker goes, the readiness memo stays' } else { Bad "marker-only: marker=$($null -ne $script:HyperVCleanMarker) ready=$($null -ne $script:HyperVReadyCache)" }
 $script:HyperVCleanMarker = @{ VMName = 'vmA'; VMId = 'x'; CheckpointName = 'clean-base'; StampedAt = Get-Date }
+$script:probeClears = 0
+Clear-Win32ToolkitHyperVStateCache -MarkerOnly
+$probeAfterMarkerOnly = $script:probeClears
+$script:HyperVReadyCache  = @{ Reasons = @(); At = Get-Date }
 Clear-Win32ToolkitHyperVStateCache
 if ($null -eq $script:HyperVCleanMarker -and $null -eq $script:HyperVReadyCache) { Ok 'without -MarkerOnly: the marker and the readiness memo go' } else { Bad 'full clear left a cache' }
+if ($probeAfterMarkerOnly -eq 0 -and $script:probeClears -eq 1) { Ok 'the stored checkpoint answers are cleared by a full clear only (Clear-Win32ToolkitParityProbeCache once)' } else { Bad "probe clears: after -MarkerOnly $probeAfterMarkerOnly, after full $($script:probeClears)" }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'ALL PASS' -ForegroundColor Green; exit 0 }

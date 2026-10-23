@@ -413,8 +413,10 @@ Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32Toolkit
 # ── Hyper-V speed-up PR 1 ────────────────────────────────────────────────────────────────────────────────────────────
 # C-12 static check (V-1): in the files below, every call of a helper this round added or changed is assigned or used
 # as an if/elseif condition within its own statement, so nothing it returns can join a caller's [bool] or session.
-$c12Files = @('Private\Invoke-Win32ToolkitHyperVRun.ps1', 'Private\New-Win32ToolkitHyperVSession.ps1', 'Private\Remove-Win32ToolkitHyperVSession.ps1')
-$c12Names = @('Get-Win32ToolkitHyperVLane', 'Get-Win32ToolkitZipContentHash', 'New-Win32ToolkitHyperVSession', 'Remove-Win32ToolkitHyperVSession')
+$c12Files = @('Private\Invoke-Win32ToolkitHyperVRun.ps1', 'Private\New-Win32ToolkitHyperVSession.ps1', 'Private\Remove-Win32ToolkitHyperVSession.ps1',
+    'Private\Invoke-Win32ToolkitParityPrecheck.ps1', 'Private\Clear-Win32ToolkitHyperVStateCache.ps1')
+$c12Names = @('Get-Win32ToolkitHyperVLane', 'Get-Win32ToolkitZipContentHash', 'New-Win32ToolkitHyperVSession', 'Remove-Win32ToolkitHyperVSession',
+    'Get-Win32ToolkitParityProbeCache', 'Set-Win32ToolkitParityProbeCache', 'Clear-Win32ToolkitParityProbeCache', 'Test-Win32ToolkitVMConnectOpen')
 $c12Check = {
     param([string[]]$Files, [string[]]$Names)
     $bad = [System.Collections.Generic.List[string]]::new()
@@ -527,7 +529,7 @@ if ($out14f.Count -eq 1 -and $out14f[0] -is [bool] -and $ri14f['Timing'] -and $r
 if ($out14g.Count -eq 1 -and $out14g[0] -is [bool] -and $ri14g['Timing'] -and $ri14g['Timing'].ContainsKey('RevertMode') -and $null -eq $ri14g['Timing']['RevertMode']) { Ok 'a teardown that reports nothing (no Restored key): Timing.RevertMode $null, the output exactly one [bool]' } else { Bad "silent teardown: out=$(@($out14g | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ') timing=$($ri14g['Timing'] | ConvertTo-Json -Compress -Depth 4)" }
 # C-12 static check.
 $c12 = & $c12Check $c12Files $c12Names
-if ($c12.Seen -ge 3 -and $c12.Bad.Count -eq 0) { Ok "C-12: all $($c12.Seen) calls of the round's helpers in the provider and the session helpers are assigned or tested" } else { Bad "C-12: seen=$($c12.Seen) unassigned: $($c12.Bad -join ', ')" }
+if ($c12.Seen -ge 11 -and $c12.Bad.Count -eq 0) { Ok "C-12: all $($c12.Seen) calls of the round's helpers in the provider, the pre-check and the session helpers are assigned or tested" } else { Bad "C-12: seen=$($c12.Seen) unassigned: $($c12.Bad -join ', ')" }
 
 Write-Host '[15] CopyInSha256: the copy-in zip''s content hash, computed in the prebuild thread job (A-3, V-8)' -ForegroundColor Cyan
 if (-not (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue)) { Bad 'Start-ThreadJob is not available: the prebuild cannot be tested' }

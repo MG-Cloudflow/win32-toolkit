@@ -238,10 +238,31 @@ try {
     $script:log = [System.Collections.Generic.List[string]]::new()
     $script:vmThrows = $false; $script:openThrows = $false
     function Get-VM { param($Name, $ErrorAction) $script:log.Add("get-vm:$Name"); if ($script:vmThrows) { throw "Hyper-V was unable to find a virtual machine with name '$Name'." }; [pscustomobject]@{ Name = $Name; State = 'Running' } }
-    function New-Win32ToolkitHyperVSession { param($VMName, [pscredential]$Credential, $CheckpointName, [switch]$SkipRevert, [switch]$EnsureDesktop) $script:log.Add("open:${VMName}:$CheckpointName"); if ($script:openThrows) { throw 'PowerShell Direct is not ready' }; 'SESSION' }
+    # Speed-up PR 1: the open fills -Info (a restore that landed warm by default; [3b] varies it).
+    $script:openRevertSkipped = $false; $script:openWarm = $true
+    function New-Win32ToolkitHyperVSession { param($VMName, [pscredential]$Credential, $CheckpointName, [switch]$SkipRevert, [switch]$EnsureDesktop, [hashtable]$Info)
+        $script:log.Add("open:${VMName}:$CheckpointName"); if ($script:openThrows) { throw 'PowerShell Direct is not ready' }
+        if ($null -ne $Info) { $Info['RevertSkipped'] = $script:openRevertSkipped; $Info['Warm'] = $script:openWarm; $Info['VMId'] = $script:laneVmId }
+        'SESSION' }
     function Remove-Win32ToolkitHyperVSession { param($Session, $VMName, $CheckpointName, [switch]$Revert) $script:log.Add("remove:${Session}:${VMName}:${CheckpointName}:revert=$($Revert.IsPresent)") }
     $script:guest = $null
     function Get-Win32ToolkitGuestSignedInUser { param($Session) $script:log.Add("query:$Session"); $script:guest }
+    # Speed-up PR 1 (C-9): the cache, lane and console helpers of the pre-check. They default to a miss with a readable
+    # lane and no console, and count their calls on their own (never in $script:log, so the sequences below stay exact).
+    $script:laneVmId = '0e5f9e66-1111-2222-3333-444455556666'
+    $script:laneCalls = 0; $script:laneNull = $false
+    function Get-Win32ToolkitHyperVLane { param($VMName, $CheckpointName, $VM)
+        $script:laneCalls++
+        if ($script:laneNull) { return @{ VMName = $VMName; VMId = $script:laneVmId; CheckpointName = $CheckpointName; CheckpointId = ''; CheckpointCreationTicks = $null } }
+        @{ VMName = $VMName; VMId = $script:laneVmId; CheckpointName = $CheckpointName; CheckpointId = '29613cba-d62f-4998-a421-df2e124a2b4f'; CheckpointCreationTicks = 638653893400000000; ConcurrentLanes = 1 }
+    }
+    $script:cacheGets = 0; $script:cacheAnswer = $null
+    function Get-Win32ToolkitParityProbeCache { param($VMId, $CheckpointId, $CreationTimeUtcTicks, $ProbeVersion) $script:cacheGets++; $script:cacheAnswer }
+    $script:cacheSets = [System.Collections.Generic.List[object]]::new()
+    function Set-Win32ToolkitParityProbeCache { param($VMId, $CheckpointId, $CreationTimeUtcTicks, $SignedIn, $SessionCount, $ProbeVersion)
+        $script:cacheSets.Add([pscustomobject]@{ VMId = $VMId; CheckpointId = $CheckpointId; Ticks = $CreationTimeUtcTicks; SignedIn = $SignedIn; SessionCount = $SessionCount }) }
+    $script:vmcAnswers = [System.Collections.Generic.Queue[bool]]::new(); $script:vmcCalls = 0
+    function Test-Win32ToolkitVMConnectOpen { param($VMName, $VMId) $script:vmcCalls++; if ($script:vmcAnswers.Count) { $script:vmcAnswers.Dequeue() } else { $false } }
     $signedIn = [pscustomobject]@{ Checked = $true; SignedIn = $true; SessionCount = 1; Reason = '' }
     $nobody   = [pscustomobject]@{ Checked = $true; SignedIn = $false; SessionCount = 0; Reason = '' }
     $unknown  = [pscustomobject]@{ Checked = $false; SignedIn = $false; SessionCount = 0; Reason = 'the guest returned no answer' }
@@ -323,10 +344,72 @@ try {
     if ($x.Info.Count -eq 0) { Ok 'no guest credential -> no host line' } else { Bad "no credential printed: $($x.Info -join ' | ')" }
     $script:cred = [pscredential]::new('w32admin', (New-Object System.Security.SecureString))
 
+    # ============================== [3b] the answer cache (speed-up PR 1) ==============================
+    Write-Host '[3b] the pre-check answer cache: a miss asks the guest and stores, a hit restores nothing; what is never stored' -ForegroundColor Cyan
+    $reset3b = { $script:cacheGets = 0; $script:cacheAnswer = $null; $script:cacheSets.Clear(); $script:vmcAnswers.Clear(); $script:vmcCalls = 0; $script:laneCalls = 0; $script:laneNull = $false
+        $script:openRevertSkipped = $false; $script:openWarm = $true; $script:guest = $signedIn; $script:cfg = @{ HyperVVMName = 'vm-test' } }
+    # miss: the live probe, one host line, stored once
+    & $reset3b
+    $live = & $preCase $pAtRisk
+    $set = @($script:cacheSets)
+    if ($live.R.Blocked -and $live.R.FromCache -eq $false -and ($live.Log -join ' > ') -eq 'get-vm:vm-test > open:vm-test:clean-base > query:SESSION > remove:SESSION:vm-test:clean-base:revert=True' -and
+        (& $progressLine $live 'clean-base') -eq 1 -and $script:cacheGets -eq 1 -and $set.Count -eq 1 -and $set[0].VMId -eq $script:laneVmId -and $set[0].CheckpointId -eq '29613cba-d62f-4998-a421-df2e124a2b4f' -and
+        $set[0].Ticks -eq 638653893400000000 -and $set[0].SignedIn -eq $true -and $set[0].SessionCount -eq 1 -and $script:vmcCalls -eq 3) {
+        Ok 'miss: the live probe (open, query, revert), one host line, the answer stored once with the checkpoint identity; three console checks (open, probe, store)'
+    } else { Bad "miss: $($live | ConvertTo-Json -Compress -Depth 4) gets=$($script:cacheGets) sets=$($set | ConvertTo-Json -Compress) vmc=$($script:vmcCalls)" }
+    if ($live.R.Seconds -is [double] -and $live.R.Seconds -ge 0 -and $live.R.Lane -and $live.R.Lane.CheckpointId -eq '29613cba-d62f-4998-a421-df2e124a2b4f') { Ok 'the result carries Seconds and the Lane' } else { Bad "keys: seconds=$($live.R.Seconds) lane=$($live.R.Lane | ConvertTo-Json -Compress)" }
+    # hit: nothing restored, no host line, the same result
+    & $reset3b
+    $script:cacheAnswer = [pscustomobject]@{ SignedIn = $true; SessionCount = 1 }
+    $hit = & $preCase $pAtRisk
+    if ($hit.R.Blocked -and $hit.R.FromCache -eq $true -and ($hit.Log -join ' > ') -eq 'get-vm:vm-test' -and $hit.Info.Count -eq 0 -and $script:cacheSets.Count -eq 0 -and $script:vmcCalls -eq 0) {
+        Ok 'hit: no open, no query, no revert, no host line, nothing stored again; FromCache $true'
+    } else { Bad "hit: $($hit | ConvertTo-Json -Compress -Depth 4) sets=$($script:cacheSets.Count) vmc=$($script:vmcCalls)" }
+    if ($hit.R.Message -ceq $live.R.Message -and $hit.R.Notes -ceq $live.R.Notes -and ($hit.R.NotRun | ConvertTo-Json -Compress) -ceq ($live.R.NotRun | ConvertTo-Json -Compress) -and $hit.R.Guest.Checked) {
+        Ok 'hit: the same Message, Notes and NotRun as the live answer (SignedInSessions from the cache)'
+    } else { Bad "hit vs live: $($hit.R.NotRun | ConvertTo-Json -Compress) / $($live.R.NotRun | ConvertTo-Json -Compress)" }
+    $script:cacheAnswer = [pscustomobject]@{ SignedIn = $true; SessionCount = 2 }
+    $hit2 = & $preCase $pAtRisk
+    if ($hit2.R.NotRun.SignedInSessions -eq 2) { Ok 'hit: SignedInSessions is the stored session count' } else { Bad "sessions: $($hit2.R.NotRun | ConvertTo-Json -Compress)" }
+    $script:cacheAnswer = [pscustomobject]@{ SignedIn = $false; SessionCount = 0 }
+    $hit3 = & $preCase $pAtRisk
+    if ($hit3.R.Blocked -eq $false -and $hit3.R.FromCache -and $hit3.Warnings.Count -eq 0) { Ok 'hit with nobody signed in: not blocked, no warning' } else { Bad "hit nobody: $($hit3 | ConvertTo-Json -Compress -Depth 4)" }
+    # never stored
+    foreach ($case in @(
+            @{ Tag = 'Checked $false'; Set = { $script:guest = $unknown } }
+            @{ Tag = 'the open landed cold (Warm $false)'; Set = { $script:openWarm = $false } }
+            @{ Tag = 'the open skipped its restore (RevertSkipped $true)'; Set = { $script:openRevertSkipped = $true } }
+            @{ Tag = 'a VM console open throughout'; Set = { foreach ($b in $true, $true, $true) { $script:vmcAnswers.Enqueue($b) } } }
+            @{ Tag = 'a console seen at the open, gone at the store (V-10)'; Set = { foreach ($b in $true, $false, $false) { $script:vmcAnswers.Enqueue($b) } } }
+            @{ Tag = 'a console seen only right after the probe (V-10)'; Set = { foreach ($b in $false, $true, $false) { $script:vmcAnswers.Enqueue($b) } } }
+            @{ Tag = 'a console seen only at the store'; Set = { foreach ($b in $false, $false, $true) { $script:vmcAnswers.Enqueue($b) } } }
+            @{ Tag = 'the checkpoint identity could not be read'; Set = { $script:laneNull = $true } })) {
+        & $reset3b
+        & $case.Set
+        $x = & $preCase $pAtRisk
+        if (-not $x.Threw -and $x.R.FromCache -eq $false -and @($x.Log | Where-Object { $_ -like 'query:*' }).Count -eq 1 -and $script:cacheSets.Count -eq 0) { Ok "$($case.Tag): asked live, not stored" } else { Bad "$($case.Tag): sets=$($script:cacheSets.Count) $($x | ConvertTo-Json -Compress -Depth 4)" }
+    }
+    # HyperVPrecheckCache Off: live, never read, never stored
+    & $reset3b
+    $script:cfg = @{ HyperVVMName = 'vm-test'; HyperVPrecheckCache = 'off' }
+    $script:cacheAnswer = [pscustomobject]@{ SignedIn = $true; SessionCount = 1 }
+    $x = & $preCase $pAtRisk
+    if ($x.R.Blocked -and $x.R.FromCache -eq $false -and $script:cacheGets -eq 0 -and $script:cacheSets.Count -eq 0 -and @($x.Log | Where-Object { $_ -like 'query:*' }).Count -eq 1) { Ok 'HyperVPrecheckCache off (any case): the guest is asked, the cache is neither read nor written' } else { Bad "cache off: gets=$($script:cacheGets) sets=$($script:cacheSets.Count) $($x | ConvertTo-Json -Compress -Depth 4)" }
+    $script:cfg = @{ HyperVVMName = 'vm-test'; HyperVPrecheckCache = 'Sometimes' }
+    $x = & $preCase $pAtRisk
+    if ($x.R.FromCache -eq $true) { Ok 'HyperVPrecheckCache with any other value: On (the stored answer is used)' } else { Bad "cache other value: $($x | ConvertTo-Json -Compress -Depth 4)" }
+    # not at risk: the cache is never asked
+    & $reset3b
+    $x = & $preCase $pListed
+    if ($script:cacheGets -eq 0 -and $script:cacheSets.Count -eq 0 -and $script:laneCalls -eq 0 -and $x.R.FromCache -eq $false -and $null -eq $x.R.Lane -and $x.R.Seconds -ge 0) { Ok 'not at risk: no lane, no cache call; FromCache $false, Lane $null' } else { Bad "not at risk: gets=$($script:cacheGets) lane=$($script:laneCalls) $($x.R | ConvertTo-Json -Compress -Depth 3)" }
+    & $reset3b
+
     # ============================== [4] file hygiene ==============================
-    Write-Host '[4] the three new files: ASCII, one function, every catch starts with the C-2 line' -ForegroundColor Cyan
+    Write-Host '[4] the pre-check files: ASCII, one function, every catch starts with the C-2 line' -ForegroundColor Cyan
     $c2 = "if (`$_.FullyQualifiedErrorId -like 'W32T.*') { throw }"
-    foreach ($name in 'Get-Win32ToolkitParityDialogRisk', 'Get-Win32ToolkitGuestSignedInUser', 'Invoke-Win32ToolkitParityPrecheck') {
+    # Speed-up PR 1: the four helpers the pre-check now calls.
+    foreach ($name in 'Get-Win32ToolkitParityDialogRisk', 'Get-Win32ToolkitGuestSignedInUser', 'Invoke-Win32ToolkitParityPrecheck',
+        'Get-Win32ToolkitHyperVLane', 'Get-Win32ToolkitParityProbeCache', 'Set-Win32ToolkitParityProbeCache', 'Test-Win32ToolkitVMConnectOpen') {
         $file = Join-Path $repo "Private\$name.ps1"
         $errs = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$errs)

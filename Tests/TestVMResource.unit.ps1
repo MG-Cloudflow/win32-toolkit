@@ -52,6 +52,11 @@ function Invoke-Command { param($VMName, $Credential, $ScriptBlock, $ErrorAction
 function Set-VM { param($Name, $CheckpointType) Log "Set-VM:CheckpointType=$CheckpointType" }
 function Checkpoint-VM { param($VMName, $SnapshotName) Log "Checkpoint-VM:$SnapshotName" }
 function Start-Sleep { param($Seconds) }
+# C-5/C-9 (speed-up PR 1): the real Clear-Win32ToolkitHyperVStateCache also clears the stored checkpoint answers;
+# the developer's real HKCU is never touched.
+$script:probeClears = 0
+function Clear-Win32ToolkitParityProbeCache { $script:probeClears++ }
+function Remove-ItemProperty { throw 'real HKCU must not be touched' }
 # advance Get-Date so the desktop-never-up loop exits quickly instead of spinning 10 real minutes
 $script:now = [datetime]'2026-01-01T00:00:00'
 function Get-Date { param($Format) $script:now = $script:now.AddMinutes(4); $script:now }
@@ -72,6 +77,7 @@ $positions = $order | ForEach-Object { $s = $_; [array]::IndexOf($script:calls, 
 $strict = $true; for ($i = 1; $i -lt $positions.Count; $i++) { if ($positions[$i] -lt $positions[$i-1] -or $positions[$i] -lt 0) { $strict = $false } }
 if ($inOrder -and $strict) { Ok "sequence is correct: $seq" } else { Bad "sequence wrong: $seq" }
 if ($script:cfg['HyperVProcessorCount'] -eq '4' -and $script:cfg['HyperVMemoryStartupBytes'] -eq '8589934592') { Ok 'new CPU + RAM persisted to config' } else { Bad "cfg cpu=$($script:cfg['HyperVProcessorCount']) mem=$($script:cfg['HyperVMemoryStartupBytes'])" }
+if ($script:probeClears -ge 1) { Ok 'the reconfigure cleared the stored checkpoint answers (Clear-Win32ToolkitParityProbeCache, shadowed)' } else { Bad "probe clears: $($script:probeClears)" }
 
 # ══ [2] CPU-only: Set-VMMemory NOT called, but still stops + re-checkpoints ════════════════════════
 Write-Host '[2] CPU-only change does not touch memory, still recreates the checkpoint' -ForegroundColor Cyan

@@ -102,7 +102,9 @@ watched and unattended runs restore the same checkpoint, a watched run needs the
 that lands on the sign-in screen restarts the VM to sign in again), and changing the VM's resources or
 repairing its checkpoint takes a signed-in checkpoint again. The check runs only for such packages and
 can take a few minutes, with one line on the console while it runs: it restores the VM's checkpoint before
-and after it looks (a test that then starts skips its own first restore). When it cannot reach the VM or read its
+and after it looks (a test that then starts skips its own first restore). The answer is kept per checkpoint
+(`HyperVPrecheckCache`, [Configuration](configuration.md#hypervprecheckcache-default-on)): later tests on the same
+checkpoint skip the check and its restores. When it cannot reach the VM or read its
 sessions, it warns and the test starts as usual. PSADT 4.2 packages are not checked: PSADT 4.2 resolves
 Auto mode to Silent when no listed process is running.
 

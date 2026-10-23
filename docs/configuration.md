@@ -42,6 +42,8 @@ Do **not** hand-edit `HyperVGuestUser` / `HyperVGuestSecret`. See [Guest credent
 | `HyperVMemoryStartupBytes` | `4294967296` (4 GB) | bytes | Startup memory used at (re-)provisioning and shown in the TUI. |
 | `HyperVGuestUser` | *(not set)* | username | Local-admin account inside the test VM (for PowerShell Direct). |
 | `HyperVGuestSecret` | *(not set)* | DPAPI blob | The guest admin password, encrypted. Never store a plain-text password here. |
+| `HyperVPrecheckCache` | `On` | `On`, `Off` | Keep the Intune-parity pre-check's answer per test VM checkpoint (see below). |
+| `HyperVPrecheckProbe` | *(not set)* | written by the toolkit | The stored pre-check answer. Never edit it; the VM commands delete it. |
 
 ## BasePath
 
@@ -86,7 +88,7 @@ Set the config value when you *always* run unattended (for example on a build se
 
 ## Performance switches
 
-These two switches trade a little state on disk (or in the VM) for wall-clock time. Both fail open: any cache problem falls back to the uncached behavior.
+These switches trade a little state on disk, in the registry or in the VM for wall-clock time. All fail open: any cache problem falls back to the uncached behavior.
 
 ### `PipelineCache` (default `On`)
 
@@ -95,6 +97,14 @@ Caches update-baseline downloads under `<BasePath>\Cache\winget\` and reuses dep
 ### `HyperVDepsCheckpoint` (default `Off`)
 
 When `On`: after a project's dependencies install once in the test VM, a `clean-base+deps-<hash>` checkpoint is taken, and later runs of that project restore it instead of re-installing the dependencies. The hash covers the dependency set, every staged installer byte, and the parent checkpoint identity. Any change falls back to `clean-base` plus a live install. VM maintenance (resource changes, re-checkpointing) deletes the checkpoint; it is simply recreated on the next run. Leave `Off` unless you repeatedly test the same dependency-heavy project.
+
+### `HyperVPrecheckCache` (default `On`)
+
+The [Intune-parity pre-check](testing.md#watched-vs-unattended) restores the test VM's checkpoint, asks the guest whether a user is signed in, and restores the checkpoint again: a minute or more (two restores). The answer depends only on the checkpoint, so it is stored (in `HyperVPrecheckProbe`) with the checkpoint's identity: the VM's Id, the checkpoint's Id and creation time, and the version of the check. A later pre-check of the same checkpoint uses the stored answer: nothing is restored and no "checking" line is printed. A re-taken checkpoint has a new Id, so it is checked again.
+
+An answer is not stored when the guest could not be read, when the check did not restore the checkpoint itself (the VM was already left clean by the run before), when the checkpoint did not restore to a running VM, or when a VM console (`vmconnect`) is attached to the VM: someone at the console could change what the answer depends on. Every VM command (provisioning, [Reset-Win32ToolkitTestVM](reference/Reset-Win32ToolkitTestVM.md), [Set-Win32ToolkitTestVMResource](reference/Set-Win32ToolkitTestVMResource.md), the checkpoint repair and [Remove-Win32ToolkitTestVM](reference/Remove-Win32ToolkitTestVM.md)) deletes the stored answer.
+
+Set `Off` to ask the guest every time (and store nothing). This value has no TUI control: set it in the registry.
 
 ## Guest credential
 

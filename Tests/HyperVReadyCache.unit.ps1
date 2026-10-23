@@ -28,6 +28,10 @@ function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }
 function Get-VM { param([Parameter(ValueFromRemainingArguments)]$Rest) [pscustomobject]@{ Name = 'win32tk-golden' } }
 function Get-VMCheckpoint { param([Parameter(ValueFromRemainingArguments)]$Rest) [pscustomobject]@{ Name = 'clean-base' } }
 function Get-Win32ToolkitGuestCredential { New-Object System.Management.Automation.PSCredential('u', (ConvertTo-SecureString 'p' -AsPlainText -Force)) }
+# C-5/C-9 (speed-up PR 1): a full clear also clears the stored checkpoint answers; the real HKCU is never touched.
+$script:probeClears = 0
+function Clear-Win32ToolkitParityProbeCache { $script:probeClears++ }
+function Remove-ItemProperty { throw 'real HKCU must not be touched' }
 
 $script:HyperVReadyCache = $null
 
@@ -46,6 +50,7 @@ Write-Host '[c] Clear-Win32ToolkitHyperVStateCache invalidates' -ForegroundColor
 Clear-Win32ToolkitHyperVStateCache
 $null = @(Test-Win32ToolkitHyperVReady)
 if ($script:probes -eq 3) { Ok 'cleared cache -> re-probed' } else { Bad "probes=$($script:probes)" }
+if ($script:probeClears -ge 1) { Ok 'the full clear also cleared the stored checkpoint answers (shadowed; the real HKCU untouched)' } else { Bad "probe clears: $($script:probeClears)" }
 
 Write-Host '[d] TTL expiry re-probes' -ForegroundColor Cyan
 $script:HyperVReadyCache = @{ Reasons = @(); At = (Get-Date).AddSeconds(-61) }
