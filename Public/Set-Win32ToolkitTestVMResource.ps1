@@ -19,7 +19,9 @@ function Set-Win32ToolkitTestVMResource {
     setting back with every restore.
 
     The chosen values are saved (HyperVProcessorCount / HyperVMemoryStartupBytes) and become the defaults for the
-    next New-Win32ToolkitTestVM. Requested CPU/RAM above the host's capacity is REFUSED.
+    next New-Win32ToolkitTestVM, except for the VM this PowerShell session pins with the W32T_HYPERV_VM environment
+    variable (a pin is for the session only: nothing is saved, and one line says so). Requested CPU/RAM above the
+    host's capacity is REFUSED.
 
     The change holds the test VM's lease, the lock every win32-toolkit process takes before it changes the VM:
     while another PowerShell session uses the VM it waits, up to HyperVLeaseWaitMinutes (default 60), and then
@@ -29,9 +31,10 @@ function Set-Win32ToolkitTestVMResource {
 .PARAMETER MemoryStartupBytes
     New static startup memory in bytes (accepts PowerShell size literals, e.g. 6GB). Omit to leave RAM unchanged.
 .PARAMETER Name
-    VM name. Defaults to the configured HyperVVMName ('win32tk-golden').
+    VM name. Defaults to the session's test VM: W32T_HYPERV_VM, else the configured HyperVVMName, else 'win32tk-golden'.
 .PARAMETER CheckpointName
-    Clean-base checkpoint name to recreate. Defaults to the configured HyperVCheckpoint ('clean-base').
+    Clean-base checkpoint name to recreate. Defaults to W32T_HYPERV_CHECKPOINT, else the configured HyperVCheckpoint,
+    else 'clean-base'.
 .PARAMETER Credential
     Guest admin credential (to confirm the desktop is up before the warm checkpoint). Defaults to the stored
     DPAPI-protected guest credential.
@@ -64,8 +67,9 @@ function Set-Win32ToolkitTestVMResource {
         throw 'Nothing to change: pass -ProcessorCount and/or -MemoryStartupBytes.'
     }
 
-    if (-not $Name)           { $Name           = Get-Win32ToolkitConfigValue -Name 'HyperVVMName'     -Default 'win32tk-golden' }
-    if (-not $CheckpointName) { $CheckpointName = Get-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Default 'clean-base' }
+    # The session's test VM and checkpoint (speed-up PR 3, D11): a W32T_HYPERV_VM / W32T_HYPERV_CHECKPOINT pin first.
+    if (-not $Name)           { $Name           = (Get-Win32ToolkitHyperVTarget).VMName }
+    if (-not $CheckpointName) { $CheckpointName = (Get-Win32ToolkitHyperVTarget).CheckpointName }
 
     # The VM must exist — this reconfigures an existing one, it does not create.
     $vm = Get-VM -Name $Name -ErrorAction SilentlyContinue
@@ -173,11 +177,18 @@ function Set-Win32ToolkitTestVMResource {
         Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName -ErrorAction Stop
         Write-Host "✓ '$CheckpointName' checkpoint recreated at $newCpu vCPU / $([math]::Round($newMem / 1GB, 2)) GB." -ForegroundColor Green
 
-        # 6. Persist the new specs (and re-affirm the VM identity) so New-Win32ToolkitTestVM reuses them.
-        Set-Win32ToolkitConfigValue -Name 'HyperVVMName'            -Value $Name
-        Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint'        -Value $CheckpointName
-        Set-Win32ToolkitConfigValue -Name 'HyperVProcessorCount'    -Value $newCpu
-        Set-Win32ToolkitConfigValue -Name 'HyperVMemoryStartupBytes' -Value $newMem
+        # 6. Persist the new specs (and re-affirm the VM identity) so New-Win32ToolkitTestVM reuses them. Not for the VM this
+        #    session pins with W32T_HYPERV_VM (speed-up PR 3, A-10): a process-scoped pin never repoints the user's defaults.
+        $pin = Get-Win32ToolkitHyperVTarget -NoThrow
+        if ($pin.Pinned -and -not $pin.Problem -and $pin.VMName -eq $Name) {
+            Write-Host "VM '$(ConvertTo-Win32ToolkitSafeText -Text $Name -MaxLength 64)' is pinned by W32T_HYPERV_VM for this session only: its name, checkpoint and size were not saved as your defaults." -ForegroundColor Yellow
+        }
+        else {
+            Set-Win32ToolkitConfigValue -Name 'HyperVVMName'            -Value $Name
+            Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint'        -Value $CheckpointName
+            Set-Win32ToolkitConfigValue -Name 'HyperVProcessorCount'    -Value $newCpu
+            Set-Win32ToolkitConfigValue -Name 'HyperVMemoryStartupBytes' -Value $newMem
+        }
 
         return (Get-VM -Name $Name -ErrorAction SilentlyContinue)
     }

@@ -41,7 +41,7 @@ PS C:\> {{ Add example code here }}
 ## PARAMETERS
 
 ### -Name
-VM name (default: the stored HyperVVMName, else 'win32tk-golden').
+VM name (default: the session's test VM: W32T_HYPERV_VM, else the stored HyperVVMName, else 'win32tk-golden').
 
 ```yaml
 Type: String
@@ -50,13 +50,13 @@ Aliases:
 
 Required: False
 Position: 1
-Default value: (Get-Win32ToolkitConfigValue -Name 'HyperVVMName' -Default 'win32tk-golden')
+Default value: ((Get-Win32ToolkitHyperVTarget).VMName)
 Accept pipeline input: False
 Accept wildcard characters: False
 ```
 
 ### -CheckpointName
-Checkpoint to restore (default: the stored HyperVCheckpoint, else 'clean-base').
+Checkpoint to restore (default: W32T_HYPERV_CHECKPOINT, else the stored HyperVCheckpoint, else 'clean-base').
 
 ```yaml
 Type: String
@@ -65,7 +65,7 @@ Aliases:
 
 Required: False
 Position: 2
-Default value: (Get-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Default 'clean-base')
+Default value: ((Get-Win32ToolkitHyperVTarget).CheckpointName)
 Accept pipeline input: False
 Accept wildcard characters: False
 ```

@@ -28,6 +28,10 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Copy-Win32ToolkitProjectToGuest.ps1')
 . (Join-Path $repo 'Private\Remove-Win32ToolkitHyperVSession.ps1')
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitHyperVRun.ps1')
+# C-9 (speed-up PR 3): the run resolves an omitted VM / checkpoint through the real resolver (the config shadows below feed it);
+# a developer's own W32T_HYPERV_VM / W32T_HYPERV_CHECKPOINT must not leak into the expectations.
+. (Join-Path $repo 'Private\Get-Win32ToolkitHyperVTarget.ps1')
+Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue
 # C-9 (Hyper-V speed-up PR 1): the provider's new record helpers, inert by default ([14]/[15] replace them). The lane
 # double returns nothing (the run's Lane stays $null) and the hash double emits nothing (no CopyInSha256).
 function Get-Win32ToolkitHyperVLane { param($VMName, $CheckpointName, $VM) }
@@ -309,6 +313,27 @@ foreach ($case in @(
     $null = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(@{ Label = 'x'; Command = 'y' }) @arg11 3>$null 6>$null
     if (($script:log11 -join ' ') -eq "open:$($case.Want) revert:$($case.Want)") { Ok "$($case.Label): opens and reverts '$($case.Want)'" } else { Bad "$($case.Label): $($script:log11 -join ' ')" }
 }
+# Speed-up PR 3 (D11): W32T_HYPERV_VM / W32T_HYPERV_CHECKPOINT win over HyperVVMName / HyperVCheckpoint; an invalid pin throws
+# W32T.HyperVTargetNotReady before anything starts; explicit -VMName and -CheckpointName never ask the resolver.
+${function:New-Win32ToolkitHyperVSession} = { param($VMName, $Credential, $CheckpointName, [switch]$SkipRevert, [switch]$EnsureDesktop) $script:log11 += "open:${VMName}:$CheckpointName"; 'SESS' }
+try {
+    $script:cfg11 = @{ HyperVVMName = 'lab-vm'; HyperVCheckpoint = 'warm-x' }; $script:log11 = @()
+    $env:W32T_HYPERV_VM = 'win32tk-measure'; $env:W32T_HYPERV_CHECKPOINT = 'clean-auto'
+    $null = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(@{ Label = 'x'; Command = 'y' }) 3>$null 6>$null
+    if (($script:log11 -join ' ') -eq 'open:win32tk-measure:clean-auto revert:clean-auto') { Ok 'pinned (W32T_HYPERV_VM, W32T_HYPERV_CHECKPOINT): opens and reverts the pinned VM and checkpoint, not the registry''s' } else { Bad "pin: $($script:log11 -join ' ')" }
+    Remove-Item Env:\W32T_HYPERV_CHECKPOINT
+    $script:log11 = @()
+    $null = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(@{ Label = 'x'; Command = 'y' }) 3>$null 6>$null
+    if (($script:log11 -join ' ') -eq 'open:win32tk-measure:warm-x revert:warm-x') { Ok 'only the VM pinned: the pinned VM with the registry''s checkpoint' } else { Bad "vm pin: $($script:log11 -join ' ')" }
+    $env:W32T_HYPERV_VM = '   '
+    $script:log11 = @(); $t11 = $null
+    try { $null = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(@{ Label = 'x'; Command = 'y' }) 3>$null 6>$null } catch { $t11 = $_ }
+    if ($t11.FullyQualifiedErrorId -eq 'W32T.HyperVTargetNotReady' -and $script:log11.Count -eq 0) { Ok 'an invalid pin: W32T.HyperVTargetNotReady before anything is opened or restored' } else { Bad "invalid pin: $($t11.FullyQualifiedErrorId) $($script:log11 -join ' ')" }
+    $script:log11 = @(); $t11 = $null
+    try { $null = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -VMName 'vm-x' -CheckpointName 'cp-x' -Phase @(@{ Label = 'x'; Command = 'y' }) 3>$null 6>$null } catch { $t11 = $_ }
+    if (-not $t11 -and ($script:log11 -join ' ') -eq 'open:vm-x:cp-x revert:cp-x') { Ok 'explicit -VMName and -CheckpointName: the resolver is not asked (an invalid pin does not matter)' } else { Bad "explicit: $t11 $($script:log11 -join ' ')" }
+}
+finally { Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue }
 Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential
 
 Write-Host '[12] a phase may raise its guest-runner limit (RunnerTimeoutMinutes): backstop +5, 1460/69113 texts per limit (F2)' -ForegroundColor Cyan

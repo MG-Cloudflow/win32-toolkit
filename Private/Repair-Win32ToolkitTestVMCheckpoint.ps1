@@ -26,9 +26,9 @@ function Repair-Win32ToolkitTestVMCheckpoint {
         Steps 2-5 hold the test VM's machine-wide lease (Enter-Win32ToolkitHyperVLease, speed-up PR 3): while another
         process uses the VM the repair waits, then stops with W32T.HyperVLeaseTimeout before changing anything.
     .PARAMETER Name
-        VM name (default: the stored HyperVVMName, else 'win32tk-golden').
+        VM name (default: the session's test VM: W32T_HYPERV_VM, else the stored HyperVVMName, else 'win32tk-golden').
     .PARAMETER CheckpointName
-        Checkpoint to (re)create (default: the stored HyperVCheckpoint, else 'clean-base').
+        Checkpoint to (re)create (default: W32T_HYPERV_CHECKPOINT, else the stored HyperVCheckpoint, else 'clean-base').
     .PARAMETER Credential
         Guest local-admin credential. Default: the stored credential; if none is stored (or it was saved
         by a different Windows user — DPAPI), an interactive prompt asks for the one baked into the image.
@@ -39,8 +39,8 @@ function Repair-Win32ToolkitTestVMCheckpoint {
     [CmdletBinding()]
     [OutputType([bool])]
     param(
-        [string]$Name = (Get-Win32ToolkitConfigValue -Name 'HyperVVMName' -Default 'win32tk-golden'),
-        [string]$CheckpointName = (Get-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Default 'clean-base'),
+        [string]$Name = ((Get-Win32ToolkitHyperVTarget).VMName),
+        [string]$CheckpointName = ((Get-Win32ToolkitHyperVTarget).CheckpointName),
         [pscredential]$Credential
     )
 
@@ -104,8 +104,15 @@ function Repair-Win32ToolkitTestVMCheckpoint {
         # A failed checkpoint stops here (speed-up PR 2, V-Fe11): no success line and no settings for a VM without one.
         Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName -ErrorAction Stop
         Clear-Win32ToolkitHyperVStateCache
-        Set-Win32ToolkitConfigValue -Name 'HyperVVMName'     -Value $Name
-        Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Value $CheckpointName
+        # Not for the VM this session pins with W32T_HYPERV_VM (speed-up PR 3, A-10): the pin never repoints the defaults.
+        $pin = Get-Win32ToolkitHyperVTarget -NoThrow
+        if ($pin.Pinned -and -not $pin.Problem -and $pin.VMName -eq $Name) {
+            Write-Host "VM '$(ConvertTo-Win32ToolkitSafeText -Text $Name -MaxLength 64)' is pinned by W32T_HYPERV_VM for this session only: its name and checkpoint were not saved as your defaults." -ForegroundColor Yellow
+        }
+        else {
+            Set-Win32ToolkitConfigValue -Name 'HyperVVMName'     -Value $Name
+            Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Value $CheckpointName
+        }
         Write-Host "✓ '$CheckpointName' checkpoint re-taken at a logged-in desktop." -ForegroundColor Green
         return $true
     }

@@ -48,6 +48,9 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Write-Win32ToolkitCheckpointAdvisory.ps1')
 . (Join-Path $repo 'Private\Restore-Win32ToolkitTestVMCheckpoint.ps1')
 . (Join-Path $repo 'Public\Reset-Win32ToolkitTestVM.ps1')
+# C-9 (speed-up PR 3): Reset's defaults come from the real resolver (fed by the config shadow); no pin leaks in.
+. (Join-Path $repo 'Private\Get-Win32ToolkitHyperVTarget.ps1')
+Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue
 
 # -- shadows: a small VM model; every Hyper-V double logs and RETURNS AN OBJECT (an unassigned call would leak it) ------
 $vmId = '0e5f9e66-1111-2222-3333-444455556666'
@@ -386,6 +389,17 @@ Reset-Model -State 'Running' -Auto $false -Land 'Saved'
 $script:leaseLog.Clear()
 $null = @(Reset-Win32ToolkitTestVM -Name 'vm-test' -WhatIf 6>$null)
 if ($script:leaseLog.Count -eq 0) { Ok 'Reset -WhatIf takes no lease' } else { Bad "whatif lease: $($script:leaseLog -join ' > ')" }
+# Speed-up PR 3 (D11): without -Name / -CheckpointName, Reset restores the session's pinned VM and checkpoint.
+Reset-Model -State 'Running' -Auto $false -Land 'Saved'
+$script:leaseLog.Clear()
+$script:cfg = @{ HyperVVMName = 'lab-vm'; HyperVCheckpoint = 'warm-x' }
+try {
+    $env:W32T_HYPERV_VM = 'vm-test'; $env:W32T_HYPERV_CHECKPOINT = 'clean-base'
+    $null = Reset-Win32ToolkitTestVM -Confirm:$false 3>$null
+}
+finally { Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue }
+if (($script:log -contains 'restore:vm-test:clean-base') -and ($script:leaseLog[0] -like 'enter:vm-test:reset:*')) { Ok 'no -Name: the pinned VM and checkpoint (W32T_HYPERV_VM / W32T_HYPERV_CHECKPOINT), not the registry''s' } else { Bad "pinned default: $($script:log -join ' > ') / $($script:leaseLog -join ' > ')" }
+$script:cfg = @{}
 
 # -- (y) file hygiene --------------------------------------------------------------------------------------------------
 Write-Host '(y) file hygiene: ASCII, one function, every catch starts with the C-2 line' -ForegroundColor Cyan
@@ -399,6 +413,10 @@ $ascii = @([System.IO.File]::ReadAllBytes($file) | Where-Object { $_ -gt 127 }).
 $top = @($ast.EndBlock.Statements)
 $oneFunction = $top.Count -eq 1 -and $top[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $top[0].Name -eq 'Restore-Win32ToolkitTestVMCheckpoint' -and -not $ast.ParamBlock
 if (@($errs).Count -eq 0 -and $catches.Count -ge 1 -and $badCatch.Count -eq 0 -and $ascii -and $oneFunction) { Ok "ASCII, one function, $($catches.Count) catch(es) with the C-2 line" } else { Bad "errors $(@($errs).Count), catches $($catches.Count), bad $($badCatch.Count), ascii $ascii, one function $oneFunction" }
+
+# Safety net (speed-up PR 3): no real Hyper-V cmdlet was reached (it would have imported the Hyper-V module, whose aliases
+# Get-VMCheckpoint / Remove-VMCheckpoint then win over the shadows above).
+if (-not (Microsoft.PowerShell.Core\Get-Module -Name Hyper-V)) { Ok 'the Hyper-V module was never imported (no real Hyper-V cmdlet reached)' } else { Bad 'the Hyper-V module was imported: a real Hyper-V cmdlet was reached' }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All HyperVRevertMode tests passed.' -ForegroundColor Green; exit 0 }

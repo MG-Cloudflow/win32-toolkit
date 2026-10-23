@@ -35,8 +35,8 @@ Do **not** hand-edit `HyperVGuestUser` / `HyperVGuestSecret`. See [Guest credent
 | `PipelineCache` | `On` | `On`, `Off` | Download/staging cache for the pipeline (see below). |
 | `HyperVDepsCheckpoint` | `Off` | `On`, `Off` | Opt-in per-project dependency checkpoint in the test VM (see below). |
 | `PreferredPsadtVersion` | *(not set)*: newest supported installed | an exact version (`4.1.8`, `4.2.0-rc2`) or `Major.Minor` (`4.1`) | Which installed PSAppDeployToolkit new projects are built with (see below). |
-| `HyperVVMName` | `win32tk-golden` | any VM name | Name of the Hyper-V test VM. Written by provisioning; read everywhere the VM is used. |
-| `HyperVCheckpoint` | `clean-base` | any checkpoint name | The clean checkpoint every test run reverts to. |
+| `HyperVVMName` | `win32tk-golden` | any VM name | Name of the Hyper-V test VM. Written by provisioning; read everywhere the VM is used, unless `W32T_HYPERV_VM` pins another one for the session (see below). |
+| `HyperVCheckpoint` | `clean-base` | any checkpoint name | The clean checkpoint every test run reverts to, unless `W32T_HYPERV_CHECKPOINT` pins another one for the session. |
 | `HyperVBaseVhdx` | *(not set)* | path | Record of where provisioning placed the golden VHDX. Informational only: never read back by the module. |
 | `HyperVProcessorCount` | `2` | integer ≥ 1 | vCPU count used at (re-)provisioning and shown in the TUI. |
 | `HyperVMemoryStartupBytes` | `4294967296` (4 GB) | bytes | Startup memory used at (re-)provisioning and shown in the TUI. |
@@ -74,6 +74,21 @@ The value is an exact version as PowerShellGet shows it (`4.1.8`, `4.2.0-rc2`, c
 Existing projects are not affected: each project keeps the PSAppDeployToolkit copy it was built with (the TUI's **Browse projects** shows it per project).
 
 One PowerShell session can only hold one PSAppDeployToolkit version. If a different version is already loaded (for example after building a project with another pin), project creation stops and asks you to start a new PowerShell session.
+
+## Hyper-V test VM per session (`W32T_HYPERV_VM`)
+
+The Hyper-V test VM and its base checkpoint come, for each value, from the first of:
+
+1. The environment variables `W32T_HYPERV_VM` and `W32T_HYPERV_CHECKPOINT` (this PowerShell session and the processes it starts only).
+2. The registry values `HyperVVMName` and `HyperVCheckpoint`.
+3. The defaults `win32tk-golden` and `clean-base`.
+
+```powershell
+# Test on another VM in this session only; the registry keeps pointing at your usual one
+$env:W32T_HYPERV_VM = 'win32tk-lane2'
+```
+
+A pin is trimmed and must be 1 to 100 characters without control characters. A session whose VM is pinned never falls back to Windows Sandbox: when the pinned VM is not ready, or the value is invalid, a test stops with `W32T.HyperVTargetNotReady`. The VM commands do not save the pinned VM's name, checkpoint, CPU or memory as your defaults. Details: [Pin a VM per session](hyperv-vm.md#make-hyper-v-tests-faster).
 
 ## Test modes (`SandboxTestMode`, `HyperVTestMode`)
 
@@ -123,6 +138,6 @@ PowerShell Direct needs the test VM's local-admin credential on every Hyper-V ru
 
 ## Hyper-V VM identity and resources
 
-`HyperVVMName`, `HyperVCheckpoint`, `HyperVProcessorCount` and `HyperVMemoryStartupBytes` are managed for you: provisioning writes all four, and the **Change VM resources** action (TUI) or [Set-Win32ToolkitTestVMResource](reference/Set-Win32ToolkitTestVMResource.md) updates CPU/memory and re-takes the clean checkpoint. A re-provision reuses the stored CPU/memory as its defaults, so your specs survive a rebuild. Only edit these by hand if you renamed the VM or checkpoint outside the toolkit and need the config to match.
+`HyperVVMName`, `HyperVCheckpoint`, `HyperVProcessorCount` and `HyperVMemoryStartupBytes` are managed for you: provisioning writes all four, and the **Change VM resources** action (TUI) or [Set-Win32ToolkitTestVMResource](reference/Set-Win32ToolkitTestVMResource.md) updates CPU/memory and re-takes the clean checkpoint (neither writes them for a VM the session pins with `W32T_HYPERV_VM`). A re-provision reuses the stored CPU/memory as its defaults, so your specs survive a rebuild. Only edit these by hand if you renamed the VM or checkpoint outside the toolkit and need the config to match.
 
 <!-- SCREENSHOT: the TUI Settings screen showing the base folder and the Hyper-V test VM entry -->

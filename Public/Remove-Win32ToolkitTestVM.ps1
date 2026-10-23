@@ -10,13 +10,13 @@ function Remove-Win32ToolkitTestVM {
         while another PowerShell session uses the VM it waits, up to HyperVLeaseWaitMinutes (default 60), and then
         stops with the error W32T.HyperVLeaseTimeout before anything is removed.
     .PARAMETER Name
-        VM name (default: the stored HyperVVMName, else 'win32tk-golden').
+        VM name (default: the session's test VM: W32T_HYPERV_VM, else the stored HyperVVMName, else 'win32tk-golden').
     .PARAMETER RemoveVhdx
         Also delete the VM's VHDX file(s).
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [string]$Name = (Get-Win32ToolkitConfigValue -Name 'HyperVVMName' -Default 'win32tk-golden'),
+        [string]$Name = ((Get-Win32ToolkitHyperVTarget).VMName),
         [switch]$RemoveVhdx
     )
 

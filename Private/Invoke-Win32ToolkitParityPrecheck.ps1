@@ -8,7 +8,8 @@ function Invoke-Win32ToolkitParityPrecheck {
 
         1. Get-Win32ToolkitParityDialogRisk: not at risk -> Blocked $false; the VM is not touched.
         2. At risk: the VM, the guest credential and the run's base checkpoint come from the same settings
-           the run uses (HyperVVMName, the stored guest credential, HyperVCheckpoint, default 'clean-base').
+           the run uses (Get-Win32ToolkitHyperVTarget: W32T_HYPERV_VM / HyperVVMName and W32T_HYPERV_CHECKPOINT /
+           HyperVCheckpoint, default 'clean-base'; the stored guest credential).
            No credential -> Blocked $false (the run then reports its usual error).
         3. One host line says the check runs (it takes minutes), then its own short PowerShell Direct session on
            that checkpoint (revert, query, revert):
@@ -66,8 +67,10 @@ function Invoke-Win32ToolkitParityPrecheck {
     if ($risk -and $risk.AtRisk) {
         # The run's effective base checkpoint (L18): the same expressions as Invoke-Win32ToolkitHyperVRun, so
         # both revert and query the same checkpoint and the clean marker stamped below matches the run.
-        $vm   = Get-Win32ToolkitConfigValue -Name 'HyperVVMName' -Default 'win32tk-golden'
-        $cp   = Get-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Default 'clean-base'
+        # Speed-up PR 3 (D11): the one resolver (a W32T_HYPERV_VM / W32T_HYPERV_CHECKPOINT pin first); an invalid pin throws.
+        $target = Get-Win32ToolkitHyperVTarget
+        $vm   = $target.VMName
+        $cp   = $target.CheckpointName
         $cred = Get-Win32ToolkitGuestCredential
         if (-not $cred) {
             Write-Verbose 'Intune-parity pre-check skipped: no Hyper-V guest credential is configured.'

@@ -51,9 +51,12 @@ function Test-Win32ToolkitPsadtVersionSupported {
 foreach ($f in 'Get-Win32ToolkitDeployScriptShape', 'Set-Win32ToolkitPhaseBlock', 'Remove-Win32ToolkitPhaseBlock', 'Remove-Win32ToolkitPhaseDefaultUi',
     'Get-Win32ToolkitDeployScriptBlock', 'Write-Win32ToolkitDeployScript', 'Test-Win32ToolkitPS51Syntax', 'Set-PSADTDataDrivenScript',
     'Set-Win32ToolkitTextBlock', 'Get-Win32ToolkitAppConfig', 'Set-Win32ToolkitAppConfig', 'ConvertTo-PSSingleQuoted', 'ConvertTo-Win32ToolkitSafeText',
-    'Get-Win32ToolkitParityDialogRisk', 'Get-Win32ToolkitGuestSignedInUser', 'Invoke-Win32ToolkitParityPrecheck') {
+    'Get-Win32ToolkitParityDialogRisk', 'Get-Win32ToolkitGuestSignedInUser', 'Invoke-Win32ToolkitParityPrecheck',
+    # C-9 (speed-up PR 3): the pre-check reads its VM / checkpoint through the real resolver (fed by the config shadow).
+    'Get-Win32ToolkitHyperVTarget') {
     . (Join-Path $repo "Private\$f.ps1")
 }
+Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue
 
 $TMP = Join-Path ([System.IO.Path]::GetTempPath()) ('w32pp_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
 New-Item -ItemType Directory -Path $TMP -Force | Out-Null
@@ -354,6 +357,20 @@ try {
     $x = & $preCase $pAtRisk
     if ($x.R.Blocked -and @($x.Log | Where-Object { $_ -eq 'open:vm-test:warm-x' }).Count -eq 1 -and @($x.Log | Where-Object { $_ -eq 'remove:SESSION:vm-test:warm-x:revert=True' }).Count -eq 1) { Ok 'HyperVCheckpoint warm-x -> the session opens and reverts warm-x (the run''s base checkpoint)' } else { Bad "checkpoint: $($x.Log -join ' > ')" }
     if ((& $progressLine $x 'warm-x') -eq 1) { Ok 'the host line names the configured checkpoint' } else { Bad "progress line (warm-x): $($x.Info -join ' | ')" }
+    # Speed-up PR 3 (D11): a W32T_HYPERV_VM / W32T_HYPERV_CHECKPOINT pin wins over the registry; an invalid pin throws (fail closed).
+    try {
+        $env:W32T_HYPERV_VM = 'win32tk-measure'; $env:W32T_HYPERV_CHECKPOINT = 'clean-auto'
+        $x = & $preCase $pAtRisk
+        if ($x.R.Blocked -and ($x.Log -join ' > ') -eq 'get-vm:win32tk-measure > open:win32tk-measure:clean-auto > query:SESSION > remove:SESSION:win32tk-measure:clean-auto:revert=True' -and $x.R.Message.Contains("'win32tk-measure'")) {
+            Ok 'pinned: the pre-check checks, restores and names the pinned VM and checkpoint, not the registry''s'
+        } else { Bad "pin: $($x.Log -join ' > ')" }
+        $env:W32T_HYPERV_VM = "bad	name"
+        $x = & $preCase $pAtRisk
+        if ($x.Threw.FullyQualifiedErrorId -eq 'W32T.HyperVTargetNotReady' -and $x.Log.Count -eq 0 -and $x.Warnings.Count -eq 0) { Ok 'an invalid pin: W32T.HyperVTargetNotReady, the VM is not touched (no fail-open warning)' } else { Bad "invalid pin: $($x.Threw.FullyQualifiedErrorId) $($x.Log -join ' > ')" }
+        $x = & $preCase $pListed
+        if (-not $x.Threw -and $x.R.Blocked -eq $false) { Ok 'an invalid pin and a project not at risk: no VM needed, nothing thrown' } else { Bad "invalid pin, not at risk: $($x.Threw)" }
+    }
+    finally { Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue }
     # no credential: nothing touches the VM
     $script:cfg = @{ HyperVVMName = 'vm-test' }; $script:cred = $null
     $x = & $preCase $pAtRisk

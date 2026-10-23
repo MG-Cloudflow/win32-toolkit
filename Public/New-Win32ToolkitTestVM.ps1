@@ -11,7 +11,9 @@ function New-Win32ToolkitTestVM {
         -Unattended — it PAUSES and hands you the VM console so you can sign in, run Windows Update and
         let all reboots finish; once you confirm, it freezes a STANDARD (memory-state) checkpoint so later
         runs revert to that warm, fully-patched, logged-in desktop with no boot. The VM name, checkpoint
-        name, and guest credential are saved to config for the resolver/provider. Hyper-V automatic
+        name, and guest credential are saved to config for the resolver/provider; for the VM this PowerShell
+        session pins with the W32T_HYPERV_VM environment variable, only a missing guest credential is saved
+        (a pin is for the session only). Hyper-V automatic
         checkpoints are turned off before the VM's first start, so the checkpoint is taken with them off
         (with them on, every start from Off would add an 'Automatic Checkpoint'). From its creation to its
         checkpoint (and while -Force removes an existing one) the VM holds its lease, the lock every win32-toolkit
@@ -126,9 +128,18 @@ function New-Win32ToolkitTestVM {
             # Adopting a VM changes exactly what the readiness probe checks (name/checkpoint/credential):
             # a stale cached verdict for the PREVIOUS configuration must not survive this.
             Clear-Win32ToolkitHyperVStateCache
-            Set-Win32ToolkitConfigValue -Name 'HyperVVMName'     -Value $Name
-            Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Value $CheckpointName
-            Set-Win32ToolkitGuestCredential -Credential $Credential
+            # Not for the VM this session pins with W32T_HYPERV_VM (speed-up PR 3, A-10): a process-scoped pin never
+            # repoints the user's defaults; the guest credential is stored only when none is.
+            $pin = Get-Win32ToolkitHyperVTarget -NoThrow
+            if ($pin.Pinned -and -not $pin.Problem -and $pin.VMName -eq $Name) {
+                Write-Host "VM '$(ConvertTo-Win32ToolkitSafeText -Text $Name -MaxLength 64)' is pinned by W32T_HYPERV_VM for this session only: its name, checkpoint and size were not saved as your defaults." -ForegroundColor Yellow
+                if (-not (Get-Win32ToolkitGuestCredential)) { Set-Win32ToolkitGuestCredential -Credential $Credential }
+            }
+            else {
+                Set-Win32ToolkitConfigValue -Name 'HyperVVMName'     -Value $Name
+                Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Value $CheckpointName
+                Set-Win32ToolkitGuestCredential -Credential $Credential
+            }
             return $existing
         }
     }
@@ -301,12 +312,21 @@ function New-Win32ToolkitTestVM {
             Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName -ErrorAction Stop
             Write-Host "✓ Warm '$CheckpointName' checkpoint taken." -ForegroundColor Green
 
-            Set-Win32ToolkitConfigValue -Name 'HyperVVMName'            -Value $Name
-            Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint'        -Value $CheckpointName
-            Set-Win32ToolkitConfigValue -Name 'HyperVBaseVhdx'          -Value $vhdx
-            Set-Win32ToolkitConfigValue -Name 'HyperVProcessorCount'    -Value $ProcessorCount
-            Set-Win32ToolkitConfigValue -Name 'HyperVMemoryStartupBytes' -Value $MemoryStartupBytes
-            Set-Win32ToolkitGuestCredential -Credential $Credential
+            # Not for the VM this session pins with W32T_HYPERV_VM (speed-up PR 3, A-10): a process-scoped pin never
+            # repoints the user's defaults; the guest credential is stored only when none is.
+            $pin = Get-Win32ToolkitHyperVTarget -NoThrow
+            if ($pin.Pinned -and -not $pin.Problem -and $pin.VMName -eq $Name) {
+                Write-Host "VM '$(ConvertTo-Win32ToolkitSafeText -Text $Name -MaxLength 64)' is pinned by W32T_HYPERV_VM for this session only: its name, checkpoint and size were not saved as your defaults." -ForegroundColor Yellow
+                if (-not (Get-Win32ToolkitGuestCredential)) { Set-Win32ToolkitGuestCredential -Credential $Credential }
+            }
+            else {
+                Set-Win32ToolkitConfigValue -Name 'HyperVVMName'            -Value $Name
+                Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint'        -Value $CheckpointName
+                Set-Win32ToolkitConfigValue -Name 'HyperVBaseVhdx'          -Value $vhdx
+                Set-Win32ToolkitConfigValue -Name 'HyperVProcessorCount'    -Value $ProcessorCount
+                Set-Win32ToolkitConfigValue -Name 'HyperVMemoryStartupBytes' -Value $MemoryStartupBytes
+                Set-Win32ToolkitGuestCredential -Credential $Credential
+            }
         }
         finally { $null = Exit-Win32ToolkitHyperVLease -Lease $lease }
     }

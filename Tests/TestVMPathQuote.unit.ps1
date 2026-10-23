@@ -21,6 +21,10 @@ function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
 . (Join-Path $repo 'Public\New-Win32ToolkitTestVM.ps1')
+# C-9 (speed-up PR 3): A-10 asks the real resolver whether the VM is pinned, and prints it as safe text; no pin leaks in.
+. (Join-Path $repo 'Private\Get-Win32ToolkitHyperVTarget.ps1')
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue
 
 # --- shadows: everything New-Win32ToolkitTestVM touches, logging the paths it hands downstream -----
 $script:calls    = @()
@@ -155,6 +159,9 @@ if ($err8.FullyQualifiedErrorId -eq 'W32T.HyperVLeaseTimeout' -and ($script:call
 # -Force on an existing VM: its lease around the stop and the removal, then the new VM's lease
 function Get-VM { param($Name, $ErrorAction) if ($script:existing8) { [pscustomobject]@{ Name = $Name; Id = [guid]'11111111-2222-3333-4444-555555555555' } } else { $null } }
 function Get-VMCheckpoint { param($VMName, $Name, $ErrorAction) $null }
+# Every Hyper-V command the path reaches is shadowed: an unshadowed one would import the Hyper-V module, whose aliases
+# (Get-VMCheckpoint, Remove-VMCheckpoint) then win over these functions and reach the real host.
+function Remove-VMCheckpoint { param([Parameter(ValueFromPipeline)]$InputObject) process { if ($null -ne $InputObject) { Log 'Remove-VMCheckpoint' } } }
 function Stop-VM { param($Name, [switch]$TurnOff, [switch]$Force, $ErrorAction) Log 'Stop-VM' }
 function Remove-VM { param($Name, [switch]$Force, $ErrorAction) Log 'Remove-VM'; $script:existing8 = $false }
 $script:existing8 = $true; $script:calls = @(); $script:leaseIds = @()
@@ -165,8 +172,49 @@ if (-not $err8 -and $seq8 -like 'Lease:enter:win32tk-golden:provisioning > Stop-
     ($script:leaseIds -join ',') -eq '11111111-2222-3333-4444-555555555555,0e5f9e66-1111-2222-3333-444455556666') {
     Ok '-Force: the old VM''s lease (its Id) around the stop and the removal, released before the rebuild; then the new VM''s'
 } else { Bad "force: err=$err8 calls=$seq8 ids=$($script:leaseIds -join ',')" }
-Remove-Item Function:\Stop-VM, Function:\Remove-VM, Function:\Get-VMCheckpoint
+Remove-Item Function:\Stop-VM, Function:\Remove-VM, Function:\Get-VMCheckpoint, Function:\Remove-VMCheckpoint
 function Get-VM { param($Name, $ErrorAction) $null }
+
+# == [9] speed-up PR 3 (A-10): provisioning the VM this session pins saves no identity or size; the credential only when none ==
+Write-Host '[9] pinned by W32T_HYPERV_VM: no HKCU identity or size value for the pinned VM (create and reuse), the credential only when none is stored' -ForegroundColor Cyan
+$script:storedCred9 = $null
+function Get-Win32ToolkitGuestCredential { $script:storedCred9 }
+$pinLine9 = "VM 'lane-vm' is pinned by W32T_HYPERV_VM for this session only: its name, checkpoint and size were not saved as your defaults."
+$run9 = {
+    param([hashtable]$P)
+    $script:calls = @(); $iv = $null; $e = $null
+    try { $null = New-Win32ToolkitTestVM @P -Credential $cred -Unattended -InformationVariable iv 6>$null 3>$null } catch { $e = $_ }
+    [pscustomobject]@{ Err = $e; Info = @($iv | ForEach-Object { "$_" }); Cfg = @($script:calls | Where-Object { $_ -like 'cfg:*' }); Cred = @($script:calls | Where-Object { $_ -eq 'cred' }).Count }
+}
+try {
+    $env:W32T_HYPERV_VM = 'lane-vm'
+    # create, no credential stored: no identity value, the credential saved
+    $x = & $run9 @{ IsoPath = 'C:\iso\Win11_x64.iso'; Name = 'lane-vm' }
+    if (-not $x.Err -and $x.Cfg.Count -eq 0 -and $x.Cred -eq 1 -and @($x.Info | Where-Object { $_ -ceq $pinLine9 }).Count -eq 1) { Ok 'create the pinned VM, no credential stored: no cfg: write, the credential saved, the one line' } else { Bad "create pinned: err=$($x.Err) cfg=$($x.Cfg -join ',') cred=$($x.Cred) info=$($x.Info -join ' | ')" }
+    # create, a credential stored: not overwritten
+    $script:storedCred9 = $cred
+    $x = & $run9 @{ IsoPath = 'C:\iso\Win11_x64.iso'; Name = 'lane-vm' }
+    if (-not $x.Err -and $x.Cfg.Count -eq 0 -and $x.Cred -eq 0) { Ok 'create the pinned VM, a credential stored: nothing written to HKCU' } else { Bad "create pinned, cred stored: cfg=$($x.Cfg -join ',') cred=$($x.Cred)" }
+    # reuse an existing pinned VM with its checkpoint: no identity value either
+    function Get-VM { param($Name, $ErrorAction) [pscustomobject]@{ Name = $Name; Id = [guid]'0e5f9e66-1111-2222-3333-444455556666' } }
+    function Get-VMCheckpoint { param($VMName, $Name, $ErrorAction) [pscustomobject]@{ Name = $Name } }
+    $script:storedCred9 = $null
+    $x = & $run9 @{ IsoPath = 'C:\iso\Win11_x64.iso'; Name = 'lane-vm' }
+    if (-not $x.Err -and $x.Cfg.Count -eq 0 -and $x.Cred -eq 1 -and @($x.Info | Where-Object { $_ -ceq $pinLine9 }).Count -eq 1) { Ok 'reuse the pinned VM: no cfg: write, the missing credential saved, the one line' } else { Bad "reuse pinned: cfg=$($x.Cfg -join ',') cred=$($x.Cred) info=$($x.Info -join ' | ')" }
+    $x = & $run9 @{ IsoPath = 'C:\iso\Win11_x64.iso'; Name = 'other-vm' }
+    if (-not $x.Err -and ($x.Cfg -join ',') -eq 'cfg:HyperVVMName,cfg:HyperVCheckpoint' -and $x.Cred -eq 1) { Ok 'reuse another VM than the pinned one: written as before' } else { Bad "reuse other: cfg=$($x.Cfg -join ',') cred=$($x.Cred)" }
+    function Get-VM { param($Name, $ErrorAction) $null }
+    Remove-Item Function:\Get-VMCheckpoint
+    # no -Name: New-Win32ToolkitTestVM keeps its literal default 'win32tk-golden' (not the pin), so that VM's settings are written
+    $x = & $run9 @{ IsoPath = 'C:\iso\Win11_x64.iso' }
+    if (-not $x.Err -and $x.Cfg.Count -eq 5) { Ok 'no -Name under a pin: the literal default VM is created and its settings written (the pin is not the default)' } else { Bad "no name: cfg=$($x.Cfg -join ',')" }
+    Remove-Item Env:\W32T_HYPERV_VM
+    $x = & $run9 @{ IsoPath = 'C:\iso\Win11_x64.iso'; Name = 'lane-vm' }
+    if (-not $x.Err -and $x.Cfg.Count -eq 5 -and $x.Cred -eq 1 -and @($x.Info | Where-Object { $_ -like '*pinned by W32T_HYPERV_VM*' }).Count -eq 0) { Ok 'no pin: the five settings and the credential are written, as before' } else { Bad "no pin: cfg=$($x.Cfg -join ',') cred=$($x.Cred)" }
+}
+finally { Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue }
+# Safety net: no real Hyper-V cmdlet was reached (it would have imported the Hyper-V module; its aliases beat the shadows).
+if (-not (Microsoft.PowerShell.Core\Get-Module -Name Hyper-V)) { Ok 'the Hyper-V module was never imported (no real Hyper-V cmdlet reached)' } else { Bad 'the Hyper-V module was imported: a real Hyper-V cmdlet was reached' }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All TestVMPathQuote tests passed.' -ForegroundColor Green; exit 0 }

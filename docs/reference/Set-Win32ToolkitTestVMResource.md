@@ -30,8 +30,10 @@ off: with them on, every start from Off adds an 'Automatic Checkpoint', and the 
 setting back with every restore.
 
 The chosen values are saved (HyperVProcessorCount / HyperVMemoryStartupBytes) and become the defaults for the
-next New-Win32ToolkitTestVM.
-Requested CPU/RAM above the host's capacity is REFUSED.
+next New-Win32ToolkitTestVM, except for the VM this PowerShell session pins with the W32T_HYPERV_VM environment
+variable (a pin is for the session only: nothing is saved, and one line says so).
+Requested CPU/RAM above the
+host's capacity is REFUSED.
 
 The change holds the test VM's lease, the lock every win32-toolkit process takes before it changes the VM:
 while another PowerShell session uses the VM it waits, up to HyperVLeaseWaitMinutes (default 60), and then
@@ -86,7 +88,7 @@ Accept wildcard characters: False
 
 ### -Name
 VM name.
-Defaults to the configured HyperVVMName ('win32tk-golden').
+Defaults to the session's test VM: W32T_HYPERV_VM, else the configured HyperVVMName, else 'win32tk-golden'.
 
 ```yaml
 Type: String
@@ -102,7 +104,8 @@ Accept wildcard characters: False
 
 ### -CheckpointName
 Clean-base checkpoint name to recreate.
-Defaults to the configured HyperVCheckpoint ('clean-base').
+Defaults to W32T_HYPERV_CHECKPOINT, else the configured HyperVCheckpoint,
+else 'clean-base'.
 
 ```yaml
 Type: String

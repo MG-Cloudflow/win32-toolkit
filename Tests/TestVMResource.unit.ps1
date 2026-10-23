@@ -19,6 +19,10 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitByteSize.ps1')
 . (Join-Path $repo 'Private\Clear-Win32ToolkitHyperVStateCache.ps1')   # reconfigure invalidates the HyperV state caches
 . (Join-Path $repo 'Public\Set-Win32ToolkitTestVMResource.ps1')
+# C-9 (speed-up PR 3): the defaults come from the real resolver (fed by the config shadow); A-10 prints the VM as safe text.
+. (Join-Path $repo 'Private\Get-Win32ToolkitHyperVTarget.ps1')
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue
 
 # --- shadowed Hyper-V + config surface, logging the call sequence ---------------------------------
 $script:calls    = @()
@@ -237,6 +241,49 @@ finally {
     Remove-Item Function:\Get-VM_Saved10, Function:\Enter-Win32ToolkitHyperVLease_Saved10, Function:\Remove-VM
     $script:leaseThrows = $false
 }
+
+# == [11] speed-up PR 3 (D11, A-10): under a W32T_HYPERV_VM pin the defaults are the pinned VM and nothing is saved ======
+Write-Host '[11] pinned by W32T_HYPERV_VM: the pinned VM by default; no HKCU identity or size value written for it, one line' -ForegroundColor Cyan
+$pinLine = "VM 'lane-vm' is pinned by W32T_HYPERV_VM for this session only: its name, checkpoint and size were not saved as your defaults."
+$run11 = {
+    param([hashtable]$P)
+    $script:calls = @(); $script:cfg = @{}; $iv = $null; $e = $null
+    try { $null = Set-Win32ToolkitTestVMResource @P -InformationVariable iv 6>$null 3>$null } catch { $e = $_ }
+    [pscustomobject]@{ Err = $e; Info = @($iv | ForEach-Object { "$_" }); Calls = @($script:calls); Cfg = @($script:calls | Where-Object { $_ -like 'cfg:*' }) }
+}
+try {
+    $script:vmState = 'Off'; $script:desktopUp = $true; $script:curCpu = 2; $script:curMem = [uint64]4GB; $script:vmExists = $true
+    $env:W32T_HYPERV_VM = 'lane-vm'; $env:W32T_HYPERV_CHECKPOINT = 'clean-auto'
+    $x = & $run11 @{ ProcessorCount = 4 }
+    if (-not $x.Err -and $x.Cfg.Count -eq 0 -and ($x.Calls -contains 'Lease:enter:lane-vm:resource change') -and ($x.Calls -contains 'Checkpoint-VM:clean-auto') -and @($x.Info | Where-Object { $_ -ceq $pinLine }).Count -eq 1) {
+        Ok 'no -Name: the pinned VM and checkpoint are reconfigured, no cfg: write, the one host line'
+    } else { Bad "pinned: err=$($x.Err) cfg=$($x.Cfg -join ',') calls=$($x.Calls -join ' > ') info=$($x.Info -join ' | ')" }
+    $x = & $run11 @{ ProcessorCount = 4; Name = 'other-vm'; CheckpointName = 'clean-base' }
+    if (-not $x.Err -and ($x.Cfg -contains 'cfg:HyperVVMName=other-vm') -and $x.Cfg.Count -eq 4 -and @($x.Info | Where-Object { $_ -like '*pinned by W32T_HYPERV_VM*' }).Count -eq 0) {
+        Ok 'another VM than the pinned one (-Name): the settings are written as before'
+    } else { Bad "other vm: cfg=$($x.Cfg -join ',') info=$($x.Info -join ' | ')" }
+    Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT
+    $x = & $run11 @{ ProcessorCount = 4 }
+    if (-not $x.Err -and ($x.Cfg -join ',') -eq 'cfg:HyperVVMName=win32tk-golden,cfg:HyperVCheckpoint=clean-base,cfg:HyperVProcessorCount=4,cfg:HyperVMemoryStartupBytes=4294967296') {
+        Ok 'no pin: the four settings are written, as before'
+    } else { Bad "no pin: cfg=$($x.Cfg -join ',')" }
+    # Remove-Win32ToolkitTestVM's default is the pinned VM too.
+    ${function:Get-VM_Saved11} = ${function:Get-VM}
+    function Get-VM { param($Name, $ErrorAction) [pscustomobject]@{ Name = $Name; State = 'Off'; Id = [guid]'0e5f9e66-1111-2222-3333-444455556666'; HardDrives = @() } }
+    function Remove-VM { param($Name, [switch]$Force, $ErrorAction) Log "Remove-VM:$Name" }
+    $env:W32T_HYPERV_VM = 'lane-vm'
+    $script:calls = @()
+    $null = Remove-Win32ToolkitTestVM -Confirm:$false 6>$null 3>$null
+    if (($script:calls -contains 'Remove-VM:lane-vm') -and ($script:calls -contains 'Lease:enter:lane-vm:removal')) { Ok 'Remove-Win32ToolkitTestVM without -Name removes the pinned VM' } else { Bad "remove default: $($script:calls -join ' > ')" }
+}
+finally {
+    Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue
+    if (Test-Path Function:\Get-VM_Saved11) { ${function:Get-VM} = ${function:Get-VM_Saved11}; Remove-Item Function:\Get-VM_Saved11 }
+    Remove-Item Function:\Remove-VM -ErrorAction SilentlyContinue
+}
+# Safety net (speed-up PR 3): no real Hyper-V cmdlet was reached (it would have imported the Hyper-V module, whose aliases
+# Get-VMCheckpoint / Remove-VMCheckpoint then win over the shadows above).
+if (-not (Microsoft.PowerShell.Core\Get-Module -Name Hyper-V)) { Ok 'the Hyper-V module was never imported (no real Hyper-V cmdlet reached)' } else { Bad 'the Hyper-V module was imported: a real Hyper-V cmdlet was reached' }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All TestVMResource tests passed.' -ForegroundColor Green; exit 0 }

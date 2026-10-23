@@ -22,6 +22,10 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Test-Win32ToolkitHyperVReady.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitTestBackend.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitBasePath.ps1')
+# C-9 (speed-up PR 3): the resolver (and its safe-text helper) the readiness check and the backend use; no pin leaks in.
+. (Join-Path $repo 'Private\Get-Win32ToolkitHyperVTarget.ps1')
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue
 
 Write-Host '[0] an absent optional config value leaves no error record (test campaign 2026-10-21)' -ForegroundColor Cyan
 # READ-ONLY against the real HKCU key: on a host with the key this is the absent-VALUE path, on a clean
@@ -129,6 +133,52 @@ function Get-VMCheckpoint { param([string]$VMName, [string]$Name, $ErrorAction) 
 function Get-Win32ToolkitGuestCredential { $null }
 if (@(Test-Win32ToolkitHyperVReady -Force) -match 'credential') { Ok 'no guest credential -> reason' } else { Bad 'missing credential not flagged' }
 
+Write-Host '[4] (speed-up PR 3, D11) a VM pinned by W32T_HYPERV_VM that is not ready: W32T.HyperVTargetNotReady, never the Sandbox fallback' -ForegroundColor Cyan
+$script:cfgBackend = 'HyperV'
+function Get-Win32ToolkitConfigValue { param([string]$Name, [string]$Default) if ($Name -eq 'TestBackend') { return $script:cfgBackend } return $Default }
+$script:hvReasons = @()
+function Test-Win32ToolkitHyperVReady { return $script:hvReasons }
+$probe4 = {
+    param([hashtable]$Splat = @{})
+    $r = $null; $threw = $null; $w = $null
+    try { $r = Get-Win32ToolkitTestBackend @Splat -WarningVariable w 3>$null } catch { $threw = $_ }
+    [pscustomobject]@{ R = $r; Threw = $threw; Warnings = @($w | ForEach-Object { "$_" }) }
+}
+try {
+    $env:W32T_HYPERV_VM = 'lane-vm'
+    foreach ($case in @(@{ Tag = '-Backend HyperV'; Splat = @{ Backend = 'HyperV' } }, @{ Tag = 'TestBackend HyperV (config)'; Splat = @{} })) {
+        $script:hvReasons = @("VM 'lane-vm' not found", 'guest credential is not configured')
+        $x = & $probe4 $case.Splat
+        $want = "The test VM pinned by W32T_HYPERV_VM ('lane-vm') is not ready (VM 'lane-vm' not found; guest credential is not configured); the test was not started. Fix the VM or remove the pin."
+        if ($x.Threw.FullyQualifiedErrorId -eq 'W32T.HyperVTargetNotReady' -and $x.Threw.CategoryInfo.Category -eq 'ResourceUnavailable' -and "$($x.Threw)" -ceq $want -and $x.Warnings.Count -eq 0 -and $null -eq $x.R) {
+            Ok "pinned + not ready, $($case.Tag): throws W32T.HyperVTargetNotReady naming the VM and the reasons (no fallback warning)"
+        } else { Bad "$($case.Tag): r=$($x.R) threw=$($x.Threw.FullyQualifiedErrorId) $($x.Threw) warnings=$($x.Warnings -join ' | ')" }
+    }
+    $x = & $probe4 @{ Backend = 'HyperV'; NoPinThrow = $true }
+    if (-not $x.Threw -and $x.R -eq 'Sandbox' -and $x.Warnings.Count -eq 1) { Ok '-NoPinThrow (display): Sandbox with the usual warning, no throw' } else { Bad "nopinthrow: r=$($x.R) threw=$($x.Threw)" }
+    $script:hvReasons = @()
+    $x = & $probe4 @{ Backend = 'HyperV' }
+    if (-not $x.Threw -and $x.R -eq 'HyperV') { Ok 'pinned + ready: HyperV' } else { Bad "pinned ready: $($x.R) $($x.Threw)" }
+    $x = & $probe4 @{ Backend = 'Sandbox' }
+    if (-not $x.Threw -and $x.R -eq 'Sandbox') { Ok 'pinned, -Backend Sandbox: Sandbox (the pin is for Hyper-V runs only)' } else { Bad "pinned sandbox: $($x.R) $($x.Threw)" }
+    Remove-Item Env:\W32T_HYPERV_VM
+    $script:hvReasons = @("VM 'win32tk-golden' not found")
+    $x = & $probe4 @{ Backend = 'HyperV' }
+    if (-not $x.Threw -and $x.R -eq 'Sandbox' -and $x.Warnings.Count -eq 1 -and $x.Warnings[0] -like 'Hyper-V test backend requested but not ready*falling back to Windows Sandbox.') { Ok 'not pinned + not ready: the Sandbox fallback and its warning, unchanged' } else { Bad "unpinned: $($x.R) $($x.Threw) $($x.Warnings -join ' | ')" }
+    $env:W32T_HYPERV_CHECKPOINT = 'clean-auto'
+    $x = & $probe4 @{ Backend = 'HyperV' }
+    if (-not $x.Threw -and $x.R -eq 'Sandbox') { Ok 'a checkpoint pin alone does not pin the VM: the fallback stays' } else { Bad "cp pin: $($x.R) $($x.Threw)" }
+    Remove-Item Env:\W32T_HYPERV_CHECKPOINT
+    # An invalid pin: the readiness check reports it, the backend throws the resolver's error.
+    $env:W32T_HYPERV_VM = '   '
+    $script:hvReasons = @('W32T_HYPERV_VM is not a valid VM name (1 to 100 characters, no control character)')
+    $x = & $probe4 @{ Backend = 'HyperV' }
+    if ($x.Threw.FullyQualifiedErrorId -eq 'W32T.HyperVTargetNotReady' -and "$($x.Threw)" -like 'W32T_HYPERV_VM is not a valid VM name*') { Ok 'an invalid pin: W32T.HyperVTargetNotReady (the resolver''s message)' } else { Bad "invalid: $($x.Threw.FullyQualifiedErrorId) $($x.Threw)" }
+    $script:cfgBackend = 'Sandbox'
+    $x = & $probe4 @{}
+    if (-not $x.Threw -and $x.R -eq 'Sandbox') { Ok 'an invalid pin with the Sandbox backend: Sandbox, no throw' } else { Bad "invalid sandbox: $($x.Threw)" }
+}
+finally { Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue }
 if ($fail -eq 0) {
     Write-Host "`nAll TestBackendConfig tests passed." -ForegroundColor Green
     exit 0

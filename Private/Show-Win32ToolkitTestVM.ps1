@@ -23,7 +23,8 @@ function Show-Win32ToolkitTestVM {
         }
 
         # Show the VM's current CPU/RAM (live if it exists, else the configured spec the next provision will use).
-        $vmName = Get-Win32ToolkitConfigValue -Name 'HyperVVMName' -Default 'win32tk-golden'
+        # The session's VM (speed-up PR 3, D11: a W32T_HYPERV_VM pin first, then the registry).
+        $vmName = (Get-Win32ToolkitHyperVTarget).VMName
         $liveVm = $null; try { $liveVm = Get-VM -Name $vmName -ErrorAction SilentlyContinue } catch { }
         if ($liveVm) {
             $hCpu = (Get-VMProcessor -VMName $vmName).Count
@@ -66,7 +67,7 @@ function Show-Win32ToolkitTestVM {
                     # New-Win32ToolkitGoldenVhdx throws "VHDX already exists (use -Force)" the instant it starts
                     # — the TUI never passed -Force — so a repeat provisioning attempt appeared to "do nothing"
                     # (it errored before any progress output). Offer a rebuild instead of dead-ending.
-                    $vmName    = Get-Win32ToolkitConfigValue -Name 'HyperVVMName' -Default 'win32tk-golden'
+                    $vmName    = (Get-Win32ToolkitHyperVTarget).VMName
                     $vhdxPath  = Join-Path (Get-Win32ToolkitHyperVPaths -BasePath (Get-Win32ToolkitBasePath)).Golden "$vmName.vhdx"
                     $existingVhdx = Test-Path -LiteralPath $vhdxPath
                     $existingVm   = $false

@@ -37,8 +37,9 @@ function Invoke-Win32ToolkitHyperVRun {
     .PARAMETER BaselineProjectPath
         Update baseline-project mode: a second project copied read-only-in-effect to C:\PSADTOld.
     .PARAMETER VMName / Credential / CheckpointName
-        Resolved from config / the stored guest credential when omitted (CheckpointName: the HyperVCheckpoint
-        config value, default 'clean-base' - the checkpoint the test VM commands maintain).
+        Resolved when omitted: VMName and CheckpointName by Get-Win32ToolkitHyperVTarget (W32T_HYPERV_VM /
+        W32T_HYPERV_CHECKPOINT for this session, else HyperVVMName / HyperVCheckpoint, else 'win32tk-golden' /
+        'clean-base' - the checkpoint the test VM commands maintain), the credential from the stored guest credential.
     .PARAMETER ParityExitNote
         Optional list the run adds one sentence to for each Intune-parity phase (a phase with a ParityHint) that
         exited with a code outside its SuccessExitCodes, for the Notes of the test's TestResults.json record:
@@ -78,8 +79,13 @@ function Invoke-Win32ToolkitHyperVRun {
         [hashtable]$RunInfo
     )
 
-    if (-not $VMName)     { $VMName = Get-Win32ToolkitConfigValue -Name 'HyperVVMName' -Default 'win32tk-golden' }
-    if (-not $CheckpointName) { $CheckpointName = Get-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Default 'clean-base' }
+    # The session's test VM and checkpoint (speed-up PR 3, D11): W32T_HYPERV_VM / W32T_HYPERV_CHECKPOINT, else the registry,
+    # else the defaults; an invalid pin throws W32T.HyperVTargetNotReady before anything starts.
+    if (-not $VMName -or -not $CheckpointName) {
+        $target = Get-Win32ToolkitHyperVTarget
+        if (-not $VMName)         { $VMName = $target.VMName }
+        if (-not $CheckpointName) { $CheckpointName = $target.CheckpointName }
+    }
     if (-not $Credential) { $Credential = Get-Win32ToolkitGuestCredential }
     if (-not $Credential) {
         throw "No Hyper-V guest credential is configured. Run New-Win32ToolkitTestVM first (it stores the credential), or pass -Credential."

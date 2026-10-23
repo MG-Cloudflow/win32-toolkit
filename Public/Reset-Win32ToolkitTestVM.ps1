@@ -18,14 +18,14 @@ function Reset-Win32ToolkitTestVM {
         while another PowerShell session uses the VM (a test run, for example) the reset waits for it, up to
         HyperVLeaseWaitMinutes (default 60), and then stops with the error W32T.HyperVLeaseTimeout.
     .PARAMETER Name
-        VM name (default: the stored HyperVVMName, else 'win32tk-golden').
+        VM name (default: the session's test VM: W32T_HYPERV_VM, else the stored HyperVVMName, else 'win32tk-golden').
     .PARAMETER CheckpointName
-        Checkpoint to restore (default: the stored HyperVCheckpoint, else 'clean-base').
+        Checkpoint to restore (default: W32T_HYPERV_CHECKPOINT, else the stored HyperVCheckpoint, else 'clean-base').
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [string]$Name = (Get-Win32ToolkitConfigValue -Name 'HyperVVMName' -Default 'win32tk-golden'),
-        [string]$CheckpointName = (Get-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Default 'clean-base')
+        [string]$Name = ((Get-Win32ToolkitHyperVTarget).VMName),
+        [string]$CheckpointName = ((Get-Win32ToolkitHyperVTarget).CheckpointName)
     )
 
     if ($PSCmdlet.ShouldProcess($Name, "Restore checkpoint '$CheckpointName'")) {

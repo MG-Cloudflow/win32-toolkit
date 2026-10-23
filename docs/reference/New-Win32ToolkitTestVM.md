@@ -27,7 +27,9 @@ Then - unless
 let all reboots finish; once you confirm, it freezes a STANDARD (memory-state) checkpoint so later
 runs revert to that warm, fully-patched, logged-in desktop with no boot.
 The VM name, checkpoint
-name, and guest credential are saved to config for the resolver/provider.
+name, and guest credential are saved to config for the resolver/provider; for the VM this PowerShell
+session pins with the W32T_HYPERV_VM environment variable, only a missing guest credential is saved
+(a pin is for the session only).
 Hyper-V automatic
 checkpoints are turned off before the VM's first start, so the checkpoint is taken with them off
 (with them on, every start from Off would add an 'Automatic Checkpoint').

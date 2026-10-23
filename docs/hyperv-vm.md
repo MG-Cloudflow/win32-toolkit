@@ -229,6 +229,24 @@ from an elevated session (it only ever holds lock files) and the next test creat
 Hyper-V Manager and scripts that call the Hyper-V cmdlets directly do not take the lease: do not restore or start
 the test VM by hand while a test runs.
 
+**Pin a VM per session** (`W32T_HYPERV_VM`, `W32T_HYPERV_CHECKPOINT`). A PowerShell session can test on another VM
+than the one in the registry, without changing the registry:
+
+```powershell
+$env:W32T_HYPERV_VM = 'win32tk-lane2'       # this session (and the processes it starts) only
+$env:W32T_HYPERV_CHECKPOINT = 'clean-base'  # optional: else HyperVCheckpoint, else clean-base
+Test-Win32ToolkitProject -ProjectPath $proj -Scenario InstallUninstall -Backend HyperV -Unattended
+```
+
+Test runs, the Intune-parity pre-check, the readiness check and the defaults of `Reset-`, `Set-Win32ToolkitTestVMResource`,
+`Remove-Win32ToolkitTestVM` and the TUI's repair action then use the pinned VM and checkpoint. A pinned session fails
+closed: when the pinned VM is not ready, a test stops with the error `W32T.HyperVTargetNotReady` instead of falling
+back to Windows Sandbox, and so does an invalid value (blank, longer than 100 characters, or with a control
+character). The VM commands save no name, checkpoint, CPU or memory value for the pinned VM as your defaults (one line
+says so); only a missing guest credential is saved, and the pinned VM uses the same stored guest credential as the
+registry's. `New-Win32ToolkitTestVM` keeps its own default name (`win32tk-golden`): pass `-Name` to provision the pinned
+VM.
+
 ### Tip: stop Edge and WebView2 from updating in the VM
 
 Microsoft Edge and the WebView2 runtime update themselves in the background. In the test VM that
@@ -243,7 +261,7 @@ running: start it with `Start-VM` if it is not.
 # Elevated PowerShell on the Hyper-V host
 Import-Module win32-toolkit
 $mod  = Get-Module win32-toolkit
-$vm   = & $mod { Get-Win32ToolkitConfigValue -Name 'HyperVVMName' }
+$vm   = & $mod { (Get-Win32ToolkitHyperVTarget).VMName }   # the session's test VM (W32T_HYPERV_VM, else the registry's)
 $cred = & $mod { Get-Win32ToolkitGuestCredential }
 
 Invoke-Command -VMName $vm -Credential $cred -ScriptBlock {

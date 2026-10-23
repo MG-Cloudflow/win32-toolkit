@@ -22,6 +22,10 @@ function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
 . (Join-Path $repo 'Private\Repair-Win32ToolkitTestVMCheckpoint.ps1')
+# C-9 (speed-up PR 3): the defaults come from the real resolver (fed by the config shadow); A-10 prints the VM as safe text.
+. (Join-Path $repo 'Private\Get-Win32ToolkitHyperVTarget.ps1')
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue
 
 # --- shadowed toolkit + Hyper-V surface, logging the call sequence --------------------------------
 $script:calls      = @()
@@ -215,6 +219,33 @@ try { $null = Repair-Win32ToolkitTestVMCheckpoint 6>$null 3>$null } catch { $err
 $script:leaseThrows = $false
 if ($err9.FullyQualifiedErrorId -eq 'W32T.HyperVLeaseTimeout' -and ($script:calls -join ' > ') -eq 'Lease:enter:win32tk-golden:checkpoint repair') { Ok 'a lease timeout: W32T.HyperVLeaseTimeout, no reset, no checkpoint, no setting' } else { Bad "timeout: $($err9.FullyQualifiedErrorId) calls=$($script:calls -join ' > ')" }
 $script:vmState = 'Running'; $script:cpExists = $false; $script:storedCred = $null
+
+# == [10] speed-up PR 3 (D11, A-10): under a W32T_HYPERV_VM pin the pinned VM is repaired and nothing is saved =======
+Write-Host '[10] pinned by W32T_HYPERV_VM: the pinned VM and checkpoint by default; no HKCU identity written, one line; a typed credential still saved' -ForegroundColor Cyan
+try {
+    $env:W32T_HYPERV_VM = 'lane-vm'; $env:W32T_HYPERV_CHECKPOINT = 'clean-auto'
+    $script:cpExists = $true; $script:storedCred = $typedCred; $script:desktopUp = $true; $script:waitThrows = $false; $script:vmState = 'Running'
+    $script:calls = @(); $script:cfg = @{}; $iv10 = $null; $r10 = $null
+    $r10 = @(Repair-Win32ToolkitTestVMCheckpoint -InformationVariable iv10 6>$null 3>$null)
+    $line10 = "VM 'lane-vm' is pinned by W32T_HYPERV_VM for this session only: its name and checkpoint were not saved as your defaults."
+    if ($r10.Count -eq 1 -and $r10[0] -eq $true -and @($script:calls | Where-Object { $_ -like 'cfg:*' }).Count -eq 0 -and ($script:calls -contains 'Checkpoint-VM:clean-auto') -and
+        ($script:calls -contains 'Lease:enter:lane-vm:checkpoint repair') -and @($iv10 | Where-Object { "$_" -ceq $line10 }).Count -eq 1) {
+        Ok 'the pinned VM and checkpoint are repaired, no cfg: write, the one host line, exactly $true'
+    } else { Bad "pinned: ret=$($r10 -join ',') calls=$($script:calls -join ' > ') info=$(@($iv10) -join ' | ')" }
+    # no stored credential: the typed one is still verified and saved under the pin
+    $script:cpExists = $false; $script:storedCred = $null
+    Run
+    if ($script:ret -eq $true -and ($script:calls -contains 'PersistCred') -and @($script:calls | Where-Object { $_ -like 'cfg:*' }).Count -eq 0) { Ok 'no stored credential under the pin: the typed credential is still saved after PowerShell Direct proved it; no identity value' } else { Bad "pinned cred: $($script:calls -join ' > ')" }
+    Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT
+    $script:cpExists = $true; $script:storedCred = $typedCred
+    Run
+    if ($script:ret -eq $true -and ($script:calls -contains 'cfg:HyperVVMName=win32tk-golden') -and ($script:calls -contains 'cfg:HyperVCheckpoint=clean-base')) { Ok 'no pin: the VM and checkpoint are saved, as before' } else { Bad "no pin: $($script:calls -join ' > ')" }
+}
+finally { Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue }
+$script:vmState = 'Running'; $script:cpExists = $false; $script:storedCred = $null
+# Safety net (speed-up PR 3): no real Hyper-V cmdlet was reached (it would have imported the Hyper-V module, whose aliases
+# Get-VMCheckpoint / Remove-VMCheckpoint then win over the shadows above).
+if (-not (Microsoft.PowerShell.Core\Get-Module -Name Hyper-V)) { Ok 'the Hyper-V module was never imported (no real Hyper-V cmdlet reached)' } else { Bad 'the Hyper-V module was imported: a real Hyper-V cmdlet was reached' }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All TestVMCheckpointRepair tests passed.' -ForegroundColor Green; exit 0 }
