@@ -154,6 +154,27 @@ Run
 if ($script:ret -eq $true -and (Index 'Set-VM:Auto=False+CheckpointType') -ge 0 -and @($script:calls | Where-Object { $_ -eq 'Set-VM:Auto=False' }).Count -eq 0) { Ok 'checkpoint present (Reset path): no start from Off, the re-take carries the setting' } else { Bad "reset path: $($script:calls -join ' > ')" }
 $script:vmState = 'Running'; $script:cpExists = $false; $script:storedCred = $null
 
+# == [8] speed-up PR 2 (V-Fe11): a checkpoint that could not be re-taken stops the repair ==========================
+Write-Host '[8] Checkpoint-VM fails -> the repair throws: no success line, no settings written' -ForegroundColor Cyan
+# The real cmdlet reports the failure as a non-terminating error. The double does the same (an advanced function, so
+# -ErrorAction Stop turns it into a throw), and the call runs with the session default $ErrorActionPreference Continue.
+${function:Checkpoint-VM_Saved} = ${function:Checkpoint-VM}
+function Checkpoint-VM { [CmdletBinding()] param($VMName, $SnapshotName) Log "Checkpoint-VM:$SnapshotName"; Write-Error 'Simulated: the checkpoint operation failed.' }
+$script:cpExists = $true; $script:storedCred = $typedCred; $script:desktopUp = $true; $script:waitThrows = $false; $script:vmState = 'Running'
+$script:calls = @(); $script:cfg = @{}
+$r8 = & {
+    $ErrorActionPreference = 'Continue'
+    $iv = $null; $t = $null; $out = $null
+    try { $out = @(Repair-Win32ToolkitTestVMCheckpoint -InformationVariable iv 2>$null 3>$null 6>$null) } catch { $t = $_ }
+    [pscustomobject]@{ Threw = $t; Out = $out; Info = @($iv | ForEach-Object { "$_" }) }
+}
+${function:Checkpoint-VM} = ${function:Checkpoint-VM_Saved}
+Remove-Item Function:\Checkpoint-VM_Saved
+if ($r8.Threw -and "$($r8.Threw)" -like '*checkpoint operation failed*' -and $null -eq $r8.Out) { Ok 'the repair throws the checkpoint error (no $true)' } else { Bad "no throw: threw=$($r8.Threw) out=$($r8.Out -join ',')" }
+if (@($r8.Info | Where-Object { $_ -like '*checkpoint re-taken*' }).Count -eq 0) { Ok 'no "checkpoint re-taken" success line' } else { Bad "success line printed: $($r8.Info -join ' | ')" }
+if (@($script:calls | Where-Object { $_ -like 'cfg:*' }).Count -eq 0 -and ($script:calls -contains 'Checkpoint-VM:clean-base')) { Ok 'no setting written after the failed checkpoint' } else { Bad "after a failed checkpoint: $($script:calls -join ' > ')" }
+$script:vmState = 'Running'; $script:cpExists = $false; $script:storedCred = $null
+
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All TestVMCheckpointRepair tests passed.' -ForegroundColor Green; exit 0 }
 else { Write-Host "$fail TestVMCheckpointRepair test(s) FAILED." -ForegroundColor Red; exit 1 }

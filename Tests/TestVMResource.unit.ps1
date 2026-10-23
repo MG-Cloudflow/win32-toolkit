@@ -155,6 +155,26 @@ $null = ExpectThrow @{ ProcessorCount = 4 } 'Could not power off'
 if (-not ($script:calls | Where-Object { $_ -like 'Set-VM*' })) { Ok 'a VM that will not power off: no Set-VM at all (as [7])' } else { Bad "set-vm on refusal: $($script:calls -join ',')" }
 $script:vmState = 'Off'
 
+# == [9] speed-up PR 2 (V-Fe11): a checkpoint that could not be taken stops the command ===========================
+Write-Host '[9] Checkpoint-VM fails -> the command throws: no success line, no settings written' -ForegroundColor Cyan
+# The real cmdlet reports the failure as a non-terminating error. The double does the same (an advanced function, so
+# -ErrorAction Stop turns it into a throw), and the call runs with the session default $ErrorActionPreference Continue.
+${function:Checkpoint-VM_Saved} = ${function:Checkpoint-VM}
+function Checkpoint-VM { [CmdletBinding()] param($VMName, $SnapshotName) Log "Checkpoint-VM:$SnapshotName"; Write-Error 'Simulated: the checkpoint operation failed.' }
+$script:vmState = 'Off'; $script:desktopUp = $true; $script:curCpu = 2; $script:curMem = [uint64]4GB
+$script:calls = @(); $script:cfg = @{}
+$r9 = & {
+    $ErrorActionPreference = 'Continue'
+    $iv = $null; $t = $null
+    try { $null = Set-Win32ToolkitTestVMResource -ProcessorCount 4 -InformationVariable iv 2>$null 3>$null 6>$null } catch { $t = $_ }
+    [pscustomobject]@{ Threw = $t; Info = @($iv | ForEach-Object { "$_" }) }
+}
+${function:Checkpoint-VM} = ${function:Checkpoint-VM_Saved}
+Remove-Item Function:\Checkpoint-VM_Saved
+if ($r9.Threw -and "$($r9.Threw)" -like '*checkpoint operation failed*') { Ok 'the command throws the checkpoint error' } else { Bad "no throw: $($r9.Threw)" }
+if (@($r9.Info | Where-Object { $_ -like '*checkpoint recreated*' }).Count -eq 0) { Ok 'no "checkpoint recreated" success line' } else { Bad "success line printed: $($r9.Info -join ' | ')" }
+if (@($script:calls | Where-Object { $_ -like 'cfg:*' }).Count -eq 0 -and ($script:calls -contains 'Checkpoint-VM:clean-base')) { Ok 'no setting written after the failed checkpoint' } else { Bad "after a failed checkpoint: $($script:calls -join ' > ')" }
+
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All TestVMResource tests passed.' -ForegroundColor Green; exit 0 }
 else { Write-Host "$fail TestVMResource test(s) FAILED." -ForegroundColor Red; exit 1 }

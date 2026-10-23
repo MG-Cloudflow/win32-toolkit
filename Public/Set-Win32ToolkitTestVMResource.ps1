@@ -161,7 +161,8 @@ function Set-Win32ToolkitTestVMResource {
 
     # 5. Re-freeze the clean base at the new hardware level.
     $null = Set-VM -Name $Name -CheckpointType Standard -AutomaticCheckpointsEnabled $false
-    Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName
+    # A failed checkpoint stops here (speed-up PR 2, V-Fe11): no success line and no settings for a VM without one.
+    Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName -ErrorAction Stop
     Write-Host "✓ '$CheckpointName' checkpoint recreated at $newCpu vCPU / $([math]::Round($newMem / 1GB, 2)) GB." -ForegroundColor Green
 
     # 6. Persist the new specs (and re-affirm the VM identity) so New-Win32ToolkitTestVM reuses them.

@@ -287,7 +287,8 @@ function New-Win32ToolkitTestVM {
 
         # The checkpoint keeps the VM's settings: Standard type, automatic checkpoints off (D5).
         $null = Set-VM -Name $Name -CheckpointType Standard -AutomaticCheckpointsEnabled $false
-        Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName
+        # A failed checkpoint stops here (speed-up PR 2, V-Fe11): no success line and no settings for a VM without one.
+        Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName -ErrorAction Stop
         Write-Host "✓ Warm '$CheckpointName' checkpoint taken." -ForegroundColor Green
 
         Set-Win32ToolkitConfigValue -Name 'HyperVVMName'            -Value $Name

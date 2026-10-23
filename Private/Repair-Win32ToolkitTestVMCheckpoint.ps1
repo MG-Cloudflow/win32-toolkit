@@ -94,7 +94,8 @@ function Repair-Win32ToolkitTestVMCheckpoint {
     # 5. Freeze the logged-in desktop as the new clean base and make the readiness banner see it.
     Get-VMCheckpoint -VMName $Name -ErrorAction SilentlyContinue | Remove-VMCheckpoint -ErrorAction SilentlyContinue
     $null = Set-VM -Name $Name -CheckpointType Standard -AutomaticCheckpointsEnabled $false
-    Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName
+    # A failed checkpoint stops here (speed-up PR 2, V-Fe11): no success line and no settings for a VM without one.
+    Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName -ErrorAction Stop
     Clear-Win32ToolkitHyperVStateCache
     Set-Win32ToolkitConfigValue -Name 'HyperVVMName'     -Value $Name
     Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Value $CheckpointName

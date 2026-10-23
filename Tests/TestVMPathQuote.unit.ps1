@@ -105,6 +105,24 @@ $iCpSet = [array]::IndexOf($script:calls, 'Set-VM:CheckpointType=Standard:Auto=F
 if (-not $script:err -and $iAuto -ge 0 -and $iStart -gt $iAuto -and [array]::IndexOf($script:calls, 'New-VM') -lt $iAuto) { Ok 'after New-VM, automatic checkpoints off BEFORE the first Start-VM' } else { Bad "order: err='$script:err' $($script:calls -join ' > ')" }
 if ($iCpSet -gt $iStart -and $iCp -gt $iCpSet) { Ok 'the checkpoint''s Set-VM: Standard type and automatic checkpoints off' } else { Bad "checkpoint Set-VM: $($script:calls -join ' > ')" }
 
+# == [7] speed-up PR 2 (V-Fe11): a clean-base checkpoint that could not be taken stops provisioning ================
+Write-Host '[7] Checkpoint-VM fails -> provisioning throws: no success line, no settings or credential written' -ForegroundColor Cyan
+# The real cmdlet reports the failure as a non-terminating error. The double does the same (an advanced function, so
+# -ErrorAction Stop turns it into a throw), and the call runs with the session default $ErrorActionPreference Continue.
+function Checkpoint-VM { [CmdletBinding()] param($VMName, $SnapshotName) Log 'Checkpoint-VM'; Write-Error 'Simulated: the checkpoint operation failed.' }
+function Set-Win32ToolkitConfigValue { param($Name, $Value) Log "cfg:$Name" }
+function Set-Win32ToolkitGuestCredential { param($Credential) Log 'cred' }
+$script:calls = @()
+$r7 = & {
+    $ErrorActionPreference = 'Continue'
+    $iv = $null; $t = $null
+    try { $null = New-Win32ToolkitTestVM -IsoPath 'C:\iso\Win11_x64.iso' -Credential $cred -Unattended -InformationVariable iv 2>$null 3>$null 6>$null } catch { $t = $_ }
+    [pscustomobject]@{ Threw = $t; Info = @($iv | ForEach-Object { "$_" }) }
+}
+if ($r7.Threw -and "$($r7.Threw)" -like '*checkpoint operation failed*') { Ok 'provisioning throws the checkpoint error' } else { Bad "no throw: $($r7.Threw)" }
+if (@($r7.Info | Where-Object { $_ -like '*checkpoint taken*' }).Count -eq 0) { Ok 'no "checkpoint taken" success line' } else { Bad "success line printed: $($r7.Info -join ' | ')" }
+if (($script:calls -contains 'Checkpoint-VM') -and @($script:calls | Where-Object { $_ -like 'cfg:*' -or $_ -eq 'cred' }).Count -eq 0) { Ok 'no setting and no guest credential written after the failed checkpoint' } else { Bad "after a failed checkpoint: $($script:calls -join ' > ')" }
+
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All TestVMPathQuote tests passed.' -ForegroundColor Green; exit 0 }
 else { Write-Host "$fail TestVMPathQuote test(s) FAILED." -ForegroundColor Red; exit 1 }
