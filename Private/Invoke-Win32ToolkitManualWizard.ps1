@@ -46,6 +46,12 @@ function Invoke-Win32ToolkitManualWizard {
     # Template
     $template = Get-Win32ToolkitTemplateChoice -BasePath $BasePath
     if ([string]::IsNullOrWhiteSpace($template)) { return }
+    # The template folder (Projects\<Template>): the Advanced hand-off and the not-configured lines of a failed
+    # build (TUI audit G4) both need it.
+    $paths = Get-Win32ToolkitPaths -BasePath $BasePath
+    $templateSeg = Sanitize-ProjectName -Name $template
+    if ([string]::IsNullOrWhiteSpace($templateSeg)) { $templateSeg = 'Default' }
+    $templateDir = Join-Path $paths.Projects $templateSeg
 
     # Dependencies — apps Intune must install BEFORE this one (e.g. a VC++ redistributable). Also staged
     # into the test/capture guest so the run installs them first, like Intune does on a device.
@@ -116,20 +122,29 @@ function Invoke-Win32ToolkitManualWizard {
     if ($iconPath)  { $p.IconPath = $iconPath }
     if ($deps)      { $p.DependsOn = $deps }   # declared into AppConfig + staged into the test/capture guest
 
+    # Kept-and-marked lines (TUI audit G4): a project this run left marked not configured (Find-Win32ToolkitNotConfiguredProject).
+    $keptLines = { param([string]$Path) @("The project folder was kept and marked not configured: $Path", 'Package and Publish refuse it until you package the app again (that replaces the folder).') }
+    $keptData = {
+        param($ErrorRecord, [datetime]$Since)
+        $d = "[red]$(Get-SpectreEscapedText -Text $ErrorRecord.Exception.Message)[/]"
+        foreach ($kept in @(Find-Win32ToolkitNotConfiguredProject -TemplateDirectory $templateDir -SinceUtc $Since -ProjectPath ([string]$ErrorRecord.TargetObject))) {
+            $d += "`n`n" + ((& $keptLines $kept | ForEach-Object { Get-SpectreEscapedText -Text $_ }) -join "`n")
+        }
+        $d
+    }
+
     if ($advanced) {
         # Scaffold only, then hand off to the two-step finish screen.
         Clear-Host
         Write-SpectreRule -Title "Scaffolding $(Get-SpectreEscapedText -Text $name)…" -Color Blue
         $p.Advanced = $true
+        $runStartUtc = [datetime]::UtcNow
         try { New-Win32ToolkitManualApp @p | Out-Null }
         catch {
-            Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Scaffold failed' -Border Rounded -Color Red
+            Format-SpectrePanel -Data (& $keptData $_ $runStartUtc) -Header 'Scaffold failed' -Border Rounded -Color Red
             Read-SpectrePause -Message 'Press any key to return' -AnyKey | Out-Null
             return
         }
-        $paths       = Get-Win32ToolkitPaths -BasePath $BasePath
-        $templateSeg = Sanitize-ProjectName -Name $template
-        if ([string]::IsNullOrWhiteSpace($templateSeg)) { $templateSeg = 'Default' }
         $projName    = '{0}_{1}_{2}' -f (Sanitize-ProjectName -Name $name), (Sanitize-ProjectName -Name $arch), (Sanitize-ProjectName -Name $version)
         $projPath    = Join-Path (Join-Path $paths.Projects $templateSeg) $projName
         Show-Win32ToolkitAdvancedFinish -ProjectPath $projPath -DoTest:$doTest -DoPackage:$doPackage -DoPublish:$doPublish
@@ -143,13 +158,21 @@ function Invoke-Win32ToolkitManualWizard {
         if ($doPublish) { $p.PublishIntune = $true }
         Clear-Host
         Write-SpectreRule -Title "Building $(Get-SpectreEscapedText -Text $name)…" -Color Blue
+        $runStartUtc = [datetime]::UtcNow
         try {
             # The run is judged by its result object (TUI audit G2): Done only when it Succeeded.
             $out = @(New-Win32ToolkitManualApp @p)
             Show-Win32ToolkitRunResult -Result $out -Name $name
+            # A non-W32T error after the scaffold returns a Failed result (no throw): name the folder it left marked.
+            $r = @($out | Where-Object { $null -ne $_ -and $_.PSObject.TypeNames -contains 'Win32Toolkit.RunResult' }) | Select-Object -Last 1
+            if ($r -and $r.Status -eq 'Failed' -and $r.ProjectPath) {
+                foreach ($kept in @(Find-Win32ToolkitNotConfiguredProject -TemplateDirectory $templateDir -SinceUtc $runStartUtc -ProjectPath ([string]$r.ProjectPath))) {
+                    foreach ($line in (& $keptLines $kept)) { Write-SpectreHost "[yellow]$(Get-SpectreEscapedText -Text $line)[/]" }
+                }
+            }
         }
         catch {
-            Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Something went wrong' -Border Rounded -Color Red
+            Format-SpectrePanel -Data (& $keptData $_ $runStartUtc) -Header 'Something went wrong' -Border Rounded -Color Red
         }
         Read-SpectrePause -Message 'Press any key to return to the menu' -AnyKey | Out-Null
     }

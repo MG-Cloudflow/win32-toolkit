@@ -58,6 +58,12 @@ function Invoke-Win32ToolkitWingetWizard {
     # 4. Template (client)
     $template = Get-Win32ToolkitTemplateChoice -BasePath $BasePath
     if ([string]::IsNullOrWhiteSpace($template)) { return }
+    # The template folder (Projects\<Template>): the technology checks below and the not-configured lines of the
+    # result (TUI audit G4) both need it, also when the version is unknown.
+    $paths = Get-Win32ToolkitPaths -BasePath $BasePath
+    $templateSeg = Sanitize-ProjectName -Name $template
+    if ([string]::IsNullOrWhiteSpace($templateSeg)) { $templateSeg = 'Default' }
+    $templateDir = Join-Path $paths.Projects $templateSeg
 
     # 4a. Installer technology (installer-identity PR 1, D4): ask once when winget ships more than one
     # technology for this version. A published/pinned earlier version (same winget id, this template) is kept
@@ -73,10 +79,6 @@ function Invoke-Win32ToolkitWingetWizard {
         $techSummary = "winget's choice (not checked: version unknown)"
     }
     else {
-        $paths = Get-Win32ToolkitPaths -BasePath $BasePath
-        $templateSeg = Sanitize-ProjectName -Name $template
-        if ([string]::IsNullOrWhiteSpace($templateSeg)) { $templateSeg = 'Default' }
-        $templateDir = Join-Path $paths.Projects $templateSeg
         $wouldBe = Join-Path $templateDir ('{0}_{1}_{2}' -f (Sanitize-ProjectName -Name $picked.Name), (Sanitize-ProjectName -Name $arch), (Sanitize-ProjectName -Name $picked.Version))
         # The template's tenant (data only), so the 'Keep' label matches what Invoke-Win32Toolkit will pin.
         $tenantId = ''
@@ -261,13 +263,27 @@ function Invoke-Win32ToolkitWingetWizard {
     if ($doTest)    { $p.RunTest = 'InstallUninstall' }
     if ($doPackage) { $p.PackageIntune = $true }
     if ($doPublish) { $p.PublishIntune = $true }
+    # Kept-and-marked lines (TUI audit G4): a project this run left marked not configured (Find-Win32ToolkitNotConfiguredProject).
+    $keptLines = { param([string]$Path) @("The project folder was kept and marked not configured: $Path", 'Package and Publish refuse it until you package the app again (that replaces the folder).') }
+    $runStartUtc = [datetime]::UtcNow
     try {
         # The run is judged by its result object (TUI audit G2): Done only when it Succeeded.
         $out = @(Invoke-Win32Toolkit @p)
         Show-Win32ToolkitRunResult -Result $out -Name $picked.Name
+        # A non-W32T error after the scaffold returns a Failed result (no throw): name the folder it left marked.
+        $r = @($out | Where-Object { $null -ne $_ -and $_.PSObject.TypeNames -contains 'Win32Toolkit.RunResult' }) | Select-Object -Last 1
+        if ($r -and $r.Status -eq 'Failed' -and $r.ProjectPath) {
+            foreach ($kept in @(Find-Win32ToolkitNotConfiguredProject -TemplateDirectory $templateDir -SinceUtc $runStartUtc -ProjectPath ([string]$r.ProjectPath))) {
+                foreach ($line in (& $keptLines $kept)) { Write-SpectreHost "[yellow]$(Get-SpectreEscapedText -Text $line)[/]" }
+            }
+        }
     }
     catch {
-        Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Something went wrong' -Border Rounded -Color Red
+        $data = "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]"
+        foreach ($kept in @(Find-Win32ToolkitNotConfiguredProject -TemplateDirectory $templateDir -SinceUtc $runStartUtc -ProjectPath ([string]$_.TargetObject))) {
+            $data += "`n`n" + ((& $keptLines $kept | ForEach-Object { Get-SpectreEscapedText -Text $_ }) -join "`n")
+        }
+        Format-SpectrePanel -Data $data -Header 'Something went wrong' -Border Rounded -Color Red
     }
     Read-SpectrePause -Message 'Press any key to return to the menu' -AnyKey | Out-Null
 }

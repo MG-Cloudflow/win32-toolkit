@@ -27,7 +27,9 @@ function Show-Win32ToolkitBrowse {
             catch { 'unknown' }
         }
         $projects | Sort-Object Template, Name |
-            Select-Object @{ n = 'Template'; e = { $_.Template } }, @{ n = 'Application'; e = { $_.Name } },
+            Select-Object @{ n = 'Template'; e = { $_.Template } },
+                # TUI audit G4: a project whose build stopped after its folder was created (Package and Publish refuse it).
+                @{ n = 'Application'; e = { if ($_.PSObject.Properties['NotConfigured'] -and $_.NotConfigured) { $_.Name + ' (not configured)' } else { $_.Name } } },
                 @{ n = 'PSADT'; e = { & $psadtLabel $_.Path } } |
             Format-SpectreTable -Border Rounded -Color Grey -Title "$($projects.Count) project(s) under $(Get-SpectreEscapedText -Text $BasePath)"
     }

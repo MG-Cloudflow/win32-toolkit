@@ -172,6 +172,19 @@ function Export-Win32ToolkitIntuneWin {
     $script:exportWarnings = @($w)
 }
 
+# TUI audit G4 (C-9): the publish action asks the not-configured gate first; a no-op unless the project is $script:notConfiguredPath (L).
+$script:notConfiguredPath = $null
+$script:gateCalls = 0
+function Assert-Win32ToolkitProjectConfigured {
+    param($ProjectPath, $Operation)
+    $null = $Operation
+    $script:gateCalls++
+    if ($script:notConfiguredPath -and $ProjectPath -eq $script:notConfiguredPath) {
+        throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new("'App_x64_2.0' is marked not configured and cannot be published: its configuration failed or was refused (W32T.X: [r]). Nothing was published."),
+            'W32T.ProjectNotConfigured', 'InvalidOperation', $ProjectPath)
+    }
+}
+
 function P($template, $name) { [pscustomobject]@{ Template = $template; Name = $name; Path = "C:\Base\Projects\$template\$name" } }
 
 # the project UNDER TEST sorts first (Template 'A'); the baseline candidate is Template 'B'.
@@ -552,6 +565,26 @@ finally {
     $script:verdict = $true; $script:runFolders = @(); $script:projects = @($under, $cand)
     Remove-Item -LiteralPath $kRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# ══ L. a project marked not configured (TUI audit G4) ══════════════════════════════════════════════════
+Write-Host '[L] a project marked not configured: ''(not configured)'' in the list; Publish stops at a red ''Not configured'' panel' -ForegroundColor Cyan
+$marked = [pscustomobject]@{ Template = 'A_App'; Name = 'App_x64_2.0'; Path = 'C:\Base\Projects\A_App\App_x64_2.0'; NotConfigured = $true }
+$script:projects = @($marked, $cand)
+$script:notConfiguredPath = $marked.Path
+$script:advisory = [pscustomobject]@{ Findings = @((F 'UPDATE-FAILED' 'Warning' 'x')) }
+$script:panels.Clear(); $script:prompts.Clear(); $script:advisoryCalls.Clear(); $script:exportCalls = 0; $script:gateCalls = 0; $script:W32TAdvisoryRun = $null
+DriveUpdate @('publish', 'back')
+$projPrompt = @($script:prompts | Where-Object Message -like 'Select a project*') | Select-Object -First 1
+if ($projPrompt -and @($projPrompt.Choices)[0] -ceq 'A_App  /  App_x64_2.0  (not configured)' -and @($projPrompt.Choices)[1] -ceq 'B_App  /  App_x64_1.0') { Ok "the project list: 'A_App  /  App_x64_2.0  (not configured)'; an unmarked project unchanged" } else { Bad "labels: $(if ($projPrompt) { @($projPrompt.Choices) -join ' | ' })" }
+$nc = @($script:panels | Where-Object Header -eq 'Not configured')
+if ($script:gateCalls -eq 1 -and $nc.Count -eq 1 -and $nc[0].Color -eq 'Red' -and $nc[0].Data -ceq "[red]'App_x64_2.0' is marked not configured and cannot be published: its configuration failed or was refused (W32T.X: [[r]]). Nothing was published.[/]") {
+    Ok 'Publish -> one red ''Not configured'' panel with the escaped W32T.ProjectNotConfigured message'
+} else { Bad "gate=$script:gateCalls panels: $($script:panels | ConvertTo-Json -Compress)" }
+if (-not @($script:prompts | Where-Object Message -eq 'Publish which app?').Count -and $script:advisoryCalls.Count -eq 0 -and $script:exportCalls -eq 0 -and $null -eq $script:W32TAdvisoryRun) {
+    Ok 'no advisory, no ''Publish which app?'', no Export; no run scope left open'
+} else { Bad "which=$(@($script:prompts | Where-Object Message -eq 'Publish which app?').Count) advisory=$($script:advisoryCalls.Count) export=$script:exportCalls" }
+if (@($script:prompts | Where-Object Message -eq 'What would you like to do?').Count -eq 2) { Ok 'back in the action menu after the panel (the screen did not return)' } else { Bad "action menus shown: $(@($script:prompts | Where-Object Message -eq 'What would you like to do?').Count)" }
+$script:notConfiguredPath = $null; $script:projects = @($under, $cand); $script:advisory = $null
 
 # The invariant over every Update run this suite drove: a winget baseline always carries a version.
 $wingetSplats = @($script:updateSplats | Where-Object { -not $_.ContainsKey('BaselineProjectPath') })

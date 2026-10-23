@@ -22,7 +22,8 @@ function Show-Win32ToolkitProjectActions {
         # Select a project (string label + lookup)
         $map = [ordered]@{}
         $labels = foreach ($p in ($projects | Sort-Object Template, Name)) {
-            $label = Get-SpectreEscapedText -Text ('{0}  /  {1}' -f $p.Template, $p.Name)
+            # A project whose build stopped after its folder was created (TUI audit G4): Package and Publish refuse it.
+            $label = Get-SpectreEscapedText -Text ('{0}  /  {1}{2}' -f $p.Template, $p.Name, $(if ($p.PSObject.Properties['NotConfigured'] -and $p.NotConfigured) { '  (not configured)' } else { '' }))
             $map[$label] = $p
             $label
         }
@@ -326,64 +327,77 @@ function Show-Win32ToolkitProjectActions {
                     ) -join "`n"
                     Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $summary) -Header 'About to PUBLISH to Intune' -Border Rounded -Color Yellow
 
-                    # Advisory run scope (L20): this action shows the package advisory once, as a panel, and the
-                    # Export / Publish calls below stay quiet for this project. Closed after Export returns.
-                    $ownsAdvisoryRun = $null -eq $script:W32TAdvisoryRun
-                    if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = @{} }
-                    try {
-                        # Package advisory (D1: warn, never block): red when an install/uninstall test failed or gave no
-                        # verdict, an Update test failed, a technology switch was seen or the uninstall cleanup paths are
-                        # unsafe (TUI audit G1); yellow for other warnings.
-                        try {
-                            $advisory = Get-Win32ToolkitPackageAdvisory -ProjectPath $project.Path -Context Tui -ProbeIfMissing
-                            $advWarnings = @($advisory.Findings | Where-Object { $_ -and $_.Severity -eq 'Warning' })
-                            if ($advWarnings.Count -gt 0) {
-                                $severe = @($advWarnings | Where-Object { $_.Code -in @('UNSAFE-CLEANUP', 'INSTALL-FAILED', 'UPDATE-FAILED', 'ID-TECH-SWITCH', 'INSTALL-INCONCLUSIVE') }).Count -gt 0
-                                $advText = @($advWarnings | ForEach-Object { [string]$_.Message }) -join "`n`n"
-                                $advHeader = if ($severe) { 'Review before you publish' } else { 'Check before you publish' }
-                                $advColor  = if ($severe) { 'Red' } else { 'Yellow' }
-                                Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $advText) -Header $advHeader -Border Rounded -Color $advColor | Out-SpectreHost
-                            }
-                            foreach ($advInfo in @($advisory.Findings | Where-Object { $_ -and $_.Severity -ne 'Warning' })) {
-                                Write-SpectreHost "[grey]$(Get-SpectreEscapedText -Text ([string]$advInfo.Message))[/]"
-                            }
-                        }
-                        catch {
-                            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
-                            Write-Warning "Could not check the Update test and identity warnings: $($_.Exception.Message)"
-                        }
-                        if ($script:W32TAdvisoryRun -is [hashtable]) {
-                            $script:W32TAdvisoryRun[[System.IO.Path]::GetFullPath($project.Path).TrimEnd('\')] = $true
-                        }
-
-                        $which = Read-SpectreSelection -Message 'Publish which app?' -Choices @(
-                            [pscustomobject]@{ Key = 'install'; Label = 'Install app — normal deployment (assign to target devices)' }
-                            [pscustomobject]@{ Key = 'both';    Label = 'Install app + Update app (2nd app, only where already installed)' }
-                            [pscustomobject]@{ Key = 'update';  Label = 'Update app only — applies only where the app is already installed' }
-                            [pscustomobject]@{ Key = 'cancel';  Label = 'Cancel' }
-                        ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 10
-
-                        if ($which.Key -ne 'cancel') {
-                            Write-SpectreHost "[yellow]You will sign in to Microsoft Graph — the target tenant is shown during sign-in.[/]"
-                            if (Read-SpectreConfirm -Message 'Package and upload now?' -DefaultAnswer 'n') {
-                                Clear-Host; Write-SpectreRule -Title 'Publishing to Intune…' -Color Blue
-                                try {
-                                    $splat = @{ ProjectPath = $project.Path }
-                                    switch ($which.Key) {
-                                        'install' { $splat['PublishIntune'] = $true }
-                                        'update'  { $splat['PublishUpdate'] = $true }
-                                        'both'    { $splat['PublishIntune'] = $true; $splat['PublishUpdate'] = $true }
-                                    }
-                                    Export-Win32ToolkitIntuneWin @splat
-                                    Format-SpectrePanel -Data 'Published. See the messages above for the app ID(s) and portal link.' -Header 'Done' -Border Rounded -Color Green
-                                }
-                                catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
-                                Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
-                            }
-                        }
+                    # A project marked not configured (TUI audit G4) is refused by Export and Publish: say so now and go
+                    # back to the action menu, before the advisory, "Publish which app?" and "Package and upload now?".
+                    $notConfigured = $false
+                    try { Assert-Win32ToolkitProjectConfigured -ProjectPath $project.Path -Operation Publish }
+                    catch {
+                        $notConfigured = $true
+                        $ncHeader = if ($_.FullyQualifiedErrorId -eq 'W32T.ProjectNotConfigured') { 'Not configured' } else { 'Error' }
+                        Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header $ncHeader -Border Rounded -Color Red
+                        Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
                     }
-                    finally {
-                        if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = $null }
+
+                    if (-not $notConfigured) {
+                        # Advisory run scope (L20): this action shows the package advisory once, as a panel, and the
+                        # Export / Publish calls below stay quiet for this project. Closed after Export returns.
+                        $ownsAdvisoryRun = $null -eq $script:W32TAdvisoryRun
+                        if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = @{} }
+                        try {
+                            # Package advisory (D1: warn, never block): red when an install/uninstall test failed or gave no
+                            # verdict, an Update test failed, a technology switch was seen or the uninstall cleanup paths are
+                            # unsafe (TUI audit G1); yellow for other warnings.
+                            try {
+                                $advisory = Get-Win32ToolkitPackageAdvisory -ProjectPath $project.Path -Context Tui -ProbeIfMissing
+                                $advWarnings = @($advisory.Findings | Where-Object { $_ -and $_.Severity -eq 'Warning' })
+                                if ($advWarnings.Count -gt 0) {
+                                    $severe = @($advWarnings | Where-Object { $_.Code -in @('UNSAFE-CLEANUP', 'INSTALL-FAILED', 'UPDATE-FAILED', 'ID-TECH-SWITCH', 'INSTALL-INCONCLUSIVE') }).Count -gt 0
+                                    $advText = @($advWarnings | ForEach-Object { [string]$_.Message }) -join "`n`n"
+                                    $advHeader = if ($severe) { 'Review before you publish' } else { 'Check before you publish' }
+                                    $advColor  = if ($severe) { 'Red' } else { 'Yellow' }
+                                    Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $advText) -Header $advHeader -Border Rounded -Color $advColor | Out-SpectreHost
+                                }
+                                foreach ($advInfo in @($advisory.Findings | Where-Object { $_ -and $_.Severity -ne 'Warning' })) {
+                                    Write-SpectreHost "[grey]$(Get-SpectreEscapedText -Text ([string]$advInfo.Message))[/]"
+                                }
+                            }
+                            catch {
+                                if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                                Write-Warning "Could not check the Update test and identity warnings: $($_.Exception.Message)"
+                            }
+                            if ($script:W32TAdvisoryRun -is [hashtable]) {
+                                $script:W32TAdvisoryRun[[System.IO.Path]::GetFullPath($project.Path).TrimEnd('\')] = $true
+                            }
+
+                            $which = Read-SpectreSelection -Message 'Publish which app?' -Choices @(
+                                [pscustomobject]@{ Key = 'install'; Label = 'Install app — normal deployment (assign to target devices)' }
+                                [pscustomobject]@{ Key = 'both';    Label = 'Install app + Update app (2nd app, only where already installed)' }
+                                [pscustomobject]@{ Key = 'update';  Label = 'Update app only — applies only where the app is already installed' }
+                                [pscustomobject]@{ Key = 'cancel';  Label = 'Cancel' }
+                            ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 10
+
+                            if ($which.Key -ne 'cancel') {
+                                Write-SpectreHost "[yellow]You will sign in to Microsoft Graph — the target tenant is shown during sign-in.[/]"
+                                if (Read-SpectreConfirm -Message 'Package and upload now?' -DefaultAnswer 'n') {
+                                    Clear-Host; Write-SpectreRule -Title 'Publishing to Intune…' -Color Blue
+                                    try {
+                                        $splat = @{ ProjectPath = $project.Path }
+                                        switch ($which.Key) {
+                                            'install' { $splat['PublishIntune'] = $true }
+                                            'update'  { $splat['PublishUpdate'] = $true }
+                                            'both'    { $splat['PublishIntune'] = $true; $splat['PublishUpdate'] = $true }
+                                        }
+                                        Export-Win32ToolkitIntuneWin @splat
+                                        Format-SpectrePanel -Data 'Published. See the messages above for the app ID(s) and portal link.' -Header 'Done' -Border Rounded -Color Green
+                                    }
+                                    catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
+                                    Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                                }
+                            }
+                        }
+                        finally {
+                            if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = $null }
+                        }
                     }
                 }
                 'doc' {

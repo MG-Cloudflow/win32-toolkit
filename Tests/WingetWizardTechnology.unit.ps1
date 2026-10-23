@@ -46,8 +46,10 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 
 # C-9 (TUI audit G2): the wizard renders its result panel with Show-Win32ToolkitRunResult (real; the Invoke shadow
 # returns no result object, so it shows the yellow 'Finished' panel).
+# C-9 (TUI audit G4): a failed build names the folder it left marked (Find-Win32ToolkitNotConfiguredProject + the marker reader).
 foreach ($f in 'Sanitize-ProjectName', 'Get-Win32ToolkitPaths', 'Get-Win32ToolkitInstallerFamily', 'ConvertTo-Win32ToolkitSafeText',
-    'Get-Win32ToolkitSiblingInstaller', 'Invoke-Win32ToolkitWingetWizard', 'Show-Win32ToolkitRunResult') {
+    'Get-Win32ToolkitSiblingInstaller', 'Invoke-Win32ToolkitWingetWizard', 'Show-Win32ToolkitRunResult',
+    'Get-Win32ToolkitNotConfiguredMarker', 'Find-Win32ToolkitNotConfiguredProject') {
     . (Join-Path $repo "Private\$f.ps1")
 }
 

@@ -36,7 +36,11 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 
 foreach ($f in 'Sanitize-ProjectName', 'Get-Win32ToolkitPaths', 'Initialize-Win32ToolkitRunResult', 'Complete-Win32ToolkitRunResult',
     'Show-Win32ToolkitRunResult', 'Invoke-Win32ToolkitWingetWizard', 'Invoke-Win32ToolkitManualWizard', 'Show-Win32ToolkitAdvancedFinish',
-    'Show-Win32ToolkitProjectActions') {
+    'Show-Win32ToolkitProjectActions',
+    # TUI audit G4 (C-9): the wizards name the folder a failed run left marked not configured; Browse and the project list say so.
+    'ConvertTo-Win32ToolkitSafeText', 'Get-Win32ToolkitNotConfiguredMarker', 'Find-Win32ToolkitNotConfiguredProject', 'Show-Win32ToolkitBrowse',
+    # Test helper: writes the markers the scripted commands leave behind.
+    'Write-Win32ToolkitNotConfiguredMarker') {
     . (Join-Path $repo "Private\$f.ps1")
 }
 
@@ -96,11 +100,12 @@ function Get-Win32ToolkitDependencies { param($ProjectPath) @() }
 
 # --- the commands: scripted output ------------------------------------------------------------------------
 # $script:output is what the next command returns (any objects); $script:throwThis is thrown instead when set.
-$script:output = @(); $script:throwThis = $null
+$script:output = @(); $script:throwThis = $null; $script:beforeRun = $null   # beforeRun: what the command does first (e.g. writes a marker)
 $script:invokeArgs = $null; $script:newArgs = $null; $script:completeArgs = $null
 function Invoke-Win32Toolkit {
     param($Id, $Architecture, $TemplateName, $BasePath, [switch]$Force, $DependsOn, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, $InstallerType)
     $script:invokeArgs = $PSBoundParameters
+    if ($script:beforeRun) { & $script:beforeRun }
     if ($script:throwThis) { throw $script:throwThis }
     $script:output
 }
@@ -108,6 +113,7 @@ function New-Win32ToolkitManualApp {
     param($Name, $Version, $Architecture, $SourcePath, $TemplateName, $BasePath, [switch]$Force, $Publisher, $Description, $InformationUrl, $IconPath, $DependsOn,
         [switch]$Advanced, $SilentArgs, [switch]$Continue, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune)
     $script:newArgs = $PSBoundParameters
+    if ($script:beforeRun) { & $script:beforeRun }
     if ($script:throwThis) { throw $script:throwThis }
     $script:output
 }
@@ -125,7 +131,7 @@ function New-RR {
     Complete-Win32ToolkitRunResult -Result $c -Failed:$Failed -Scaffolded:$Scaffolded
 }
 function Reset-Run([object[]]$Output, $Throw = $null) {
-    $script:output = $Output; $script:throwThis = $Throw
+    $script:output = $Output; $script:throwThis = $Throw; $script:beforeRun = $null
     $script:panels.Clear(); $script:hostLines.Clear(); $script:keys = [System.Collections.Queue]::new()
     $script:invokeArgs = $null; $script:newArgs = $null; $script:completeArgs = $null
 }
@@ -213,6 +219,145 @@ try {
     $rp = @($script:panels | Where-Object { $_.Header -eq 'Finished with problems' })
     if ($script:completeArgs -and $rp.Count -eq 1 -and $rp[0].Data -like '`[red`]Tool_x64_1.0`[/] finished, but not everything worked:*Inconclusive*') { Ok 'Finalize with a problem -> red "Finished with problems"' } else { Bad "panels: $($script:panels | ConvertTo-Json -Compress)" }
     if (-not @($leak | Where-Object { $_ -and $_.PSObject.TypeNames -contains 'Win32Toolkit.RunResult' }).Count) { Ok 'the RunResult is captured: nothing of it leaves the screen' } else { Bad 'the RunResult leaked out of Show-Win32ToolkitProjectActions' }
+
+    # == [5] winget wizard: the folder a failed build left marked not configured (TUI audit G4) =============
+    Write-Host '[5] the winget wizard names the project folder a failed build left marked not configured' -ForegroundColor Cyan
+    $tplDir = Join-Path $BASE 'Projects\Contoso'
+    $gitProj = Join-Path $tplDir 'Git_x_x64_2.55.0'
+    $line2 = 'Package and Publish refuse it until you package the app again (that replaces the folder).'
+    $kept = { param([string]$Path) "`n`nThe project folder was kept and marked not configured: $Path`n$line2" }
+    $w32tErr = { param([string]$Id, [string]$Message, $Target) [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new($Message), $Id, 'InvalidData', $Target) }
+    $writeRaw = {
+        param([string]$Project, [datetime]$Stamp, [datetime]$FileTime)
+        New-Item -ItemType Directory -Path (Join-Path $Project 'Documentation') -Force | Out-Null
+        $f = Join-Path $Project 'Documentation\NotConfigured.json'
+        [System.IO.File]::WriteAllText($f, "{ `"SchemaVersion`": `"1.0`", `"Stage`": `"Configure`", `"ErrorId`": `"W32T.X`", `"Reason`": `"r`", `"TimestampUtc`": `"$($Stamp.ToString('o'))`" }", [System.Text.UTF8Encoding]::new($false))
+        (Get-Item -LiteralPath $f).LastWriteTimeUtc = $FileTime
+    }
+    $resetMarkers = { Remove-Item -LiteralPath $tplDir -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path $tplDir -Force | Out-Null }
+
+    & $resetMarkers
+    $modDir = Join-Path $BASE 'Templates\Contoso\PSAppDeployToolkit.Contoso'
+    Reset-Run @() (& $w32tErr 'W32T.OrgExtensionInvalid' "Org extension module 'PSAppDeployToolkit.Contoso' cannot be used: no manifest" $modDir)
+    $script:beforeRun = { Write-Win32ToolkitNotConfiguredMarker -ProjectPath $gitProj -Stage Configure -ErrorId 'W32T.OrgExtensionInvalid' -Reason 'no manifest' }
+    Invoke-Win32ToolkitWingetWizard -BasePath $BASE 6>$null 3>$null
+    $p = LastPanel
+    $want = "[red]Org extension module 'PSAppDeployToolkit.Contoso' cannot be used: no manifest[/]" + (& $kept $gitProj)
+    if ($p.Header -eq 'Something went wrong' -and $p.Data -ceq $want) { Ok 'W32T.OrgExtensionInvalid (TargetObject the module folder) -> the red panel names the kept, marked project (template-folder scan)' } else { Bad "panel: $($p | ConvertTo-Json -Compress)" }
+
+    & $resetMarkers
+    & $writeRaw (Join-Path $tplDir 'Old_x64_1.0') ([datetime]::UtcNow.AddHours(-1)) ([datetime]::UtcNow.AddHours(-1))
+    & $writeRaw (Join-Path $tplDir 'Future_x64_1.0') ([datetime]::UtcNow.AddDays(1)) ([datetime]::UtcNow.AddMinutes(-5))
+    Reset-Run @() (& $w32tErr 'W32T.OrgExtensionInvalid' 'refused' $modDir)
+    $script:beforeRun = { & $writeRaw (Join-Path $tplDir 'FutureNow_x64_1.0') ([datetime]::UtcNow.AddDays(1)) ([datetime]::UtcNow) }
+    Invoke-Win32ToolkitWingetWizard -BasePath $BASE 6>$null 3>$null
+    $p = LastPanel
+    if ($p.Header -eq 'Something went wrong' -and $p.Data -ceq '[red]refused[/]') { Ok 'a marker older than the run, a future-dated one written before it and a future-dated one written during it -> none is named' } else { Bad "panel: $($p | ConvertTo-Json -Compress)" }
+
+    # Each time rule on its own (a sibling the other rule lets through), next to a fresh marker that IS named.
+    $freshProj = Join-Path $tplDir 'Fresh_x64_1.0'
+    & $resetMarkers
+    Reset-Run @() (& $w32tErr 'W32T.OrgExtensionInvalid' 'refused' $modDir)
+    $script:beforeRun = {
+        Write-Win32ToolkitNotConfiguredMarker -ProjectPath $freshProj -Stage Configure -ErrorId 'W32T.OrgExtensionInvalid' -Reason 'refused'
+        & $writeRaw (Join-Path $tplDir 'OldFile_x64_1.0') ([datetime]::UtcNow) ([datetime]::UtcNow.AddHours(-1))
+    }
+    Invoke-Win32ToolkitWingetWizard -BasePath $BASE 6>$null 3>$null
+    $p = LastPanel
+    if ($p.Header -eq 'Something went wrong' -and $p.Data -ceq ('[red]refused[/]' + (& $kept $freshProj))) { Ok 'a sibling marker stamped during the run whose file was last written before it -> not named (the fresh one is)' } else { Bad "panel: $($p | ConvertTo-Json -Compress)" }
+
+    & $resetMarkers
+    Reset-Run @() (& $w32tErr 'W32T.OrgExtensionInvalid' 'refused' $modDir)
+    $script:beforeRun = {
+        Write-Win32ToolkitNotConfiguredMarker -ProjectPath $freshProj -Stage Configure -ErrorId 'W32T.OrgExtensionInvalid' -Reason 'refused'
+        & $writeRaw (Join-Path $tplDir 'OldStamp_x64_1.0') ([datetime]::UtcNow.AddHours(-1)) ([datetime]::UtcNow)
+    }
+    Invoke-Win32ToolkitWingetWizard -BasePath $BASE 6>$null 3>$null
+    $p = LastPanel
+    if ($p.Header -eq 'Something went wrong' -and $p.Data -ceq ('[red]refused[/]' + (& $kept $freshProj))) { Ok 'a sibling marker written during the run whose TimestampUtc is an hour old -> not named (the fresh one is)' } else { Bad "panel: $($p | ConvertTo-Json -Compress)" }
+
+    & $resetMarkers
+    $projA = Join-Path $tplDir 'A_x64_1.0'; $projB = Join-Path $tplDir 'B_x64_1.0'
+    Reset-Run @() (& $w32tErr 'W32T.PipelineAborted' 'PSADT configuration failed' $projA)
+    $script:beforeRun = { foreach ($pp in $projA, $projB) { Write-Win32ToolkitNotConfiguredMarker -ProjectPath $pp -Stage Configure -ErrorId 'W32T.PipelineAborted' -Reason 'x' } }
+    Invoke-Win32ToolkitWingetWizard -BasePath $BASE 6>$null 3>$null
+    $p = LastPanel
+    if ($p.Data -ceq ('[red]PSADT configuration failed[/]' + (& $kept $projA))) { Ok "the error's TargetObject is a project of the template folder -> only that project is named (no scan; B's fresh marker is not)" } else { Bad "panel: $($p | ConvertTo-Json -Compress)" }
+
+    & $resetMarkers
+    $script:apps = @([pscustomobject]@{ Name = 'Git[x]'; Id = 'Git.Git'; Version = 'Unknown'; Source = 'winget' })
+    $unk = Join-Path $tplDir 'Git_x_x64_Unknown'
+    Reset-Run @() (& $w32tErr 'W32T.DownloadFailed' 'Download FAILED' $unk)
+    $script:beforeRun = { Write-Win32ToolkitNotConfiguredMarker -ProjectPath $unk -Stage Download -ErrorId 'W32T.DownloadFailed' -Reason 'Download FAILED' }
+    $threw = $null
+    try { Invoke-Win32ToolkitWingetWizard -BasePath $BASE 6>$null 3>$null } catch { $threw = $_ }
+    $p = LastPanel
+    if (-not $threw -and $p.Data -ceq ('[red]Download FAILED[/]' + (& $kept $unk))) { Ok 'version Unknown (no technology checks) -> the catch still knows the template folder and names the project' } else { Bad "threw=$threw panel: $($p | ConvertTo-Json -Compress)" }
+    $script:apps = @([pscustomobject]@{ Name = 'Git[x]'; Id = 'Git.Git'; Version = '2.55.0'; Source = 'winget' })
+
+    & $resetMarkers
+    Reset-Run @('stray', (New-RR -Problems 'Script stopped' -Failed -ProjectPath $gitProj))
+    $script:beforeRun = { Write-Win32ToolkitNotConfiguredMarker -ProjectPath $gitProj -Stage Configure -Reason 'Script stopped' }
+    Invoke-Win32ToolkitWingetWizard -BasePath $BASE 6>$null 3>$null
+    $y = @($script:hostLines | Where-Object { $_ -like '`[yellow`]*' })
+    if ((LastPanel).Header -eq 'Finished with problems' -and $y.Count -eq 2 -and $y[0] -ceq "[yellow]The project folder was kept and marked not configured: $gitProj[/]" -and $y[1] -ceq "[yellow]$line2[/]") {
+        Ok 'a Failed result (a non-W32T error after the scaffold) -> the two kept-and-marked lines in yellow after the result panel'
+    } else { Bad "yellow lines: $($y -join ' | ') panel: $(LastPanel | ConvertTo-Json -Compress)" }
+    & $resetMarkers
+    Reset-Run @((New-RR -Problems 'p' -ProjectPath $gitProj))
+    Invoke-Win32ToolkitWingetWizard -BasePath $BASE 6>$null 3>$null
+    if (-not @($script:hostLines | Where-Object { $_ -like '*kept and marked not configured*' }).Count) { Ok 'a result that is not Failed -> no kept-and-marked lines' } else { Bad "lines: $($script:hostLines -join ' | ')" }
+
+    # == [6] manual wizard: the same in the Advanced and Easy catches and after a Failed result ==============
+    Write-Host '[6] the manual wizard names the project folder a failed build left marked not configured' -ForegroundColor Cyan
+    $toolProj = Join-Path $tplDir 'Tool_1_x64_1.0'
+    & $resetMarkers
+    Reset-Run @() (& $w32tErr 'W32T.PipelineAborted' 'org template refused' $toolProj)
+    $script:beforeRun = { Write-Win32ToolkitNotConfiguredMarker -ProjectPath $toolProj -Stage Configure -ErrorId 'W32T.PipelineAborted' -Reason 'org template refused' }
+    $script:keys.Enqueue('advanced')
+    $threw = $null
+    try { Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null } catch { $threw = $_ }
+    $p = LastPanel
+    if (-not $threw -and $script:newArgs['Advanced'] -and $p.Header -eq 'Scaffold failed' -and $p.Data -ceq ('[red]org template refused[/]' + (& $kept $toolProj))) { Ok 'Advanced: the red "Scaffold failed" panel names the kept, marked project' } else { Bad "threw=$threw panel: $($p | ConvertTo-Json -Compress)" }
+
+    & $resetMarkers
+    Reset-Run @() (& $w32tErr 'W32T.PipelineAborted' 'org template refused' $toolProj)
+    $script:beforeRun = { Write-Win32ToolkitNotConfiguredMarker -ProjectPath $toolProj -Stage Configure -ErrorId 'W32T.PipelineAborted' -Reason 'org template refused' }
+    $script:keys.Enqueue('easy')
+    $threw = $null
+    try { Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null } catch { $threw = $_ }
+    $p = LastPanel
+    if (-not $threw -and $p.Header -eq 'Something went wrong' -and $p.Data -ceq ('[red]org template refused[/]' + (& $kept $toolProj))) { Ok 'Easy: the red "Something went wrong" panel names it; the catch does not throw' } else { Bad "threw=$threw panel: $($p | ConvertTo-Json -Compress)" }
+
+    & $resetMarkers
+    Reset-Run @((New-RR -Command 'New-Win32ToolkitManualApp' -Problems 'No installer (msi/exe/msix/appx) detected' -Failed -ProjectPath $toolProj))
+    $script:beforeRun = { Write-Win32ToolkitNotConfiguredMarker -ProjectPath $toolProj -Stage Download -Reason 'No installer (msi/exe/msix/appx) detected' }
+    $script:keys.Enqueue('easy')
+    Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null
+    $y = @($script:hostLines | Where-Object { $_ -like '`[yellow`]*kept and marked*' })
+    if ((LastPanel).Header -eq 'Finished with problems' -and $y.Count -eq 1 -and $y[0] -ceq "[yellow]The project folder was kept and marked not configured: $toolProj[/]") { Ok 'Easy + a Failed result with a freshly marked ProjectPath -> the yellow kept-and-marked lines' } else { Bad "lines: $($script:hostLines -join ' | ')" }
+
+    # == [7] Browse and the project list say "(not configured)" ============================================
+    Write-Host '[7] Browse and the project list mark a not-configured project' -ForegroundColor Cyan
+    $script:browseRows = [System.Collections.Generic.List[object]]::new()
+    function Format-SpectreTable { param([Parameter(ValueFromPipeline)]$InputObject, $Border, $Color, $Title) process { $script:browseRows.Add($InputObject) } }
+    function Get-Win32ToolkitProjectPsadtVersion { param($ProjectPath) [pscustomobject]@{ VersionText = '4.1.8'; IsLegacy = $false; IsSupported = $true } }
+    function Get-PSADTProjects {
+        param($BasePath)
+        @([pscustomobject]@{ Template = 'Contoso'; Name = 'Tool_x64_1.0'; Path = $toolProj; ScriptPath = ''; NotConfigured = $true },
+          [pscustomobject]@{ Template = 'Contoso'; Name = 'Zed_x64_1.0'; Path = (Join-Path $tplDir 'Zed_x64_1.0'); ScriptPath = ''; NotConfigured = $false })
+    }
+    Show-Win32ToolkitBrowse -BasePath $BASE 6>$null 3>$null
+    $apps = @($script:browseRows | ForEach-Object Application)
+    if (($apps -join '|') -ceq 'Tool_x64_1.0 (not configured)|Zed_x64_1.0') { Ok "Browse: Application 'Tool_x64_1.0 (not configured)'; the other project unchanged" } else { Bad "browse rows: $($apps -join '|')" }
+    $script:labelsSeen = @()
+    function Read-SpectreSelection {
+        param($Message, $Choices, $ChoiceLabelProperty, $Color, [switch]$EnableSearch, $PageSize)
+        if ($Message -like 'Select a project*') { $script:labelsSeen = @($Choices); return 'no such project' }   # -> the screen returns
+        @($Choices)[0]
+    }
+    Show-Win32ToolkitProjectActions -BasePath $BASE 6>$null 3>$null
+    if (($script:labelsSeen -join '|') -ceq 'Contoso  /  Tool_x64_1.0  (not configured)|Contoso  /  Zed_x64_1.0') { Ok "the project list: 'Contoso  /  Tool_x64_1.0  (not configured)'" } else { Bad "labels: $($script:labelsSeen -join '|')" }
 }
 finally {
     Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue
