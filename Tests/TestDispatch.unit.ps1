@@ -945,6 +945,83 @@ ${function:Get-Win32ToolkitTechnologySwitch} = $savedTech19
 Remove-Item Function:\Wait-Win32ToolkitUpdateAssertion_Real19, Function:\Start-Sleep
 Remove-Item -LiteralPath $base19 -Recurse -Force -ErrorAction SilentlyContinue
 
+# Hyper-V speed-up PR 3 (D10, A-12, V-6, V-18): TestProjectLease On -> the outer call holds the project's lease from right
+# after the project is validated (before the backend is resolved, so before any VM lease) to the end, also when the scenario
+# throws; not elevated -> skipped with one verbose line; Off (default) -> neither the lease nor the elevation check.
+Write-Host '[20] TestProjectLease: the per-project lease around the outer call (elevated only); Off = no call; a lease timeout propagates' -ForegroundColor Cyan
+$script:lease20 = [System.Collections.Generic.List[string]]::new()
+$script:leaseSetting20 = 'Off'; $script:elevated20 = $true; $script:enterThrows20 = $false; $script:elevCalls20 = 0
+$leaseObj20 = [pscustomobject]@{ Kind = 'Project'; Epoch = 'e'; Generation = 1; PreviousGeneration = 0; Nested = $false }
+function Get-Win32ToolkitConfigValue { param($Name, $Default) if ($Name -eq 'TestProjectLease') { $script:leaseSetting20 } else { $script:testMode } }
+function Test-Win32ToolkitElevated { $script:elevCalls20++; $script:elevated20 }
+function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose)
+    $script:lease20.Add("enter:${ProjectPath}:$Purpose")
+    if ($script:enterThrows20) {
+        throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new("Another process kept the project for more than 60 minutes."),
+            'W32T.ProjectLeaseTimeout', [System.Management.Automation.ErrorCategory]::ResourceBusy, (Split-Path -Leaf $ProjectPath))
+    }
+    $leaseObj20 }
+# The release double RETURNS AN OBJECT: an unassigned call would add it to the verdict.
+function Exit-Win32ToolkitHyperVLease { param($Lease) $script:lease20.Add("exit:$([object]::ReferenceEquals($Lease, $leaseObj20))"); [pscustomobject]@{ Leak = 'exit' } }
+${function:Get-Win32ToolkitTestBackend_Saved20} = ${function:Get-Win32ToolkitTestBackend}
+function Get-Win32ToolkitTestBackend { param($Backend) $script:lease20.Add('backend'); $script:backend }
+$script:hv20Throws = $false
+${function:Invoke-Win32ToolkitHyperVRun_Saved20} = ${function:Invoke-Win32ToolkitHyperVRun}
+function Invoke-Win32ToolkitHyperVRun { param($ProjectPath, $Phase, $Output, $BaselineProjectPath, [System.Collections.Generic.List[string]]$ParityExitNote, [hashtable]$RunInfo)
+    $script:lease20.Add('hvrun')
+    if ($script:hv20Throws) { throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new('VM busy'), 'W32T.HyperVLeaseTimeout', [System.Management.Automation.ErrorCategory]::ResourceBusy, 'vm') }
+    $ld = Join-Path $ProjectPath 'Sandbox\Logs'
+    New-Item -ItemType Directory -Path $ld -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $ld 'InstallAssertions.log') -Value '[t] ASSERT InstallDetected-PostInstall = PASS', '[t] RESULT COMPLETE'
+    $true }
+$run20 = {
+    $script:lease20.Clear(); $script:elevCalls20 = 0
+    $o = $null; $threw = $null; $vv = $null
+    try { $o = @(Test-Win32ToolkitProject -ProjectPath $proj -Scenario InstallUninstall -Unattended -Verbose 4>&1 3>$null 6>$null) } catch { $threw = $_ }
+    [pscustomobject]@{ Out = @($o | Where-Object { $_ -isnot [System.Management.Automation.VerboseRecord] }); Verbose = @($o | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] } | ForEach-Object { $_.Message })
+        Threw = $threw; Log = @($script:lease20); Elev = $script:elevCalls20 }
+}
+$script:backend = 'HyperV'; $script:procs = @(); $script:depCount = 0; $script:preBlocked = $false; $script:testMode = 'Interactive'
+try {
+    # Off (the default): no lease, no elevation check
+    $script:leaseSetting20 = 'Off'
+    $off = & $run20
+    if (-not $off.Threw -and ($off.Log -join ' > ') -eq 'backend > hvrun' -and $off.Elev -eq 0) { Ok 'Off: no lease, no elevation check' } else { Bad "off: log=$($off.Log -join ' > ') elev=$($off.Elev) threw=$($off.Threw)" }
+    # On + elevated: the lease right after the project check (before the backend), released last
+    $script:leaseSetting20 = ' on '
+    $on = & $run20
+    if (-not $on.Threw -and ($on.Log -join ' > ') -eq "enter:${proj}:test > backend > hvrun > exit:True" -and $on.Elev -eq 1) { Ok 'On (any case, trimmed) + elevated: the project lease before the backend is resolved, released after the run' } else { Bad "on: log=$($on.Log -join ' > ') elev=$($on.Elev) threw=$($on.Threw)" }
+    if ($on.Out.Count -eq $off.Out.Count -and $on.Out.Count -eq 1 -and $on.Out[0] -eq $off.Out[0] -and $on.Out[0] -eq $true) { Ok 'On: the output (value and count) equals Off''s: exactly $true (the release double''s object does not leak)' } else { Bad "output: on=$(@($on.Out) -join ',') off=$(@($off.Out) -join ',')" }
+    # On + not elevated: skipped with one verbose line, the test runs
+    $script:elevated20 = $false
+    $ne = & $run20
+    $script:elevated20 = $true
+    $vl = @($ne.Verbose | Where-Object { $_ -ceq 'TestProjectLease is On but this session is not elevated: the per-project lease is skipped; the lease trusts only lock files owned by Administrators or SYSTEM, which only an elevated session creates.' })
+    if (-not $ne.Threw -and ($ne.Log -join ' > ') -eq 'backend > hvrun' -and $vl.Count -eq 1 -and $ne.Out.Count -eq 1 -and $ne.Out[0] -eq $true) { Ok 'On + not elevated: no lease, one verbose line, the test runs (V-6)' } else { Bad "not elevated: log=$($ne.Log -join ' > ') verbose=$($vl.Count) out=$(@($ne.Out) -join ',')" }
+    # the scenario throws (a W32T error from the run): released anyway, the error propagates
+    $script:hv20Throws = $true
+    $tx = & $run20
+    $script:hv20Throws = $false
+    if ($tx.Threw.FullyQualifiedErrorId -eq 'W32T.HyperVLeaseTimeout' -and ($tx.Log -join ' > ') -eq "enter:${proj}:test > backend > hvrun > exit:True") { Ok 'the run throws: the W32T error propagates and the project lease is still released' } else { Bad "throws: log=$($tx.Log -join ' > ') threw=$($tx.Threw.FullyQualifiedErrorId)" }
+    # a project lease timeout: W32T.ProjectLeaseTimeout propagates, nothing runs, nothing to release
+    $script:enterThrows20 = $true
+    $pt = & $run20
+    $script:enterThrows20 = $false
+    if ($pt.Threw.FullyQualifiedErrorId -eq 'W32T.ProjectLeaseTimeout' -and ($pt.Log -join ' > ') -eq "enter:${proj}:test") { Ok 'a project lease timeout: W32T.ProjectLeaseTimeout, nothing resolved or run' } else { Bad "project timeout: log=$($pt.Log -join ' > ') threw=$($pt.Threw.FullyQualifiedErrorId)" }
+    # an inner leg of an Update 'Both' run takes no lease (the outer call holds it)
+    $script:W32TUpdateLegContext = @{ Mode = 'Both'; Origin = 'Packaged'; Label = 'leg'; Index = 1; Count = 2 }
+    $leg = & $run20
+    $script:W32TUpdateLegContext = $null
+    if (@($leg.Log | Where-Object { $_ -like 'enter:*' -or $_ -like 'exit:*' }).Count -eq 0 -and $leg.Elev -eq 0) { Ok 'an inner Update leg: no lease, no elevation check' } else { Bad "leg: log=$($leg.Log -join ' > ') elev=$($leg.Elev)" }
+}
+finally {
+    $script:W32TUpdateLegContext = $null
+    ${function:Get-Win32ToolkitTestBackend} = ${function:Get-Win32ToolkitTestBackend_Saved20}
+    ${function:Invoke-Win32ToolkitHyperVRun} = ${function:Invoke-Win32ToolkitHyperVRun_Saved20}
+    Remove-Item Function:\Get-Win32ToolkitTestBackend_Saved20, Function:\Invoke-Win32ToolkitHyperVRun_Saved20, Function:\Enter-Win32ToolkitHyperVLease, Function:\Exit-Win32ToolkitHyperVLease, Function:\Test-Win32ToolkitElevated
+    function Get-Win32ToolkitConfigValue { param($Name, $Default) return $script:testMode }
+}
+
 Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''

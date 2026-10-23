@@ -26,6 +26,10 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Wait-Win32ToolkitSandboxFree.ps1')          # the guard now waits instead of throwing
 function Get-Win32ToolkitSandboxEnvironment { $null }   # C-9: no wsb answer -> the process check decides (test campaign F1)
 . (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1')
+# C-9 (speed-up PR 3): TestProjectLease On would take the project's lease; inert doubles (never a lock file), never used while
+# the config reads return the test modes.
+function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose) [pscustomobject]@{ Kind = 'Project'; Epoch = 'inert'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
+function Exit-Win32ToolkitHyperVLease { param($Lease) }
 # C-9 (installer-identity PR 2 follow-up F7): every test first asks for the uninstall cleanup paths Export refuses (none here).
 $script:cleanupCalls = 0
 $script:cleanupFindings = @()

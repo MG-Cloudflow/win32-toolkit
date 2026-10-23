@@ -46,6 +46,7 @@ Do **not** hand-edit `HyperVGuestUser` / `HyperVGuestSecret`. See [Guest credent
 | `HyperVPrecheckProbe` | *(not set)* | written by the toolkit | The stored pre-check answer. Never edit it; the VM commands delete it. |
 | `HyperVCheckpointAttestation` | *(not set)* | written by the toolkit | The stored sign-in and Defender state of the test VM's checkpoint ([Testing](testing.md)). Never edit it; the VM commands delete it. |
 | `HyperVRevertMode` | `TurnOffFirst` | `TurnOffFirst`, `Legacy` | How the test VM's checkpoint is restored: turn the VM off first, or the plain restore (see below). |
+| `TestProjectLease` | `Off` | `On`, `Off` | `On`: one test of a project at a time across PowerShell sessions, on either backend (elevated sessions only; see below). |
 | `HyperVLeaseWaitMinutes` | `60` | integer 1-240 | How long a Hyper-V test or VM command waits while another PowerShell session uses the test VM, before it stops with `W32T.HyperVLeaseTimeout` ([One VM, one PowerShell session at a time](hyperv-vm.md#make-hyper-v-tests-faster)). Any other value counts as `60`. No TUI control: set it in the registry. |
 
 ## BasePath
@@ -89,6 +90,10 @@ $env:W32T_HYPERV_VM = 'win32tk-lane2'
 ```
 
 A pin is trimmed and must be 1 to 100 characters without control characters. A session whose VM is pinned never falls back to Windows Sandbox: when the pinned VM is not ready, or the value is invalid, a test stops with `W32T.HyperVTargetNotReady`. The VM commands do not save the pinned VM's name, checkpoint, CPU or memory as your defaults. Details: [Pin a VM per session](hyperv-vm.md#make-hyper-v-tests-faster).
+
+## One test per project at a time (`TestProjectLease`)
+
+Two PowerShell sessions that test the same project at the same time (for example two VMs pinned with `W32T_HYPERV_VM`, or a Sandbox test next to a Hyper-V one) write the same logs and the same `Documentation\TestResults.json`. With `TestProjectLease` set to `On`, [Test-Win32ToolkitProject](reference/Test-Win32ToolkitProject.md) first takes the project's lease (a lock file under `%ProgramData%\win32-toolkit\locks`, like the test VM's): a second session testing the same project waits for it, up to `HyperVLeaseWaitMinutes`, and then stops with `W32T.ProjectLeaseTimeout`. The project's lease is always taken before the test VM's. The lease trusts only a lock folder and lock files owned by Administrators or SYSTEM, which only an elevated session creates, so a session that is not elevated skips the project lease (one verbose line) and tests as before. Any user can create files in `%ProgramData%`, so the lease never writes through a link there and refuses a lock folder or lock file that another account owns, with the error `W32T.HyperVLeaseUnsafe` (see [One VM, one PowerShell session at a time](hyperv-vm.md#make-hyper-v-tests-faster)). Default `Off`. No TUI control: set it in the registry.
 
 ## Test modes (`SandboxTestMode`, `HyperVTestMode`)
 

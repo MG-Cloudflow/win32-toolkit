@@ -36,6 +36,10 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 function Get-Win32ToolkitSandboxEnvironment { $null }   # C-9: no wsb answer -> the process check decides (test campaign F1)
 . (Join-Path $repo 'Private\Get-Win32ToolkitConfigValue.ps1')   # New-TargetedDocumentation reads SandboxTestMode
 . (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1')   # for -BaselineProjectPath validation (throws early)
+# C-9 (speed-up PR 3): TestProjectLease On would take the project's lease; inert doubles (never a lock file), never used while
+# the config reads return the test modes.
+function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose) [pscustomobject]@{ Kind = 'Project'; Epoch = 'inert'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
+function Exit-Win32ToolkitHyperVLease { param($Lease) }
 # C-9 (installer-identity PR 2 follow-up F7): every test first asks for the uninstall cleanup paths Export refuses. No
 # finding by default; [10] (e) sets some.
 $script:cleanupCalls = 0

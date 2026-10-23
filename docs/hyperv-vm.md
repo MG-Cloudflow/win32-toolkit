@@ -322,5 +322,6 @@ typo is never stored).
 | `HyperVDepsCheckpoint` | `On` freezes a `clean-base+deps-*` checkpoint after a successful dependency install so later runs of that project skip it. See [Configuration](configuration.md) |
 | `HyperVRevertMode` | `TurnOffFirst` (default) turns the VM off before each restore, `Legacy` keeps the plain restore. See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
 | `HyperVLeaseWaitMinutes` | How long (1-240 minutes, default 60) a test or a VM command waits while another PowerShell session uses the VM, then stops with `W32T.HyperVLeaseTimeout`. See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
+| `TestProjectLease` | `On` lets one PowerShell session at a time test a project (elevated sessions; default `Off`). See [Configuration](configuration.md) |
 
 All keys live in the toolkit's registry config; see [Configuration](configuration.md) for the full list.

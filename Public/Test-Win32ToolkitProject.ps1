@@ -236,6 +236,8 @@ function Test-Win32ToolkitProject {
         [string]$TestMode
     )
 
+    # The optional per-project lease (speed-up PR 3, TestProjectLease): $null unless taken below; released in the finally.
+    $projectLease = $null
     try {
         # Per-run test mode (TUI audit G3): passed to every Get-Win32ToolkitTestMode call below.
         if ($Unattended -and $TestMode -eq 'Interactive') {
@@ -265,6 +267,20 @@ function Test-Win32ToolkitProject {
 
         if (-not (Test-Path $ProjectPath)) {
             throw "Project path not found: $ProjectPath"
+        }
+
+        # Optional per-project lease (speed-up PR 3, D10, A-12, V-6, V-18; HKCU TestProjectLease = On): one test of this
+        # project at a time across PowerShell processes (a Sandbox test and a Hyper-V lane of the same project would write
+        # the same logs and records). Taken before any VM lease (lock order: project, then VM). Outer call only: the legs
+        # of an Update 'Both' run are inside it. Elevated sessions only: the lease trusts only a lock folder and lock files
+        # owned by Administrators or SYSTEM, which only an elevated session creates (any user may write in the folder).
+        if ($null -eq $script:W32TUpdateLegContext -and ([string](Get-Win32ToolkitConfigValue -Name 'TestProjectLease' -Default 'Off')).Trim() -eq 'On') {
+            if (Test-Win32ToolkitElevated) {
+                $projectLease = Enter-Win32ToolkitHyperVLease -ProjectPath $ProjectPath -Purpose 'test'
+            }
+            else {
+                Write-Verbose 'TestProjectLease is On but this session is not elevated: the per-project lease is skipped; the lease trusts only lock files owned by Administrators or SYSTEM, which only an elevated session creates.'
+            }
         }
 
         $projectName = Split-Path -Leaf $ProjectPath
@@ -1291,5 +1307,9 @@ function Test-Win32ToolkitProject {
         # (re-verification 2026-10-21, B3 #1).
         if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
         Write-Error "Test-Win32ToolkitProject failed: $($_.Exception.Message)"
+    }
+    finally {
+        # The per-project lease (speed-up PR 3), whatever happened above; nothing to release by default.
+        if ($null -ne $projectLease) { $null = Exit-Win32ToolkitHyperVLease -Lease $projectLease }
     }
 }
