@@ -78,8 +78,10 @@ function Wait-Win32ToolkitVMReady {
         }
     }
 
-    # Gate 2 — PowerShell Direct accepts the credential (profile exists). Retry backs off 1->2->4->8->10 s (a warm
-    # memory-state revert is typically reachable in 1-2 s); the 900 s ceiling is unchanged (the cold golden-image path).
+    # Gate 2 — PowerShell Direct accepts the credential (profile exists). Retry backs off 1->2->4->8->10 s (the cold
+    # golden-image path); with -ReturnSession (a run's open, right after a checkpoint restore) it waits 1 s, then 2 s at
+    # most (speed-up PR 1, D22): a warm revert becomes reachable within seconds, and a longer back-off only added dead
+    # time after it. The 900 s ceiling is unchanged.
     # An early refusal ('The credential is invalid.', 'A remote session might have ended.') is normal while the guest
     # creates the profile, so the attempts run with -ErrorAction Ignore: a passing run leaves no record in $Error or in a
     # caller's -ErrorVariable (live P4-ff-hv #3 / Q3-npp418-hv). An error PowerShell raises as terminating whatever
@@ -108,9 +110,9 @@ function Wait-Win32ToolkitVMReady {
             $ready = $false
         }
         if (-not $ready) {
-            Write-Verbose "PowerShell Direct is not ready yet (attempt $attempt); retrying in $gate2Delay s."
+            Write-Verbose "PowerShell Direct is not ready yet (attempt $attempt at $([DateTime]::UtcNow.ToString('HH:mm:ss.fff', [Globalization.CultureInfo]::InvariantCulture))Z); retrying in $gate2Delay s."
             Start-Sleep -Seconds $gate2Delay
-            $gate2Delay = [Math]::Min($gate2Delay * 2, 10)
+            $gate2Delay = if ($ReturnSession) { 2 } else { [Math]::Min($gate2Delay * 2, 10) }
         }
     } until ($ready -or (Get-Date) -gt $deadline2)
     $lastError = ''

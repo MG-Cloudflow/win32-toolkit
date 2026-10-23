@@ -259,7 +259,7 @@ $ev = $null
 $d1 = Split-ProbeOutput (Invoke-WaitProbe -Credential $cred -ReturnSession -ErrorVariable ev 4>&1)
 if ($d1.Value.Count -eq 1 -and $d1.Value[0].Name -eq 'd-session' -and $script:dCalls -eq 3) { Ok '-ReturnSession: two refusals, then the session on the third attempt is returned' } else { Bad "d1: value=$($d1.Value | ForEach-Object { "$_" }) calls=$($script:dCalls)" }
 if ($Error.Count -eq 0 -and @($ev).Count -eq 0) { Ok '-ReturnSession: no record left in $Error or the caller''s -ErrorVariable' } else { Bad "d1: `$Error=$($Error.Count) ev=$(@($ev).Count): $(@($Error | ForEach-Object { "$_" }) -join ' | ')" }
-if ($d1.Verbose.Count -eq 2 -and $d1.Verbose[0] -like '*(attempt 1); retrying in 1 s.' -and $d1.Verbose[1] -like '*(attempt 2); retrying in 2 s.') { Ok 'each refusal is a verbose line (attempt 1, attempt 2)' } else { Bad "d1 verbose: $($d1.Verbose -join ' | ')" }
+if ($d1.Verbose.Count -eq 2 -and $d1.Verbose[0] -match '\(attempt 1 at \d\d:\d\d:\d\d\.\d{3}Z\); retrying in 1 s\.$' -and $d1.Verbose[1] -match '\(attempt 2 at \d\d:\d\d:\d\d\.\d{3}Z\); retrying in 2 s\.$') { Ok 'each refusal is a verbose line with its UTC time (attempt 1, attempt 2)' } else { Bad "d1 verbose: $($d1.Verbose -join ' | ')" }
 
 # d2: bool mode, the same with Invoke-Command.
 $script:dCalls = 0; $script:dFail = 2; $script:dKind = 'write'
@@ -301,6 +301,24 @@ if ($vmrSrc.Contains('$global:Error.RemoveAt(') -and -not $vmrSrc.Contains('$Err
 
 Remove-Module -ModuleInfo $waitMod
 # Every copy of the doubles goes (the global ones of [d] and the script ones of [c]).
+foreach ($dbl in 'New-PSSession', 'Invoke-Command', 'Start-Sleep', 'Get-VMIntegrationService', 'Wait-Win32ToolkitVMReady') {
+    while (Test-Path -LiteralPath "Function:\$dbl") { Remove-Item -LiteralPath "Function:\$dbl" }
+}
+
+# ══ (c2) Hyper-V speed-up PR 1 (D22): the PowerShell Direct back-off is capped at 2 s after a checkpoint restore ═════
+Write-Host '[c2] Wait-Win32ToolkitVMReady: -ReturnSession retries 1, 2, 2, 2 ... s; bool mode keeps 1, 2, 4, 8, 10 s' -ForegroundColor Cyan
+. (Join-Path $repo 'Private\Wait-Win32ToolkitVMReady.ps1')
+$script:c2Calls = 0
+$script:c2Sleeps = [System.Collections.Generic.List[int]]::new()
+function Start-Sleep { param([int]$Seconds, [int]$Milliseconds) $script:c2Sleeps.Add($Seconds) }
+function Get-VMIntegrationService { param([Parameter(ValueFromRemainingArguments)]$Rest) [pscustomobject]@{ PrimaryStatusDescription = 'OK' } }
+function New-PSSession { param([Parameter(ValueFromRemainingArguments)]$Rest) $script:c2Calls++; if ($script:c2Calls -le 5) { return $null }; [pscustomobject]@{ Id = 3; Name = 'c2-session' } }
+function Invoke-Command { param([Parameter(ValueFromRemainingArguments)]$Rest) $script:c2Calls++; if ($script:c2Calls -le 5) { return $null }; $true }
+$r = Wait-Win32ToolkitVMReady -VMName 'vm' -Credential $cred -SkipPrep -ReturnSession
+if ($r.Name -eq 'c2-session' -and ($script:c2Sleeps -join ',') -eq '1,2,2,2,2') { Ok '-ReturnSession: five refusals -> sleeps 1, 2, 2, 2, 2 s, then the session' } else { Bad "-ReturnSession sleeps: $($script:c2Sleeps -join ',') result=$r" }
+$script:c2Calls = 0; $script:c2Sleeps.Clear()
+$r = Wait-Win32ToolkitVMReady -VMName 'vm' -Credential $cred -SkipPrep
+if ($r -eq $true -and ($script:c2Sleeps -join ',') -eq '1,2,4,8,10') { Ok 'bool mode (provisioning): five refusals -> sleeps 1, 2, 4, 8, 10 s (unchanged)' } else { Bad "bool sleeps: $($script:c2Sleeps -join ',') result=$r" }
 foreach ($dbl in 'New-PSSession', 'Invoke-Command', 'Start-Sleep', 'Get-VMIntegrationService', 'Wait-Win32ToolkitVMReady') {
     while (Test-Path -LiteralPath "Function:\$dbl") { Remove-Item -LiteralPath "Function:\$dbl" }
 }
