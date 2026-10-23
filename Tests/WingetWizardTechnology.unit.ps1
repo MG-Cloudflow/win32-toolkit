@@ -230,6 +230,24 @@ try {
     $null = Invoke-Wizard -App $npp -Probe $probeNpp -Anchor (New-Anchor 'nullsoft') -Pick 0
     if ($script:selfCalls -eq 1 -and $script:lookupCalls -eq 1 -and @($script:techChoices)[0] -eq 'Keep nullsoft (vendor EXE, NSIS) (recommended: Notepad++_x64_8.8.9 is published)') { Ok 'no self-anchor (a new project, or one that anchors nothing) -> the predecessor lookup as before' } else { Bad "self=$script:selfCalls lookup=$script:lookupCalls choices=[$($script:techChoices -join ' | ')]" }
 
+    # == [2c] / [2d] the labels follow the resolver (TUI audit G8) ===========================================
+    # Resolve-Win32ToolkitInstallerPin drops a self-anchor whose type cannot be pinned and falls back to the earlier
+    # versions; a pinnable one is what a 'Switch to ...' is compared with.
+    Write-Host '[2c] a self-anchor that cannot be pinned (portable) -> dropped: the earlier versions anchor, as in the resolver' -ForegroundColor Cyan
+    $selfPortable = [pscustomobject]@{ Name = 'Notepad++_x64_8.9.8.1'; Path = 'C:\x\Notepad++_x64_8.9.8.1'; InstallerType = 'portable'; Family = 'portable'; PinnedBy = 'winget-default'
+                                       Published = $true; Anchored = $true; AnchorReason = 'published' }
+    $a = Invoke-Wizard -App $npp -Probe $probeNpp -Anchor (New-Anchor 'nullsoft') -Self $selfPortable -Pick 0
+    if ($script:selfCalls -eq 1 -and $script:lookupCalls -eq 1 -and $script:techAsked -eq 1 -and @($script:techChoices)[0] -ceq 'Keep nullsoft (vendor EXE, NSIS) (recommended: Notepad++_x64_8.8.9 is published)' -and $a -and -not (HasType $a)) {
+        Ok "unpinnable self-anchor + a published nullsoft 8.8.9 -> the lookup runs and Keep names 8.8.9 (what the resolver pins); Keep passes nothing"
+    } else { Bad "self=$script:selfCalls lookup=$script:lookupCalls asked=$script:techAsked choices=[$($script:techChoices -join ' | ')]" }
+    if (-not @($script:techChoices | Where-Object { $_ -match 'rebuilding it' }).Count) { Ok 'no "rebuilding it" label for a dropped self-anchor' } else { Bad "choices=[$($script:techChoices -join ' | ')]" }
+
+    Write-Host '[2d] a pinnable self-anchor and a switch -> the summary compares with the rebuilt version' -ForegroundColor Cyan
+    $null = Invoke-Wizard -App $npp -Probe $probeNpp -Anchor $null -Self $selfWix -Pick 1
+    if (($script:panels -join "`n") -match [regex]::Escape('Installer tech : nullsoft (your choice; the rebuilt version is wix)')) { Ok "summary row 'nullsoft (your choice; the rebuilt version is wix)'" } else { Bad "panels: $($script:panels -join ' || ')" }
+    $null = Invoke-Wizard -App $npp -Probe $probeNpp -Anchor (New-Anchor 'nullsoft') -Pick 1
+    if (($script:panels -join "`n") -match [regex]::Escape('Installer tech : wix (your choice; the earlier version is nullsoft)')) { Ok "a predecessor anchor keeps 'the earlier version is nullsoft'" } else { Bad "panels: $($script:panels -join ' || ')" }
+
     # == [3] anchor + one family / probe unavailable =======================================================
     Write-Host '[3] anchor + one family or no probe answer -> not asked, grey keeps line' -ForegroundColor Cyan
     $tv = App 'TeamViewer' 'TeamViewer.TeamViewer' '15.82.6'
@@ -297,6 +315,20 @@ try {
     $a = Invoke-Wizard -App (App 'Git' 'Git.Git' 'Unknown') -Probe $probeGit -Anchor (New-Anchor 'inno')
     if ($script:probeCalls -eq 0 -and $script:lookupCalls -eq 0 -and $script:techAsked -eq 0 -and $a -and -not (HasType $a)) { Ok 'no probe request, no predecessor lookup, not asked, no -InstallerType' } else { Bad "probe=$script:probeCalls lookup=$script:lookupCalls asked=$script:techAsked" }
     if (& $grey '^\[grey\]Installer technology: not checked \(version unknown\); the checks after the download still run\.\[/\]$') { Ok 'grey line: "Installer technology: not checked (version unknown); the checks after the download still run."' } else { Bad "lines: $($script:hostLines -join ' || ')" }
+
+    # == [6b] version unknown + a pinnable self-anchor (TUI audit G8) ======================================
+    # The resolver keeps the rebuilt version's technology BEFORE its version check, so the wizard says so too.
+    Write-Host "[6b] version 'Unknown' + the rebuilt project is published -> 'keeps <type> (...; rebuilding it)', no probe" -ForegroundColor Cyan
+    $selfInno = [pscustomobject]@{ Name = 'Git_x64_Unknown'; Path = 'C:\x\Git_x64_Unknown'; InstallerType = 'inno'; Family = 'exe'; PinnedBy = 'winget-default'
+                                   Published = $true; Anchored = $true; AnchorReason = 'published' }
+    $a = Invoke-Wizard -App (App 'Git' 'Git.Git' 'Unknown') -Probe $probeGit -Anchor (New-Anchor 'wix') -Self $selfInno
+    $want6b = '^\[grey\]' + [regex]::Escape('Installer technology: keeps inno (Git_x64_Unknown is published; rebuilding it); the other technologies were not checked (version unknown).') + '\[/\]$'
+    if ($script:selfCalls -eq 1 -and $script:selfArgs['ProjectPath'] -eq (Join-Path $BASE 'Projects\Contoso\Git_x64_Unknown') -and $script:probeCalls -eq 0 -and $script:lookupCalls -eq 0 -and $script:techAsked -eq 0 -and (& $grey $want6b)) {
+        Ok "the self-anchor is read for 'Git_x64_Unknown'; one grey 'keeps inno (... rebuilding it); ... (version unknown)' line; no probe, no lookup, no question"
+    } else { Bad "self=$script:selfCalls probe=$script:probeCalls lookup=$script:lookupCalls lines: $($script:hostLines -join ' || ')" }
+    if (($script:panels -join "`n") -match [regex]::Escape('Installer tech : keeps inno (Git_x64_Unknown is published; rebuilding it; not checked: version unknown)') -and $a -and -not (HasType $a)) { Ok "summary row 'keeps inno (Git_x64_Unknown is published; rebuilding it; not checked: version unknown)'; no -InstallerType" } else { Bad "panels: $($script:panels -join ' || ')" }
+    $null = Invoke-Wizard -App (App 'Git' 'Git.Git' 'Unknown') -Probe $probeGit -Anchor $null -Self $selfPortable
+    if (& $grey '^\[grey\]Installer technology: not checked \(version unknown\)') { Ok "version 'Unknown' + an unpinnable self-anchor -> today's 'not checked (version unknown)' line" } else { Bad "lines: $($script:hostLines -join ' || ')" }
 
     # == [7] arguments, summary, escaping ==================================================================
     Write-Host '[7] lookup/probe arguments, summary row, escaping' -ForegroundColor Cyan

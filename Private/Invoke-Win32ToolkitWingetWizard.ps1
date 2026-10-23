@@ -71,33 +71,47 @@ function Invoke-Win32ToolkitWingetWizard {
     # -InstallerType <pin value>. When the probe answers and the version ships no packageable installer of the
     # anchor's family, Keep would stop the build (W32T.InstallerVariantUnavailable): the wizard says so and asks
     # (skip - recommended, switch, keep). Probe and predecessor lookup are fail-open: no answer -> no question.
+    # The project this build replaces and the template's tenant (data only), read BEFORE the version check: the
+    # resolver in Invoke-Win32Toolkit applies the rebuilt version's own technology before it looks at the version
+    # (TUI audit G8), so the labels below must too.
+    $wouldBe = Join-Path $templateDir ('{0}_{1}_{2}' -f (Sanitize-ProjectName -Name $picked.Name), (Sanitize-ProjectName -Name $arch), (Sanitize-ProjectName -Name $picked.Version))
+    $tenantId = ''
+    try {
+        $tplFile = Join-Path $paths.Templates "$template.json"
+        if (Test-Path -LiteralPath $tplFile) {
+            $tpl = Get-Content -LiteralPath $tplFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($tpl.PSObject.Properties['TenantId'] -and $tpl.TenantId) { $tenantId = [string]$tpl.TenantId }
+        }
+    }
+    catch {
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+        Write-Verbose "Template tenant not read: $($_.Exception.Message)"
+    }
+    # Rebuilding a version that is itself published or pinned keeps its own technology (the resolver reads the
+    # same self-anchor before the old folder is deleted, so 'Keep' still passes nothing and its label stays true,
+    # L3). A self-anchor whose type cannot be pinned is dropped, exactly as the resolver drops it, so the earlier
+    # versions anchor instead.
+    $selfAnchor = Get-Win32ToolkitSelfAnchor -ProjectPath $wouldBe -TenantId $tenantId
+    $selfRow = if ($selfAnchor) { Get-Win32ToolkitInstallerFamily -Type ([string]$selfAnchor.InstallerType) }
+    if ($selfAnchor -and -not ($selfRow -and $selfRow.PinValue)) { $selfAnchor = $null }
+    $whose = if ($selfAnchor) { 'the rebuilt version' } else { 'the earlier version' }
+
     $techPin = ''
     $techSummary = "winget's choice"
     $verText = ([string]$picked.Version).Trim()
     if (-not $verText -or $verText -notmatch '^[vV]?\d+(\.\d+)*') {
-        Write-SpectreHost "[grey]Installer technology: not checked (version unknown); the checks after the download still run.[/]"
-        $techSummary = "winget's choice (not checked: version unknown)"
+        if ($selfAnchor) {
+            # The resolver keeps the rebuilt version's technology before its own version check.
+            $selfHow = if ([string]$selfAnchor.AnchorReason -eq 'published') { 'published' } else { 'pinned' }
+            Write-SpectreHost "[grey]$(Get-SpectreEscapedText -Text ('Installer technology: keeps {0} ({1} is {2}; rebuilding it); the other technologies were not checked (version unknown).' -f $selfRow.EffectiveType, $selfAnchor.Name, $selfHow))[/]"
+            $techSummary = "keeps $($selfRow.EffectiveType) ($($selfAnchor.Name) is $selfHow; rebuilding it; not checked: version unknown)"
+        }
+        else {
+            Write-SpectreHost "[grey]Installer technology: not checked (version unknown); the checks after the download still run.[/]"
+            $techSummary = "winget's choice (not checked: version unknown)"
+        }
     }
     else {
-        $wouldBe = Join-Path $templateDir ('{0}_{1}_{2}' -f (Sanitize-ProjectName -Name $picked.Name), (Sanitize-ProjectName -Name $arch), (Sanitize-ProjectName -Name $picked.Version))
-        # The template's tenant (data only), so the 'Keep' label matches what Invoke-Win32Toolkit will pin.
-        $tenantId = ''
-        try {
-            $tplFile = Join-Path $paths.Templates "$template.json"
-            if (Test-Path -LiteralPath $tplFile) {
-                $tpl = Get-Content -LiteralPath $tplFile -Raw -Encoding UTF8 | ConvertFrom-Json
-                if ($tpl.PSObject.Properties['TenantId'] -and $tpl.TenantId) { $tenantId = [string]$tpl.TenantId }
-            }
-        }
-        catch {
-            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
-            Write-Verbose "Template tenant not read: $($_.Exception.Message)"
-        }
-
-        # Rebuilding a version that is itself published or pinned keeps its own technology (the resolver
-        # in Invoke-Win32Toolkit reads the same self-anchor before the old folder is deleted, so 'Keep'
-        # still passes nothing and its label stays true, L3); otherwise the earlier versions anchor.
-        $selfAnchor = Get-Win32ToolkitSelfAnchor -ProjectPath $wouldBe -TenantId $tenantId
         $anchor = if ($selfAnchor) { $selfAnchor }
                   else { (Get-Win32ToolkitPreviousProject -TemplateDirectory $templateDir -WingetId $picked.Id -Version $verText -ExcludePath $wouldBe -TenantId $tenantId).Anchor }
         Write-SpectreHost "[grey]Checking which installer technologies winget ships for $(Get-SpectreEscapedText -Text ('{0} {1} ({2})' -f $picked.Id, $verText, $arch))...[/]"
@@ -156,7 +170,7 @@ function Invoke-Win32ToolkitWingetWizard {
                     return
                 }
                 $techPin = [string]$techMap[[string]$choice]
-                $techSummary = if ($techPin) { "$techPin (your choice; the earlier version is $($anchorRow.EffectiveType))" } else { "keeps $($anchorRow.EffectiveType) ($($anchor.Name) is $how; not offered for this version: the build will stop)" }
+                $techSummary = if ($techPin) { "$techPin (your choice; $whose is $($anchorRow.EffectiveType))" } else { "keeps $($anchorRow.EffectiveType) ($($anchor.Name) is $how; not offered for this version: the build will stop)" }
             }
             elseif ($families.Count -ge 2 -and $others.Count -ge 1) {
                 $techMap = [ordered]@{}
@@ -165,7 +179,7 @@ function Invoke-Win32ToolkitWingetWizard {
                 foreach ($f in $others) { $techMap[(Get-SpectreEscapedText -Text ('Switch to {0}' -f $f.Label))] = $f.PinValue }
                 $choice = Read-SpectreSelection -Message ('Installer technology for {0} in this tenant' -f (Get-SpectreEscapedText -Text $picked.Name)) -Choices @($techMap.Keys) -Color Blue
                 $techPin = if ($techMap.Contains([string]$choice)) { [string]$techMap[[string]$choice] } else { '' }
-                $techSummary = if ($techPin) { "$techPin (your choice; the earlier version is $($anchorRow.EffectiveType))" } else { "keeps $($anchorRow.EffectiveType) ($($anchor.Name) is $how)" }
+                $techSummary = if ($techPin) { "$techPin (your choice; $whose is $($anchorRow.EffectiveType))" } else { "keeps $($anchorRow.EffectiveType) ($($anchor.Name) is $how)" }
             }
             else {
                 Write-SpectreHost "[grey]$(Get-SpectreEscapedText -Text ('Installer technology: keeps {0} ({1} is {2}).' -f $anchorRow.EffectiveType, $anchor.Name, $how))[/]"
