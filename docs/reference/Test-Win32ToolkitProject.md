@@ -362,7 +362,8 @@ reached) mean.
 A HyperV-unattended run of a PSADT 4.1 package with no processes to close and a deferrable welcome
 is not started while a user is signed in to the VM, which the toolkit's VM always is (it would wait
 on the dialog until the 25-minute limit): it is recorded as Inconclusive (not run) with the reason.
-Run it watched, or list the app's process in ProcessesToClose.
+Run it watched (-TestMode Interactive, or Interactive as the Hyper-V run mode in the menu), or list the
+app's process in ProcessesToClose.
 
 ```yaml
 Type: SwitchParameter

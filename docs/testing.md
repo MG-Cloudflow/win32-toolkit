@@ -86,10 +86,11 @@ anything runs (nothing is written, cleared or downloaded for the test: the logs 
 in place), and the test is recorded as Inconclusive with the reason (the customer documentation shows it
 as "Not run (Intune-parity pre-check)"). To test such a package:
 
-- run the test **watched** and answer the dialog in the VM window. A watched run needs all three: no
-  `-Unattended` switch, the `HyperVTestMode` config value set to `Interactive` or removed (see
-  [Configuration](configuration.md#test-modes-sandboxtestmode-hypervtestmode)), and an interactive console.
-  Leaving out `-Unattended` alone is not enough when `HyperVTestMode` is `Unattended`; or
+- run the test **watched** and answer the dialog in the VM window:
+  `Test-Win32ToolkitProject ... -Backend HyperV -TestMode Interactive` (it overrides `HyperVTestMode` for that
+  run, see [Configuration](configuration.md#test-modes-sandboxtestmode-hypervtestmode)), or **Interactive** as
+  the Hyper-V run mode under **Run a test** in the menu, from an interactive console (a host that cannot
+  prompt always runs unattended); or
 - list the app's process in `ProcessesToClose`, so that PSADT 4.1 asks only while the app is running
   (on devices too).
 
@@ -108,7 +109,7 @@ names the likely cause:
 
 - **Install or update phase**: a PSADT dialog waiting for the user signed in to the VM (for example
   because a listed process to close was running, or, on PSADT 4.1, a welcome dialog), or an installer that
-  did not finish. Run the test watched to see it (the three conditions above).
+  did not finish. Run the test watched to see it (`-TestMode Interactive`, see above).
 - **Uninstall phase**: the package was still running after 35 minutes, longer than the 30-minute limit
   the uninstall of a project created with this version puts on an EXE uninstaller: a project created
   before that limit (re-create it), or a step the limit does not cover, for example an MSI uninstall.

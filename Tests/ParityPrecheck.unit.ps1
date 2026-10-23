@@ -274,11 +274,12 @@ try {
         $m.Contains("'vm-test'") -and $m.Contains("'$leaf'") -and $m -notmatch '(?i)sign the user out' -and $m -match 'Install -> Uninstall' -and $m -match "org template's welcome dialog \(OrgUi\.Welcome: AllowDefer\)") {
         Ok 'the message: NOT started, 1460, watched, ProcessesToClose, the signed-in desktop, the VM and the project, no "sign the user out"'
     } else { Bad "message: $m" }
-    # Live P5 r2: with HyperVTestMode=Unattended, dropping -Unattended alone ran unattended again (Get-Win32ToolkitTestMode):
-    # the advice names every condition of a watched run, joined by "all three", never "-Unattended, or HyperVTestMode".
-    if ($m.Contains('a watched run needs all three: no -Unattended switch, the HyperVTestMode value under HKCU:\Software\CloudFlow\win32-toolkit set to Interactive or removed, and an interactive console') -and
-        $m -notmatch 'without -Unattended, or') {
-        Ok 'the watched-run advice names all three conditions (no -Unattended, HyperVTestMode not Unattended, an interactive console)'
+    # Live P5 r2: with HyperVTestMode=Unattended, dropping -Unattended alone ran unattended again (Get-Win32ToolkitTestMode).
+    # TUI audit G3: -TestMode Interactive overrides HyperVTestMode for one run, so the advice names it (and the TUI's
+    # Hyper-V run mode) instead of the three conditions and a registry edit.
+    if ($m.Contains('(Test-Win32ToolkitProject -TestMode Interactive, or Interactive as the Hyper-V run mode under Run a test in the menu, from an interactive console: -TestMode overrides the HyperVTestMode value for that run), ') -and
+        $m -notmatch 'all three' -and $m -notmatch 'without -Unattended, or') {
+        Ok 'the watched-run advice names -TestMode Interactive and the menu''s Hyper-V run mode (no "all three", no registry edit)'
     } else { Bad "watched advice: $m" }
     if (@([System.Text.Encoding]::UTF8.GetBytes($m) | Where-Object { $_ -gt 127 }).Count -eq 0 -and $x.Warnings.Count -eq 0) { Ok 'the message is ASCII; the pre-check itself prints no warning (the caller prints the message)' } else { Bad "ascii/warnings: $($x.Warnings -join ' | ')" }
     $n = $x.R.NotRun

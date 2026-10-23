@@ -181,9 +181,11 @@ if ($d41.Count -eq 1 -and $d41[0] -match '25-minute limit' -and $d41[0] -match '
 $dlg = @(& $for7 'p-dialog')
 if ($dlg.Count -eq 1 -and $dlg[0] -match '25-minute limit' -and $dlg[0] -match 'watched' -and $dlg[0] -notmatch 'PSADT 4\.1') { Ok '1460 + Dialog: the 25-minute limit and a watched run, no PSADT version claimed' } else { Bad "Dialog: $($dlg -join ' | ')" }
 # Live P5 r2: "without -Unattended" alone did not make a watched run when HyperVTestMode=Unattended is configured.
-$needs7 = 'a watched run needs all three: no -Unattended switch, the HyperVTestMode value under HKCU:\Software\CloudFlow\win32-toolkit set to Interactive or removed, and an interactive console'
-if ($d41.Count -eq 1 -and $dlg.Count -eq 1 -and $d41[0].Contains($needs7) -and $dlg[0].Contains($needs7) -and -not ($d41[0] -match 'watched \(without -Unattended\)') -and -not ($dlg[0] -match 'watched \(without -Unattended\)')) {
-    Ok '1460 + Dialog41 / Dialog: the watched-run advice names all three conditions'
+# TUI audit G3: -TestMode Interactive overrides HyperVTestMode for one run; the advice names it and the menu's run mode.
+$needs7 = ' (Test-Win32ToolkitProject -TestMode Interactive, or Interactive as the Hyper-V run mode under Run a test in the menu, from an interactive console)'
+if ($d41.Count -eq 1 -and $dlg.Count -eq 1 -and $d41[0].Contains($needs7) -and $dlg[0].Contains($needs7) -and $d41[0] -notmatch 'all three' -and $dlg[0] -notmatch 'all three' -and
+    -not ($d41[0] -match 'watched \(without -Unattended\)') -and -not ($dlg[0] -match 'watched \(without -Unattended\)')) {
+    Ok '1460 + Dialog41 / Dialog: the watched-run advice names -TestMode Interactive and the menu''s Hyper-V run mode (no "all three")'
 } else { Bad "watched advice: $($d41 -join ' | ') || $($dlg -join ' | ')" }
 $uni = @(& $for7 'p-uninstaller')
 if ($uni.Count -eq 1 -and $uni[0] -match 'uninstaller' -and $uni[0] -match '30 minutes' -and $uni[0] -match '69113' -and $uni[0] -notmatch 'dialog') { Ok '1460 + Uninstaller: names the uninstaller, the 30-minute device limit and 69113, no dialog' } else { Bad "Uninstaller: $($uni -join ' | ')" }

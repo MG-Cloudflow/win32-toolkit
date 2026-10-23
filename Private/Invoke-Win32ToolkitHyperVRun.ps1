@@ -237,9 +237,9 @@ function Invoke-Win32ToolkitHyperVRun {
                 # (never data); the texts are constants here (installer-identity PR 2, L16).
                 $hint = ''
                 if ($exit -eq 1460) {
-                    # Dropping -Unattended alone is not enough (live P5 r2): HyperVTestMode=Unattended or a non-interactive
-                    # host also make the run unattended (Get-Win32ToolkitTestMode).
-                    $watchedNeeds = ' (a watched run needs all three: no -Unattended switch, the HyperVTestMode value under HKCU:\Software\CloudFlow\win32-toolkit set to Interactive or removed, and an interactive console)'
+                    # A watched run: -TestMode Interactive overrides HyperVTestMode; a non-interactive host still runs
+                    # unattended (Get-Win32ToolkitTestMode).
+                    $watchedNeeds = ' (Test-Win32ToolkitProject -TestMode Interactive, or Interactive as the Hyper-V run mode under Run a test in the menu, from an interactive console)'
                     switch ([string]$ph.ParityHint) {
                         'Dialog41'    { $hint = ' In an unattended Intune-parity run this usually means a PSADT dialog was waiting for the user signed in to the VM: PSADT 4.1 shows its welcome dialog in Auto mode when a user is signed in and the app has no processes to close. Run the test watched to see and answer it' + $watchedNeeds + ', or list the app''s process in ProcessesToClose; the PSADT log under Sandbox\Logs shows the last dialog it opened.' }
                         'Dialog'      { $hint = ' In an unattended Intune-parity run this often means a PSADT dialog was waiting for the user signed in to the VM (for example because a listed process to close was running), or the installer itself did not finish. Run the test watched to see it' + $watchedNeeds + '; the PSADT log under Sandbox\Logs shows where it stopped.' }

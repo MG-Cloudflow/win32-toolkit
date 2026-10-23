@@ -91,7 +91,7 @@ function Invoke-Win32ToolkitParityPrecheck {
                     "PSADT 4.1 shows that dialog in Auto mode (the Intune command line has no deploy mode) whenever a user is signed in, and a user is signed in to the test VM '{3}' " +
                     "(the toolkit's VM always restores to a signed-in desktop): nobody would answer it, so the run would wait 25 minutes and then fail with exit code 1460. " +
                     'The result is recorded as Inconclusive (not run). To test this package: run the test watched and answer the dialog in the VM window ' +
-                    '(a watched run needs all three: no -Unattended switch, the HyperVTestMode value under HKCU:\Software\CloudFlow\win32-toolkit set to Interactive or removed, and an interactive console), ' +
+                    '(Test-Win32ToolkitProject -TestMode Interactive, or Interactive as the Hyper-V run mode under Run a test in the menu, from an interactive console: -TestMode overrides the HyperVTestMode value for that run), ' +
                     "or list the app's process in ProcessesToClose so that PSADT 4.1 asks only while the app is running (on devices too). Devices with a signed-in user show the same dialog.") -f
                     $what, $project, $welcomeText, $vm
                 $notes = 'Not run (Intune-parity pre-check): a PSADT 4.1 package with no processes to close and a deferrable welcome dialog waits for an answer whenever a user is signed in, ' +
