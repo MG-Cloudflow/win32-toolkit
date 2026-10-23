@@ -43,21 +43,47 @@ function New-Win32ToolkitHyperVSession {
     # Nothing is restored with -SkipRevert; a used clean marker also skips the restore (below).
     $revertSkipped = [bool]$SkipRevert
     $sinceTeardown = $null
+    $vm = $null
     if (-not $SkipRevert) {
         # Skip the open-revert only when THIS process verified a teardown revert of the SAME VM+checkpoint
         # moments ago (Remove-Win32ToolkitHyperVSession stamps $script:HyperVCleanMarker strictly AFTER a
         # successful restore; every VM-management cmdlet clears it). Back-to-back runs in one pipeline
         # otherwise revert twice with zero use in between. Fail-safe by construction: no marker, any
         # mismatch, or age > 10 min ⇒ revert exactly as before. The marker is deliberately PROCESS-LOCAL —
-        # VM Notes have untested survive/erase semantics across a Standard-checkpoint restore, and
-        # uptime/state checks detect nothing (a memory-state revert leaves the VM continuously Running).
+        # VM Notes have untested survive/erase semantics across a Standard-checkpoint restore.
+        # Guard (speed-up PR 1, D25): another process may restore, start or use the VM in between. A restore or a
+        # start resets the VM's uptime, so the marker is used only while the VM is still the one the teardown left
+        # (same VM Id), Running, and up for at least the marker's age (5 s of slack); anything else restores.
         $m = $script:HyperVCleanMarker
-        $markerFresh = $m -and ($m.VMName -eq $VMName) -and ($m.CheckpointName -eq $CheckpointName) -and
-                       (((Get-Date) - $m.StampedAt).TotalMinutes -lt 10)
+        $markerFresh = $false
+        if ($m -and ($m.VMName -eq $VMName) -and ($m.CheckpointName -eq $CheckpointName) -and (((Get-Date) - $m.StampedAt).TotalMinutes -lt 10)) {
+            $age = ((Get-Date) - $m.StampedAt).TotalSeconds
+            $why = $null
+            $guardVm = $null
+            try { $guardVm = Get-VM -Name $VMName -ErrorAction Stop }
+            catch {
+                if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                $why = "the VM could not be read ($($_.Exception.Message))"
+            }
+            if (-not $why) {
+                if (-not $m.VMId -or $null -eq $guardVm -or [string]$guardVm.Id -ne [string]$m.VMId) { $why = 'its VM Id is not the one the teardown left clean' }
+                elseif ([string]$guardVm.State -ne 'Running') { $why = "the VM is $($guardVm.State), not Running" }
+                elseif ($guardVm.Uptime -isnot [timespan] -or $guardVm.Uptime.TotalSeconds -lt ($age - 5)) {
+                    $why = "the VM's uptime is shorter than the $([int]$age) s since the teardown restore (it was restored or started since)"
+                }
+            }
+            if ($why) {
+                Write-Verbose "'$VMName': the clean marker is not used ($why); restoring '$CheckpointName'."
+            }
+            else {
+                $markerFresh = $true
+                $vm = $guardVm
+            }
+        }
         if ($markerFresh) {
             Write-Verbose "'$VMName' was left verified-clean at '$CheckpointName' by this process — skipping the redundant open-revert."
             $revertSkipped = $true
-            $sinceTeardown = [math]::Round(((Get-Date) - $m.StampedAt).TotalSeconds, 1)
+            $sinceTeardown = [math]::Round($age, 1)
         }
         else {
             Restore-VMCheckpoint -VMName $VMName -Name $CheckpointName -Confirm:$false -ErrorAction Stop
@@ -66,7 +92,8 @@ function New-Win32ToolkitHyperVSession {
     # From here the VM is in use — it can no longer be presumed clean, whatever happens to this run.
     $script:HyperVCleanMarker = $null
 
-    $vm = Get-VM -Name $VMName -ErrorAction Stop
+    # After a restore (or with -SkipRevert) the VM is read once more; a used marker already read it.
+    if ($null -eq $vm) { $vm = Get-VM -Name $VMName -ErrorAction Stop }
     $warm = $true
     if ($vm.State -ne 'Running') {
         # A Standard (memory-state) checkpoint restores a RUNNING guest; landing here means the checkpoint

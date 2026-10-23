@@ -35,7 +35,7 @@ function Get-Module { param($Name, [switch]$ListAvailable) [pscustomobject]@{ Na
 function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }
 function Set-Win32ToolkitConfigValue { param($Name, $Value) }
 function Set-Win32ToolkitGuestCredential { param($Credential) }
-function Clear-Win32ToolkitHyperVStateCache { }
+function Clear-Win32ToolkitHyperVStateCache { param([switch]$MarkerOnly) }   # speed-up PR 1 (A-6): accepts -MarkerOnly
 function Get-Win32ToolkitBasePath { param([Parameter(ValueFromRemainingArguments)]$a) 'C:\Win32Apps' }
 function Get-Win32ToolkitHyperVPaths { param($BasePath) [pscustomobject]@{ Golden = 'C:\hv\golden'; VMs = 'C:\hv\vms' } }
 function Test-Path { param($LiteralPath, $Path, $PathType) if ($LiteralPath -eq $script:byoVhdx) { $true } elseif ($LiteralPath -like 'C:\hv\*') { $true } else { $false } }

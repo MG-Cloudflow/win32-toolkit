@@ -42,7 +42,7 @@ function Set-Win32ToolkitConfigValue { param($Name, $Value) $script:cfg[$Name] =
 function Get-Win32ToolkitGuestCredential { $script:storedCred }
 function Get-Win32ToolkitGuestCredentialInteractive { param($UserName, $Message) Log 'Prompt'; $typedCred }
 function Set-Win32ToolkitGuestCredential { param($Credential) Log 'PersistCred' }
-function Clear-Win32ToolkitHyperVStateCache { Log 'ClearCache' }
+function Clear-Win32ToolkitHyperVStateCache { param([switch]$MarkerOnly) Log 'ClearCache' }   # speed-up PR 1 (A-6): accepts -MarkerOnly
 function Reset-Win32ToolkitTestVM { param($Name, $CheckpointName) Log 'Reset' }
 function Wait-Win32ToolkitVMReady { param($VMName, $Credential) Log 'Wait'; if ($script:waitThrows) { throw "Heartbeat not 'OK' within 300 s" }; $true }
 function Set-Win32ToolkitGuestAutoLogon { param($VMName, $Credential) Log 'AutoLogon' }

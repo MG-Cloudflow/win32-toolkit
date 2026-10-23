@@ -40,7 +40,21 @@ function Remove-Win32ToolkitHyperVSession {
         try {
             Restore-VMCheckpoint -VMName $VMName -Name $CheckpointName -Confirm:$false -ErrorAction Stop
             if ($null -ne $Info) { $Info['Restored'] = $true; $Info['RevertMode'] = 'Legacy' }
-            $script:HyperVCleanMarker = @{ VMName = $VMName; CheckpointName = $CheckpointName; StampedAt = Get-Date }
+            # The marker carries the VM's Id (speed-up PR 1, D25): the next open uses it only for this very VM. When
+            # the Id cannot be read there is no marker (one extra restore next time); the restore itself succeeded.
+            $vmId = $null
+            try { $vmId = [string](Get-VM -Name $VMName -ErrorAction Stop).Id }
+            catch {
+                if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                $vmId = $null
+            }
+            if ($vmId) {
+                $script:HyperVCleanMarker = @{ VMName = $VMName; VMId = $vmId; CheckpointName = $CheckpointName; StampedAt = Get-Date }
+            }
+            else {
+                $script:HyperVCleanMarker = $null
+                Write-Verbose "Teardown of '$VMName': the VM's Id could not be read, so no clean marker is kept (the next run restores the checkpoint again)."
+            }
         }
         catch {
             $script:HyperVCleanMarker = $null
