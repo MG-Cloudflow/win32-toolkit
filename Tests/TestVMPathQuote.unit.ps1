@@ -58,6 +58,9 @@ function Start-Sleep { param($Seconds) }
 function Set-Win32ToolkitGuestAutoLogon { param($VMName, $Credential) }
 function Set-VM { param($Name, $CheckpointType) }
 function Checkpoint-VM { param($VMName, $SnapshotName) Log 'Checkpoint-VM' }
+# C-9 (speed-up PR 3): provisioning holds the VM's lease; inert doubles (a fake lease, nothing logged; [8] logs them).
+function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose) [pscustomobject]@{ Kind = 'VM'; VMName = $VMName; Epoch = 'inert'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
+function Exit-Win32ToolkitHyperVLease { param($Lease) }
 
 $cred = [pscredential]::new('w32admin', (ConvertTo-SecureString 'p' -AsPlainText -Force))
 function Run { param([hashtable]$P) $script:calls = @(); $script:isoSeen = $null; $script:vhdSeen = $null; $script:err = $null
@@ -122,6 +125,48 @@ $r7 = & {
 if ($r7.Threw -and "$($r7.Threw)" -like '*checkpoint operation failed*') { Ok 'provisioning throws the checkpoint error' } else { Bad "no throw: $($r7.Threw)" }
 if (@($r7.Info | Where-Object { $_ -like '*checkpoint taken*' }).Count -eq 0) { Ok 'no "checkpoint taken" success line' } else { Bad "success line printed: $($r7.Info -join ' | ')" }
 if (($script:calls -contains 'Checkpoint-VM') -and @($script:calls | Where-Object { $_ -like 'cfg:*' -or $_ -eq 'cred' }).Count -eq 0) { Ok 'no setting and no guest credential written after the failed checkpoint' } else { Bad "after a failed checkpoint: $($script:calls -join ' > ')" }
+
+# == [8] speed-up PR 3 (D10): provisioning holds the new VM's lease; -Force holds the old VM's while removing it ========
+Write-Host '[8] the VM lease: right after New-VM until the settings are written; around the -Force removal; a timeout stops there' -ForegroundColor Cyan
+function Checkpoint-VM { param($VMName, $SnapshotName) Log 'Checkpoint-VM' }
+$script:leaseThrows = $false; $script:leaseIds = @()
+function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose)
+    Log "Lease:enter:${VMName}:$Purpose"; $script:leaseIds += [string]$VMId
+    if ($script:leaseThrows) {
+        throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new("Another process kept the test VM '$VMName' for more than 60 minutes."),
+            'W32T.HyperVLeaseTimeout', [System.Management.Automation.ErrorCategory]::ResourceBusy, $VMName)
+    }
+    [pscustomobject]@{ Kind = 'VM'; VMName = $VMName; Epoch = 'e'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
+function Exit-Win32ToolkitHyperVLease { param($Lease) Log 'Lease:exit'; [pscustomobject]@{ Leak = 'exit' } }
+function New-VM { param($Name, $Generation, $MemoryStartupBytes, $VHDPath, $Path, $SwitchName, $ErrorAction) $script:vhdSeen = $VHDPath; Log 'New-VM'; [pscustomobject]@{ Name = $Name; Id = [guid]'0e5f9e66-1111-2222-3333-444455556666' } }
+$script:calls = @(); $script:leaseIds = @()
+$out8 = $null; $err8 = $null
+try { $out8 = @(New-Win32ToolkitTestVM -IsoPath 'C:\iso\Win11_x64.iso' -Credential $cred -Unattended 6>$null 3>$null) } catch { $err8 = $_ }
+$iNew = [array]::IndexOf($script:calls, 'New-VM'); $iEnter = [array]::IndexOf($script:calls, 'Lease:enter:win32tk-golden:provisioning'); $iStart = [array]::IndexOf($script:calls, 'Start-VM')
+if (-not $err8 -and $iEnter -eq $iNew + 1 -and $iStart -gt $iEnter -and $script:calls[-1] -eq 'Lease:exit' -and [array]::IndexOf($script:calls, 'cred') -lt ($script:calls.Count - 1) -and
+    ($script:leaseIds -join ',') -eq '0e5f9e66-1111-2222-3333-444455556666' -and @($out8 | Where-Object { $null -ne $_ }).Count -eq 0) {
+    Ok 'provisioning: the lease (with the new VM''s Id) right after New-VM, released after the settings and the credential; the release double''s object does not leak (only Get-VM''s result)'
+} else { Bad "provision lease: err=$err8 calls=$($script:calls -join ' > ') ids=$($script:leaseIds -join ',') out=$(@($out8).Count)" }
+# a lease timeout after New-VM: no start, no checkpoint, no setting
+$script:leaseThrows = $true; $script:calls = @(); $err8 = $null
+try { $null = New-Win32ToolkitTestVM -IsoPath 'C:\iso\Win11_x64.iso' -Credential $cred -Unattended 6>$null 3>$null } catch { $err8 = $_ }
+$script:leaseThrows = $false
+if ($err8.FullyQualifiedErrorId -eq 'W32T.HyperVLeaseTimeout' -and ($script:calls -join ' > ') -eq 'BuildVhdx > New-VM > Lease:enter:win32tk-golden:provisioning') { Ok 'a lease timeout after New-VM: W32T.HyperVLeaseTimeout, nothing started, checkpointed or saved' } else { Bad "provision timeout: $($err8.FullyQualifiedErrorId) calls=$($script:calls -join ' > ')" }
+# -Force on an existing VM: its lease around the stop and the removal, then the new VM's lease
+function Get-VM { param($Name, $ErrorAction) if ($script:existing8) { [pscustomobject]@{ Name = $Name; Id = [guid]'11111111-2222-3333-4444-555555555555' } } else { $null } }
+function Get-VMCheckpoint { param($VMName, $Name, $ErrorAction) $null }
+function Stop-VM { param($Name, [switch]$TurnOff, [switch]$Force, $ErrorAction) Log 'Stop-VM' }
+function Remove-VM { param($Name, [switch]$Force, $ErrorAction) Log 'Remove-VM'; $script:existing8 = $false }
+$script:existing8 = $true; $script:calls = @(); $script:leaseIds = @()
+$err8 = $null
+try { $null = New-Win32ToolkitTestVM -IsoPath 'C:\iso\Win11_x64.iso' -Credential $cred -Unattended -Force 6>$null 3>$null } catch { $err8 = $_ }
+$seq8 = $script:calls -join ' > '
+if (-not $err8 -and $seq8 -like 'Lease:enter:win32tk-golden:provisioning > Stop-VM > Remove-VM > Lease:exit > BuildVhdx > New-VM > Lease:enter:win32tk-golden:provisioning > *' -and
+    ($script:leaseIds -join ',') -eq '11111111-2222-3333-4444-555555555555,0e5f9e66-1111-2222-3333-444455556666') {
+    Ok '-Force: the old VM''s lease (its Id) around the stop and the removal, released before the rebuild; then the new VM''s'
+} else { Bad "force: err=$err8 calls=$seq8 ids=$($script:leaseIds -join ',')" }
+Remove-Item Function:\Stop-VM, Function:\Remove-VM, Function:\Get-VMCheckpoint
+function Get-VM { param($Name, $ErrorAction) $null }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All TestVMPathQuote tests passed.' -ForegroundColor Green; exit 0 }

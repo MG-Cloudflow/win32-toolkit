@@ -35,6 +35,9 @@ function Get-Win32ToolkitCheckpointAttestation { param($Session, $VMName, $Check
 function Write-Win32ToolkitCheckpointAdvisory { param($Kind, $Key, $Message) }
 function Test-Win32ToolkitVMConnectOpen { param($VMName, $VMId) $false }
 function Get-Win32ToolkitCheckpointAutoSetting { param($CheckpointId) }
+# C-9 (speed-up PR 3): the run takes the VM's lease first; inert doubles (a fake lease, a release that does nothing), never a lock file.
+function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose) [pscustomobject]@{ Kind = 'VM'; VMName = $VMName; Epoch = 'inert'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
+function Exit-Win32ToolkitHyperVLease { param($Lease) }
 
 function New-Proj {
     param([switch]$WithDeps)

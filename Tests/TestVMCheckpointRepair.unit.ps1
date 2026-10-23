@@ -59,6 +59,16 @@ function Set-VM { param($Name, $CheckpointType, $AutomaticCheckpointsEnabled, $E
     if ($CheckpointType) { Log "Set-VM:CheckpointType=$CheckpointType" }
     if ($null -ne $AutomaticCheckpointsEnabled) { Log "Set-VM:Auto=$AutomaticCheckpointsEnabled$(if ($CheckpointType) { '+CheckpointType' })" } }
 function Checkpoint-VM { param($VMName, $SnapshotName) Log "Checkpoint-VM:$SnapshotName" }
+# C-9 (speed-up PR 3): steps 2-5 hold the VM's lease; the doubles log it and hand out a fake lease ([9] makes it time out).
+$script:leaseThrows = $false
+function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose)
+    Log "Lease:enter:${VMName}:$Purpose"
+    if ($script:leaseThrows) {
+        throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new("Another process kept the test VM '$VMName' for more than 60 minutes."),
+            'W32T.HyperVLeaseTimeout', [System.Management.Automation.ErrorCategory]::ResourceBusy, $VMName)
+    }
+    [pscustomobject]@{ Kind = 'VM'; VMName = $VMName; Epoch = 'e'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
+function Exit-Win32ToolkitHyperVLease { param($Lease) Log 'Lease:exit'; [pscustomobject]@{ Leak = 'exit' } }
 
 # 6> silences the helper's Write-Host progress without eating the [bool] return value (Ok/Bad keep Write-Host).
 function Run {
@@ -173,6 +183,37 @@ Remove-Item Function:\Checkpoint-VM_Saved
 if ($r8.Threw -and "$($r8.Threw)" -like '*checkpoint operation failed*' -and $null -eq $r8.Out) { Ok 'the repair throws the checkpoint error (no $true)' } else { Bad "no throw: threw=$($r8.Threw) out=$($r8.Out -join ',')" }
 if (@($r8.Info | Where-Object { $_ -like '*checkpoint re-taken*' }).Count -eq 0) { Ok 'no "checkpoint re-taken" success line' } else { Bad "success line printed: $($r8.Info -join ' | ')" }
 if (@($script:calls | Where-Object { $_ -like 'cfg:*' }).Count -eq 0 -and ($script:calls -contains 'Checkpoint-VM:clean-base')) { Ok 'no setting written after the failed checkpoint' } else { Bad "after a failed checkpoint: $($script:calls -join ' > ')" }
+$script:vmState = 'Running'; $script:cpExists = $false; $script:storedCred = $null
+
+# == [9] speed-up PR 3 (D10): steps 2-5 hold the VM's lease (the credential prompt does not) ==========================
+Write-Host '[9] the VM lease: after the credential step, before the first VM call, released last; a lease timeout changes nothing' -ForegroundColor Cyan
+# checkpoint present: the lease before the (nested) Reset, released after the settings; exactly one [bool]
+$script:cpExists = $true; $script:storedCred = $typedCred; $script:desktopUp = $true; $script:waitThrows = $false; $script:vmState = 'Running'
+$script:calls = @(); $script:cfg = @{}; $script:err = $null
+$out9 = $null
+try { $out9 = @(Repair-Win32ToolkitTestVMCheckpoint 6>$null 3>$null) } catch { $script:err = $_.Exception.Message }
+$iEnter = Index 'Lease:enter:win32tk-golden:checkpoint repair'
+if (-not $script:err -and $iEnter -ge 0 -and $iEnter -lt (Index 'Reset') -and $script:calls[-1] -eq 'Lease:exit' -and (Index 'Lease:exit') -gt (Index 'cfg:HyperVCheckpoint=clean-base')) {
+    Ok 'checkpoint present: the lease before the Reset, released after the settings (last call)'
+} else { Bad "present: err='$script:err' calls=$($script:calls -join ' > ')" }
+if ($out9.Count -eq 1 -and $out9[0] -is [bool] -and $out9[0]) { Ok 'the repair still returns exactly one [bool] $true (C-12)' } else { Bad "output: $(@($out9 | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ')" }
+# no credential stored: the prompt happens before the lease; the lease before the first VM call (Start-VM from Off)
+$script:cpExists = $false; $script:storedCred = $null; $script:vmState = 'Off'
+Run
+if ($script:ret -eq $true -and (Index 'Prompt') -lt (Index 'Lease:enter:win32tk-golden:checkpoint repair') -and (Index 'Lease:enter:win32tk-golden:checkpoint repair') -lt (Index 'Start-VM') -and $script:calls[-1] -eq 'Lease:exit') {
+    Ok 'no stored credential: the prompt first, then the lease, then Start-VM; released last'
+} else { Bad "prompt: ret=$script:ret calls=$($script:calls -join ' > ')" }
+# a failure inside the lease (the readiness gate) still releases it
+$script:waitThrows = $true
+Run
+$script:waitThrows = $false
+if ($script:err -and $script:calls[-1] -eq 'Lease:exit') { Ok 'a failed readiness gate: the error surfaces and the lease is released' } else { Bad "gate: err='$script:err' calls=$($script:calls -join ' > ')" }
+# a lease timeout: nothing is changed
+$script:cpExists = $true; $script:storedCred = $typedCred; $script:vmState = 'Running'; $script:leaseThrows = $true
+$script:calls = @(); $script:cfg = @{}; $err9 = $null
+try { $null = Repair-Win32ToolkitTestVMCheckpoint 6>$null 3>$null } catch { $err9 = $_ }
+$script:leaseThrows = $false
+if ($err9.FullyQualifiedErrorId -eq 'W32T.HyperVLeaseTimeout' -and ($script:calls -join ' > ') -eq 'Lease:enter:win32tk-golden:checkpoint repair') { Ok 'a lease timeout: W32T.HyperVLeaseTimeout, no reset, no checkpoint, no setting' } else { Bad "timeout: $($err9.FullyQualifiedErrorId) calls=$($script:calls -join ' > ')" }
 $script:vmState = 'Running'; $script:cpExists = $false; $script:storedCred = $null
 
 Write-Host ''

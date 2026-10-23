@@ -25,6 +25,10 @@ A checkpoint taken with automatic checkpoints on gets the plain restore and one 
 The plain restore keeps a running VM running, but leaves a VM that was off or saved before the reset in
 the Saved state: Start-VM resumes it.
 
+The reset holds the test VM's lease, the lock every win32-toolkit process takes before it changes the VM:
+while another PowerShell session uses the VM (a test run, for example) the reset waits for it, up to
+HyperVLeaseWaitMinutes (default 60), and then stops with the error W32T.HyperVLeaseTimeout.
+
 ## EXAMPLES
 
 ### Example 1

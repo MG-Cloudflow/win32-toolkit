@@ -268,6 +268,18 @@ try {
     function Get-Win32ToolkitCheckpointAttestation { param($Session, $VMName, $CheckpointName, $VMId, $CheckpointId, $CreationTimeUtcTicks, [switch]$AllowLive, [switch]$AllowStore, $SignedInAnswer)
         $script:attCalls.Add([pscustomobject]@{ Session = $Session; AllowLive = [bool]$AllowLive; AllowStore = [bool]$AllowStore; SignedInAnswer = $SignedInAnswer; VMId = $VMId; CheckpointId = $CheckpointId; Ticks = $CreationTimeUtcTicks })
         $script:attAnswer }
+    # Speed-up PR 3 (C-9): a live check takes the VM's lease before its first restore. The doubles hand out a fake lease and
+    # record the calls on their own ($script:leaseLog, never $script:log, so the sequences below stay exact); [3d] varies them.
+    $script:leaseLog = [System.Collections.Generic.List[string]]::new(); $script:leaseThrows = $false
+    $script:leaseObj = [pscustomobject]@{ Kind = 'VM'; Epoch = 'e'; Generation = 2; PreviousGeneration = 1; Nested = $false }
+    function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose)
+        $script:leaseLog.Add("enter:${VMName}:${VMId}:$Purpose")
+        if ($script:leaseThrows) {
+            throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new("Another process kept the test VM '$VMName' for more than 60 minutes."),
+                'W32T.HyperVLeaseTimeout', [System.Management.Automation.ErrorCategory]::ResourceBusy, $VMName)
+        }
+        $script:leaseObj }
+    function Exit-Win32ToolkitHyperVLease { param($Lease) $script:leaseLog.Add("exit:$([object]::ReferenceEquals($Lease, $script:leaseObj))") }
     $signedIn = [pscustomobject]@{ Checked = $true; SignedIn = $true; SessionCount = 1; Reason = '' }
     $nobody   = [pscustomobject]@{ Checked = $true; SignedIn = $false; SessionCount = 0; Reason = '' }
     $unknown  = [pscustomobject]@{ Checked = $false; SignedIn = $false; SessionCount = 0; Reason = 'the guest returned no answer' }
@@ -468,12 +480,63 @@ try {
     if (-not $x.Threw -and $x.R.Blocked -and $x.Warnings.Count -eq 0 -and $script:cacheSets.Count -eq 1) { Ok 'a throwing attestation: the pre-check answer is unchanged (blocked, no warning, the probe answer still stored)' } else { Bad "attestation throws: $($x | ConvertTo-Json -Compress -Depth 3)" }
     & $reset3b; $script:attAnswer = $null; $script:attCalls.Clear()
 
+    # ============================== [3d] the VM lease (speed-up PR 3) ==============================
+    Write-Host '[3d] the VM lease: a live check takes it right before the open and releases it after the revert; a hit takes none; a timeout propagates' -ForegroundColor Cyan
+    ${function:New-Win32ToolkitHyperVSession_Saved3d} = ${function:New-Win32ToolkitHyperVSession}
+    ${function:Remove-Win32ToolkitHyperVSession_Saved3d} = ${function:Remove-Win32ToolkitHyperVSession}
+    ${function:New-Win32ToolkitHyperVSession} = { param($VMName, [pscredential]$Credential, $CheckpointName, [switch]$SkipRevert, [switch]$EnsureDesktop, [hashtable]$Info, $Lease)
+        $script:leaseLog.Add("open:lease=$([object]::ReferenceEquals($Lease, $script:leaseObj))")
+        New-Win32ToolkitHyperVSession_Saved3d -VMName $VMName -Credential $Credential -CheckpointName $CheckpointName -Info $Info }
+    ${function:Remove-Win32ToolkitHyperVSession} = { param($Session, $VMName, $CheckpointName, [switch]$Revert, $Lease)
+        $script:leaseLog.Add("remove:lease=$([object]::ReferenceEquals($Lease, $script:leaseObj))")
+        Remove-Win32ToolkitHyperVSession_Saved3d -Session $Session -VMName $VMName -CheckpointName $CheckpointName -Revert:$Revert }
+    try {
+        # a miss: enter (with the lane's VM Id) -> open with the lease -> query -> revert with the lease -> exit
+        & $reset3b; $script:leaseLog.Clear()
+        $x = & $preCase $pAtRisk
+        if (-not $x.Threw -and $x.R.Blocked -and ($script:leaseLog -join ' > ') -eq "enter:vm-test:$($script:laneVmId):Intune-parity pre-check > open:lease=True > remove:lease=True > exit:True" -and
+            ($x.Log -join ' > ') -eq 'get-vm:vm-test > open:vm-test:clean-base > query:SESSION > remove:SESSION:vm-test:clean-base:revert=True') {
+            Ok 'a miss: the lease (with the lane''s VM Id) right before the open, handed to the open and the revert, released last'
+        } else { Bad "miss: lease=$($script:leaseLog -join ' > ') log=$($x.Log -join ' > ')" }
+        # a cache hit: no lease at all (nothing is restored)
+        & $reset3b; $script:leaseLog.Clear()
+        $script:cacheAnswer = [pscustomobject]@{ SignedIn = $true; SessionCount = 1 }
+        $x = & $preCase $pAtRisk
+        if ($x.R.FromCache -and @($script:leaseLog | Where-Object { $_ -like 'enter:*' -or $_ -like 'open:*' -or $_ -like 'remove:*' }).Count -eq 0) { Ok 'a cache hit takes no lease (it never waits for the VM)' } else { Bad "hit: $($script:leaseLog -join ' > ')" }
+        # a lease timeout: thrown (never the fail-open warning), nothing opened or reverted, nothing stored
+        & $reset3b; $script:leaseLog.Clear(); $script:leaseThrows = $true
+        $x = & $preCase $pAtRisk
+        $script:leaseThrows = $false
+        if ($x.Threw -and $x.Threw.FullyQualifiedErrorId -eq 'W32T.HyperVLeaseTimeout' -and $x.Warnings.Count -eq 0 -and ($x.Log -join ' > ') -eq 'get-vm:vm-test' -and
+            ($script:leaseLog -join ' > ') -eq "enter:vm-test:$($script:laneVmId):Intune-parity pre-check > exit:False" -and $script:cacheSets.Count -eq 0) {
+            Ok 'a lease timeout propagates (W32T.HyperVLeaseTimeout, no "could not reach the VM" warning); no open, no revert, nothing stored'
+        } else { Bad "timeout: threw=$($x.Threw.FullyQualifiedErrorId) warnings=$($x.Warnings -join ' | ') log=$($x.Log -join ' > ') lease=$($script:leaseLog -join ' > ')" }
+        # no VM: no lease, no revert
+        & $reset3b; $script:leaseLog.Clear(); $script:vmThrows = $true
+        $x = & $preCase $pAtRisk
+        $script:vmThrows = $false
+        if (-not $x.Threw -and @($script:leaseLog | Where-Object { $_ -like 'enter:*' -or $_ -like 'remove:*' }).Count -eq 0) { Ok 'Get-VM throws: no lease taken, no revert (fail-open as before)' } else { Bad "no vm: $($script:leaseLog -join ' > ')" }
+        # not at risk: the VM is not touched, no lease
+        & $reset3b; $script:leaseLog.Clear()
+        $null = & $preCase $pListed
+        if ($script:leaseLog.Count -eq 0) { Ok 'not at risk: no lease' } else { Bad "not at risk: $($script:leaseLog -join ' > ')" }
+    }
+    finally {
+        ${function:New-Win32ToolkitHyperVSession} = ${function:New-Win32ToolkitHyperVSession_Saved3d}
+        ${function:Remove-Win32ToolkitHyperVSession} = ${function:Remove-Win32ToolkitHyperVSession_Saved3d}
+        Remove-Item Function:\New-Win32ToolkitHyperVSession_Saved3d, Function:\Remove-Win32ToolkitHyperVSession_Saved3d
+        $script:leaseThrows = $false
+    }
+    & $reset3b
+
     # ============================== [4] file hygiene ==============================
     Write-Host '[4] the pre-check files: ASCII, one function, every catch starts with the C-2 line' -ForegroundColor Cyan
     $c2 = "if (`$_.FullyQualifiedErrorId -like 'W32T.*') { throw }"
     # Speed-up PR 1: the four helpers the pre-check now calls.
     foreach ($name in 'Get-Win32ToolkitParityDialogRisk', 'Get-Win32ToolkitGuestSignedInUser', 'Invoke-Win32ToolkitParityPrecheck',
-        'Get-Win32ToolkitHyperVLane', 'Get-Win32ToolkitParityProbeCache', 'Set-Win32ToolkitParityProbeCache', 'Test-Win32ToolkitVMConnectOpen', 'Get-Win32ToolkitCheckpointAttestation') {
+        'Get-Win32ToolkitHyperVLane', 'Get-Win32ToolkitParityProbeCache', 'Set-Win32ToolkitParityProbeCache', 'Test-Win32ToolkitVMConnectOpen', 'Get-Win32ToolkitCheckpointAttestation',
+        # Speed-up PR 3: the lease helpers the pre-check now calls.
+        'Enter-Win32ToolkitHyperVLease', 'Exit-Win32ToolkitHyperVLease') {
         $file = Join-Path $repo "Private\$name.ps1"
         $errs = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$errs)

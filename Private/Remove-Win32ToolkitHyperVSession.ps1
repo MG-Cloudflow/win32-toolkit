@@ -19,6 +19,10 @@ function Remove-Win32ToolkitHyperVSession {
         Optional hashtable the teardown fills for the caller's record (Hyper-V speed-up PR 1): Restored ($true
         when the checkpoint was restored) and RevertMode (after a restore the mode it used, TurnOffFirst or Legacy;
         else $null). Nothing is written to the output.
+    .PARAMETER Lease
+        The VM lease the caller holds (Enter-Win32ToolkitHyperVLease, speed-up PR 3). The clean marker carries its
+        epoch and generation (A-2), so the next open uses it only while no other process held the VM in between.
+        Without -Lease the restore still runs but no marker is kept (the next run restores again).
     #>
     [CmdletBinding()]
     param(
@@ -28,7 +32,10 @@ function Remove-Win32ToolkitHyperVSession {
         [switch]$Revert,
 
         # Filled for the caller (speed-up PR 1): Restored, RevertMode.
-        [hashtable]$Info
+        [hashtable]$Info,
+
+        # The VM lease the caller holds (speed-up PR 3, A-2): stamped into the clean marker.
+        [object]$Lease
     )
 
     if ($null -ne $Info) { $Info['Restored'] = $false; $Info['RevertMode'] = $null }
@@ -54,8 +61,14 @@ function Remove-Win32ToolkitHyperVSession {
                 if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
                 $vmId = $null
             }
-            if ($vmId) {
-                $script:HyperVCleanMarker = @{ VMName = $VMName; VMId = $vmId; CheckpointName = $CheckpointName; StampedAt = Get-Date }
+            # Speed-up PR 3 (A-2): the marker also carries the lease it was stamped under; without a lease there is none.
+            if ($null -eq $Lease) {
+                $script:HyperVCleanMarker = $null
+                Write-Verbose "Teardown of '$VMName': no VM lease is held, so no clean marker is kept (the next run restores the checkpoint again)."
+            }
+            elseif ($vmId) {
+                $script:HyperVCleanMarker = @{ VMName = $VMName; VMId = $vmId; CheckpointName = $CheckpointName; StampedAt = Get-Date
+                    LeaseEpoch = [string]$Lease.Epoch; LeaseGeneration = ($Lease.Generation -as [long]) }
             }
             else {
                 $script:HyperVCleanMarker = $null

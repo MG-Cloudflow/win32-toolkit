@@ -31,6 +31,9 @@ name, and guest credential are saved to config for the resolver/provider.
 Hyper-V automatic
 checkpoints are turned off before the VM's first start, so the checkpoint is taken with them off
 (with them on, every start from Off would add an 'Automatic Checkpoint').
+From its creation to its
+checkpoint (and while -Force removes an existing one) the VM holds its lease, the lock every win32-toolkit
+process takes before it changes the test VM: another PowerShell session's test waits for it.
 
 ## EXAMPLES
 

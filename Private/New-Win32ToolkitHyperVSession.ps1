@@ -26,6 +26,10 @@ function New-Win32ToolkitHyperVSession {
         Restore-Win32ToolkitTestVMCheckpoint then started it, or when the VM was not Running or Saved here and had
         to be started). Speed-up PR 2: RevertMode (TurnOffFirst or Legacy, the mode the restore used; $null when
         nothing was restored). The output is unchanged: exactly the session.
+    .PARAMETER Lease
+        The VM lease the caller holds (Enter-Win32ToolkitHyperVLease, speed-up PR 3). The clean marker is used only
+        under a lease, and only when it was stamped under the same lease epoch with the generation this lease follows
+        (A-2): no other process held the VM since the teardown that stamped it. Without -Lease the open always restores.
     .OUTPUTS
         A PSSession (System.Management.Automation.Runspaces.PSSession).
     #>
@@ -42,7 +46,10 @@ function New-Win32ToolkitHyperVSession {
         [switch]$EnsureDesktop,
 
         # Filled for the caller (speed-up PR 1): RevertSkipped, SecondsSinceTeardown, VM, VMId, Warm; PR 2: RevertMode.
-        [hashtable]$Info
+        [hashtable]$Info,
+
+        # The VM lease the caller holds (speed-up PR 3, A-2): the clean marker is honoured only under it.
+        [object]$Lease
     )
 
     # Nothing is restored with -SkipRevert; a used clean marker also skips the restore (below).
@@ -66,11 +73,22 @@ function New-Win32ToolkitHyperVSession {
         if ($m -and ($m.VMName -eq $VMName) -and ($m.CheckpointName -eq $CheckpointName) -and (((Get-Date) - $m.StampedAt).TotalMinutes -lt 10)) {
             $age = ((Get-Date) - $m.StampedAt).TotalSeconds
             $why = $null
+            # Speed-up PR 3 (A-2): another process may have held the VM since the teardown. The marker counts only under
+            # the lease this run holds, stamped under the same lease epoch, with a generation this lease follows directly
+            # (the file's generation before this acquisition, or the same generation for a nested hold).
+            $markGen = $m.LeaseGeneration -as [long]
+            if ($null -eq $Lease) { $why = 'no VM lease is held' }
+            elseif (-not $m.LeaseEpoch -or [string]$m.LeaseEpoch -ne [string]$Lease.Epoch) { $why = 'it was not stamped under the current VM lease' }
+            elseif ($null -eq $markGen -or ($markGen -ne ($Lease.Generation -as [long]) -and $markGen -ne ($Lease.PreviousGeneration -as [long]))) {
+                $why = 'another process used the VM since the teardown (the lease generation changed)'
+            }
             $guardVm = $null
-            try { $guardVm = Get-VM -Name $VMName -ErrorAction Stop }
-            catch {
-                if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
-                $why = "the VM could not be read ($($_.Exception.Message))"
+            if (-not $why) {
+                try { $guardVm = Get-VM -Name $VMName -ErrorAction Stop }
+                catch {
+                    if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                    $why = "the VM could not be read ($($_.Exception.Message))"
+                }
             }
             if (-not $why) {
                 if (-not $m.VMId -or $null -eq $guardVm -or [string]$guardVm.Id -ne [string]$m.VMId) { $why = 'its VM Id is not the one the teardown left clean' }

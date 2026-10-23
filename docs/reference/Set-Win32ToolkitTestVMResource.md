@@ -33,6 +33,10 @@ The chosen values are saved (HyperVProcessorCount / HyperVMemoryStartupBytes) an
 next New-Win32ToolkitTestVM.
 Requested CPU/RAM above the host's capacity is REFUSED.
 
+The change holds the test VM's lease, the lock every win32-toolkit process takes before it changes the VM:
+while another PowerShell session uses the VM it waits, up to HyperVLeaseWaitMinutes (default 60), and then
+stops with the error W32T.HyperVLeaseTimeout before anything changes.
+
 ## EXAMPLES
 
 ### EXAMPLE 1

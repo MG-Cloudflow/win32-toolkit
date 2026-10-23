@@ -20,7 +20,7 @@ Tests run in one of two guest environments:
 |---|---|---|
 | Setup needed | None (Windows feature) | One-time VM build (see [Hyper-V test VM](hyperv-vm.md)) |
 | Guest lifetime | Disposable: a fresh guest cold-boots for every run | Persistent VM, reverted to a warm checkpoint per run (no cold boot; each run restores the checkpoint twice, which costs seconds to about a minute each depending on the host) |
-| Concurrency | One sandbox at a time (the toolkit waits up to 90 s for a previous one to close) | No single-instance limit from Sandbox |
+| Concurrency | One sandbox at a time (the toolkit waits up to 90 s for a previous one to close) | One test at a time per VM: a second PowerShell session waits for it (up to `HyperVLeaseWaitMinutes`, then a `W32T.HyperVLeaseTimeout` error) |
 | Unattended runs execute as | The sandbox's built-in admin user, `-DeployMode Silent` | **SYSTEM**, with the published Intune command line from a 32-bit parent (Intune parity) |
 
 To make Hyper-V the default backend, set the `TestBackend` config value (stored in the toolkit's

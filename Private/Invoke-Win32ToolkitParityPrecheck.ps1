@@ -28,6 +28,10 @@ function Invoke-Win32ToolkitParityPrecheck {
         (vmconnect) was seen right after the open, right after the probe and when storing. HyperVPrecheckCache Off asks
         the guest every time and stores nothing. Every VM-management command clears the stored answer.
 
+        Lease (speed-up PR 3, D10): a live check takes the VM's machine-wide lease (Enter-Win32ToolkitHyperVLease) right
+        before its first restore and releases it after the teardown restore; a cache hit takes none. A lease timeout
+        (W32T.HyperVLeaseTimeout) is thrown, never turned into the fail-open warning.
+
         Risk is returned on every path: the caller derives the exit-code-1460 hint of the parity phases from
         Risk.AtRisk (L16): the PSADT 4.1 welcome text only for an at-risk project the check did not block.
     .PARAMETER ProjectPath
@@ -74,7 +78,7 @@ function Invoke-Win32ToolkitParityPrecheck {
             # No host progress bars from the checkpoint cmdlets (they tear the TUI, as in Invoke-Win32ToolkitHyperVRun);
             # a local variable: it ends with this function.
             $ProgressPreference = 'SilentlyContinue'
-            $vmFound = $false; $session = $null; $openInfo = @{}
+            $vmFound = $false; $session = $null; $openInfo = @{}; $lease = $null
             try {
                 $vmObj = Get-VM -Name $vm -ErrorAction Stop
                 $vmFound = $true
@@ -100,7 +104,10 @@ function Invoke-Win32ToolkitParityPrecheck {
                     # other output (live P5: 3 minutes of silence before the warning).
                     Write-Host "Intune-parity pre-check: checking whether a user is signed in to the test VM '$vm' (restores checkpoint '$cp' before and after; this can take a few minutes)..." -ForegroundColor Cyan
                     $laneVmId = if ($lane) { [string]$lane.VMId } else { '' }
-                    $session = New-Win32ToolkitHyperVSession -VMName $vm -Credential $cred -CheckpointName $cp -Info $openInfo
+                    # The restores need the VM's lease (speed-up PR 3, D10, A-1), taken only here: a cache hit never waits.
+                    # A lease timeout propagates through the C-2 line below (never the fail-open warning).
+                    $lease = Enter-Win32ToolkitHyperVLease -VMName $vm -VMId $laneVmId -Purpose 'Intune-parity pre-check'
+                    $session = New-Win32ToolkitHyperVSession -VMName $vm -Credential $cred -CheckpointName $cp -Info $openInfo -Lease $lease
                     # A VM console seen right after the open or right after the probe: the answer is not stored (V-10).
                     $vmcSeen = Test-Win32ToolkitVMConnectOpen -VMName $vm -VMId $laneVmId
                     $guest = Get-Win32ToolkitGuestSignedInUser -Session $session
@@ -129,7 +136,11 @@ function Invoke-Win32ToolkitParityPrecheck {
                 $guest = $null
             }
             finally {
-                if ($vmFound -and -not $fromCache) { $null = Remove-Win32ToolkitHyperVSession -Session $session -VMName $vm -CheckpointName $cp -Revert }
+                # The teardown restore only under the lease (speed-up PR 3): without it nothing was opened here.
+                try {
+                    if ($vmFound -and -not $fromCache -and $null -ne $lease) { $null = Remove-Win32ToolkitHyperVSession -Session $session -VMName $vm -CheckpointName $cp -Revert -Lease $lease }
+                }
+                finally { $null = Exit-Win32ToolkitHyperVLease -Lease $lease }
             }
             # Store a live answer (speed-up PR 1, D3): complete, from an open that restored the checkpoint and landed warm,
             # no console seen at the open or after the probe, and none now, after the teardown restore (V-10).

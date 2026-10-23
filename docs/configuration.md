@@ -46,6 +46,7 @@ Do **not** hand-edit `HyperVGuestUser` / `HyperVGuestSecret`. See [Guest credent
 | `HyperVPrecheckProbe` | *(not set)* | written by the toolkit | The stored pre-check answer. Never edit it; the VM commands delete it. |
 | `HyperVCheckpointAttestation` | *(not set)* | written by the toolkit | The stored sign-in and Defender state of the test VM's checkpoint ([Testing](testing.md)). Never edit it; the VM commands delete it. |
 | `HyperVRevertMode` | `TurnOffFirst` | `TurnOffFirst`, `Legacy` | How the test VM's checkpoint is restored: turn the VM off first, or the plain restore (see below). |
+| `HyperVLeaseWaitMinutes` | `60` | integer 1-240 | How long a Hyper-V test or VM command waits while another PowerShell session uses the test VM, before it stops with `W32T.HyperVLeaseTimeout` ([One VM, one PowerShell session at a time](hyperv-vm.md#make-hyper-v-tests-faster)). Any other value counts as `60`. No TUI control: set it in the registry. |
 
 ## BasePath
 

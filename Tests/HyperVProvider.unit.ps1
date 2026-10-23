@@ -43,6 +43,10 @@ function Get-Win32ToolkitCheckpointAutoSetting { param($CheckpointId) }
 function Restore-Win32ToolkitTestVMCheckpoint { param($VMName, $CheckpointName, $Mode, [switch]$NoStart)
     $null = Restore-VMCheckpoint -VMName $VMName -Name $CheckpointName -Confirm:$false -ErrorAction Stop
     [pscustomobject]@{ Mode = 'TurnOffFirst'; Landed = 'Running'; TurnOffSeconds = $null; RestoreSeconds = 0.1; StartSeconds = $null; Started = $false } }
+# C-9 (speed-up PR 3): the run takes the VM's machine-wide lease first. Inert doubles: a fake lease (so the teardown runs as
+# before), a release that does nothing; never a lock file ([18] replaces them).
+function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose) [pscustomobject]@{ Kind = 'VM'; VMName = $VMName; Epoch = 'inert'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
+function Exit-Win32ToolkitHyperVLease { param($Lease) }
 
 Write-Host '[1] Invoke-Win32ToolkitGuestPhase runs as SYSTEM and returns ONLY the exit code' -ForegroundColor Cyan
 # Simulate a guest that emits output lines followed by the exit code (the shape that broke the [int] cast).
@@ -427,11 +431,15 @@ Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32Toolkit
 $c12Files = @('Private\Invoke-Win32ToolkitHyperVRun.ps1', 'Private\New-Win32ToolkitHyperVSession.ps1', 'Private\Remove-Win32ToolkitHyperVSession.ps1',
     'Private\Invoke-Win32ToolkitParityPrecheck.ps1', 'Private\Clear-Win32ToolkitHyperVStateCache.ps1',
     # speed-up PR 2: the restore helper and its VM-command caller
-    'Private\Restore-Win32ToolkitTestVMCheckpoint.ps1', 'Public\Reset-Win32ToolkitTestVM.ps1')
+    'Private\Restore-Win32ToolkitTestVMCheckpoint.ps1', 'Public\Reset-Win32ToolkitTestVM.ps1',
+    # speed-up PR 3: the other VM commands (they take the VM's lease)
+    'Public\Set-Win32ToolkitTestVMResource.ps1', 'Public\Remove-Win32ToolkitTestVM.ps1', 'Public\New-Win32ToolkitTestVM.ps1', 'Private\Repair-Win32ToolkitTestVMCheckpoint.ps1')
 $c12Names = @('Get-Win32ToolkitHyperVLane', 'Get-Win32ToolkitZipContentHash', 'New-Win32ToolkitHyperVSession', 'Remove-Win32ToolkitHyperVSession',
     'Get-Win32ToolkitParityProbeCache', 'Set-Win32ToolkitParityProbeCache', 'Clear-Win32ToolkitParityProbeCache', 'Test-Win32ToolkitVMConnectOpen',
     'Get-Win32ToolkitCheckpointAttestation', 'Write-Win32ToolkitCheckpointAdvisory', 'Get-Win32ToolkitCheckpointAutoSetting',
-    'Restore-Win32ToolkitTestVMCheckpoint')
+    'Restore-Win32ToolkitTestVMCheckpoint',
+    # speed-up PR 3
+    'Enter-Win32ToolkitHyperVLease', 'Exit-Win32ToolkitHyperVLease')
 $c12Check = {
     param([string[]]$Files, [string[]]$Names)
     $bad = [System.Collections.Generic.List[string]]::new()
@@ -725,6 +733,96 @@ $script:HyperVAdvised = $null; $script:auto17 = $true
 $null = & $run16
 $x17b = & $run16
 if ($x17b.Warnings.Count -eq 0) { Ok 'a second run in the process: the advisory is not repeated' } else { Bad "repeat: $($x17b.Warnings -join ' | ')" }
+
+Write-Host '[18] the VM lease (speed-up PR 3, D10, A-1): taken before the open, held through the teardown; a timeout is thrown, nothing restored' -ForegroundColor Cyan
+$script:log18 = [System.Collections.Generic.List[string]]::new()
+$lease18 = [pscustomobject]@{ Kind = 'VM'; VMName = 'win32tk-golden'; Epoch = 'e18'; Generation = 3; PreviousGeneration = 2; Nested = $false }
+$script:enter18 = ''
+${function:Enter-Win32ToolkitHyperVLease} = {
+    param($VMName, $VMId, $ProjectPath, $Purpose)
+    $script:log18.Add("enter:${VMName}:${Purpose}:progress=$ProgressPreference")
+    if ($script:enter18 -eq 'timeout') {
+        throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new("Another process kept the test VM '$VMName' for more than 60 minutes."),
+            'W32T.HyperVLeaseTimeout', [System.Management.Automation.ErrorCategory]::ResourceBusy, $VMName)
+    }
+    $lease18
+}
+# The release double RETURNS AN OBJECT: an unassigned call would add it to the run's [bool].
+${function:Exit-Win32ToolkitHyperVLease} = { param($Lease) $script:log18.Add("exit:same=$([object]::ReferenceEquals($Lease, $lease18))"); [pscustomobject]@{ Leak = 'exit' } }
+$script:open18 = ''
+${function:New-Win32ToolkitHyperVSession} = {
+    param($VMName, $Credential, $CheckpointName, [switch]$SkipRevert, [switch]$EnsureDesktop, [hashtable]$Info, $Lease)
+    $script:log18.Add("open:lease=$([object]::ReferenceEquals($Lease, $lease18))")
+    if ($script:open18 -eq 'w32t') { throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new('pinned VM gone'), 'W32T.HyperVTargetNotReady', [System.Management.Automation.ErrorCategory]::ResourceUnavailable, $VMName) }
+    if ($script:open18 -eq 'plain') { throw 'PowerShell Direct is not ready' }
+    'SESS'
+}
+${function:Remove-Win32ToolkitHyperVSession} = {
+    param($Session, $VMName, $CheckpointName, [switch]$Revert, [hashtable]$Info, $Lease)
+    $script:log18.Add("teardown:revert=$($Revert.IsPresent):lease=$([object]::ReferenceEquals($Lease, $lease18))")
+    [pscustomobject]@{ Leak = 'teardown' }
+}
+${function:Invoke-Win32ToolkitGuestPhase} = { param($Session, $Command, $Label) $script:log18.Add("phase:$Label"); 0 }
+$run18 = {
+    param([string]$ProjectPath = 'C:\proj')
+    $script:log18.Clear()
+    $o = $null; $threw = $null; $w = $null
+    $ProgressPreference = 'Continue'
+    try { $o = @(Invoke-Win32ToolkitHyperVRun -ProjectPath $ProjectPath -Phase @(@{ Label = 'Install'; Command = '0' }) -WarningVariable w 3>$null 6>$null) } catch { $threw = $_ }
+    [pscustomobject]@{ Out = $o; Threw = $threw; Warnings = @($w | ForEach-Object { "$_" }); Log = @($script:log18); Progress = $ProgressPreference }
+}
+# Success: enter -> open (with the lease) -> phase -> teardown (with the lease) -> exit; exactly one [bool].
+$x18 = & $run18
+if (-not $x18.Threw -and $x18.Out.Count -eq 1 -and $x18.Out[0] -is [bool] -and $x18.Out[0] -and
+    ($x18.Log -join ' > ') -eq 'enter:win32tk-golden:test run:progress=SilentlyContinue > open:lease=True > phase:Install > teardown:revert=True:lease=True > exit:same=True') {
+    Ok 'the lease is taken first (progress already silenced), handed to the open and the teardown, released last; the output is exactly one [bool] $true'
+} else { Bad "success: out=$(@($x18.Out | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ') log=$($x18.Log -join ' > ') threw=$($x18.Threw)" }
+# A lease timeout: thrown (was a warning and $false), nothing opened or restored, the zip prebuild cleaned, progress restored.
+$proj18 = Join-Path ([System.IO.Path]::GetTempPath()) ('w32hvp18_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $proj18 -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $proj18 'Invoke-AppDeployToolkit.ps1') -Value '# deploy'
+. (Join-Path $repo 'Private\New-Win32ToolkitProjectZip.ps1')
+$script:jobs18 = [System.Collections.Generic.List[object]]::new()
+$canJob18 = [bool](Get-Command Start-ThreadJob -ErrorAction SilentlyContinue)
+if ($canJob18) {
+    $realStj18 = Get-Command Start-ThreadJob -CommandType Cmdlet, Function | Select-Object -First 1
+    ${function:Start-ThreadJob} = { param($ScriptBlock, $ArgumentList) $j = & $realStj18 -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList; $script:jobs18.Add([pscustomobject]@{ Job = $j; Zip = $ArgumentList[1] }); $j }
+}
+$script:enter18 = 'timeout'
+try { $x18 = & $run18 $proj18 }
+finally { $script:enter18 = ''; if ($canJob18) { Remove-Item Function:\Start-ThreadJob } }
+$jobsLeft18 = @($script:jobs18 | Where-Object { Get-Job -Id $_.Job.Id -ErrorAction SilentlyContinue })
+$zipsLeft18 = @($script:jobs18 | Where-Object { Test-Path -LiteralPath $_.Zip })
+if ($x18.Threw -and $x18.Threw.FullyQualifiedErrorId -eq 'W32T.HyperVLeaseTimeout' -and $x18.Warnings.Count -eq 0 -and $null -eq $x18.Out) {
+    Ok 'a lease timeout is thrown (W32T.HyperVLeaseTimeout), not a "Hyper-V run failed" warning and $false'
+} else { Bad "timeout: threw=$($x18.Threw.FullyQualifiedErrorId) warnings=$($x18.Warnings -join ' | ') out=$($x18.Out -join ',')" }
+if (($x18.Log -join ' > ') -eq 'enter:win32tk-golden:test run:progress=SilentlyContinue > exit:same=False') { Ok 'no open and no teardown restore without the lease (only the no-op release of $null)' } else { Bad "timeout log: $($x18.Log -join ' > ')" }
+if ($x18.Progress -eq 'Continue') { Ok '$ProgressPreference restored after the timeout' } else { Bad "progress: $($x18.Progress)" }
+if (-not $canJob18) { Bad 'Start-ThreadJob is not available: the prebuild cleanup cannot be tested' }
+elseif ($script:jobs18.Count -ge 1 -and $jobsLeft18.Count -eq 0 -and $zipsLeft18.Count -eq 0) { Ok "the zip prebuild started before the try is cleaned ($($script:jobs18.Count) job(s) removed, no zip left)" }
+else { Bad "prebuild: jobs=$($script:jobs18.Count) left=$($jobsLeft18.Count) zips=$($zipsLeft18.Count)" }
+Remove-Item -LiteralPath $proj18 -Recurse -Force -ErrorAction SilentlyContinue
+# A W32T error from the open: rethrown (C-2), and the teardown still runs under the lease before the release.
+$script:open18 = 'w32t'
+$x18 = & $run18
+$script:open18 = ''
+if ($x18.Threw.FullyQualifiedErrorId -eq 'W32T.HyperVTargetNotReady' -and $x18.Warnings.Count -eq 0 -and
+    ($x18.Log -join ' > ') -eq 'enter:win32tk-golden:test run:progress=SilentlyContinue > open:lease=True > teardown:revert=True:lease=True > exit:same=True') {
+    Ok 'a W32T error from the open is rethrown; the teardown restore still runs under the lease, then the release'
+} else { Bad "w32t open: threw=$($x18.Threw.FullyQualifiedErrorId) log=$($x18.Log -join ' > ')" }
+# Any other error: the warning and $false as before, teardown and release.
+$script:open18 = 'plain'
+$x18 = & $run18
+$script:open18 = ''
+if (-not $x18.Threw -and $x18.Out.Count -eq 1 -and $x18.Out[0] -eq $false -and $x18.Warnings.Count -eq 1 -and $x18.Warnings[0] -like 'Hyper-V run failed: PowerShell Direct is not ready*' -and
+    ($x18.Log -join ' > ') -like '*teardown:revert=True:lease=True > exit:same=True') {
+    Ok 'any other error: one warning and exactly $false, as before; teardown and release'
+} else { Bad "plain: out=$($x18.Out -join ',') warnings=$($x18.Warnings -join ' | ') log=$($x18.Log -join ' > ')" }
+# C-12: every call of the lease helpers in the provider, the pre-check and the VM commands is assigned.
+$c12L = & $c12Check $c12Files @('Enter-Win32ToolkitHyperVLease', 'Exit-Win32ToolkitHyperVLease')
+if ($c12L.Seen -ge 16 -and $c12L.Bad.Count -eq 0) { Ok "C-12: all $($c12L.Seen) lease calls (provider, pre-check, Reset, Set-...Resource, Remove, New, Repair) are assigned" } else { Bad "C-12 lease: seen=$($c12L.Seen) unassigned: $($c12L.Bad -join ', ')" }
+${function:Enter-Win32ToolkitHyperVLease} = { param($VMName, $VMId, $ProjectPath, $Purpose) [pscustomobject]@{ Kind = 'VM'; VMName = $VMName; Epoch = 'inert'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
+${function:Exit-Win32ToolkitHyperVLease} = { param($Lease) }
 
 Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential, Function:\Read-Host, Function:\Start-Process
 function Get-Win32ToolkitHyperVLane { param($VMName, $CheckpointName, $VM) }

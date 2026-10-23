@@ -11,6 +11,10 @@ function Invoke-Win32ToolkitHyperVRun {
 
         This is the 'HyperV' branch of the test-backend seam; the flows call it instead of building a
         .wsb. See knowledge-base/designs/hyperv-backend-plan.md.
+
+        Before it touches the VM it takes the VM's machine-wide lease (Enter-Win32ToolkitHyperVLease, speed-up PR 3,
+        D10): while another PowerShell process uses the VM this run waits, up to HyperVLeaseWaitMinutes, and then throws
+        W32T.HyperVLeaseTimeout without restoring anything. The lease is held until the teardown restore is done.
     .PARAMETER ProjectPath
         The PSADT project under test (host path). Copied to C:\PSADT in the guest.
     .PARAMETER Phase
@@ -52,7 +56,8 @@ function Invoke-Win32ToolkitHyperVRun {
         the Sandbox fire-and-forget semantics; callers judge results from the copied-back outputs).
         $false when a step threw, or when a phase did not finish (stopped at its timeout: 267009, or
         never started: 267011): the remaining phases are then skipped, the logs are still copied back
-        (never an install capture) and the VM is still reverted.
+        (never an install capture) and the VM is still reverted. A W32T error (a lease timeout) is thrown, never
+        turned into $false.
     #>
     [CmdletBinding()]
     [OutputType([bool])]
@@ -93,6 +98,8 @@ function Invoke-Win32ToolkitHyperVRun {
     $teardownWatch = $null
 
     $session = $null
+    # The machine-wide lease of the VM (speed-up PR 3, D10): $null until taken; without it nothing is restored below.
+    $lease = $null
     # Suppress HOST progress bars for the whole run. Copy-Item -To/-FromSession (the project copy in/out)
     # and the Hyper-V checkpoint cmdlets paint out-of-band, absolute-cursor progress regions that tear the
     # Spectre.Console TUI this runs under. The copy/session helpers below don't set their own
@@ -183,12 +190,17 @@ function Invoke-Win32ToolkitHyperVRun {
     }
 
     try {
+        # One process at a time on this VM (speed-up PR 3, D10, A-1): the lease is taken before the first VM-changing call
+        # and inside this try, so the finally still cleans the zip jobs and restores $ProgressPreference. A lease timeout
+        # (W32T.HyperVLeaseTimeout) propagates through the catch's C-2 line, and the finally restores nothing without it.
+        $lease = Enter-Win32ToolkitHyperVLease -VMName $VMName -Purpose 'test run'
+
         # Interactive phases need a logged-in desktop, so ask the session to ensure/recover one.
         $needsDesktop = @($Phase | Where-Object { $_.Interactive }).Count -gt 0
 
         Write-Verbose "Reverting '$VMName' to '$effectiveCheckpoint' and connecting over PowerShell Direct..."
         $openWatch = [System.Diagnostics.Stopwatch]::StartNew()
-        $session = New-Win32ToolkitHyperVSession -VMName $VMName -Credential $Credential -CheckpointName $effectiveCheckpoint -EnsureDesktop:$needsDesktop -Info $openInfo
+        $session = New-Win32ToolkitHyperVSession -VMName $VMName -Credential $Credential -CheckpointName $effectiveCheckpoint -EnsureDesktop:$needsDesktop -Info $openInfo -Lease $lease
         # The record's open timing and the VM/checkpoint identity (speed-up PR 1, D12): fail-open.
         try {
             $timing.OpenSeconds = [math]::Round($openWatch.Elapsed.TotalSeconds, 1)
@@ -401,20 +413,31 @@ function Invoke-Win32ToolkitHyperVRun {
         return (-not $incomplete)
     }
     catch {
+        # Fail closed (C-2, speed-up PR 3): a lease timeout or another W32T error is the caller's, never a quiet $false.
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
         Write-Warning "Hyper-V run failed: $($_.Exception.Message)"
         return $false
     }
     finally {
         # Revert to the EFFECTIVE checkpoint: with the deps feature that leaves the VM clean-with-deps
         # (still never holding app/test state), and the R2 marker then matches the next run of the same
-        # project for the single-revert skip.
+        # project for the single-revert skip. Only while this run holds the VM's lease (speed-up PR 3, A-1): without it
+        # no session was opened, and the VM may be another process's.
         $tdInfo = @{}
-        $null = Remove-Win32ToolkitHyperVSession -Session $session -VMName $VMName -CheckpointName $effectiveCheckpoint -Revert -Info $tdInfo
-        # INTERACTIVE runs leave a vmconnect window attached to the reverted-but-running guest — the
-        # operator can keep poking it after the teardown, invisibly dirtying the VM within the marker's
-        # TTL. Never presume clean after an interactive run; unattended runs (no console, no operator)
-        # keep the single-revert skip.
-        if ($needsDesktop) { $script:HyperVCleanMarker = $null }
+        try {
+            if ($null -ne $lease) {
+                $null = Remove-Win32ToolkitHyperVSession -Session $session -VMName $VMName -CheckpointName $effectiveCheckpoint -Revert -Info $tdInfo -Lease $lease
+            }
+            # INTERACTIVE runs leave a vmconnect window attached to the reverted-but-running guest — the
+            # operator can keep poking it after the teardown, invisibly dirtying the VM within the marker's
+            # TTL. Never presume clean after an interactive run; unattended runs (no console, no operator)
+            # keep the single-revert skip.
+            if ($needsDesktop) { $script:HyperVCleanMarker = $null }
+        }
+        finally {
+            # The lease is released after the teardown restore, whatever happened above.
+            $null = Exit-Win32ToolkitHyperVLease -Lease $lease
+        }
         # Any unconsumed prebuild zips (job failed, run threw before the join) are cleaned here. The copy
         # helper normally consumed (deleted) the zip already, so only an existing one is removed: an absent
         # file must leave no PathNotFound record in $Error / a caller's -ErrorVariable (test campaign

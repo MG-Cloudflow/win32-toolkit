@@ -13,7 +13,9 @@ function New-Win32ToolkitTestVM {
         runs revert to that warm, fully-patched, logged-in desktop with no boot. The VM name, checkpoint
         name, and guest credential are saved to config for the resolver/provider. Hyper-V automatic
         checkpoints are turned off before the VM's first start, so the checkpoint is taken with them off
-        (with them on, every start from Off would add an 'Automatic Checkpoint').
+        (with them on, every start from Off would add an 'Automatic Checkpoint'). From its creation to its
+        checkpoint (and while -Force removes an existing one) the VM holds its lease, the lock every win32-toolkit
+        process takes before it changes the test VM: another PowerShell session's test waits for it.
     .PARAMETER IsoPath
         Build the golden VHDX from this Windows 11 x64 ISO. Mutually exclusive with -VhdxPath.
     .PARAMETER VhdxPath
@@ -132,12 +134,17 @@ function New-Win32ToolkitTestVM {
     }
     if ($existing -and $Force) {
         if ($PSCmdlet.ShouldProcess($Name, 'Remove existing VM before rebuild')) {
-            # Clear BEFORE the destruction: if the rebuild aborts mid-way, a <=60 s-old 'ready' verdict
-            # must not steer backend resolution at a VM that no longer exists.
-            Clear-Win32ToolkitHyperVStateCache
-            Stop-VM -Name $Name -TurnOff -Force -ErrorAction SilentlyContinue
-            Get-VMCheckpoint -VMName $Name -ErrorAction SilentlyContinue | Remove-VMCheckpoint -ErrorAction SilentlyContinue
-            Remove-VM -Name $Name -Force -ErrorAction SilentlyContinue
+            # One process at a time on the VM (speed-up PR 3, D10): never remove it under a running test.
+            $lease = Enter-Win32ToolkitHyperVLease -VMName $Name -VMId ([string]$existing.Id) -Purpose 'provisioning'
+            try {
+                # Clear BEFORE the destruction: if the rebuild aborts mid-way, a <=60 s-old 'ready' verdict
+                # must not steer backend resolution at a VM that no longer exists.
+                Clear-Win32ToolkitHyperVStateCache
+                Stop-VM -Name $Name -TurnOff -Force -ErrorAction SilentlyContinue
+                Get-VMCheckpoint -VMName $Name -ErrorAction SilentlyContinue | Remove-VMCheckpoint -ErrorAction SilentlyContinue
+                Remove-VM -Name $Name -Force -ErrorAction SilentlyContinue
+            }
+            finally { $null = Exit-Win32ToolkitHyperVLease -Lease $lease }
         }
     }
 
@@ -167,136 +174,141 @@ function New-Win32ToolkitTestVM {
         # Invalidate the process-local clean marker / readiness cache — a brand-new VM + checkpoint
         # supersede anything cached about the previous one.
         Clear-Win32ToolkitHyperVStateCache
-        New-VM -Name $Name -Generation 2 -MemoryStartupBytes $MemoryStartupBytes -VHDPath $vhdx -Path $paths.VMs -SwitchName $SwitchName -ErrorAction Stop | Out-Null
-        Set-VMFirmware  -VMName $Name -EnableSecureBoot On -SecureBootTemplate 'MicrosoftWindows'
-        Set-VMProcessor -VMName $Name -Count $ProcessorCount
-        Set-VMMemory    -VMName $Name -DynamicMemoryEnabled $false -StartupBytes $MemoryStartupBytes
-        if ($EnableTPM) {
-            Set-VMKeyProtector -VMName $Name -NewLocalKeyProtector
-            Enable-VMTPM       -VMName $Name
-        }
-
-        # Unplug the vNIC for the OOBE boot so Windows 11 OOBE does NOT stall on its network-dependent
-        # "checking for updates" device-prep phase — with no network it fails fast and goes straight to
-        # the desktop. Safe: PowerShell Direct is over the VMBus, not TCP/IP. Reconnected before the
-        # checkpoint so reverts have internet for the test workload (winget).
-        Disconnect-VMNetworkAdapter -VMName $Name -ErrorAction SilentlyContinue
-
-        # Automatic checkpoints off before the first start (speed-up PR 1, D5): with them on, Hyper-V takes an
-        # 'Automatic Checkpoint' at every start from Off, and the clean-base checkpoint would keep the setting on.
-        $null = Set-VM -Name $Name -AutomaticCheckpointsEnabled $false -ErrorAction Stop
-
-        Write-Verbose "Starting VM '$Name' for first boot (unattended OOBE, NIC unplugged)..."
-        Start-VM -Name $Name -ErrorAction Stop
-        Wait-Win32ToolkitVMReady -VMName $Name -Credential $Credential | Out-Null
-
-        # Let the first-logon reach a SETTLED desktop before checkpointing (explorer.exe = shell is up),
-        # so clean-base is a real desktop, not a half-finished OOBE screen.
-        Write-Verbose 'Waiting for the guest desktop to settle (explorer)...'
-        $shellDeadline = (Get-Date).AddMinutes(10)
-        $shellUp = $false
-        do {
-            Start-Sleep -Seconds 10
-            $shellUp = [bool](Invoke-Command -VMName $Name -Credential $Credential -ScriptBlock {
-                [bool](Get-Process -Name explorer -ErrorAction SilentlyContinue)
-            } -ErrorAction SilentlyContinue)
-        } until ($shellUp -or (Get-Date) -gt $shellDeadline)
-        if (-not $shellUp) { Write-Warning 'Desktop shell (explorer) not detected before timeout — checkpointing anyway.' }
-
-        # Reconnect the NIC BEFORE configuring AutoLogon (Sysinternals Autologon needs guest internet) and
-        # before the warm checkpoint (so the workload has internet on revert).
-        Connect-VMNetworkAdapter -VMName $Name -SwitchName $SwitchName -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 8   # let the NIC acquire an address
-
-        # Safety net: configure guest AutoLogon so any reboot during prep (Windows Update) lands back on
-        # the desktop, and so the -EnsureDesktop recovery path works later.
-        try { Set-Win32ToolkitGuestAutoLogon -VMName $Name -Credential $Credential }
-        catch { Write-Warning "Could not configure guest AutoLogon: $($_.Exception.Message)" }
-
-        # --- Manual prep window (default) --------------------------------------------------------------
-        # A STANDARD checkpoint freezes the LIVE state (memory + disk): every test run reverts to the
-        # EXACT moment captured here. So don't snapshot a bare first-boot desktop — hand the VM to the
-        # operator to sign in, run Windows Update, and let all reboots finish, then confirm. -Unattended
-        # skips this and checkpoints immediately (CI / automation).
-        if (-not $Unattended) {
-            # Try to pop the VM console. vmconnect.exe ships with the Hyper-V GUI tools, which can be ABSENT
-            # on a Server / Cloud PC that only has the Hyper-V PowerShell module — resolve it robustly and,
-            # if it's missing, tell the operator how to open the VM another way (a blind pause is useless).
-            $vmconnect = (Get-Command 'vmconnect.exe' -ErrorAction SilentlyContinue).Source
-            if (-not $vmconnect) {
-                $cand = Join-Path $env:SystemRoot 'System32\vmconnect.exe'
-                if (Test-Path -LiteralPath $cand) { $vmconnect = $cand }
-            }
-            $consoleOpened = $false
-            if ($vmconnect) {
-                try { Start-Process -FilePath $vmconnect -ArgumentList 'localhost', $Name -ErrorAction Stop; $consoleOpened = $true }
-                catch { }
+        $newVm = New-VM -Name $Name -Generation 2 -MemoryStartupBytes $MemoryStartupBytes -VHDPath $vhdx -Path $paths.VMs -SwitchName $SwitchName -ErrorAction Stop
+        # One process at a time on the new VM (speed-up PR 3, D10), from its creation to its checkpoint and settings.
+        $lease = Enter-Win32ToolkitHyperVLease -VMName $Name -VMId $(if ($newVm -and $newVm.Id) { [string]$newVm.Id } else { '' }) -Purpose 'provisioning'
+        try {
+            Set-VMFirmware  -VMName $Name -EnableSecureBoot On -SecureBootTemplate 'MicrosoftWindows'
+            Set-VMProcessor -VMName $Name -Count $ProcessorCount
+            Set-VMMemory    -VMName $Name -DynamicMemoryEnabled $false -StartupBytes $MemoryStartupBytes
+            if ($EnableTPM) {
+                Set-VMKeyProtector -VMName $Name -NewLocalKeyProtector
+                Enable-VMTPM       -VMName $Name
             }
 
-            # Windows Update needs real internet. Verify it (and repair the common nested Default-Switch DNS
-            # failure) BEFORE the operator relies on it, so "Windows Update just sits there" is caught here.
-            Write-Verbose 'Checking the guest has working internet (Windows Update needs it)...'
-            $guestNet = Confirm-Win32ToolkitGuestInternet -VMName $Name -Credential $Credential
+            # Unplug the vNIC for the OOBE boot so Windows 11 OOBE does NOT stall on its network-dependent
+            # "checking for updates" device-prep phase — with no network it fails fast and goes straight to
+            # the desktop. Safe: PowerShell Direct is over the VMBus, not TCP/IP. Reconnected before the
+            # checkpoint so reverts have internet for the test workload (winget).
+            Disconnect-VMNetworkAdapter -VMName $Name -ErrorAction SilentlyContinue
 
-            $sam = $Credential.UserName.Split('\')[-1]
-            Write-Host ''
-            Write-Host '──────────────────────────────────────────────────────────────────────────────' -ForegroundColor Yellow
-            Write-Host '  PREPARE THE VM, THEN CONFIRM — the checkpoint freezes whatever state is live' -ForegroundColor Yellow
-            Write-Host '──────────────────────────────────────────────────────────────────────────────' -ForegroundColor Yellow
-            Write-Host "  The VM '$Name' IS created and running right now — this prompt is only waiting for you." -ForegroundColor Green
-            if ($guestNet) {
-                Write-Host '  Guest internet: OK (DNS + outbound reachable) — Windows Update should work.' -ForegroundColor Green
-            }
-            else {
-                Write-Host '  Guest internet: NOT confirmed — Windows Update will not download.' -ForegroundColor Red
-                Write-Host "     Tried DHCP renew + public DNS already. Check: Get-VMSwitch 'Default Switch', and in the" -ForegroundColor Yellow
-                Write-Host '     VM run  Test-NetConnection www.msftconnecttest.com -Port 80 . On a nested host the' -ForegroundColor Yellow
-                Write-Host "     Default Switch NAT must be up; you can also try  Set-VMNetworkAdapter -VMName $Name -MacAddressSpoofing On." -ForegroundColor Yellow
-            }
-            if ($consoleOpened) {
-                Write-Host "  A console window opened for '$Name'. In that window:" -ForegroundColor Cyan
-            }
-            else {
-                Write-Host '  Could NOT auto-open the VM console (vmconnect.exe not available on this host).' -ForegroundColor Yellow
-                Write-Host '  Open the VM yourself, any one of:' -ForegroundColor Yellow
-                Write-Host "     - Hyper-V Manager  ->  Connect to '$Name'" -ForegroundColor Yellow
-                Write-Host "     - run:  vmconnect.exe localhost $Name" -ForegroundColor Yellow
-                Write-Host '     - install the console:  Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Management-Clients -All' -ForegroundColor Yellow
-                Write-Host '  Then, in the VM:' -ForegroundColor Cyan
-            }
-            Write-Host "    1. Sign in if you're not already (user: $sam)." -ForegroundColor Cyan
-            Write-Host '    2. Run Windows Update until nothing is left; install everything.' -ForegroundColor Cyan
-            Write-Host '    3. Let ALL reboots finish and return to the desktop (AutoLogon signs back in).' -ForegroundColor Cyan
-            Write-Host '    4. Close first-run app windows so the desktop is idle and clean.' -ForegroundColor Cyan
-            Write-Host ''
-            Write-Host '  Every test run reverts to exactly this moment — make it a fully patched, idle desktop.' -ForegroundColor Gray
-            Write-Host ''
-            Read-Host '  When the desktop is fully ready, press Enter to capture the clean-base checkpoint' | Out-Null
+            # Automatic checkpoints off before the first start (speed-up PR 1, D5): with them on, Hyper-V takes an
+            # 'Automatic Checkpoint' at every start from Off, and the clean-base checkpoint would keep the setting on.
+            $null = Set-VM -Name $Name -AutomaticCheckpointsEnabled $false -ErrorAction Stop
 
-            # After update reboots the guest may still be settling — re-confirm the shell before freezing.
-            Write-Verbose 'Confirming the desktop is up before checkpointing...'
-            $reDeadline = (Get-Date).AddMinutes(5)
+            Write-Verbose "Starting VM '$Name' for first boot (unattended OOBE, NIC unplugged)..."
+            Start-VM -Name $Name -ErrorAction Stop
+            Wait-Win32ToolkitVMReady -VMName $Name -Credential $Credential | Out-Null
+
+            # Let the first-logon reach a SETTLED desktop before checkpointing (explorer.exe = shell is up),
+            # so clean-base is a real desktop, not a half-finished OOBE screen.
+            Write-Verbose 'Waiting for the guest desktop to settle (explorer)...'
+            $shellDeadline = (Get-Date).AddMinutes(10)
+            $shellUp = $false
             do {
+                Start-Sleep -Seconds 10
                 $shellUp = [bool](Invoke-Command -VMName $Name -Credential $Credential -ScriptBlock {
                     [bool](Get-Process -Name explorer -ErrorAction SilentlyContinue)
                 } -ErrorAction SilentlyContinue)
-                if (-not $shellUp) { Start-Sleep -Seconds 5 }
-            } until ($shellUp -or (Get-Date) -gt $reDeadline)
-            if (-not $shellUp) { Write-Warning 'Desktop shell not detected (guest may be mid-reboot) — checkpointing anyway.' }
+            } until ($shellUp -or (Get-Date) -gt $shellDeadline)
+            if (-not $shellUp) { Write-Warning 'Desktop shell (explorer) not detected before timeout — checkpointing anyway.' }
+
+            # Reconnect the NIC BEFORE configuring AutoLogon (Sysinternals Autologon needs guest internet) and
+            # before the warm checkpoint (so the workload has internet on revert).
+            Connect-VMNetworkAdapter -VMName $Name -SwitchName $SwitchName -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 8   # let the NIC acquire an address
+
+            # Safety net: configure guest AutoLogon so any reboot during prep (Windows Update) lands back on
+            # the desktop, and so the -EnsureDesktop recovery path works later.
+            try { Set-Win32ToolkitGuestAutoLogon -VMName $Name -Credential $Credential }
+            catch { Write-Warning "Could not configure guest AutoLogon: $($_.Exception.Message)" }
+
+            # --- Manual prep window (default) --------------------------------------------------------------
+            # A STANDARD checkpoint freezes the LIVE state (memory + disk): every test run reverts to the
+            # EXACT moment captured here. So don't snapshot a bare first-boot desktop — hand the VM to the
+            # operator to sign in, run Windows Update, and let all reboots finish, then confirm. -Unattended
+            # skips this and checkpoints immediately (CI / automation).
+            if (-not $Unattended) {
+                # Try to pop the VM console. vmconnect.exe ships with the Hyper-V GUI tools, which can be ABSENT
+                # on a Server / Cloud PC that only has the Hyper-V PowerShell module — resolve it robustly and,
+                # if it's missing, tell the operator how to open the VM another way (a blind pause is useless).
+                $vmconnect = (Get-Command 'vmconnect.exe' -ErrorAction SilentlyContinue).Source
+                if (-not $vmconnect) {
+                    $cand = Join-Path $env:SystemRoot 'System32\vmconnect.exe'
+                    if (Test-Path -LiteralPath $cand) { $vmconnect = $cand }
+                }
+                $consoleOpened = $false
+                if ($vmconnect) {
+                    try { Start-Process -FilePath $vmconnect -ArgumentList 'localhost', $Name -ErrorAction Stop; $consoleOpened = $true }
+                    catch { }
+                }
+
+                # Windows Update needs real internet. Verify it (and repair the common nested Default-Switch DNS
+                # failure) BEFORE the operator relies on it, so "Windows Update just sits there" is caught here.
+                Write-Verbose 'Checking the guest has working internet (Windows Update needs it)...'
+                $guestNet = Confirm-Win32ToolkitGuestInternet -VMName $Name -Credential $Credential
+
+                $sam = $Credential.UserName.Split('\')[-1]
+                Write-Host ''
+                Write-Host '──────────────────────────────────────────────────────────────────────────────' -ForegroundColor Yellow
+                Write-Host '  PREPARE THE VM, THEN CONFIRM — the checkpoint freezes whatever state is live' -ForegroundColor Yellow
+                Write-Host '──────────────────────────────────────────────────────────────────────────────' -ForegroundColor Yellow
+                Write-Host "  The VM '$Name' IS created and running right now — this prompt is only waiting for you." -ForegroundColor Green
+                if ($guestNet) {
+                    Write-Host '  Guest internet: OK (DNS + outbound reachable) — Windows Update should work.' -ForegroundColor Green
+                }
+                else {
+                    Write-Host '  Guest internet: NOT confirmed — Windows Update will not download.' -ForegroundColor Red
+                    Write-Host "     Tried DHCP renew + public DNS already. Check: Get-VMSwitch 'Default Switch', and in the" -ForegroundColor Yellow
+                    Write-Host '     VM run  Test-NetConnection www.msftconnecttest.com -Port 80 . On a nested host the' -ForegroundColor Yellow
+                    Write-Host "     Default Switch NAT must be up; you can also try  Set-VMNetworkAdapter -VMName $Name -MacAddressSpoofing On." -ForegroundColor Yellow
+                }
+                if ($consoleOpened) {
+                    Write-Host "  A console window opened for '$Name'. In that window:" -ForegroundColor Cyan
+                }
+                else {
+                    Write-Host '  Could NOT auto-open the VM console (vmconnect.exe not available on this host).' -ForegroundColor Yellow
+                    Write-Host '  Open the VM yourself, any one of:' -ForegroundColor Yellow
+                    Write-Host "     - Hyper-V Manager  ->  Connect to '$Name'" -ForegroundColor Yellow
+                    Write-Host "     - run:  vmconnect.exe localhost $Name" -ForegroundColor Yellow
+                    Write-Host '     - install the console:  Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Management-Clients -All' -ForegroundColor Yellow
+                    Write-Host '  Then, in the VM:' -ForegroundColor Cyan
+                }
+                Write-Host "    1. Sign in if you're not already (user: $sam)." -ForegroundColor Cyan
+                Write-Host '    2. Run Windows Update until nothing is left; install everything.' -ForegroundColor Cyan
+                Write-Host '    3. Let ALL reboots finish and return to the desktop (AutoLogon signs back in).' -ForegroundColor Cyan
+                Write-Host '    4. Close first-run app windows so the desktop is idle and clean.' -ForegroundColor Cyan
+                Write-Host ''
+                Write-Host '  Every test run reverts to exactly this moment — make it a fully patched, idle desktop.' -ForegroundColor Gray
+                Write-Host ''
+                Read-Host '  When the desktop is fully ready, press Enter to capture the clean-base checkpoint' | Out-Null
+
+                # After update reboots the guest may still be settling — re-confirm the shell before freezing.
+                Write-Verbose 'Confirming the desktop is up before checkpointing...'
+                $reDeadline = (Get-Date).AddMinutes(5)
+                do {
+                    $shellUp = [bool](Invoke-Command -VMName $Name -Credential $Credential -ScriptBlock {
+                        [bool](Get-Process -Name explorer -ErrorAction SilentlyContinue)
+                    } -ErrorAction SilentlyContinue)
+                    if (-not $shellUp) { Start-Sleep -Seconds 5 }
+                } until ($shellUp -or (Get-Date) -gt $reDeadline)
+                if (-not $shellUp) { Write-Warning 'Desktop shell not detected (guest may be mid-reboot) — checkpointing anyway.' }
+            }
+
+            # The checkpoint keeps the VM's settings: Standard type, automatic checkpoints off (D5).
+            $null = Set-VM -Name $Name -CheckpointType Standard -AutomaticCheckpointsEnabled $false
+            # A failed checkpoint stops here (speed-up PR 2, V-Fe11): no success line and no settings for a VM without one.
+            Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName -ErrorAction Stop
+            Write-Host "✓ Warm '$CheckpointName' checkpoint taken." -ForegroundColor Green
+
+            Set-Win32ToolkitConfigValue -Name 'HyperVVMName'            -Value $Name
+            Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint'        -Value $CheckpointName
+            Set-Win32ToolkitConfigValue -Name 'HyperVBaseVhdx'          -Value $vhdx
+            Set-Win32ToolkitConfigValue -Name 'HyperVProcessorCount'    -Value $ProcessorCount
+            Set-Win32ToolkitConfigValue -Name 'HyperVMemoryStartupBytes' -Value $MemoryStartupBytes
+            Set-Win32ToolkitGuestCredential -Credential $Credential
         }
-
-        # The checkpoint keeps the VM's settings: Standard type, automatic checkpoints off (D5).
-        $null = Set-VM -Name $Name -CheckpointType Standard -AutomaticCheckpointsEnabled $false
-        # A failed checkpoint stops here (speed-up PR 2, V-Fe11): no success line and no settings for a VM without one.
-        Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName -ErrorAction Stop
-        Write-Host "✓ Warm '$CheckpointName' checkpoint taken." -ForegroundColor Green
-
-        Set-Win32ToolkitConfigValue -Name 'HyperVVMName'            -Value $Name
-        Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint'        -Value $CheckpointName
-        Set-Win32ToolkitConfigValue -Name 'HyperVBaseVhdx'          -Value $vhdx
-        Set-Win32ToolkitConfigValue -Name 'HyperVProcessorCount'    -Value $ProcessorCount
-        Set-Win32ToolkitConfigValue -Name 'HyperVMemoryStartupBytes' -Value $MemoryStartupBytes
-        Set-Win32ToolkitGuestCredential -Credential $Credential
+        finally { $null = Exit-Win32ToolkitHyperVLease -Lease $lease }
     }
 
     return (Get-VM -Name $Name -ErrorAction SilentlyContinue)

@@ -26,6 +26,11 @@ function Restore-Win32ToolkitTestVMCheckpoint {
           * Legacy: the restore as before this change (one Restore-VMCheckpoint; Hyper-V saves a running VM first).
             Starting a VM that did not land Running is left to the caller.
         Every step is timed; one verbose line per step.
+
+        Speed-up PR 3: first, a VM in the middle of a state change (Starting, Stopping, Saving, Pausing, Resuming,
+        Reset, FastSaving or any *Critical state: an orphaned background restore, another tool) is waited for, every
+        2 seconds for up to 120 seconds; then the restore goes on and the cmdlets report whatever is still wrong. The
+        callers hold the VM's lease (Enter-Win32ToolkitHyperVLease), which keeps out other win32-toolkit processes.
     .PARAMETER VMName
         The test VM.
     .PARAMETER CheckpointName
@@ -82,6 +87,30 @@ function Restore-Win32ToolkitTestVMCheckpoint {
 
     $result = [ordered]@{ Mode = $Mode; Landed = $null; TurnOffSeconds = $null; RestoreSeconds = $null; StartSeconds = $null; Started = $false }
     $advKey = "$VMName|$CheckpointName"
+
+    # Speed-up PR 3: never start on a VM in the middle of a state change (an orphaned background restore, another tool's
+    # save or start): wait while it is transitional, every 2 s for up to 120 s, then go on and let the cmdlets report.
+    # Fail-open: a VM that cannot be read here is left to the steps below.
+    $transitional = @('Starting', 'Stopping', 'Saving', 'Pausing', 'Resuming', 'Reset', 'FastSaving')
+    $settle = [System.Diagnostics.Stopwatch]::StartNew()
+    $polls = 0
+    while ($true) {
+        $state = $null
+        try { $state = [string](Get-VM -Name $VMName -ErrorAction Stop).State }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Verbose "'$vmText': the VM state could not be read before the restore ($($_.Exception.Message))."
+            break
+        }
+        if (-not ($state -in $transitional -or $state -like '*Critical')) { break }
+        if ($polls -ge 60 -or $settle.Elapsed.TotalSeconds -ge 120) {
+            Write-Verbose "'$vmText' is still $state after $([math]::Round($settle.Elapsed.TotalSeconds)) s; restoring anyway."
+            break
+        }
+        if ($polls -eq 0) { Write-Verbose "'$vmText' is $state; waiting for it to settle before the restore..." }
+        $polls++
+        Start-Sleep -Seconds 2
+    }
 
     if ($Mode -eq 'TurnOffFirst') {
         # The precondition is read on the target checkpoint itself (its own setting comes back with the restore).

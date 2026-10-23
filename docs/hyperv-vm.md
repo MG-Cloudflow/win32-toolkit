@@ -199,8 +199,35 @@ of the procedure above): Hyper-V refuses to change the stop action of a running 
 
 **Many tests in one PowerShell session.** A test run skips its first restore when the same PowerShell session
 restored the same VM and checkpoint at the end of the previous run less than 10 minutes ago, the VM has been
-running since then, and that run was not a watched one. To restore before every test (for example a final
-check), start a new PowerShell session.
+running since then, no other PowerShell session used the VM in between (see the lease below), and that run was
+not a watched one. To restore before every test (for example a final check), start a new PowerShell session.
+
+**One VM, one PowerShell session at a time.** Every test run, the Intune-parity pre-check (when it restores the
+VM) and every VM command (`Reset-`, `Set-Win32ToolkitTestVMResource`, `Remove-` and `New-Win32ToolkitTestVM`, and the
+TUI's repair action) first take the test VM's lease: a lock file under `%ProgramData%\win32-toolkit\locks` that
+only one process can hold. A second PowerShell session that wants the same VM waits for it and prints one line
+that names the holder:
+
+```
+Waiting for the test VM 'win32tk-golden': another process is using it (test run since 2026-10-24 09:15:30Z, process 4242); up to 60 minutes...
+```
+
+The line names only a holder whose process is still running: when the lock file still names an earlier
+holder (the new one writes its details just after it takes the lease), the line comes one try later, without the
+part in brackets if the holder still cannot be named.
+
+After `HyperVLeaseWaitMinutes` (default 60, from 1 to 240; [Configuration](configuration.md)) the waiting test
+stops with the error `W32T.HyperVLeaseTimeout`: it was not started and the VM was not restored. The lease is
+released when the run ends, and Windows releases it when the PowerShell process ends for any reason. The lock
+folder keeps the access rights of `%ProgramData%`, where any user can create files and folders. So the lease
+trusts only a lock folder (`%ProgramData%\win32-toolkit` and its `locks` folder) and lock files that are plain
+folders and files owned by Administrators or SYSTEM, and it never writes through a link (junction or symbolic
+link). Only an elevated session creates them that way, so a lease needs an elevated session (Hyper-V needs one
+anyway). If another account created the folder first, or a lock file or folder is a link, the test stops with
+the error `W32T.HyperVLeaseUnsafe` before it writes anything, and the message names the folder or file: delete it
+from an elevated session (it only ever holds lock files) and the next test creates it again.
+Hyper-V Manager and scripts that call the Hyper-V cmdlets directly do not take the lease: do not restore or start
+the test VM by hand while a test runs.
 
 ### Tip: stop Edge and WebView2 from updating in the VM
 
@@ -276,5 +303,6 @@ typo is never stored).
 | `HyperVTestMode` | `Unattended` makes Hyper-V test runs non-interactive (Intune-parity) by default (`-TestMode` overrides it for one run; the menu's **Hyper-V run mode** lists it first) |
 | `HyperVDepsCheckpoint` | `On` freezes a `clean-base+deps-*` checkpoint after a successful dependency install so later runs of that project skip it. See [Configuration](configuration.md) |
 | `HyperVRevertMode` | `TurnOffFirst` (default) turns the VM off before each restore, `Legacy` keeps the plain restore. See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
+| `HyperVLeaseWaitMinutes` | How long (1-240 minutes, default 60) a test or a VM command waits while another PowerShell session uses the VM, then stops with `W32T.HyperVLeaseTimeout`. See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
 
 All keys live in the toolkit's registry config; see [Configuration](configuration.md) for the full list.

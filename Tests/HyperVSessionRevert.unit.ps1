@@ -11,6 +11,10 @@
     HyperVRevertMode.unit for the helper itself). [e] (PR 2): a Saved VM is resumed silently, Off warns, Info.Warm
     follows the helper's Landed (V-4). [j]: the teardown stamps the marker only after the whole helper succeeded.
 
+    Speed-up PR 3 (A-2): the marker is used only under a VM lease (Enter-Win32ToolkitHyperVLease) whose generation
+    follows the one the teardown stamped (the sections above pass $L5 to the teardown and $L6 to the open). [n]: the
+    generation rule (next outermost, nested, another holder in between, another epoch, no lease, a PR 1 marker).
+
     All Hyper-V cmdlets are shadowed; nothing touches a real VM.
 
     Run:  pwsh -File Tests\HyperVSessionRevert.unit.ps1
@@ -66,6 +70,10 @@ function Clear-Win32ToolkitParityProbeCache { $script:probeClears++ }
 function Remove-ItemProperty { throw 'real HKCU must not be touched' }
 
 $cred = New-Object System.Management.Automation.PSCredential('u', (ConvertTo-SecureString 'p' -AsPlainText -Force))
+# Speed-up PR 3 (A-2): the marker counts only under a VM lease. $L5 = the lease a teardown held (generation 5); $L6 = the
+# next outermost acquisition of the same file when nobody else took it in between (PreviousGeneration 5).
+$L5 = [pscustomobject]@{ Kind = 'VM'; Epoch = 'epoch-a'; Generation = 5; PreviousGeneration = 4; Nested = $false }
+$L6 = [pscustomobject]@{ Kind = 'VM'; Epoch = 'epoch-a'; Generation = 6; PreviousGeneration = 5; Nested = $false }
 function Reset-State { $script:restores = 0; $script:restoreFail = $false; $script:HyperVCleanMarker = $null; $script:started = 0; $script:vmState = 'Running'
     $script:vmId = [guid]'0e5f9e66-1111-2222-3333-444455556666'; $script:vmUptime = [timespan]::FromDays(1); $script:vmGetThrows = $false
     $script:helperMode = 'TurnOffFirst'; $script:helperLanded = $null; $script:helperStarted = $false; $script:helperFail = ''; $script:helperCalls = 0 }
@@ -80,10 +88,10 @@ if ($null -eq $script:HyperVCleanMarker) { Ok 'marker stays clear once the VM is
 # ── (b) full run pair: teardown stamps; next open skips ───────────────────────────────────────────
 Write-Host '[b] teardown stamps the marker -> the NEXT open skips its revert (1 restore per pair)' -ForegroundColor Cyan
 Reset-State
-Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert
+Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert -Lease $L5
 if ($script:restores -eq 1) { Ok 'teardown reverted' } else { Bad "teardown restores=$($script:restores)" }
 if ($script:HyperVCleanMarker -and $script:HyperVCleanMarker.VMName -eq 'vmA') { Ok 'marker stamped after a VERIFIED teardown revert' } else { Bad 'no marker after successful teardown' }
-$null = New-Win32ToolkitHyperVSession -VMName 'vmA' -Credential $cred -CheckpointName 'clean-base'
+$null = New-Win32ToolkitHyperVSession -VMName 'vmA' -Credential $cred -CheckpointName 'clean-base' -Lease $L6
 if ($script:restores -eq 1) { Ok 'open SKIPPED the redundant revert (still 1 restore total)' } else { Bad "restores=$($script:restores) after open" }
 if ($null -eq $script:HyperVCleanMarker) { Ok 'marker consumed/cleared the moment the run starts' } else { Bad 'marker survived into the run' }
 
@@ -143,7 +151,7 @@ ${function:Wait-Win32ToolkitVMReady_Saved} = ${function:Wait-Win32ToolkitVMReady
 function Wait-Win32ToolkitVMReady { param($VMName, $Credential, [switch]$SkipPrep, [switch]$ReturnSession) if ($ReturnSession) { $sessionDouble } else { $true } }
 $openM = {
     param([hashtable]$Info)
-    $o = @(New-Win32ToolkitHyperVSession -VMName 'vmA' -Credential $cred -CheckpointName 'clean-base' -Info $Info 3>$null)
+    $o = @(New-Win32ToolkitHyperVSession -VMName 'vmA' -Credential $cred -CheckpointName 'clean-base' -Info $Info -Lease $L6 3>$null)
     [pscustomobject]@{ Out = $o; Exact = ($o.Count -eq 1 -and [object]::ReferenceEquals($o[0], $sessionDouble)) }
 }
 # a restore
@@ -155,7 +163,7 @@ if ($rm.Exact -and $script:restores -eq 1 -and $im['RevertSkipped'] -eq $false -
 } else { Bad "restore: exact=$($rm.Exact) restores=$($script:restores) info=$($im | ConvertTo-Json -Compress -Depth 2)" }
 # a marker skip (the marker the teardown stamps, 30 s old)
 Reset-State
-$script:HyperVCleanMarker = @{ VMName = 'vmA'; VMId = $script:vmId; CheckpointName = 'clean-base'; StampedAt = (Get-Date).AddSeconds(-30) }
+$script:HyperVCleanMarker = @{ VMName = 'vmA'; VMId = $script:vmId; CheckpointName = 'clean-base'; StampedAt = (Get-Date).AddSeconds(-30); LeaseEpoch = 'epoch-a'; LeaseGeneration = 5 }
 $im = @{}
 $rm = & $openM $im
 if ($rm.Exact -and $script:restores -eq 0 -and $im['RevertSkipped'] -eq $true -and $im['SecondsSinceTeardown'] -ge 29 -and $im['SecondsSinceTeardown'] -le 40 -and $im['Warm'] -eq $true) {
@@ -197,10 +205,10 @@ Reset-State
 # ── (l) Hyper-V speed-up PR 1 (D25): the marker is used only while the VM is still the one the teardown left clean ───
 Write-Host '[l] clean-marker guard: same VM Id, Running, uptime >= the marker''s age (5 s slack); a teardown without an Id keeps no marker' -ForegroundColor Cyan
 $openL = {
-    $v = @(New-Win32ToolkitHyperVSession -VMName 'vmA' -Credential $cred -CheckpointName 'clean-base' -Verbose 4>&1 3>$null | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] } | ForEach-Object { $_.Message })
+    $v = @(New-Win32ToolkitHyperVSession -VMName 'vmA' -Credential $cred -CheckpointName 'clean-base' -Lease $L6 -Verbose 4>&1 3>$null | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] } | ForEach-Object { $_.Message })
     @($v | Where-Object { $_ -like '*clean marker is not used*' })
 }
-$stampL = { param([int]$AgeSeconds) $script:HyperVCleanMarker = @{ VMName = 'vmA'; VMId = [string]$script:vmId; CheckpointName = 'clean-base'; StampedAt = (Get-Date).AddSeconds(-$AgeSeconds) } }
+$stampL = { param([int]$AgeSeconds) $script:HyperVCleanMarker = @{ VMName = 'vmA'; VMId = [string]$script:vmId; CheckpointName = 'clean-base'; StampedAt = (Get-Date).AddSeconds(-$AgeSeconds); LeaseEpoch = 'epoch-a'; LeaseGeneration = 5 } }
 # all good: skip
 Reset-State; & $stampL 60; $script:vmUptime = [timespan]::FromSeconds(90)
 $whyL = @(& $openL)
@@ -228,18 +236,18 @@ foreach ($case in @(
 }
 # a marker of the old shape (no VMId) is never used
 Reset-State
-$script:HyperVCleanMarker = @{ VMName = 'vmA'; CheckpointName = 'clean-base'; StampedAt = (Get-Date).AddSeconds(-30) }
+$script:HyperVCleanMarker = @{ VMName = 'vmA'; CheckpointName = 'clean-base'; StampedAt = (Get-Date).AddSeconds(-30); LeaseEpoch = 'epoch-a'; LeaseGeneration = 5 }
 $null = & $openL
 if ($script:restores -eq 1) { Ok 'a marker without VMId -> restore (fail-safe)' } else { Bad "no VMId: restores=$($script:restores)" }
 # the teardown stamps the VM Id; without one it keeps no marker and does not warn
 Reset-State
-Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert
+Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert -Lease $L5
 if ($script:HyperVCleanMarker -and $script:HyperVCleanMarker.VMId -eq [string]$script:vmId -and $script:HyperVCleanMarker.CheckpointName -eq 'clean-base') { Ok 'the teardown stamps VMName, VMId, CheckpointName, StampedAt' } else { Bad "stamp: $($script:HyperVCleanMarker | ConvertTo-Json -Compress)" }
 Reset-State
 $script:HyperVCleanMarker = @{ VMName = 'vmA'; VMId = 'x'; CheckpointName = 'clean-base'; StampedAt = Get-Date }
 $script:vmGetThrows = $true
 $wl = @()
-Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert -WarningVariable wl 3>$null
+Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert -Lease $L5 -WarningVariable wl 3>$null
 if ($script:restores -eq 1 -and $null -eq $script:HyperVCleanMarker -and @($wl).Count -eq 0) { Ok 'Get-VM fails after the teardown restore -> no marker, no warning (the restore still counts as done)' } else { Bad "teardown get-vm: restores=$($script:restores) marker=$($null -ne $script:HyperVCleanMarker) warnings=$(@($wl).Count)" }
 Reset-State
 
@@ -266,7 +274,7 @@ function Wait-Win32ToolkitVMReady { param($VMName, $Credential, [switch]$SkipPre
 $openE = {
     $info = @{}
     $wv = $null
-    $o = @(New-Win32ToolkitHyperVSession -VMName 'vmA' -Credential $cred -CheckpointName 'clean-base' -Info $info -WarningVariable wv 3>$null)
+    $o = @(New-Win32ToolkitHyperVSession -VMName 'vmA' -Credential $cred -CheckpointName 'clean-base' -Info $info -Lease $L6 -WarningVariable wv 3>$null)
     [pscustomobject]@{ Info = $info; Warnings = @($wv | ForEach-Object { "$_" }); Exact = ($o.Count -eq 1 -and [object]::ReferenceEquals($o[0], $sessionDouble)) }
 }
 # A Saved VM after the restore (Legacy on a VM that was off, or a helper run with -NoStart): resumed, no warning.
@@ -288,7 +296,7 @@ foreach ($landed in 'Saved', 'Running') {
 }
 # A marker-skip open restores nothing: RevertMode $null; a skipped open that finds the VM Saved resumes it silently.
 Reset-State
-$script:HyperVCleanMarker = @{ VMName = 'vmA'; VMId = [string]$script:vmId; CheckpointName = 'clean-base'; StampedAt = (Get-Date).AddSeconds(-30) }
+$script:HyperVCleanMarker = @{ VMName = 'vmA'; VMId = [string]$script:vmId; CheckpointName = 'clean-base'; StampedAt = (Get-Date).AddSeconds(-30); LeaseEpoch = 'epoch-a'; LeaseGeneration = 5 }
 $e = & $openE
 if ($e.Exact -and $script:helperCalls -eq 0 -and $e.Info['RevertSkipped'] -eq $true -and $null -eq $e.Info['RevertMode']) { Ok 'a marker skip: no helper call, RevertMode $null' } else { Bad "skip: calls=$($script:helperCalls) info=$($e.Info | ConvertTo-Json -Compress -Depth 1)" }
 Reset-State; $script:vmState = 'Saved'
@@ -299,7 +307,7 @@ if ($o.Count -eq 1 -and $script:started -eq 1 -and @($wvS).Count -eq 0) { Ok '-S
 Write-Host '[j] (PR 2) teardown: marker only after the whole restore helper succeeded; a failed step -> no marker + warning; no output leaks' -ForegroundColor Cyan
 Reset-State
 $tj = @{}
-$o = @(Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert -Info $tj)
+$o = @(Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert -Info $tj -Lease $L5)
 if ($o.Count -eq 0 -and $script:helperCalls -eq 1 -and $script:HyperVCleanMarker -and $script:HyperVCleanMarker.VMName -eq 'vmA' -and $tj['Restored'] -eq $true -and $tj['RevertMode'] -ceq 'TurnOffFirst') {
     Ok 'success: one helper call, the marker stamped, Info RevertMode TurnOffFirst; Remove- emits nothing although the helper double returns an object'
 } else { Bad "teardown ok: out=$($o.Count) calls=$($script:helperCalls) marker=$($null -ne $script:HyperVCleanMarker) info=$($tj | ConvertTo-Json -Compress)" }
@@ -323,6 +331,46 @@ $e = & $openE
 if ($e.Exact -and $script:helperCalls -eq 1 -and $script:restores -eq 1) { Ok 'the open: one helper call; New- returns exactly the session double although the helper double returns an object' } else { Bad "open: exact=$($e.Exact) calls=$($script:helperCalls)" }
 ${function:Wait-Win32ToolkitVMReady} = ${function:Wait-Win32ToolkitVMReady_Saved}
 Remove-Item Function:\Wait-Win32ToolkitVMReady_Saved
+Reset-State
+
+# ── (n) Hyper-V speed-up PR 3 (A-2): the marker counts only under the lease generation that follows its own ───────────
+Write-Host '[n] (PR 3) the marker of a teardown under lease generation N: used with PreviousGeneration N or a nested hold of N; not with N+1, another epoch, or no lease' -ForegroundColor Cyan
+$openN = {
+    param($Lease)
+    $a = @{ VMName = 'vmA'; Credential = $cred; CheckpointName = 'clean-base' }
+    if ($null -ne $Lease) { $a['Lease'] = $Lease }
+    $v = @(New-Win32ToolkitHyperVSession @a -Verbose 4>&1 3>$null | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] } | ForEach-Object { $_.Message })
+    @($v | Where-Object { $_ -like '*clean marker is not used*' })
+}
+foreach ($case in @(
+        @{ Tag = 'the next outermost lease (PreviousGeneration 5, Generation 6)'; Lease = $L6; Skip = $true; Why = '' }
+        @{ Tag = 'a nested hold of generation 5 (lane runner -HoldLease)'; Lease = [pscustomobject]@{ Epoch = 'epoch-a'; Generation = 5; PreviousGeneration = 5; Nested = $true }; Skip = $true; Why = '' }
+        @{ Tag = 'another process held the VM in between (PreviousGeneration 6, Generation 7)'; Lease = [pscustomobject]@{ Epoch = 'epoch-a'; Generation = 7; PreviousGeneration = 6; Nested = $false }; Skip = $false; Why = 'another process used the VM since the teardown (the lease generation changed)' }
+        @{ Tag = 'another epoch (the lease file was reset)'; Lease = [pscustomobject]@{ Epoch = 'epoch-b'; Generation = 6; PreviousGeneration = 5; Nested = $false }; Skip = $false; Why = 'it was not stamped under the current VM lease' }
+        @{ Tag = 'no lease passed'; Lease = $null; Skip = $false; Why = 'no VM lease is held' })) {
+    Reset-State
+    Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert -Lease $L5
+    $stamped = $script:HyperVCleanMarker
+    $script:restores = 0
+    $whyN = @(& $openN $case.Lease)
+    $wantRestores = if ($case.Skip) { 0 } else { 1 }
+    $whyOk = if ($case.Skip) { $whyN.Count -eq 0 } else { $whyN.Count -eq 1 -and $whyN[0] -like "*($($case.Why)); restoring 'clean-base'." }
+    if ($stamped.LeaseEpoch -ceq 'epoch-a' -and $stamped.LeaseGeneration -eq 5 -and $script:restores -eq $wantRestores -and $whyOk) {
+        Ok "$($case.Tag): $(if ($case.Skip) { 'the marker is used (no restore)' } else { 'restore, the verbose line names why' })"
+    } else { Bad "$($case.Tag): stamp=$($stamped | ConvertTo-Json -Compress) restores=$($script:restores) why=$($whyN -join ' | ')" }
+}
+# A marker of the PR 1 shape (VMId, no lease fields) is never used once leases exist.
+Reset-State
+$script:HyperVCleanMarker = @{ VMName = 'vmA'; VMId = [string]$script:vmId; CheckpointName = 'clean-base'; StampedAt = (Get-Date).AddSeconds(-30) }
+$whyN = @(& $openN $L6)
+if ($script:restores -eq 1 -and $whyN.Count -eq 1 -and $whyN[0] -like '*not stamped under the current VM lease*') { Ok 'a marker without lease fields -> restore (fail-safe)' } else { Bad "no lease fields: restores=$($script:restores) why=$($whyN -join ' | ')" }
+# The teardown without a lease restores but keeps no marker (one verbose line).
+Reset-State
+$tn = @{}
+$vn = @(Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert -Info $tn -Verbose 4>&1 | ForEach-Object { $_.Message })
+if ($script:restores -eq 1 -and $tn['Restored'] -eq $true -and $null -eq $script:HyperVCleanMarker -and @($vn | Where-Object { $_ -like '*no VM lease is held, so no clean marker is kept*' }).Count -eq 1) {
+    Ok 'a teardown without -Lease: the restore runs (Restored $true), no marker, one verbose line'
+} else { Bad "teardown no lease: restores=$($script:restores) marker=$($null -ne $script:HyperVCleanMarker) verbose=$($vn -join ' | ')" }
 Reset-State
 
 Write-Host ''

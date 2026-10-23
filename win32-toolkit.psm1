@@ -49,3 +49,16 @@ foreach ($folder in @('Private', 'Public')) {
             ForEach-Object { . $_.FullName }
     }
 }
+
+# The machine-wide test-VM and project leases this process holds are open lock files (Enter-Win32ToolkitHyperVLease,
+# Hyper-V speed-up PR 3). Remove-Module or Import-Module -Force must close them: an unreferenced handle would keep the
+# lease, and block this very process, until the garbage collector finds it.
+$ExecutionContext.SessionState.Module.OnRemove = {
+    if ($script:HyperVLeases) {
+        foreach ($hold in @($script:HyperVLeases.Values)) {
+            try { $hold['Stream'].Dispose() }
+            catch { Write-Verbose "A test-VM lease could not be closed: $($_.Exception.Message)" }
+        }
+        $script:HyperVLeases = $null
+    }
+}

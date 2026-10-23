@@ -13,6 +13,10 @@ function Reset-Win32ToolkitTestVM {
         afterwards. A checkpoint taken with automatic checkpoints on gets the plain restore and one warning.
         The plain restore keeps a running VM running, but leaves a VM that was off or saved before the reset in
         the Saved state: Start-VM resumes it.
+
+        The reset holds the test VM's lease, the lock every win32-toolkit process takes before it changes the VM:
+        while another PowerShell session uses the VM (a test run, for example) the reset waits for it, up to
+        HyperVLeaseWaitMinutes (default 60), and then stops with the error W32T.HyperVLeaseTimeout.
     .PARAMETER Name
         VM name (default: the stored HyperVVMName, else 'win32tk-golden').
     .PARAMETER CheckpointName
@@ -25,10 +29,16 @@ function Reset-Win32ToolkitTestVM {
     )
 
     if ($PSCmdlet.ShouldProcess($Name, "Restore checkpoint '$CheckpointName'")) {
-        # Invalidate the process-local clean marker / readiness cache — this action changes VM state
-        # outside the session lifecycle that maintains them (fail-safe: worst case is one extra revert).
-        Clear-Win32ToolkitHyperVStateCache
-        # Speed-up PR 2 (D4): turn off, restore, start (HyperVRevertMode). Reset emits nothing (C-12): Repair calls it.
-        $null = Restore-Win32ToolkitTestVMCheckpoint -VMName $Name -CheckpointName $CheckpointName
+        # One process at a time on the VM (speed-up PR 3, D10): waits while another process holds it, else throws
+        # W32T.HyperVLeaseTimeout before anything changes. Nested (no wait) when the caller holds it (Repair).
+        $lease = Enter-Win32ToolkitHyperVLease -VMName $Name -Purpose 'reset'
+        try {
+            # Invalidate the process-local clean marker / readiness cache — this action changes VM state
+            # outside the session lifecycle that maintains them (fail-safe: worst case is one extra revert).
+            Clear-Win32ToolkitHyperVStateCache
+            # Speed-up PR 2 (D4): turn off, restore, start (HyperVRevertMode). Reset emits nothing (C-12): Repair calls it.
+            $null = Restore-Win32ToolkitTestVMCheckpoint -VMName $Name -CheckpointName $CheckpointName
+        }
+        finally { $null = Exit-Win32ToolkitHyperVLease -Lease $lease }
     }
 }

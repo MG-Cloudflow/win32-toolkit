@@ -16,6 +16,10 @@ Turns the VM off, removes all its checkpoints and the VM config, and - with
 -RemoveVhdx - deletes its virtual disks.
 Each step is best-effort so partial state still cleans.
 
+The removal holds the test VM's lease, the lock every win32-toolkit process takes before it changes the VM:
+while another PowerShell session uses the VM it waits, up to HyperVLeaseWaitMinutes (default 60), and then
+stops with the error W32T.HyperVLeaseTimeout before anything is removed.
+
 ## EXAMPLES
 
 ### Example 1

@@ -20,6 +20,10 @@ function Set-Win32ToolkitTestVMResource {
 
     The chosen values are saved (HyperVProcessorCount / HyperVMemoryStartupBytes) and become the defaults for the
     next New-Win32ToolkitTestVM. Requested CPU/RAM above the host's capacity is REFUSED.
+
+    The change holds the test VM's lease, the lock every win32-toolkit process takes before it changes the VM:
+    while another PowerShell session uses the VM it waits, up to HyperVLeaseWaitMinutes (default 60), and then
+    stops with the error W32T.HyperVLeaseTimeout before anything changes.
 .PARAMETER ProcessorCount
     New virtual processor count (1-64). Omit to leave CPU unchanged.
 .PARAMETER MemoryStartupBytes
@@ -116,60 +120,66 @@ function Set-Win32ToolkitTestVMResource {
         }
     }
 
-    Write-Host "Reconfiguring '$Name': $curCpu vCPU / $([math]::Round($curMem / 1GB, 2)) GB  ->  $newCpu vCPU / $([math]::Round($newMem / 1GB, 2)) GB" -ForegroundColor Cyan
+    # One process at a time on the VM (speed-up PR 3, D10): the whole reconfigure holds the VM's lease (a W32T.HyperVLeaseTimeout
+    # stops it before anything changes).
+    $lease = Enter-Win32ToolkitHyperVLease -VMName $Name -VMId ([string]$vm.Id) -Purpose 'resource change'
+    try {
+        Write-Host "Reconfiguring '$Name': $curCpu vCPU / $([math]::Round($curMem / 1GB, 2)) GB  ->  $newCpu vCPU / $([math]::Round($newMem / 1GB, 2)) GB" -ForegroundColor Cyan
 
-    # Invalidate the process-local clean marker / readiness cache — the checkpoint is about to be
-    # destroyed and recreated, so nothing cached about the VM's state may survive this.
-    Clear-Win32ToolkitHyperVStateCache
+        # Invalidate the process-local clean marker / readiness cache — the checkpoint is about to be
+        # destroyed and recreated, so nothing cached about the VM's state may survive this.
+        Clear-Win32ToolkitHyperVStateCache
 
-    # 1. Off. Static memory / vCPU count cannot change on a running VM. CONFIRM it actually powered off before
-    #    anything destructive: if Stop-VM silently failed and we removed the checkpoint anyway, we'd destroy the
-    #    only recovery point for a change that then can't apply (VM stuck running, OLD hardware, NO checkpoint).
-    Write-Verbose "Stopping '$Name'..."
-    Stop-VM -Name $Name -TurnOff -Force -ErrorAction SilentlyContinue
-    if ((Get-VM -Name $Name -ErrorAction SilentlyContinue).State -ne 'Off') {
-        throw "Could not power off VM '$Name' — refusing to remove its clean-base checkpoint. Stop it manually (Stop-VM -Name '$Name' -TurnOff) and retry."
+        # 1. Off. Static memory / vCPU count cannot change on a running VM. CONFIRM it actually powered off before
+        #    anything destructive: if Stop-VM silently failed and we removed the checkpoint anyway, we'd destroy the
+        #    only recovery point for a change that then can't apply (VM stuck running, OLD hardware, NO checkpoint).
+        Write-Verbose "Stopping '$Name'..."
+        Stop-VM -Name $Name -TurnOff -Force -ErrorAction SilentlyContinue
+        if ((Get-VM -Name $Name -ErrorAction SilentlyContinue).State -ne 'Off') {
+            throw "Could not power off VM '$Name' — refusing to remove its clean-base checkpoint. Stop it manually (Stop-VM -Name '$Name' -TurnOff) and retry."
+        }
+        # Automatic checkpoints off before the start below (speed-up PR 1, D5).
+        $null = Set-VM -Name $Name -AutomaticCheckpointsEnabled $false -ErrorAction Stop
+
+        # 2. Remove ALL checkpoints — a Standard checkpoint encodes the OLD memory state, so keeping it would let
+        #    the next Reset revert the change (and can block the memory reconfigure).
+        Get-VMCheckpoint -VMName $Name -ErrorAction SilentlyContinue | Remove-VMCheckpoint -ErrorAction SilentlyContinue
+
+        # 3. Apply the new hardware (static memory, matching provisioning).
+        if ($changeCpu) { Set-VMProcessor -VMName $Name -Count $newCpu }
+        if ($changeMem) { Set-VMMemory -VMName $Name -DynamicMemoryEnabled $false -StartupBytes $newMem }
+
+        # 4. Cold-boot and wait for the AutoLogon desktop, so the warm checkpoint captures a real logged-in shell.
+        Write-Verbose "Starting '$Name' and waiting for the guest to be ready..."
+        Start-VM -Name $Name -ErrorAction Stop
+        Wait-Win32ToolkitVMReady -VMName $Name -Credential $Credential | Out-Null
+
+        Write-Verbose 'Waiting for the guest desktop to settle (explorer)...'
+        $deadline = (Get-Date).AddMinutes(10)
+        $shellUp  = $false
+        do {
+            Start-Sleep -Seconds 10
+            $shellUp = [bool](Invoke-Command -VMName $Name -Credential $Credential -ScriptBlock {
+                [bool](Get-Process -Name explorer -ErrorAction SilentlyContinue)
+            } -ErrorAction SilentlyContinue)
+        } until ($shellUp -or (Get-Date) -gt $deadline)
+        if (-not $shellUp) {
+            throw "The guest desktop (explorer) did not come up within 10 minutes after the reconfigure — refusing to freeze a broken state. The VM '$Name' is running with the new hardware but has NO clean-base checkpoint; check AutoLogon / the console, then re-run."
+        }
+
+        # 5. Re-freeze the clean base at the new hardware level.
+        $null = Set-VM -Name $Name -CheckpointType Standard -AutomaticCheckpointsEnabled $false
+        # A failed checkpoint stops here (speed-up PR 2, V-Fe11): no success line and no settings for a VM without one.
+        Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName -ErrorAction Stop
+        Write-Host "✓ '$CheckpointName' checkpoint recreated at $newCpu vCPU / $([math]::Round($newMem / 1GB, 2)) GB." -ForegroundColor Green
+
+        # 6. Persist the new specs (and re-affirm the VM identity) so New-Win32ToolkitTestVM reuses them.
+        Set-Win32ToolkitConfigValue -Name 'HyperVVMName'            -Value $Name
+        Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint'        -Value $CheckpointName
+        Set-Win32ToolkitConfigValue -Name 'HyperVProcessorCount'    -Value $newCpu
+        Set-Win32ToolkitConfigValue -Name 'HyperVMemoryStartupBytes' -Value $newMem
+
+        return (Get-VM -Name $Name -ErrorAction SilentlyContinue)
     }
-    # Automatic checkpoints off before the start below (speed-up PR 1, D5).
-    $null = Set-VM -Name $Name -AutomaticCheckpointsEnabled $false -ErrorAction Stop
-
-    # 2. Remove ALL checkpoints — a Standard checkpoint encodes the OLD memory state, so keeping it would let
-    #    the next Reset revert the change (and can block the memory reconfigure).
-    Get-VMCheckpoint -VMName $Name -ErrorAction SilentlyContinue | Remove-VMCheckpoint -ErrorAction SilentlyContinue
-
-    # 3. Apply the new hardware (static memory, matching provisioning).
-    if ($changeCpu) { Set-VMProcessor -VMName $Name -Count $newCpu }
-    if ($changeMem) { Set-VMMemory -VMName $Name -DynamicMemoryEnabled $false -StartupBytes $newMem }
-
-    # 4. Cold-boot and wait for the AutoLogon desktop, so the warm checkpoint captures a real logged-in shell.
-    Write-Verbose "Starting '$Name' and waiting for the guest to be ready..."
-    Start-VM -Name $Name -ErrorAction Stop
-    Wait-Win32ToolkitVMReady -VMName $Name -Credential $Credential | Out-Null
-
-    Write-Verbose 'Waiting for the guest desktop to settle (explorer)...'
-    $deadline = (Get-Date).AddMinutes(10)
-    $shellUp  = $false
-    do {
-        Start-Sleep -Seconds 10
-        $shellUp = [bool](Invoke-Command -VMName $Name -Credential $Credential -ScriptBlock {
-            [bool](Get-Process -Name explorer -ErrorAction SilentlyContinue)
-        } -ErrorAction SilentlyContinue)
-    } until ($shellUp -or (Get-Date) -gt $deadline)
-    if (-not $shellUp) {
-        throw "The guest desktop (explorer) did not come up within 10 minutes after the reconfigure — refusing to freeze a broken state. The VM '$Name' is running with the new hardware but has NO clean-base checkpoint; check AutoLogon / the console, then re-run."
-    }
-
-    # 5. Re-freeze the clean base at the new hardware level.
-    $null = Set-VM -Name $Name -CheckpointType Standard -AutomaticCheckpointsEnabled $false
-    # A failed checkpoint stops here (speed-up PR 2, V-Fe11): no success line and no settings for a VM without one.
-    Checkpoint-VM -VMName $Name -SnapshotName $CheckpointName -ErrorAction Stop
-    Write-Host "✓ '$CheckpointName' checkpoint recreated at $newCpu vCPU / $([math]::Round($newMem / 1GB, 2)) GB." -ForegroundColor Green
-
-    # 6. Persist the new specs (and re-affirm the VM identity) so New-Win32ToolkitTestVM reuses them.
-    Set-Win32ToolkitConfigValue -Name 'HyperVVMName'            -Value $Name
-    Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint'        -Value $CheckpointName
-    Set-Win32ToolkitConfigValue -Name 'HyperVProcessorCount'    -Value $newCpu
-    Set-Win32ToolkitConfigValue -Name 'HyperVMemoryStartupBytes' -Value $newMem
-
-    return (Get-VM -Name $Name -ErrorAction SilentlyContinue)
+    finally { $null = Exit-Win32ToolkitHyperVLease -Lease $lease }
 }

@@ -20,6 +20,11 @@
       (r)  Output shape (C-12, V-1): exactly one object in every case although every Hyper-V double returns an object;
            Reset-Win32ToolkitTestVM emits nothing (also when the advisory prints) and calls the helper once, after the
            cache clear; -WhatIf changes nothing.
+      (s)  Speed-up PR 3: a VM in a transitional state (Starting, Stopping, Saving, Pausing, Resuming, Reset, FastSaving,
+           *Critical) is waited for first, every 2 s up to 60 polls / 120 s, then the restore goes on; Legacy too; a
+           state that cannot be read is not waited for.
+      (t)  Speed-up PR 3: Reset holds the VM's lease around the cache clear and the restore; a lease timeout changes
+           nothing; -WhatIf takes no lease.
       (y)  File hygiene: ASCII, one function, every catch starts with the C-2 line.
 
     Every Hyper-V cmdlet, the HKCU read and the checkpoint's WMI read are shadowed; nothing reaches a VM.
@@ -61,8 +66,12 @@ function Get-VMCheckpoint { param($VMName, $Name, $ErrorAction)
 function Get-VM { param($Name, $ErrorAction)
     $script:log.Add('get-vm')
     if ($script:failAt -eq 'get-vm-after' -and $script:restored) { throw 'Get-VM failed' }
-    [pscustomobject]@{ Name = $Name; Id = [guid]$vmId; State = $script:vmState; AutomaticCheckpointsEnabled = $script:vmAuto }
+    # (s) speed-up PR 3: the states the next reads report before the model's own ($script:stateQueue), a first read that fails.
+    if ($script:getVmFailFirst) { $script:getVmFailFirst = $false; throw 'Get-VM failed once' }
+    $st = if ($script:stateQueue.Count -gt 0) { $script:stateQueue.Dequeue() } else { $script:vmState }
+    [pscustomobject]@{ Name = $Name; Id = [guid]$vmId; State = $st; AutomaticCheckpointsEnabled = $script:vmAuto }
 }
+$script:stateQueue = [System.Collections.Generic.Queue[string]]::new(); $script:getVmFailFirst = $false
 function Stop-VM { param($Name, [switch]$TurnOff, [switch]$Force, [switch]$Confirm, $ErrorAction)
     $script:log.Add("stop:turnoff=$($TurnOff.IsPresent):force=$($Force.IsPresent)")
     if ($script:failAt -eq 'stop') { throw 'The virtual machine could not be turned off' }
@@ -88,6 +97,18 @@ function Start-VM { param($Name, [switch]$Confirm, $ErrorAction)
 }
 $script:clears = 0
 function Clear-Win32ToolkitHyperVStateCache { param([switch]$MarkerOnly) $script:log.Add('clear'); $script:clears++; $script:HyperVAdvised = $null }
+# C-9 (speed-up PR 3): Reset holds the VM's lease. The doubles record on their own ($script:leaseLog, never $script:log, so
+# the sequences above stay exact) and hand out a fake lease; (t) makes the lease time out.
+$script:leaseLog = [System.Collections.Generic.List[string]]::new(); $script:leaseThrows = $false
+$script:leaseObj = [pscustomobject]@{ Kind = 'VM'; Epoch = 'e'; Generation = 1; PreviousGeneration = 0; Nested = $false }
+function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose)
+    $script:leaseLog.Add("enter:${VMName}:${Purpose}:log=$($script:log.Count)")
+    if ($script:leaseThrows) {
+        throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new("Another process kept the test VM '$VMName' for more than 60 minutes."),
+            'W32T.HyperVLeaseTimeout', [System.Management.Automation.ErrorCategory]::ResourceBusy, $VMName)
+    }
+    $script:leaseObj }
+function Exit-Win32ToolkitHyperVLease { param($Lease) $script:leaseLog.Add("exit:same=$([object]::ReferenceEquals($Lease, $script:leaseObj)):log=$($script:log.Count)"); [pscustomobject]@{ Leak = 'exit' } }
 
 function Reset-Model {
     param([string]$State = 'Running', $Auto = $false, [string]$Land = 'Saved', $LandAuto = $false)
@@ -96,6 +117,7 @@ function Reset-Model {
     # Legacy on a running VM: a memory-state checkpoint comes back Running (Hyper-V saves, applies and resumes).
     $script:vmStateBeforeRestore = @('Running', 'Paused'); $script:landRunningWhenRunning = $false
     $script:HyperVAdvised = $null
+    $script:stateQueue.Clear(); $script:getVmFailFirst = $false
 }
 # One call: every output object, the warnings, the verbose lines, the error.
 function Invoke-Restore {
@@ -115,7 +137,7 @@ $shapeOk = $true
 Write-Host '(f) TurnOffFirst, Running VM, checkpoint taken with automatic checkpoints off: turn off, restore, start' -ForegroundColor Cyan
 Reset-Model -State 'Running' -Auto $false -Land 'Saved'
 $x = Invoke-Restore
-$want = "get-cp:vm-test:clean-base > auto:$cpId > get-vm > stop:turnoff=True:force=True > restore:vm-test:clean-base > get-vm > start:auto=False"
+$want = "get-vm > get-cp:vm-test:clean-base > auto:$cpId > get-vm > stop:turnoff=True:force=True > restore:vm-test:clean-base > get-vm > start:auto=False"
 if (-not $x.Threw -and ($x.Log -join ' > ') -eq $want -and $x.Warnings.Count -eq 0) { Ok "the sequence: $want; no warning" } else { Bad "sequence: threw=$($x.Threw) log=$($x.Log -join ' > ') warnings=$($x.Warnings -join ' | ')" }
 if ((& $one $x) -and $x.R.Mode -ceq 'TurnOffFirst' -and $x.R.Landed -ceq 'Saved' -and $x.R.Started -eq $true -and $x.R.TurnOffSeconds -is [double] -and $x.R.RestoreSeconds -is [double] -and $x.R.StartSeconds -is [double]) {
     Ok 'the result: exactly one object; Mode TurnOffFirst, Landed Saved, Started $true, the seconds of each step'
@@ -150,7 +172,7 @@ Write-Host '(h) a checkpoint taken with automatic checkpoints on (or unknown): t
 Reset-Model -State 'Running' -Auto $true -Land 'Saved'
 $script:landRunningWhenRunning = $true
 $x = Invoke-Restore
-$wantH = "get-cp:vm-test:clean-base > auto:$cpId > restore:vm-test:clean-base > get-vm"
+$wantH = "get-vm > get-cp:vm-test:clean-base > auto:$cpId > restore:vm-test:clean-base > get-vm"
 if (-not $x.Threw -and ($x.Log -join ' > ') -eq $wantH) { Ok "Legacy: $wantH (no Stop-VM, no Start-VM)" } else { Bad "legacy sequence: $($x.Log -join ' > ')" }
 if ($x.Warnings.Count -eq 1 -and $x.Warnings[0] -like "The test VM's checkpoint 'clean-base' was taken with automatic checkpoints on. Turn them off (Set-VM -Name 'vm-test' -AutomaticCheckpointsEnabled `$false) and re-take the checkpoint (docs/hyperv-vm.md). Until then every restore keeps the slower path that saves the running VM first.") {
     Ok 'exactly one warning: the PR 1 text plus "until then every restore keeps the slower path"'
@@ -196,15 +218,15 @@ foreach ($value in 'Legacy', 'legacy', ' LEGACY ') {
     $script:landRunningWhenRunning = $true
     $script:cfg = @{ HyperVRevertMode = $value }
     $x = Invoke-Restore
-    if (-not $x.Threw -and ($x.Log -join ' > ') -eq 'restore:vm-test:clean-base > get-vm' -and $x.R.Mode -ceq 'Legacy' -and $x.R.Landed -ceq 'Running' -and -not $x.R.Started -and $x.Warnings.Count -eq 0) {
-        Ok "HyperVRevertMode '$value': one Restore-VMCheckpoint (and the state read), no checkpoint or setting read, no turn-off, no start, no warning"
+    if (-not $x.Threw -and ($x.Log -join ' > ') -eq 'get-vm > restore:vm-test:clean-base > get-vm' -and $x.R.Mode -ceq 'Legacy' -and $x.R.Landed -ceq 'Running' -and -not $x.R.Started -and $x.Warnings.Count -eq 0) {
+        Ok "HyperVRevertMode '$value': one Restore-VMCheckpoint (and the state reads before and after), no checkpoint or setting read, no turn-off, no start, no warning"
     } else { Bad "'$value': log=$($x.Log -join ' > ') result=$($x.R | ConvertTo-Json -Compress)" }
     if (-not (& $one $x)) { $shapeOk = $false }
 }
 Reset-Model -State 'Running' -Auto $false -Land 'Saved'
 $script:landRunningWhenRunning = $true
 $x = Invoke-Restore -Splat @{ Mode = 'Legacy' }
-if (($x.Log -join ' > ') -eq 'restore:vm-test:clean-base > get-vm' -and $x.R.Mode -ceq 'Legacy') { Ok '-Mode Legacy wins over the (absent) setting' } else { Bad "-Mode Legacy: $($x.Log -join ' > ')" }
+if (($x.Log -join ' > ') -eq 'get-vm > restore:vm-test:clean-base > get-vm' -and $x.R.Mode -ceq 'Legacy') { Ok '-Mode Legacy wins over the (absent) setting' } else { Bad "-Mode Legacy: $($x.Log -join ' > ')" }
 Reset-Model -State 'Running' -Auto $false -Land 'Saved'
 $script:cfg = @{ HyperVRevertMode = 'Legacy' }
 $x = Invoke-Restore -Splat @{ Mode = 'TurnOffFirst' }
@@ -288,6 +310,82 @@ foreach ($case in @(
 Reset-Model -State 'Running' -Auto $false -Land 'Saved'
 $o = @(Reset-Win32ToolkitTestVM -Name 'vm-test' -WhatIf 6>$null)
 if ($o.Count -eq 0 -and $script:log.Count -eq 0) { Ok 'Reset -WhatIf: no cache clear, no restore' } else { Bad "whatif: $($script:log -join ' > ')" }
+
+# -- (s) speed-up PR 3: a VM in the middle of a state change is waited for first ----------------------------------------
+Write-Host '(s) (PR 3) a transitional VM state is waited for (2 s polls, at most 120 s) before the restore' -ForegroundColor Cyan
+$script:sleeps = [System.Collections.Generic.List[double]]::new()
+function Start-Sleep { param($Seconds, $Milliseconds) $script:sleeps.Add([double]$Seconds) }
+try {
+    # Saving twice, then Running: two 2 s waits, then the usual TurnOffFirst sequence.
+    Reset-Model -State 'Running' -Auto $false -Land 'Saved'
+    foreach ($s in 'Saving', 'Saving') { $script:stateQueue.Enqueue($s) }
+    $script:sleeps.Clear()
+    $x = Invoke-Restore
+    $wantS = "get-vm > get-vm > get-vm > get-cp:vm-test:clean-base > auto:$cpId > get-vm > stop:turnoff=True:force=True > restore:vm-test:clean-base > get-vm > start:auto=False"
+    if (-not $x.Threw -and ($x.Log -join ' > ') -eq $wantS -and ($script:sleeps -join ',') -eq '2,2' -and $x.R.Mode -ceq 'TurnOffFirst' -and
+        @($x.Verbose | Where-Object { $_ -ceq "'vm-test' is Saving; waiting for it to settle before the restore..." }).Count -eq 1) {
+        Ok 'Saving, Saving, Running: two 2 s waits (one verbose line), then turn off, restore, start'
+    } else { Bad "saving: log=$($x.Log -join ' > ') sleeps=$($script:sleeps -join ',') verbose=$($x.Verbose -join ' | ')" }
+    if (& $one $x) { Ok 'still exactly one object' } else { Bad "shape: $($x.Out.Count)" }
+    # Every transitional state, and a *Critical one, waits; settled states do not.
+    foreach ($case in @(
+            @{ State = 'Starting'; Waits = 1 }, @{ State = 'Stopping'; Waits = 1 }, @{ State = 'Pausing'; Waits = 1 }, @{ State = 'Resuming'; Waits = 1 }
+            @{ State = 'Reset'; Waits = 1 }, @{ State = 'FastSaving'; Waits = 1 }, @{ State = 'RunningCritical'; Waits = 1 }, @{ State = 'SavingCritical'; Waits = 1 }
+            @{ State = 'Running'; Waits = 0 }, @{ State = 'Off'; Waits = 0 }, @{ State = 'Saved'; Waits = 0 }, @{ State = 'Paused'; Waits = 0 })) {
+        Reset-Model -State 'Running' -Auto $false -Land 'Saved'
+        $script:stateQueue.Enqueue($case.State)
+        $script:sleeps.Clear()
+        $x = Invoke-Restore
+        if (-not $x.Threw -and $script:sleeps.Count -eq $case.Waits -and $x.R.Started) { Ok "$($case.State): $($case.Waits) wait(s)" } else { Bad "$($case.State): sleeps=$($script:sleeps.Count) threw=$($x.Threw)" }
+    }
+    # Never settles: 60 polls of 2 s (the 120 s ceiling), one verbose line, then the restore goes on.
+    Reset-Model -State 'Saving' -Auto $false -Land 'Saved'
+    $script:sleeps.Clear()
+    $x = Invoke-Restore
+    if ($script:sleeps.Count -eq 60 -and @($script:sleeps | Where-Object { $_ -ne 2 }).Count -eq 0 -and @($x.Log | Where-Object { $_ -like 'restore:*' }).Count -eq 1 -and
+        @($x.Verbose | Where-Object { $_ -like "'vm-test' is still Saving after * s; restoring anyway." }).Count -eq 1) {
+        Ok 'a state that never settles: 60 polls of 2 s (the ceiling), one verbose line, then the restore runs and the cmdlets report'
+    } else { Bad "never settles: sleeps=$($script:sleeps.Count) log=$($x.Log -join ' > ') verbose=$($x.Verbose -join ' | ')" }
+    # The Legacy restore waits too.
+    Reset-Model -State 'Running' -Auto $false -Land 'Saved'
+    $script:landRunningWhenRunning = $true
+    $script:cfg = @{ HyperVRevertMode = 'Legacy' }
+    $script:stateQueue.Enqueue('Stopping')
+    $script:sleeps.Clear()
+    $x = Invoke-Restore
+    if (-not $x.Threw -and ($x.Log -join ' > ') -eq 'get-vm > get-vm > restore:vm-test:clean-base > get-vm' -and $script:sleeps.Count -eq 1 -and $x.R.Mode -ceq 'Legacy') { Ok 'Legacy: waits for Stopping, then the one restore' } else { Bad "legacy wait: log=$($x.Log -join ' > ') sleeps=$($script:sleeps.Count)" }
+    # A VM that cannot be read before the restore: no wait (fail-open), the steps go on.
+    Reset-Model -State 'Running' -Auto $false -Land 'Saved'
+    $script:getVmFailFirst = $true
+    $script:sleeps.Clear()
+    $x = Invoke-Restore
+    if (-not $x.Threw -and $script:sleeps.Count -eq 0 -and $x.R.Mode -ceq 'TurnOffFirst' -and $x.R.Started -and @($x.Verbose | Where-Object { $_ -like '*the VM state could not be read before the restore*' }).Count -eq 1) {
+        Ok 'the first state read fails: one verbose line, no wait, the restore goes on'
+    } else { Bad "read fails: threw=$($x.Threw) sleeps=$($script:sleeps.Count) verbose=$($x.Verbose -join ' | ')" }
+}
+finally { Remove-Item Function:\Start-Sleep }
+
+# -- (t) speed-up PR 3: Reset holds the VM's lease ---------------------------------------------------------------------
+Write-Host '(t) (PR 3) Reset-Win32ToolkitTestVM holds the VM''s lease around the cache clear and the restore; a timeout changes nothing' -ForegroundColor Cyan
+Reset-Model -State 'Running' -Auto $false -Land 'Saved'
+$script:leaseLog.Clear()
+$o = @(Reset-Win32ToolkitTestVM -Name 'vm-test' -CheckpointName 'clean-base' -Confirm:$false 3>$null)
+$nLog = $script:log.Count
+if ($o.Count -eq 0 -and ($script:leaseLog -join ' > ') -eq "enter:vm-test:reset:log=0 > exit:same=True:log=$nLog" -and $script:log[0] -eq 'clear' -and @($script:log | Where-Object { $_ -like 'restore:*' }).Count -eq 1) {
+    Ok 'the lease before the cache clear, released after the restore (the same lease); Reset still emits nothing'
+} else { Bad "reset lease: out=$($o.Count) lease=$($script:leaseLog -join ' > ') log=$($script:log -join ' > ')" }
+Reset-Model -State 'Running' -Auto $false -Land 'Saved'
+$script:leaseLog.Clear(); $script:leaseThrows = $true
+$threwT = $null
+try { $null = Reset-Win32ToolkitTestVM -Name 'vm-test' -Confirm:$false 3>$null } catch { $threwT = $_ }
+$script:leaseThrows = $false
+if ($threwT -and $threwT.FullyQualifiedErrorId -eq 'W32T.HyperVLeaseTimeout' -and $script:log.Count -eq 0 -and @($script:leaseLog | Where-Object { $_ -like 'exit:*' }).Count -eq 0) {
+    Ok 'a lease timeout: Reset throws W32T.HyperVLeaseTimeout, no cache clear, no restore'
+} else { Bad "reset timeout: threw=$($threwT.FullyQualifiedErrorId) log=$($script:log -join ' > ') lease=$($script:leaseLog -join ' > ')" }
+Reset-Model -State 'Running' -Auto $false -Land 'Saved'
+$script:leaseLog.Clear()
+$null = @(Reset-Win32ToolkitTestVM -Name 'vm-test' -WhatIf 6>$null)
+if ($script:leaseLog.Count -eq 0) { Ok 'Reset -WhatIf takes no lease' } else { Bad "whatif lease: $($script:leaseLog -join ' > ')" }
 
 # -- (y) file hygiene --------------------------------------------------------------------------------------------------
 Write-Host '(y) file hygiene: ASCII, one function, every catch starts with the C-2 line' -ForegroundColor Cyan

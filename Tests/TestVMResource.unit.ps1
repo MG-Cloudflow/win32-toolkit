@@ -60,6 +60,17 @@ function Start-Sleep { param($Seconds) }
 $script:probeClears = 0
 function Clear-Win32ToolkitParityProbeCache { $script:probeClears++ }
 function Remove-ItemProperty { throw 'real HKCU must not be touched' }
+# C-9 (speed-up PR 3): the VM commands hold the VM's lease; the doubles log it into the call sequence and hand out a fake
+# lease ([10] makes it time out).
+$script:leaseThrows = $false
+function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose)
+    Log "Lease:enter:${VMName}:$Purpose"
+    if ($script:leaseThrows) {
+        throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new("Another process kept the test VM '$VMName' for more than 60 minutes."),
+            'W32T.HyperVLeaseTimeout', [System.Management.Automation.ErrorCategory]::ResourceBusy, $VMName)
+    }
+    [pscustomobject]@{ Kind = 'VM'; VMName = $VMName; Epoch = 'e'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
+function Exit-Win32ToolkitHyperVLease { param($Lease) Log "Lease:exit:$(if ($Lease) { $Lease.VMName } else { 'none' })"; [pscustomobject]@{ Leak = 'exit' } }
 # advance Get-Date so the desktop-never-up loop exits quickly instead of spinning 10 real minutes
 $script:now = [datetime]'2026-01-01T00:00:00'
 function Get-Date { param($Format) $script:now = $script:now.AddMinutes(4); $script:now }
@@ -174,6 +185,58 @@ Remove-Item Function:\Checkpoint-VM_Saved
 if ($r9.Threw -and "$($r9.Threw)" -like '*checkpoint operation failed*') { Ok 'the command throws the checkpoint error' } else { Bad "no throw: $($r9.Threw)" }
 if (@($r9.Info | Where-Object { $_ -like '*checkpoint recreated*' }).Count -eq 0) { Ok 'no "checkpoint recreated" success line' } else { Bad "success line printed: $($r9.Info -join ' | ')" }
 if (@($script:calls | Where-Object { $_ -like 'cfg:*' }).Count -eq 0 -and ($script:calls -contains 'Checkpoint-VM:clean-base')) { Ok 'no setting written after the failed checkpoint' } else { Bad "after a failed checkpoint: $($script:calls -join ' > ')" }
+
+# == [10] speed-up PR 3 (D10): the reconfigure and the removal hold the VM's lease ====================================
+Write-Host '[10] the VM lease: taken before the first VM change, released after the last; a lease timeout changes nothing' -ForegroundColor Cyan
+$script:vmState = 'Off'; $script:desktopUp = $true; $script:curCpu = 2; $script:curMem = [uint64]4GB; $script:vmExists = $true
+$script:calls = @(); $script:cfg = @{}
+$out10 = $null; $err10 = $null
+try { $out10 = @(Set-Win32ToolkitTestVMResource -ProcessorCount 4 6>$null 3>$null) } catch { $err10 = $_ }
+$iEnter = [array]::IndexOf($script:calls, 'Lease:enter:win32tk-golden:resource change'); $iExit = [array]::IndexOf($script:calls, 'Lease:exit:win32tk-golden')
+$iStop = [array]::IndexOf($script:calls, 'Stop-VM'); $iLastCfg = [array]::LastIndexOf($script:calls, 'cfg:HyperVMemoryStartupBytes=4294967296')
+if (-not $err10 -and $iEnter -ge 0 -and $iEnter -lt $iStop -and $iExit -gt $iLastCfg -and $iExit -eq $script:calls.Count - 1 -and @($script:calls | Where-Object { $_ -like 'Lease:*' }).Count -eq 2) {
+    Ok 'Set-...Resource: the lease before Stop-VM, released after the settings are written (last call)'
+} else { Bad "set lease: err=$err10 calls=$($script:calls -join ' > ')" }
+if ($out10.Count -eq 1 -and $out10[0].Name -eq 'win32tk-golden') { Ok 'the output is still the VM only (the release double''s object does not leak)' } else { Bad "output: $(@($out10) | ConvertTo-Json -Compress)" }
+# A failure inside the lease still releases it.
+$script:vmState = 'Running'
+$null = ExpectThrow @{ ProcessorCount = 4 } 'Could not power off'
+if (($script:calls | Select-Object -Last 1) -eq 'Lease:exit:win32tk-golden') { Ok 'a VM that will not power off: the lease is still released' } else { Bad "failure release: $($script:calls -join ' > ')" }
+$script:vmState = 'Off'
+# A lease timeout: the W32T error, nothing changed.
+$script:leaseThrows = $true
+$script:calls = @(); $script:cfg = @{}; $err10 = $null
+try { Set-Win32ToolkitTestVMResource -ProcessorCount 4 6>$null 3>$null } catch { $err10 = $_ }
+$script:leaseThrows = $false
+$changed = @($script:calls | Where-Object { $_ -notlike 'Lease:enter:*' })
+if ($err10.FullyQualifiedErrorId -eq 'W32T.HyperVLeaseTimeout' -and $changed.Count -eq 0) { Ok 'a lease timeout: W32T.HyperVLeaseTimeout, no stop, no checkpoint change, no setting written' } else { Bad "set timeout: $($err10.FullyQualifiedErrorId) calls=$($script:calls -join ' > ')" }
+# Remove-Win32ToolkitTestVM: the same lease around the stop and the removal (with the VM's Id).
+. (Join-Path $repo 'Public\Remove-Win32ToolkitTestVM.ps1')
+${function:Get-VM_Saved10} = ${function:Get-VM}
+function Get-VM { param($Name, $ErrorAction) [pscustomobject]@{ Name = $Name; State = 'Running'; Id = [guid]'0e5f9e66-1111-2222-3333-444455556666'; HardDrives = @() } }
+function Remove-VM { param($Name, [switch]$Force, $ErrorAction) Log 'Remove-VM' }
+${function:Enter-Win32ToolkitHyperVLease_Saved10} = ${function:Enter-Win32ToolkitHyperVLease}
+$script:leaseVmId10 = $null
+function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose) $script:leaseVmId10 = $VMId; Enter-Win32ToolkitHyperVLease_Saved10 -VMName $VMName -Purpose $Purpose }
+try {
+    $script:calls = @()
+    $o = @(Remove-Win32ToolkitTestVM -Name 'vm-x' -Confirm:$false 6>$null 3>$null)
+    if ($o.Count -eq 0 -and ($script:calls -join ' > ') -eq 'Lease:enter:vm-x:removal > Stop-VM > Remove-VMCheckpoint > Remove-VM > Lease:exit:vm-x' -and $script:leaseVmId10 -eq '0e5f9e66-1111-2222-3333-444455556666') {
+        Ok 'Remove-Win32ToolkitTestVM: the lease (with the VM''s Id) around the stop and the removal; nothing emitted'
+    } else { Bad "remove lease: out=$($o.Count) calls=$($script:calls -join ' > ') id=$($script:leaseVmId10)" }
+    $script:leaseThrows = $true; $script:calls = @(); $errR = $null
+    try { Remove-Win32ToolkitTestVM -Name 'vm-x' -Confirm:$false 6>$null 3>$null } catch { $errR = $_ }
+    $script:leaseThrows = $false
+    if ($errR.FullyQualifiedErrorId -eq 'W32T.HyperVLeaseTimeout' -and ($script:calls -join ' > ') -eq 'Lease:enter:vm-x:removal') { Ok 'Remove: a lease timeout removes nothing' } else { Bad "remove timeout: $($errR.FullyQualifiedErrorId) calls=$($script:calls -join ' > ')" }
+    $script:calls = @()
+    $null = Remove-Win32ToolkitTestVM -Name 'vm-x' -WhatIf 6>$null 3>$null
+    if ($script:calls.Count -eq 0) { Ok 'Remove -WhatIf: no lease, nothing removed' } else { Bad "remove whatif: $($script:calls -join ' > ')" }
+}
+finally {
+    ${function:Get-VM} = ${function:Get-VM_Saved10}; ${function:Enter-Win32ToolkitHyperVLease} = ${function:Enter-Win32ToolkitHyperVLease_Saved10}
+    Remove-Item Function:\Get-VM_Saved10, Function:\Enter-Win32ToolkitHyperVLease_Saved10, Function:\Remove-VM
+    $script:leaseThrows = $false
+}
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All TestVMResource tests passed.' -ForegroundColor Green; exit 0 }
