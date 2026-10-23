@@ -156,6 +156,9 @@ them once, not once per app, and a dry run (`-WhatIf`) prints them too. In the T
 Intune** shows them in a panel before you pick which app to publish: red when an install/uninstall test
 failed or gave no verdict, an Update test failed, a technology switch was seen or the cleanup paths are
 unsafe, yellow for the other warnings.
+When the cleanup paths are unsafe, the menu stops before asking which app to publish: packaging refuses
+such a project until Finalize / refresh re-runs the capture (or, when `SupportFiles\AppConfig.json` cannot be
+read, until you fix the file or re-create the project).
 **Package and upload now?** still defaults to No.
 
 **Packages exported before this version:** re-export them before you publish. Packaging now refuses a

@@ -102,7 +102,7 @@ function Assert-Win32ToolkitPackageReady {
     $addOverridable = {
         param([string]$Problem, [string]$Fix)
         if ($downgrade) { $warnings.Add("$Problem Accepted as-is (-AllowLegacyScript).") }
-        else { $errors.Add("$Problem $Fix, or pass -AllowLegacyScript to package it as-is.") }
+        else { $errors.Add("$Problem $Fix, or pass -AllowLegacyScript to package it as-is (a command-line switch of Export-Win32ToolkitIntuneWin and Complete-Win32ToolkitManualApp; the menu does not offer it).") }
     }
 
     $shape       = $null

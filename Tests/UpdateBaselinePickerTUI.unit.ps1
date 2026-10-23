@@ -450,8 +450,9 @@ if ($script:switchCalls -eq 0 -and @($script:panels | Where-Object Header -eq 'U
 
 Write-Host '[I] publish: the advisory panel before "Publish which app?", printed once (Export stays quiet)' -ForegroundColor Cyan
 $script:W32TAdvisoryRun = $null
+# A red advisory that still lets the publish go ahead (UPDATE-FAILED); UNSAFE-CLEANUP stops it (I2, TUI audit G11).
 $script:advisory = [pscustomobject]@{ Findings = @(
-        (F 'UNSAFE-CLEANUP' 'Warning' "UNSAFE-CLEANUP: this project's uninstall would delete 1 folder(s) [C:\Program Files (x86)]"),
+        (F 'UPDATE-FAILED' 'Warning' "UPDATE-FAILED: the latest Update test FAILED [C:\Program Files (x86)]"),
         (F 'ID-NO-ANCHOR' 'Warning' 'winget chose wix (MSI) ...'),
         (F 'UPDATE-INCONCLUSIVE' 'Info' 'The latest Update test gave no verdict [x]')) }
 $script:panels.Clear(); $script:hostLines.Clear(); $script:advisoryCalls.Clear(); $script:prompts.Clear(); $script:exportCalls = 0
@@ -461,14 +462,72 @@ $whichIdx = [array]::IndexOf(@($script:prompts | ForEach-Object Message), 'Publi
 if ($script:advisoryCalls.Count -eq 1 -and $script:advisoryCalls[0].Context -eq 'Tui' -and $script:advisoryCalls[0].ProbeIfMissing -and $script:advisoryCalls[0].ProjectPath -eq $under.Path -and $whichIdx -ge 0) {
     Ok 'Get-Win32ToolkitPackageAdvisory -Context Tui -ProbeIfMissing once, then "Publish which app?"'
 } else { Bad "advisory calls: $($script:advisoryCalls | ConvertTo-Json -Compress) which=$whichIdx" }
-if ($ap.Count -eq 1 -and $ap[0].Header -eq 'Review before you publish' -and $ap[0].Color -eq 'Red' -and $ap[0].Data -match 'would delete 1 folder\(s\) \[\[C:\\Program Files \(x86\)\]\]' -and $ap[0].Data -match 'winget chose wix') {
-    Ok 'UNSAFE-CLEANUP -> one RED panel with every warning, escaped'
+if ($ap.Count -eq 1 -and $ap[0].Header -eq 'Review before you publish' -and $ap[0].Color -eq 'Red' -and $ap[0].Data -match 'Update test FAILED \[\[C:\\Program Files \(x86\)\]\]' -and $ap[0].Data -match 'winget chose wix') {
+    Ok 'UPDATE-FAILED -> one RED panel with every warning, escaped'
 } else { Bad "advisory panel: $($ap | ConvertTo-Json -Compress)" }
 if ($script:hostLines -ccontains '[grey]The latest Update test gave no verdict [[x]][/]') { Ok 'an Info finding -> one grey line, escaped' } else { Bad "info line: $($script:hostLines -join ' | ')" }
 if ($script:exportCalls -eq 1 -and $null -eq $script:exportResult -and $script:exportWarnings.Count -eq 0 -and $script:advisoryCalls.Count -eq 1 -and $script:scopeInExport -is [hashtable]) {
     Ok 'Export under the TUI publish action: the run scope is open, the writer returns $null, prints nothing and asks for no second advisory'
 } else { Bad "export: calls=$($script:exportCalls) result=$($script:exportResult) warnings=$($script:exportWarnings.Count) advisoryCalls=$($script:advisoryCalls.Count)" }
 if ($null -eq $script:W32TAdvisoryRun) { Ok 'the TUI closed the run scope after Export returned' } else { Bad 'the run scope leaked out of the TUI publish action' }
+
+# I2 (TUI audit G11): UNSAFE-CLEANUP stops the publish before its prompts; the line names the fix of the variant.
+Write-Host '[I2] UNSAFE-CLEANUP -> the red panel, the line naming the fix, back to the action menu (no prompts, no Export)' -ForegroundColor Cyan
+$recaptureLine = '[red]Packaging refuses this project until its uninstall cleanup paths are fixed (Finalize / refresh re-runs the install capture), so the publish cannot start.[/]'
+$unreadableLine = '[red]Packaging refuses this project until SupportFiles\AppConfig.json can be read: fix the file or re-create the project (Finalize / refresh cannot, it reads the same file), so the publish cannot start.[/]'
+$stopped = {
+    param([string]$Label)
+    $menus = @($script:prompts | Where-Object Message -eq 'What would you like to do?').Count
+    if (-not @($script:prompts | Where-Object Message -eq 'Publish which app?').Count -and $script:exportCalls -eq 0 -and $null -eq $script:W32TAdvisoryRun -and $menus -eq 2) {
+        Ok "${Label}: no 'Publish which app?', no Export, the run scope closed, back in the action menu"
+    } else { Bad "${Label}: which=$(@($script:prompts | Where-Object Message -eq 'Publish which app?').Count) export=$script:exportCalls scope=$($null -ne $script:W32TAdvisoryRun) menus=$menus" }
+}
+$script:advisory = [pscustomobject]@{ Findings = @(
+        (F 'UNSAFE-CLEANUP' 'Warning' "UNSAFE-CLEANUP: this project's uninstall would delete 1 folder(s) [C:\Program Files (x86)]"),
+        (F 'ID-NO-ANCHOR' 'Warning' 'winget chose wix (MSI) ...')) }
+$script:panels.Clear(); $script:hostLines.Clear(); $script:prompts.Clear(); $script:exportCalls = 0; $script:W32TAdvisoryRun = $null
+DriveUpdate @('publish', 'back')
+$ap = @($script:panels | Where-Object { $_.Header -eq 'Review before you publish' })
+if ($ap.Count -eq 1 -and $ap[0].Color -eq 'Red' -and $ap[0].Data -match 'would delete 1 folder\(s\) \[\[C:\\Program Files \(x86\)\]\]' -and $script:hostLines -ccontains $recaptureLine -and -not ($script:hostLines -ccontains $unreadableLine)) {
+    Ok 'unsafe cleanup paths -> the red panel (escaped), then the line: Finalize / refresh re-runs the install capture'
+} else { Bad "panels: $($ap | ConvertTo-Json -Compress) lines: $($script:hostLines -join ' | ')" }
+& $stopped 'unsafe cleanup paths'
+
+$cfgShadowI2 = ${function:Get-Win32ToolkitAppConfig}
+try {
+    function Get-Win32ToolkitAppConfig { param($ProjectPath) $null = $ProjectPath; throw 'Conversion from JSON failed' }
+    $script:advisory = [pscustomobject]@{ Findings = @((F 'UNSAFE-CLEANUP' 'Warning' "UNSAFE-CLEANUP: this project's uninstall cleanup paths could not be checked: SupportFiles\AppConfig.json could not be read (x).")) }
+    $script:panels.Clear(); $script:hostLines.Clear(); $script:prompts.Clear(); $script:exportCalls = 0; $script:W32TAdvisoryRun = $null
+    DriveUpdate @('publish', 'back')
+    if ($script:hostLines -ccontains $unreadableLine -and -not @($script:hostLines | Where-Object { $_ -like '*Finalize / refresh re-runs*' }).Count) {
+        Ok 'an unreadable AppConfig.json -> the line says fix the file or re-create the project (Finalize / refresh cannot), never "Finalize / refresh re-runs"'
+    } else { Bad "lines: $($script:hostLines -join ' | ')" }
+    & $stopped 'unreadable AppConfig.json'
+}
+finally { ${function:Get-Win32ToolkitAppConfig} = $cfgShadowI2 }
+
+# A file Get-Content cannot open (locked, access denied) is a NON-terminating error. The module runs with the session's
+# $ErrorActionPreference (Continue), not this suite's Stop, so each TUI read passes -ErrorAction Stop, as the advisory's
+# reader (Get-Win32ToolkitCleanupPathFinding) does; without it the TUI sees no error, picks the recapture line and prints
+# the raw error record. $asModule runs a drive under Continue and returns the error records that reached the screen.
+$asModule = {
+    param([scriptblock]$Run)
+    $ErrorActionPreference = 'Continue'
+    @(& $Run 2>&1 | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] })
+}
+$cfgShadowI2b = ${function:Get-Win32ToolkitAppConfig}
+try {
+    function Get-Win32ToolkitAppConfig { [CmdletBinding()] param($ProjectPath) $null = $ProjectPath; Write-Error 'The process cannot access the file' }
+    $script:advisory = [pscustomobject]@{ Findings = @((F 'UNSAFE-CLEANUP' 'Warning' "UNSAFE-CLEANUP: this project's uninstall cleanup paths could not be checked: SupportFiles\AppConfig.json could not be read (The process cannot access the file).")) }
+    $script:panels.Clear(); $script:hostLines.Clear(); $script:prompts.Clear(); $script:exportCalls = 0; $script:W32TAdvisoryRun = $null
+    $raw = & $asModule { DriveUpdate @('publish', 'back') }
+    if ($script:hostLines -ccontains $unreadableLine -and -not @($script:hostLines | Where-Object { $_ -like '*Finalize / refresh re-runs*' }).Count) {
+        Ok 'a locked AppConfig.json (a non-terminating read error) -> the "SupportFiles\AppConfig.json can be read" line, never "Finalize / refresh re-runs"'
+    } else { Bad "locked: lines: $($script:hostLines -join ' | ')" }
+    if ($raw.Count -eq 0) { Ok 'a locked AppConfig.json on Publish -> no raw error record on the screen' } else { Bad "locked: $($raw.Count) raw error record(s): $($raw[0])" }
+    & $stopped 'locked AppConfig.json'
+}
+finally { ${function:Get-Win32ToolkitAppConfig} = $cfgShadowI2b }
 
 $script:advisory = [pscustomobject]@{ Findings = @((F 'ID-SIBLING-UNTESTED' 'Warning' 'winget also ships nullsoft ...')) }
 $script:panels.Clear()
@@ -588,7 +647,7 @@ if (@($script:prompts | Where-Object Message -eq 'What would you like to do?').C
 $script:notConfiguredPath = $null; $script:projects = @($under, $cand); $script:advisory = $null
 
 # ══ M. an unreadable AppConfig.json does not end the screen (TUI audit G7) ═══════════════════════════════
-Write-Host '[M] an unreadable AppConfig.json: a red line and the action menu; Publish shows the project name' -ForegroundColor Cyan
+Write-Host '[M] an unreadable AppConfig.json: a red line and the action menu; Publish shows the project name; a locked one reads the same (-ErrorAction Stop)' -ForegroundColor Cyan
 $depsShadow = ${function:Get-Win32ToolkitDependencies}
 $cfgShadow = ${function:Get-Win32ToolkitAppConfig}
 try {
@@ -611,6 +670,34 @@ try {
     try { Show-Win32ToolkitProjectActions -BasePath 'C:\Base' 6>$null 3>$null | Out-Null } catch { $threw = $_ }
     $sum = @($script:panels | Where-Object Header -eq 'About to PUBLISH to Intune')
     if (-not $threw -and $sum.Count -eq 1 -and $sum[0].Data -match '^Application : App_x64_2\.0\nVersion     : \nPublisher   : $') { Ok 'Get-Win32ToolkitAppConfig throws on Publish -> no exception; the summary shows the project name, empty version and publisher' } else { Bad "threw=$threw summary=$($sum | ConvertTo-Json -Compress)" }
+
+    # A locked AppConfig.json (a non-terminating read error, $asModule: the module's Continue) through the REAL
+    # Get-Win32ToolkitDependencies: the TUI's -ErrorAction Stop reaches its inner read, so the red line and the
+    # 'unknown' label show, never 'none' and never a raw error record.
+    . (Join-Path $repo 'Private\Get-Win32ToolkitDependencies.ps1')
+    function Get-Win32ToolkitAppConfig { [CmdletBinding()] param($ProjectPath) $null = $ProjectPath; Write-Error 'The process cannot access the file [locked]' }
+    $script:hostLines.Clear(); $script:prompts.Clear()
+    $script:keys = New-Object System.Collections.Queue
+    $script:keys.Enqueue('back')
+    $raw = & $asModule { Show-Win32ToolkitProjectActions -BasePath 'C:\Base' 6>$null 3>$null | Out-Null }
+    $wantLocked = '[red]SupportFiles\AppConfig.json of this project cannot be read: The process cannot access the file [[locked]]. Fix the JSON or re-create the project; Package and Publish refuse it until then.[/]'
+    $menu = @($script:prompts | Where-Object Message -eq 'What would you like to do?')
+    $depLabel = if ($menu.Count) { @($menu[0].Choices | Where-Object Key -eq 'deps')[0].Label } else { '' }
+    if ($script:hostLines -ccontains $wantLocked -and $depLabel -ceq 'Dependencies — apps installed BEFORE this one (unknown: AppConfig.json cannot be read)') {
+        Ok "a locked AppConfig.json (real Get-Win32ToolkitDependencies) -> the red 'cannot be read' line and 'unknown: AppConfig.json cannot be read', not 'none'"
+    } else { Bad "locked deps: label='$depLabel' lines=$($script:hostLines -join ' | ')" }
+    if ($raw.Count -eq 0) { Ok 'a locked AppConfig.json in the dependency count -> no raw error record on the screen' } else { Bad "locked deps: $($raw.Count) raw error record(s): $($raw[0])" }
+    ${function:Get-Win32ToolkitDependencies} = $depsShadow
+
+    # The same for a local baseline whose AppConfig.json is locked: its label has no version, and nothing raw shows.
+    $script:projects = @($under, $cand)
+    $script:wingetId = 'Publisher.App'
+    $script:prompts.Clear()
+    $raw = & $asModule { DriveUpdate @('test', 'Sandbox', 'Update', 'project', 'back') }
+    $bp = @($script:prompts | Where-Object Message -eq 'Baseline project (the OLDER version to upgrade FROM)')
+    if ($script:called -eq 1 -and $bp.Count -eq 1 -and (@($bp[0].Choices) -join '|') -ceq 'B_App  /  App_x64_1.0' -and $raw.Count -eq 0) {
+        Ok 'a locked AppConfig.json of a local baseline -> its label without a version, no raw error record; the test still runs'
+    } else { Bad "locked baseline: called=$script:called choices=$(if ($bp.Count) { @($bp[0].Choices) -join '|' }) raw=$($raw.Count)" }
 }
 finally {
     ${function:Get-Win32ToolkitDependencies} = $depsShadow

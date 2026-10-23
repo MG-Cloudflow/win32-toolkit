@@ -38,8 +38,10 @@ function Show-Win32ToolkitProjectActions {
 
             # An unreadable SupportFiles\AppConfig.json must not end the screen (TUI audit G7): one red line, and the
             # action menu still comes up. Every error is handled the same way here (the TUI is the display sink, Dv8).
+            # -ErrorAction Stop: a file Get-Content cannot open (locked, access denied) is a non-terminating error,
+            # which would otherwise print raw on this screen and read as 'none'.
             try {
-                $depNow = @(Get-Win32ToolkitDependencies -ProjectPath $project.Path)
+                $depNow = @(Get-Win32ToolkitDependencies -ProjectPath $project.Path -ErrorAction Stop)
                 $depText = if ($depNow.Count) { "$($depNow.Count) declared" } else { 'none' }
             }
             catch {
@@ -153,7 +155,7 @@ function Show-Win32ToolkitProjectActions {
                             $bmap = [ordered]@{}
                             $blabels = foreach ($bp in ($baselineCandidates | Sort-Object Template, Name)) {
                                 $bver = $null
-                                try { $bver = (Get-Win32ToolkitAppConfig -ProjectPath $bp.Path).App.Version } catch { $bver = $null }
+                                try { $bver = (Get-Win32ToolkitAppConfig -ProjectPath $bp.Path -ErrorAction Stop).App.Version } catch { $bver = $null }
                                 $label = Get-SpectreEscapedText -Text ('{0}  /  {1}{2}' -f $bp.Template, $bp.Name, $(if ($bver) { "  (v$bver)" } else { '' }))
                                 $bmap[$label] = $bp
                                 $label
@@ -332,9 +334,13 @@ function Show-Win32ToolkitProjectActions {
                 }
                 'publish' {
                     # An unreadable AppConfig.json must not end the screen (TUI audit G7): the summary then shows the
-                    # project name only, and the advisory below reports UNSAFE-CLEANUP ('could not be read').
-                    try { $cfg = Get-Win32ToolkitAppConfig -ProjectPath $project.Path }
-                    catch { $cfg = $null }
+                    # project name only, and the advisory below reports UNSAFE-CLEANUP ('could not be read'). The same
+                    # reader drives that variant, read the same way (-ErrorAction Stop, as Get-Win32ToolkitCleanupPathFinding
+                    # does: a locked or access-denied file is a non-terminating Get-Content error), so $cfgUnreadable
+                    # tells the two UNSAFE-CLEANUP variants apart (G11).
+                    $cfgUnreadable = $false
+                    try { $cfg = Get-Win32ToolkitAppConfig -ProjectPath $project.Path -ErrorAction Stop }
+                    catch { $cfg = $null; $cfgUnreadable = $true }
                     $app = if ($cfg -and $cfg.PSObject.Properties.Name -contains 'App') { $cfg.App } else { $null }
                     $summary = @(
                         "Application : $(if ($app.Name) { $app.Name } else { $project.Name })"
@@ -359,6 +365,7 @@ function Show-Win32ToolkitProjectActions {
                         # Export / Publish calls below stay quiet for this project. Closed after Export returns.
                         $ownsAdvisoryRun = $null -eq $script:W32TAdvisoryRun
                         if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = @{} }
+                        $cleanupBlocked = $false
                         try {
                             # Package advisory (D1: warn, never block): red when an install/uninstall test failed or gave no
                             # verdict, an Update test failed, a technology switch was seen or the uninstall cleanup paths are
@@ -373,6 +380,19 @@ function Show-Win32ToolkitProjectActions {
                                     $advColor  = if ($severe) { 'Red' } else { 'Yellow' }
                                     Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $advText) -Header $advHeader -Border Rounded -Color $advColor | Out-SpectreHost
                                 }
+                                # Unsafe cleanup paths (TUI audit G11): Export re-packages and refuses such a project
+                                # (W32T.PackageNotReady), so the publish stops here, before its prompts. The line names
+                                # the fix of the variant: an unreadable AppConfig.json cannot be fixed by Finalize / refresh
+                                # (it reads the same file), unsafe paths can (it re-runs the capture).
+                                if (@($advWarnings | Where-Object { $_.Code -eq 'UNSAFE-CLEANUP' }).Count -gt 0) {
+                                    $cleanupBlocked = $true
+                                    if ($cfgUnreadable) {
+                                        Write-SpectreHost '[red]Packaging refuses this project until SupportFiles\AppConfig.json can be read: fix the file or re-create the project (Finalize / refresh cannot, it reads the same file), so the publish cannot start.[/]'
+                                    }
+                                    else {
+                                        Write-SpectreHost '[red]Packaging refuses this project until its uninstall cleanup paths are fixed (Finalize / refresh re-runs the install capture), so the publish cannot start.[/]'
+                                    }
+                                }
                                 foreach ($advInfo in @($advisory.Findings | Where-Object { $_ -and $_.Severity -ne 'Warning' })) {
                                     Write-SpectreHost "[grey]$(Get-SpectreEscapedText -Text ([string]$advInfo.Message))[/]"
                                 }
@@ -385,29 +405,35 @@ function Show-Win32ToolkitProjectActions {
                                 $script:W32TAdvisoryRun[[System.IO.Path]::GetFullPath($project.Path).TrimEnd('\')] = $true
                             }
 
-                            $which = Read-SpectreSelection -Message 'Publish which app?' -Choices @(
-                                [pscustomobject]@{ Key = 'install'; Label = 'Install app — normal deployment (assign to target devices)' }
-                                [pscustomobject]@{ Key = 'both';    Label = 'Install app + Update app (2nd app, only where already installed)' }
-                                [pscustomobject]@{ Key = 'update';  Label = 'Update app only — applies only where the app is already installed' }
-                                [pscustomobject]@{ Key = 'cancel';  Label = 'Cancel' }
-                            ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 10
+                            if ($cleanupBlocked) {
+                                # Back to the action menu: no "Publish which app?", no "Package and upload now?", no Export.
+                                Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                            }
+                            else {
+                                $which = Read-SpectreSelection -Message 'Publish which app?' -Choices @(
+                                    [pscustomobject]@{ Key = 'install'; Label = 'Install app — normal deployment (assign to target devices)' }
+                                    [pscustomobject]@{ Key = 'both';    Label = 'Install app + Update app (2nd app, only where already installed)' }
+                                    [pscustomobject]@{ Key = 'update';  Label = 'Update app only — applies only where the app is already installed' }
+                                    [pscustomobject]@{ Key = 'cancel';  Label = 'Cancel' }
+                                ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 10
 
-                            if ($which.Key -ne 'cancel') {
-                                Write-SpectreHost "[yellow]You will sign in to Microsoft Graph — the target tenant is shown during sign-in.[/]"
-                                if (Read-SpectreConfirm -Message 'Package and upload now?' -DefaultAnswer 'n') {
-                                    Clear-Host; Write-SpectreRule -Title 'Publishing to Intune…' -Color Blue
-                                    try {
-                                        $splat = @{ ProjectPath = $project.Path }
-                                        switch ($which.Key) {
-                                            'install' { $splat['PublishIntune'] = $true }
-                                            'update'  { $splat['PublishUpdate'] = $true }
-                                            'both'    { $splat['PublishIntune'] = $true; $splat['PublishUpdate'] = $true }
+                                if ($which.Key -ne 'cancel') {
+                                    Write-SpectreHost "[yellow]You will sign in to Microsoft Graph — the target tenant is shown during sign-in.[/]"
+                                    if (Read-SpectreConfirm -Message 'Package and upload now?' -DefaultAnswer 'n') {
+                                        Clear-Host; Write-SpectreRule -Title 'Publishing to Intune…' -Color Blue
+                                        try {
+                                            $splat = @{ ProjectPath = $project.Path }
+                                            switch ($which.Key) {
+                                                'install' { $splat['PublishIntune'] = $true }
+                                                'update'  { $splat['PublishUpdate'] = $true }
+                                                'both'    { $splat['PublishIntune'] = $true; $splat['PublishUpdate'] = $true }
+                                            }
+                                            Export-Win32ToolkitIntuneWin @splat
+                                            Format-SpectrePanel -Data 'Published. See the messages above for the app ID(s) and portal link.' -Header 'Done' -Border Rounded -Color Green
                                         }
-                                        Export-Win32ToolkitIntuneWin @splat
-                                        Format-SpectrePanel -Data 'Published. See the messages above for the app ID(s) and portal link.' -Header 'Done' -Border Rounded -Color Green
+                                        catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
+                                        Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
                                     }
-                                    catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
-                                    Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
                                 }
                             }
                         }

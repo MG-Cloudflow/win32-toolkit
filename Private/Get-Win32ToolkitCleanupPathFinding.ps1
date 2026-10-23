@@ -50,7 +50,8 @@ function Get-Win32ToolkitCleanupPathFinding {
         param([string]$Kind, [string]$Path, [string[]]$Reasons, [string]$Explanation, [string]$Message)
         [pscustomobject]@{ Kind = $Kind; Path = $Path; Reasons = [string[]]@($Reasons); Explanation = $Explanation; Message = $Message }
     }
-    $recapture = "re-run the install capture (Complete-Win32ToolkitManualApp -ProjectPath '$((& $safe $ProjectPath).Replace("'", "''"))')"
+    # Names the menu path too (TUI audit G11): the TUI shows this text in its red panels.
+    $recapture = "re-run the install capture (in the menu: Finalize / refresh in the project's actions; on the command line: Complete-Win32ToolkitManualApp -ProjectPath '$((& $safe $ProjectPath).Replace("'", "''"))')"
 
     # -- 1. AppConfig ---------------------------------------------------------------------------------------
     # Unreadable is NOT harmless: Windows PowerShell 5.1 (the device) accepts JSON that PowerShell 7 rejects

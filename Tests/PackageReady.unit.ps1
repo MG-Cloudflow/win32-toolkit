@@ -181,7 +181,7 @@ try {
         Initialize-TestDouble; Use-ShapeResult -IsPatched $false -GeneratorVersion $null -HasTattoo $true
         $r = Invoke-Gate -ProjectPath $plain -Stage $stage
         $loader = @($r.Lines | Where-Object { $_ -match 'has no AppConfig loader' })
-        if ((Test-NotReady $r) -and $loader.Count -eq 1 -and $loader[0] -match 'or pass -AllowLegacyScript to package it as-is\.$') { Ok "$stage -> error naming -AllowLegacyScript" } else { Bad "$stage -> $($r.Lines -join ' | ')" }
+        if ((Test-NotReady $r) -and $loader.Count -eq 1 -and $loader[0] -match 'or pass -AllowLegacyScript to package it as-is \(a command-line switch of Export-Win32ToolkitIntuneWin and Complete-Win32ToolkitManualApp; the menu does not offer it\)\.$') { Ok "$stage -> error naming -AllowLegacyScript" } else { Bad "$stage -> $($r.Lines -join ' | ')" }
         # No AppConfig.json either: a project whose download/configuration never finished, not a script to re-create
         # with 'this version' (S10-F6).
         if ($loader.Count -eq 1 -and $loader[0] -match 'SupportFiles\\AppConfig\.json is missing too' -and $loader[0] -match 'download or configuration never finished' -and $loader[0] -match 'Run Invoke-Win32Toolkit for the app again' -and $loader[0] -notmatch 'never patched it') { Ok "$stage -> no AppConfig.json: the hint names the unfinished download/configuration" } else { Bad "$stage no-AppConfig hint: $($loader -join ' | ')" }
@@ -217,7 +217,7 @@ try {
             $dv = if ($c.Dasv) { $c.Dasv } else { 'none' }
             $want = '^' + [regex]::Escape("Unsupported PSADT template shape: $oddScript; shape $($c.Shape); DeployAppScriptVersion $dv; supported: 4.1.x and 4.2.x. ") + '\S'
             $lines = @($r.Lines | Where-Object { $_ -match $prefixRx })
-            if ((Test-NotReady $r) -and $lines.Count -eq 1 -and $lines[0] -match $want -and $lines[0] -match 'or pass -AllowLegacyScript to package it as-is\.$') {
+            if ((Test-NotReady $r) -and $lines.Count -eq 1 -and $lines[0] -match $want -and $lines[0] -match 'or pass -AllowLegacyScript to package it as-is \(a command-line switch of Export-Win32ToolkitIntuneWin and Complete-Win32ToolkitManualApp; the menu does not offer it\)\.$') {
                 Ok "$($c.Label) / $stage -> one '<prefix><path>; shape; DeployAppScriptVersion $dv; supported: ...' line with the -AllowLegacyScript hint"
             } else { Bad "$($c.Label) / $stage -> $($r.Lines -join ' | ')" }
         }
@@ -586,7 +586,7 @@ try {
     $r = Invoke-Gate -ProjectPath $p19 -Stage Export
     $lines = @(Get-CleanupLine $r)
     if ((Test-NotReady $r) -and $lines.Count -eq 1 -and $lines[0].StartsWith("Unsafe uninstall cleanup path: 'C:\Program Files (x86)'")) { Ok "one line starting Unsafe uninstall cleanup path: 'C:\Program Files (x86)'" } else { Bad "[19] -> $($r.Lines -join ' | ')" }
-    if ($lines.Count -eq 1 -and $lines[0].Contains('it is a Windows system folder itself') -and $lines[0].Contains("Complete-Win32ToolkitManualApp -ProjectPath '$p19'") -and
+    if ($lines.Count -eq 1 -and $lines[0].Contains('it is a Windows system folder itself') -and $lines[0].Contains("Complete-Win32ToolkitManualApp -ProjectPath '$p19'") -and $lines[0].Contains("in the menu: Finalize / refresh in the project's actions") -and
         $lines[0].Contains('re-create the project') -and $lines[0].EndsWith('This check has no override.')) {
         Ok 'the line explains why, names the re-capture (Complete-Win32ToolkitManualApp) and the rebuild, and says there is no override'
     } else { Bad "[19] line: $($lines -join ' | ')" }

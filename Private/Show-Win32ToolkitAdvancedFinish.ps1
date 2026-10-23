@@ -43,16 +43,28 @@ function Show-Win32ToolkitAdvancedFinish {
                 if ($DoTest)    { $cp.RunTest = 'InstallUninstall' }
                 if ($DoPackage) { $cp.PackageIntune = $true }
                 if ($DoPublish) { $cp.PublishIntune = $true }
+                $finished = $true
                 try {
                     # The run is judged by its result object (TUI audit G2): Done only when it Succeeded.
                     $out = @(Complete-Win32ToolkitManualApp @cp)
                     Show-Win32ToolkitRunResult -Result $out -Name (Split-Path -Leaf $ProjectPath)
                 }
                 catch {
-                    Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Something went wrong' -Border Rounded -Color Red
+                    if ($_.FullyQualifiedErrorId -eq 'W32T.PackageNotReady') {
+                        # The deploy script was refused (TUI audit G11): stay on this screen so the operator can fix it
+                        # and choose Finish setup again, with the same test, package and publish choices.
+                        $finished = $false
+                        Format-SpectrePanel -Data ("[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]`n`n" +
+                            'Fix the deploy script (Open Invoke-AppDeployToolkit.ps1 in Notepad), then choose Finish setup again: your test, package and publish choices are kept.') -Header 'Not ready to finish' -Border Rounded -Color Red
+                    }
+                    else {
+                        Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Something went wrong' -Border Rounded -Color Red
+                    }
                 }
-                Read-SpectrePause -Message 'Press any key to return to the menu' -AnyKey | Out-Null
-                return
+                $pauseText = if ($finished) { 'Press any key to return to the menu' } else { 'Press any key to continue' }
+                Read-SpectrePause -Message $pauseText -AnyKey | Out-Null
+                # 'continue' would only end the switch: return leaves the loop; otherwise the loop shows the screen again.
+                if ($finished) { return }
             }
             'later' { return }
         }

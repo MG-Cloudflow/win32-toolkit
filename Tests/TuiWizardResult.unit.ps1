@@ -109,6 +109,7 @@ function Get-Win32ToolkitDependencies { param($ProjectPath) @() }
 # $script:output is what the next command returns (any objects); $script:throwThis is thrown instead when set.
 $script:output = @(); $script:throwThis = $null; $script:beforeRun = $null   # beforeRun: what the command does first (e.g. writes a marker)
 $script:completeOutput = $null
+$script:throwOnce = $null; $script:completeCalls = 0
 $script:invokeArgs = $null; $script:newArgs = $null; $script:completeArgs = $null
 function Invoke-Win32Toolkit {
     param($Id, $Architecture, $TemplateName, $BasePath, [switch]$Force, $DependsOn, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, $InstallerType, [switch]$NoPublishPrompt)
@@ -131,6 +132,8 @@ function New-Win32ToolkitManualApp {
 function Complete-Win32ToolkitManualApp {
     param($ProjectPath, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript, [switch]$NoPublishPrompt)
     $script:completeArgs = $PSBoundParameters
+    $script:completeCalls++
+    if ($script:throwOnce) { $once = $script:throwOnce; $script:throwOnce = $null; throw $once }   # [11]: the first call only
     if ($script:throwThis) { throw $script:throwThis }
     if ($null -ne $script:completeOutput) { $script:completeOutput } else { $script:output }   # [9]: its own output after a scaffold
 }
@@ -514,6 +517,29 @@ try {
         if ($script:pickerArgs -and (@($script:pickerArgs['ExcludeProject']) -join '|') -ceq $wantM) { Ok "manual wizard -> -ExcludeProject '$wantM'" } else { Bad "picker args: $(if ($script:pickerArgs) { ($script:pickerArgs.Keys | ForEach-Object { "$_=$($script:pickerArgs[$_])" }) -join '; ' })" }
     }
     finally { $script:confirmDeps = $false }
+
+    # == [11] Advanced finish stays on its screen after a refusal (TUI audit G11) =============================
+    Write-Host '[11] Advanced finish: W32T.PackageNotReady -> "Not ready to finish", the screen again, the choices kept' -ForegroundColor Cyan
+    Reset-Run @(New-RR -Command 'Complete-Win32ToolkitManualApp' -ProjectPath $proj)
+    $script:completeCalls = 0
+    $script:throwOnce = & $w32tErr 'W32T.PackageNotReady' "The package is not ready:`n- Invoke-AppDeployToolkit.ps1 does not parse [x]" $proj
+    $script:keys.Enqueue('finish'); $script:keys.Enqueue('finish')
+    $threw = $null
+    try { Show-Win32ToolkitAdvancedFinish -ProjectPath $proj -DoTest -DoPackage 6>$null 3>$null } catch { $threw = $_ }
+    $nr = @($script:panels | Where-Object { $_.Header -eq 'Not ready to finish' })
+    $wantNr = "[red]The package is not ready:`n- Invoke-AppDeployToolkit.ps1 does not parse [[x]][/]`n`nFix the deploy script (Open Invoke-AppDeployToolkit.ps1 in Notepad), then choose Finish setup again: your test, package and publish choices are kept."
+    if (-not $threw -and $nr.Count -eq 1 -and $nr[0].Color -eq 'Red' -and $nr[0].Data -ceq $wantNr) { Ok 'the refusal -> one red "Not ready to finish" panel (escaped) with the fix' } else { Bad "threw=$threw panels: $($script:panels | ConvertTo-Json -Compress)" }
+    $yt = @($script:panels | Where-Object { $_.Header -like 'Advanced app ? your turn' })
+    $ca = $script:completeArgs
+    if ($yt.Count -eq 2 -and $script:completeCalls -eq 2 -and (LastPanel).Header -eq 'Done' -and $ca['RunTest'] -eq 'InstallUninstall' -and $ca['PackageIntune']) {
+        Ok 'the screen comes back; Finish setup again (same test and package choices) succeeds and shows the result panel; then the screen ends'
+    } else { Bad "your-turn=$($yt.Count) completeCalls=$script:completeCalls last=$((LastPanel).Header) args=$(if ($ca) { ($ca.Keys | Sort-Object) -join ',' })" }
+
+    Reset-Run @() (& $w32tErr 'W32T.Other' 'something else' $proj)
+    $script:completeCalls = 0
+    $script:keys.Enqueue('finish')
+    Show-Win32ToolkitAdvancedFinish -ProjectPath $proj 6>$null 3>$null
+    if ($script:completeCalls -eq 1 -and (LastPanel).Header -eq 'Something went wrong' -and @($script:panels | Where-Object { $_.Header -like 'Advanced app ? your turn' }).Count -eq 1) { Ok 'any other error -> "Something went wrong" and the screen ends as before' } else { Bad "calls=$script:completeCalls panels: $(@($script:panels | ForEach-Object Header) -join ', ')" }
 
     # == [12] blank problems and warnings never reach Get-SpectreEscapedText (it refuses an empty string) =====
     Write-Host '[12] the scaffold panels skip blank problems and warnings (faithful Get-SpectreEscapedText)' -ForegroundColor Cyan
