@@ -9,7 +9,10 @@
       B. winget app + "winget download"          -> no BaselineProjectPath (unchanged default)
       C. manual (non-winget) app + a candidate   -> auto local baseline, BaselineProjectPath set
       D. manual app + NO candidate               -> aborts (Test-Win32ToolkitProject is never called)
-      E. Hyper-V run mode                        -> the unattended choice says Intune parity, never Silent
+      E. Hyper-V run mode                        -> the unattended choice says Intune parity, never Silent; the pick
+                                                    is passed as -TestMode (E2), the effective mode is shown (E3), an
+                                                    unready Hyper-V asks nothing, passes no mode and says so on the run
+                                                    screen (E4), the configured mode is the first choice (E5) (TUI audit G3)
 
     Installer-identity PR 1 (WP-5, spec 2.13 / 3.5 task 4):
       F. winget baseline, two technologies       -> 'Baseline installer technology' (Auto / Both / Packaged)
@@ -50,9 +53,12 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 # --- Spectre / rendering shadows (recorded, nothing renders) ---------------------------------------
 $script:panels = New-Object System.Collections.Generic.List[object]
 $script:hostLines = New-Object System.Collections.Generic.List[string]
-function Clear-Host {}
-function Write-SpectreRule { param($Title, $Color) }
-function Write-SpectreHost { param($Message) $script:hostLines.Add([string]$Message) }
+# What the screen showed, in order (E4): 'CLEAR' for Clear-Host, 'RULE:<title>', 'HOST:<line>'. Only what follows the
+# last CLEAR stays on the operator's screen.
+$script:screen = New-Object System.Collections.Generic.List[string]
+function Clear-Host { $script:screen.Add('CLEAR') }
+function Write-SpectreRule { param($Title, $Color) $script:screen.Add("RULE:$Title") }
+function Write-SpectreHost { param($Message) $script:hostLines.Add([string]$Message); $script:screen.Add("HOST:$Message") }
 function Out-SpectreHost { param([Parameter(ValueFromPipeline)]$InputObject) process {} }
 function Format-SpectrePanel { param($Data, $Header, $Border, $Color) $script:panels.Add([pscustomobject]@{ Data = [string]$Data; Header = [string]$Header; Color = [string]$Color }) }
 function Get-SpectreEscapedText { param($Text) ([string]$Text).Replace('[', '[[').Replace(']', ']]') }   # what Spectre's escaper does
@@ -68,7 +74,8 @@ function Read-SpectreSelection {
     $script:prompts.Add([pscustomobject]@{ Message = $Message; Choices = @($Choices) })
     if ($Message -eq 'Hyper-V run mode') { $script:hvModeChoices = @($Choices) }
     if ($ChoiceLabelProperty) {
-        $want = if ($script:keys.Count) { $script:keys.Dequeue() } else { $null }
+        # A script that ran out of answers leaves the action menu ('back') instead of looping on its first choice.
+        $want = if ($script:keys.Count) { $script:keys.Dequeue() } elseif ($Message -eq 'What would you like to do?') { 'back' } else { $null }
         $m = @($Choices | Where-Object { $_.Key -eq $want })
         if ($m.Count) { return $m[0] }
         return @($Choices)[0]
@@ -90,8 +97,17 @@ $script:splat   = $null
 $script:called  = 0
 $script:verdict = $true
 $script:updateSplats = New-Object System.Collections.Generic.List[object]   # J: every Update splat the TUI built
+# TUI audit G3 (C-9): the 'test' action resolves the backend before the run-mode question and prints the run's effective
+# test mode. The pick runs unless $script:hvNotReady; the mode is the pick's -TestMode, else the config value
+# ($script:cfgMode); $script:hostCannotPrompt forces Unattended (as Get-Win32ToolkitTestMode does on such a host).
+$script:hvNotReady = $false
+$script:cfgMode = 'Interactive'
+$script:hostCannotPrompt = $false
+function Get-Win32ToolkitTestBackend { param($Backend) if ($script:hvNotReady -and $Backend -eq 'HyperV') { 'Sandbox' } else { $Backend } }
+function Get-Win32ToolkitTestMode { param($Backend, [switch]$Unattended, $TestMode) $null = $Backend; if ($Unattended -or $script:hostCannotPrompt) { 'Unattended' } elseif ($TestMode) { $TestMode } else { $script:cfgMode } }
+function Get-Win32ToolkitConfigValue { param($Name, $Default) $null = $Name, $Default; $script:cfgMode }
 function Test-Win32ToolkitProject {
-    param($ProjectPath, $Scenario, $Backend, $BaselineProjectPath, [switch]$Unattended, [switch]$SkipRequirementCheck, $BaselineInstallerType, $SpecificVersion, $VersionsBack)
+    param($ProjectPath, $Scenario, $Backend, $BaselineProjectPath, [switch]$Unattended, [switch]$SkipRequirementCheck, $BaselineInstallerType, $SpecificVersion, $VersionsBack, $TestMode)
     $script:called++
     $script:splat = $PSBoundParameters
     if ($Scenario -eq 'Update') { $h = @{}; foreach ($k in $PSBoundParameters.Keys) { $h[$k] = $PSBoundParameters[$k] }; $script:updateSplats.Add($h) }
@@ -200,9 +216,9 @@ if ($script:splat['SpecificVersion'] -eq '1.8') { Ok 'picking another version pa
 # the previous version without asking; the operator at the TUI is still asked.
 $script:prompts.Clear()
 DriveUpdate @('test', 'HyperV', 'Update', 'unattended', 'winget', 'back')
-if ($script:called -eq 1 -and $script:splat['Unattended'] -eq $true -and $script:splat['SpecificVersion'] -eq '1.9' -and @($script:prompts | Where-Object Message -eq 'Baseline version (the OLDER version to upgrade FROM)').Count -eq 1) {
-    Ok "Hyper-V 'Unattended': the TUI still asks the version and passes -SpecificVersion with -Unattended"
-} else { Bad "hyperv unattended -> called=$script:called unattended=$($script:splat['Unattended']) version=$($script:splat['SpecificVersion'])" }
+if ($script:called -eq 1 -and $script:splat['TestMode'] -eq 'Unattended' -and $script:splat['SpecificVersion'] -eq '1.9' -and @($script:prompts | Where-Object Message -eq 'Baseline version (the OLDER version to upgrade FROM)').Count -eq 1) {
+    Ok "Hyper-V 'Unattended': the TUI still asks the version and passes -SpecificVersion with -TestMode Unattended"
+} else { Bad "hyperv unattended -> called=$script:called testMode=$($script:splat['TestMode']) version=$($script:splat['SpecificVersion'])" }
 # With two technologies the version is asked AFTER the technology (Dv5: the operator knows which technology it must ship).
 $script:legs = $twoLegs
 $script:prompts.Clear()
@@ -252,7 +268,100 @@ DriveUpdate @('test', 'HyperV', 'InstallUninstall', 'unattended', 'back')
 $ua = @($script:hvModeChoices | Where-Object { $_.Key -eq 'unattended' })
 if ($ua.Count -eq 1 -and $ua[0].Label -match 'Intune parity' -and $ua[0].Label -notmatch '(?i)silent|no GUI') { Ok "unattended label: '$($ua[0].Label)'" } else { Bad "unattended label: '$($ua.Label)'" }
 if ($script:hvModeChoices.Count -eq 2 -and -not @($script:hvModeChoices | Where-Object { $_.Label -match '[\[\]]' }).Count) { Ok 'no Spectre markup brackets in the Hyper-V run mode labels' } else { Bad "labels: $($script:hvModeChoices.Label -join ' | ')" }
-if ($script:called -eq 1 -and $script:splat['Unattended'] -eq $true) { Ok 'choosing it passes -Unattended' } else { Bad "called=$script:called unattended=$($script:splat['Unattended'])" }
+if ($script:called -eq 1 -and $script:splat['TestMode'] -eq 'Unattended' -and -not $script:splat.ContainsKey('Unattended')) { Ok 'choosing it passes -TestMode Unattended (no -Unattended key)' } else { Bad "called=$script:called testMode=$($script:splat['TestMode']) unattended=$($script:splat['Unattended'])" }
+
+# TUI audit G3: the pick is this run's -TestMode, so Interactive wins over HyperVTestMode=Unattended.
+Write-Host '[E2] Hyper-V run mode Interactive with HyperVTestMode=Unattended -> -TestMode Interactive' -ForegroundColor Cyan
+$script:cfgMode = 'Unattended'
+DriveUpdate @('test', 'HyperV', 'InstallUninstall', 'interactive', 'back')
+$script:cfgMode = 'Interactive'
+if ($script:called -eq 1 -and $script:splat['TestMode'] -eq 'Interactive' -and -not $script:splat.ContainsKey('Unattended')) { Ok 'the Interactive pick passes -TestMode Interactive (it overrides HyperVTestMode)' } else { Bad "called=$script:called testMode=$($script:splat['TestMode']) unattended=$($script:splat['Unattended'])" }
+
+Write-Host '[E3] the run''s effective test mode is shown before the run starts' -ForegroundColor Cyan
+$modeCases = @(
+    @{ Tag = 'Hyper-V, Interactive pick';        Keys = @('test', 'HyperV', 'InstallUninstall', 'interactive', 'back'); Cfg = 'Unattended'; NoPrompt = $false
+       Want = '[grey]Test mode: Interactive (your choice for this run): watch the PSADT dialogs in the VM window.[/]' }
+    @{ Tag = 'Hyper-V, Unattended pick';         Keys = @('test', 'HyperV', 'InstallUninstall', 'unattended', 'back'); Cfg = 'Interactive'; NoPrompt = $false
+       Want = '[grey]Test mode: Unattended (your choice for this run): the Intune command line as SYSTEM, no pause.[/]' }
+    @{ Tag = 'Hyper-V, Interactive pick, a console that cannot prompt'; Keys = @('test', 'HyperV', 'InstallUninstall', 'interactive', 'back'); Cfg = 'Interactive'; NoPrompt = $true
+       Want = '[yellow]Test mode: Unattended. This console cannot answer prompts, so the run cannot be watched.[/]' }
+    @{ Tag = 'Sandbox, SandboxTestMode=Unattended'; Keys = @('test', 'Sandbox', 'InstallUninstall', 'back'); Cfg = 'Unattended'; NoPrompt = $false
+       Want = '[grey]Test mode: Unattended (SandboxTestMode = Unattended): a silent run, the sandbox closes itself.[/]' }
+    @{ Tag = 'Sandbox, default';                 Keys = @('test', 'Sandbox', 'InstallUninstall', 'back'); Cfg = 'Interactive'; NoPrompt = $false
+       Want = '[grey]Test mode: Interactive (watched: a 2-minute countdown, the sandbox stays open; SandboxTestMode changes the default).[/]' })
+foreach ($mc in $modeCases) {
+    $script:cfgMode = $mc.Cfg; $script:hostCannotPrompt = $mc.NoPrompt; $script:hostLines.Clear()
+    DriveUpdate $mc.Keys
+    $modeLines = @($script:hostLines | Where-Object { $_ -match 'Test mode: ' })
+    if ($script:called -eq 1 -and $modeLines.Count -eq 1 -and $modeLines[0] -ceq $mc.Want) { Ok "$($mc.Tag): '$($mc.Want)'" } else { Bad "$($mc.Tag): $($modeLines -join ' | ')" }
+}
+$script:cfgMode = 'Interactive'; $script:hostCannotPrompt = $false
+
+Write-Host '[E4] Hyper-V picked but not ready -> no run-mode question, no -TestMode, the Sandbox mode line' -ForegroundColor Cyan
+$notReadyText = '[yellow]Hyper-V is not ready, so Windows Sandbox runs this test (it follows SandboxTestMode). See Settings for the reasons.[/]'
+# The run screen: from the Clear-Host before the 'Running the … test…' rule to the next Clear-Host (the action menu after
+# the run), which is all the operator sees while the test runs. Get-RunScreenStart = the index of that Clear-Host.
+function Get-RunScreenStart {
+    $r = [array]::FindLastIndex([string[]]$script:screen, [Predicate[string]] { param($l) $l -like 'RULE:Running the *' })
+    if ($r -lt 0) { return -1 }
+    $script:screen.LastIndexOf('CLEAR', $r)
+}
+function Get-RunScreen {
+    $c = Get-RunScreenStart
+    if ($c -lt 0) { return @() }
+    $n = $script:screen.IndexOf('CLEAR', $c + 1)
+    $end = if ($n -lt 0) { $script:screen.Count } else { $n }
+    @($script:screen.GetRange($c + 1, $end - $c - 1))
+}
+$script:hvNotReady = $true; $script:hostLines.Clear(); $script:prompts.Clear(); $script:screen.Clear()
+DriveUpdate @('test', 'HyperV', 'InstallUninstall', 'back')
+$script:hvNotReady = $false
+$notReady = @($script:hostLines | Where-Object { $_ -ceq $notReadyText })
+$e4Mode = @($script:hostLines | Where-Object { $_ -match 'Test mode: ' })
+if ($script:called -eq 1 -and @($script:prompts | Where-Object Message -eq 'Hyper-V run mode').Count -eq 0 -and -not $script:splat.ContainsKey('TestMode') -and -not $script:splat.ContainsKey('Unattended')) {
+    Ok 'no Hyper-V run-mode question; neither -TestMode nor -Unattended (the Sandbox run follows SandboxTestMode)'
+} else { Bad "not ready -> called=$script:called prompts=$(@($script:prompts | ForEach-Object Message) -join ' | ') keys=$(@($script:splat.Keys) -join ',')" }
+if ($notReady.Count -eq 1 -and $e4Mode.Count -eq 1 -and $e4Mode[0] -match 'sandbox stays open' -and $e4Mode[0] -notmatch 'VM window') { Ok 'one yellow "Hyper-V is not ready" line, then the Sandbox mode line (not the VM-window line)' } else { Bad "not ready lines: $($script:hostLines -join ' | ')" }
+# On the run screen (after its Clear-Host): the rule names what runs, then the yellow line, then the mode line. Before the
+# fix the yellow line came before that Clear-Host (never seen) and the rule said 'Running the HyperV test…'.
+$e4Run = @(Get-RunScreen)
+$e4Rule = [array]::IndexOf([string[]]$e4Run, 'RULE:Running the Sandbox test…')
+$e4Yellow = [array]::IndexOf([string[]]$e4Run, "HOST:$notReadyText")
+$e4ModeAt = [array]::FindIndex([string[]]$e4Run, [Predicate[string]] { param($l) $l -like 'HOST:*Test mode: *' })
+if ($e4Rule -eq 0 -and $e4Yellow -gt $e4Rule -and $e4ModeAt -gt $e4Yellow -and @($e4Run | Where-Object { $_ -like 'RULE:*HyperV*' }).Count -eq 0) {
+    Ok "the run screen: 'Running the Sandbox test…', then the yellow line, then the Sandbox mode line (all after its Clear-Host)"
+} else { Bad "run screen: $($e4Run -join ' | ')" }
+if ($script:splat['Backend'] -eq 'HyperV') { Ok 'the splat keeps the operator''s pick as -Backend (the test resolves it again)' } else { Bad "backend: $($script:splat['Backend'])" }
+# Update: the line also stands above the baseline questions on the first screen, and again on the run screen.
+$script:hvNotReady = $true; $script:hostLines.Clear(); $script:prompts.Clear(); $script:screen.Clear()
+DriveUpdate @('test', 'HyperV', 'Update', 'project', 'back')
+$script:hvNotReady = $false
+$e4uRun = @(Get-RunScreen)
+$e4uFirst = $script:screen.IndexOf("HOST:$notReadyText")
+$e4uRunClear = Get-RunScreenStart
+if ($script:called -eq 1 -and $e4uFirst -ge 0 -and $e4uFirst -lt $e4uRunClear -and $e4uRun.Count -ge 3 -and $e4uRun[0] -eq 'RULE:Running the Sandbox test…' -and $e4uRun[1] -eq "HOST:$notReadyText" -and $e4uRun[2] -like 'HOST:*Test mode: *sandbox stays open*') {
+    Ok 'Update, Hyper-V not ready: the yellow line above the baseline questions, and again on the run screen under ''Running the Sandbox test…'''
+} else { Bad "update not ready: called=$script:called screen=$($script:screen -join ' | ')" }
+# Hyper-V ready: the rule names Hyper-V, no yellow line.
+$script:screen.Clear()
+DriveUpdate @('test', 'HyperV', 'InstallUninstall', 'interactive', 'back')
+$e4hRun = @(Get-RunScreen)
+if ($e4hRun.Count -ge 2 -and $e4hRun[0] -eq 'RULE:Running the HyperV test…' -and $e4hRun[1] -like 'HOST:*Test mode: Interactive*' -and @($script:screen | Where-Object { $_ -eq "HOST:$notReadyText" }).Count -eq 0) {
+    Ok "Hyper-V ready: 'Running the HyperV test…', then the mode line, no not-ready line"
+} else { Bad "ready run screen: $($e4hRun -join ' | ')" }
+
+# The run-mode list offers the mode a run without -TestMode would get first (the highlighted default), so Enter on the
+# first item keeps HyperVTestMode's meaning; the labels are the ones Test E pins.
+Write-Host '[E5] Hyper-V run mode: the configured mode is the first (default) choice' -ForegroundColor Cyan
+foreach ($case in @(@{ Cfg = 'Unattended'; First = 'unattended'; Mode = 'Unattended' }, @{ Cfg = 'Interactive'; First = 'interactive'; Mode = 'Interactive' })) {
+    $script:cfgMode = $case.Cfg; $script:hvModeChoices = @()
+    DriveUpdate @('test', 'HyperV', 'InstallUninstall', '(enter: the first choice)', 'back')
+    $keys5 = @($script:hvModeChoices | ForEach-Object Key)
+    if ($keys5.Count -eq 2 -and $keys5[0] -eq $case.First -and $script:called -eq 1 -and $script:splat['TestMode'] -eq $case.Mode) {
+        Ok "HyperVTestMode=$($case.Cfg): '$($case.First)' is offered first; Enter passes -TestMode $($case.Mode)"
+    } else { Bad "HyperVTestMode=$($case.Cfg): order=$($keys5 -join ',') testMode=$($script:splat['TestMode'])" }
+}
+$script:cfgMode = 'Interactive'
 
 # ══ F. baseline installer technology: asked only with two or more technologies ══════════════════════
 Write-Host '[F] winget baseline with two technologies -> "Baseline installer technology" reaches -BaselineInstallerType' -ForegroundColor Cyan

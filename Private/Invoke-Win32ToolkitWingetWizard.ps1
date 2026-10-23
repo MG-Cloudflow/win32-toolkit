@@ -222,17 +222,25 @@ function Invoke-Win32ToolkitWingetWizard {
     if ($doPackage) { $after += 'package (.intunewin)' }
     if ($doPublish) { $after += 'PUBLISH to Intune' }
     $afterStr = if ($after) { $after -join ', ' } else { 'nothing (just build the project)' }
-    $summary = @(
-        "Application  : $($picked.Name)  (v$($picked.Version))"
-        "Winget ID    : $($picked.Id)"
-        "Architecture : $arch"
-        "Installer tech : $techSummary"
-        "Template     : $template"
-        "Base folder  : $BasePath"
-        "Test/capture : $($bi.Label)"
-        "Depends on   : $(if ($deps) { $deps -join ', ' } else { '(nothing)' })"
-        "After build  : $afterStr"
-    ) -join "`n"
+    $summaryLines = [System.Collections.Generic.List[string]]::new()
+    $summaryLines.Add("Application  : $($picked.Name)  (v$($picked.Version))")
+    $summaryLines.Add("Winget ID    : $($picked.Id)")
+    $summaryLines.Add("Architecture : $arch")
+    $summaryLines.Add("Installer tech : $techSummary")
+    $summaryLines.Add("Template     : $template")
+    $summaryLines.Add("Base folder  : $BasePath")
+    $summaryLines.Add("Test/capture : $($bi.Label)")
+    if ($doTest) {
+        # The test's effective mode (TUI audit G3), information only: the wizard does not pick one (Run a test does).
+        $cfgName = if ($bi.Resolved -eq 'HyperV') { 'HyperVTestMode' } else { 'SandboxTestMode' }
+        $effMode = Get-Win32ToolkitTestMode -Backend $bi.Resolved -WarningAction SilentlyContinue
+        $why = if ((Get-Win32ToolkitConfigValue -Name $cfgName -Default '') -eq 'Unattended') { "$cfgName = Unattended" }
+               elseif ($effMode -eq 'Unattended') { 'this console cannot answer prompts' } else { 'default' }
+        $summaryLines.Add("Test mode    : $effMode ($why)")
+    }
+    $summaryLines.Add("Depends on   : $(if ($deps) { $deps -join ', ' } else { '(nothing)' })")
+    $summaryLines.Add("After build  : $afterStr")
+    $summary = $summaryLines -join "`n"
     Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $summary) -Header 'Review' -Border Rounded -Color Blue
 
     # 7. Confirm (+ extra gate for publish)

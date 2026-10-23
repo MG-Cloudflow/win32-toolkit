@@ -171,7 +171,7 @@ typo is never stored).
 | `HyperVVMName` | VM name (default `win32tk-golden`) |
 | `HyperVCheckpoint` | Warm checkpoint name (default `clean-base`) |
 | `HyperVProcessorCount` / `HyperVMemoryStartupBytes` | Last chosen hardware, reused as defaults by the next provision |
-| `HyperVTestMode` | `Unattended` makes Hyper-V test runs non-interactive (Intune-parity) by default (`-TestMode` overrides it for one run) |
+| `HyperVTestMode` | `Unattended` makes Hyper-V test runs non-interactive (Intune-parity) by default (`-TestMode` overrides it for one run; the menu's **Hyper-V run mode** lists it first) |
 | `HyperVDepsCheckpoint` | `On` freezes a `clean-base+deps-*` checkpoint after a successful dependency install so later runs of that project skip it. See [Configuration](configuration.md) |
 
 All keys live in the toolkit's registry config; see [Configuration](configuration.md) for the full list.

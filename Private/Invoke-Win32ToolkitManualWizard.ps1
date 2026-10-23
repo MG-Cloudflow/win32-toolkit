@@ -77,18 +77,26 @@ function Invoke-Win32ToolkitManualWizard {
     if ($doPublish) { $after += 'PUBLISH to Intune' }
     $afterStr = if ($after) { $after -join ', ' } else { 'nothing (just build the project)' }
     $modeStr  = if ($advanced) { 'Advanced (you write the install logic)' } elseif ($silentArgs) { "Easy (silent: $silentArgs)" } else { 'Easy (MSI / Zero-Config)' }
-    $summary = @(
-        "Application  : $name  (v$version)"
-        "Architecture : $arch"
-        "Installer    : $source"
-        "Publisher    : $(if ($publisher) { $publisher } else { '(none)' })"
-        "Template     : $template"
-        "Mode         : $modeStr"
-        "Base folder  : $BasePath"
-        "Test/capture : $($bi.Label)"
-        "Depends on   : $(if ($deps) { $deps -join ', ' } else { '(nothing)' })"
-        "After build  : $afterStr"
-    ) -join "`n"
+    $summaryLines = [System.Collections.Generic.List[string]]::new()
+    $summaryLines.Add("Application  : $name  (v$version)")
+    $summaryLines.Add("Architecture : $arch")
+    $summaryLines.Add("Installer    : $source")
+    $summaryLines.Add("Publisher    : $(if ($publisher) { $publisher } else { '(none)' })")
+    $summaryLines.Add("Template     : $template")
+    $summaryLines.Add("Mode         : $modeStr")
+    $summaryLines.Add("Base folder  : $BasePath")
+    $summaryLines.Add("Test/capture : $($bi.Label)")
+    if ($doTest) {
+        # The test's effective mode (TUI audit G3), information only: the wizard does not pick one (Run a test does).
+        $cfgName = if ($bi.Resolved -eq 'HyperV') { 'HyperVTestMode' } else { 'SandboxTestMode' }
+        $effMode = Get-Win32ToolkitTestMode -Backend $bi.Resolved -WarningAction SilentlyContinue
+        $why = if ((Get-Win32ToolkitConfigValue -Name $cfgName -Default '') -eq 'Unattended') { "$cfgName = Unattended" }
+               elseif ($effMode -eq 'Unattended') { 'this console cannot answer prompts' } else { 'default' }
+        $summaryLines.Add("Test mode    : $effMode ($why)")
+    }
+    $summaryLines.Add("Depends on   : $(if ($deps) { $deps -join ', ' } else { '(nothing)' })")
+    $summaryLines.Add("After build  : $afterStr")
+    $summary = $summaryLines -join "`n"
     Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $summary) -Header 'Review' -Border Rounded -Color Blue
 
     # Confirm (+ publish gate)

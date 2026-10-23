@@ -80,13 +80,27 @@ function Show-Win32ToolkitProjectActions {
                     $sc = Read-SpectreSelection -Message 'Test scenario' -Choices $scenChoices -ChoiceLabelProperty 'Label' -Color Blue
 
                     $testSplat = @{ ProjectPath = $project.Path; Scenario = $sc.Key; Backend = $backend.Key }
-                    if ($backend.Key -eq 'HyperV') {
+                    # The run-mode question and -TestMode follow what will run (TUI audit G3): a Hyper-V pick that is not
+                    # ready falls back to Sandbox inside the test, which then follows SandboxTestMode (no question).
+                    $resolvedBackend = Get-Win32ToolkitTestBackend -Backend $backend.Key -WarningAction SilentlyContinue
+                    # Said on the run screen, after it is cleared (below); for the Update scenario also here, above the
+                    # baseline questions that follow on this screen.
+                    $notReadyLine = if ($backend.Key -eq 'HyperV' -and $resolvedBackend -ne 'HyperV') {
+                        '[yellow]Hyper-V is not ready, so Windows Sandbox runs this test (it follows SandboxTestMode). See Settings for the reasons.[/]'
+                    } else { $null }
+                    if ($notReadyLine -and $sc.Key -eq 'Update') { Write-SpectreHost $notReadyLine }
+                    if ($resolvedBackend -eq 'HyperV') {
                         $pauseWhat = if ($sc.Key -eq 'Update') { 'verify the OLD install, then update' } else { 'test the app, then uninstall' }
-                        $mode = Read-SpectreSelection -Message 'Hyper-V run mode' -Choices @(
-                            [pscustomobject]@{ Key = 'interactive'; Label = "Interactive — watch the PSADT GUI in the VM console, $pauseWhat" }
-                            [pscustomobject]@{ Key = 'unattended';  Label = 'Unattended — Intune parity: the published command line from a 32-bit parent, as SYSTEM (no pause)' }
-                        ) -ChoiceLabelProperty 'Label' -Color Blue
-                        if ($mode.Key -eq 'unattended') { $testSplat['Unattended'] = $true }
+                        $interactiveChoice = [pscustomobject]@{ Key = 'interactive'; Label = "Interactive — watch the PSADT GUI in the VM console, $pauseWhat" }
+                        $unattendedChoice  = [pscustomobject]@{ Key = 'unattended';  Label = 'Unattended — Intune parity: the published command line from a 32-bit parent, as SYSTEM (no pause)' }
+                        # The mode a run without -TestMode would get (HyperVTestMode) is listed first, so it is the
+                        # highlighted default: HyperVTestMode=Unattended keeps Intune parity as the menu's default.
+                        $modeChoices = if ((Get-Win32ToolkitTestMode -Backend HyperV -WarningAction SilentlyContinue) -eq 'Unattended') { @($unattendedChoice, $interactiveChoice) }
+                                       else { @($interactiveChoice, $unattendedChoice) }
+                        $mode = Read-SpectreSelection -Message 'Hyper-V run mode' -Choices $modeChoices -ChoiceLabelProperty 'Label' -Color Blue
+                        # The pick is this run's -TestMode: it overrides HyperVTestMode (a host that cannot prompt still
+                        # runs unattended).
+                        $testSplat['TestMode'] = if ($mode.Key -eq 'unattended') { 'Unattended' } else { 'Interactive' }
                     }
                     $abort = $false
                     if ($sc.Key -eq 'Update') {
@@ -162,7 +176,7 @@ function Show-Win32ToolkitProjectActions {
                             }
 
                             # Baseline VERSION, asked here: the test itself uses the previous version without asking
-                            # when the run is unattended (the Hyper-V 'Unattended' choice, SandboxTestMode / HyperVTestMode;
+                            # when the run is unattended (the Hyper-V run mode Unattended, -TestMode, SandboxTestMode / HyperVTestMode;
                             # test campaign F5), but an operator at this menu can always choose. Newest first.
                             $olderVersions = @()
                             $versionError = $null
@@ -201,7 +215,22 @@ function Show-Win32ToolkitProjectActions {
                         }
                     }
                     if (-not $abort) {
-                        Clear-Host; Write-SpectreRule -Title "Running the $($backend.Key) test…" -Color Blue
+                        # Titled by what runs ($resolvedBackend), never by the pick.
+                        Clear-Host; Write-SpectreRule -Title "Running the $resolvedBackend test…" -Color Blue
+                        if ($notReadyLine) { Write-SpectreHost $notReadyLine }
+                        # The run's effective test mode (TUI audit G3), chosen by what runs ($resolvedBackend), never by
+                        # the pick. Constant texts only.
+                        $modeSplat = @{ Backend = $resolvedBackend }
+                        if ($testSplat.ContainsKey('TestMode')) { $modeSplat['TestMode'] = $testSplat['TestMode'] }
+                        $effMode = Get-Win32ToolkitTestMode @modeSplat -WarningAction SilentlyContinue
+                        $modeLine = if ($resolvedBackend -eq 'HyperV') {
+                            if ($testSplat['TestMode'] -eq 'Unattended') { '[grey]Test mode: Unattended (your choice for this run): the Intune command line as SYSTEM, no pause.[/]' }
+                            elseif ($effMode -eq 'Unattended') { '[yellow]Test mode: Unattended. This console cannot answer prompts, so the run cannot be watched.[/]' }
+                            else { '[grey]Test mode: Interactive (your choice for this run): watch the PSADT dialogs in the VM window.[/]' }
+                        }
+                        elseif ($effMode -eq 'Unattended') { '[grey]Test mode: Unattended (SandboxTestMode = Unattended): a silent run, the sandbox closes itself.[/]' }
+                        else { '[grey]Test mode: Interactive (watched: a 2-minute countdown, the sandbox stays open; SandboxTestMode changes the default).[/]' }
+                        Write-SpectreHost $modeLine
                         try {
                             $testStartUtc = [datetime]::UtcNow
                             $verdict = Test-Win32ToolkitProject @testSplat

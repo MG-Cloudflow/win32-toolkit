@@ -20,6 +20,8 @@ There is no public `Set-...ConfigValue` command; the setter is a private helper.
 Set-ItemProperty -Path 'HKCU:\Software\CloudFlow\win32-toolkit' -Name 'PipelineCache' -Value 'Off'
 ```
 
+The menu's **Run a test → Hyper-V run mode** overrides `HyperVTestMode` for that run only. It lists the mode `HyperVTestMode` sets first, so pressing Enter keeps that mode.
+
 Do **not** hand-edit `HyperVGuestUser` / `HyperVGuestSecret`. See [Guest credential](#guest-credential).
 
 ## All values

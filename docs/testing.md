@@ -66,6 +66,9 @@ config. `-TestMode Interactive` runs one test watched although the config value 
 `-TestMode Unattended` is the same as `-Unattended`. On a **non-interactive host** (CI pipeline,
 redirected stdin), the toolkit auto-selects Unattended and prints a loud warning, also over
 `-TestMode Interactive`. Interactive mode would block forever on prompts nobody can see.
+In the menu, **Run a test** asks the Hyper-V run mode and passes it as `-TestMode`; the mode `HyperVTestMode`
+sets is the first choice, so pressing Enter keeps it. A Sandbox test follows `SandboxTestMode`. The screen
+shows the mode before the run starts, and the packaging wizards' Review panel shows it when you tick the test.
 
 > **Context caveat.** A Sandbox-unattended run executes as the sandbox's interactive admin user, while a
 > HyperV-unattended run executes as **SYSTEM, with the same launcher, bitness and command line Intune

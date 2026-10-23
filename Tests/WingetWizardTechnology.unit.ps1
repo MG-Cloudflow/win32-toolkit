@@ -24,6 +24,8 @@
       [6] version 'Unknown' -> no probe request, no lookup, grey line
       [7] the lookup and probe get the template folder, tenant, would-be project and architecture; the
           summary has the 'Installer tech' row; hostile labels are escaped
+      [9] TUI audit G3: with the test ticked, the Review panel (winget and manual wizard) has a 'Test mode' row
+          naming the effective mode and why; without the test, no row
 
     Run:  pwsh -File Tests\WingetWizardTechnology.unit.ps1
 #>
@@ -91,12 +93,23 @@ function Format-SpectrePanel { param($Data, $Header, $Border, $Color) $script:pa
 function Read-SpectrePause { param($Message, [switch]$AnyKey) }
 function Read-SpectreText { param($Message) 'something' }
 function Get-SpectreEscapedText { param($Text) ([string]$Text).Replace('[', '[[').Replace(']', ']]') }
-function Read-SpectreMultiSelection { param($Message, $Choices, $Color, [switch]$AllowEmpty) @() }
+# Nothing ticked unless a case sets $script:multiPattern ([9]: the install/uninstall test).
+$script:multiPattern = $null
+function Read-SpectreMultiSelection { param($Message, $Choices, $Color, [switch]$AllowEmpty) if ($script:multiPattern) { @($Choices | Where-Object { $_ -like $script:multiPattern }) } else { @() } }
 function Read-SpectreConfirm { param($Message, $DefaultAnswer) $Message -eq 'Build this now?' }
 function Get-WingetAppDetails { param($AppId) 'x64' }
 function Get-Win32ToolkitTemplateChoice { param($BasePath) 'Contoso' }
 function Show-Win32ToolkitDependencyPicker { param($BasePath) @() }
-function Get-Win32ToolkitBackendInfo { [pscustomobject]@{ Label = 'Windows Sandbox'; FellBack = $false; Reasons = @() } }
+$script:biResolved = 'Sandbox'
+function Get-Win32ToolkitBackendInfo { [pscustomobject]@{ Label = $(if ($script:biResolved -eq 'HyperV') { 'Hyper-V VM (vm-test)' } else { 'Windows Sandbox' }); Resolved = $script:biResolved; FellBack = $false; Reasons = @() } }
+# TUI audit G3 (C-9): the Review panel names the ticked test's effective mode (config value per backend; shadowed).
+$script:cfg = @{}
+function Get-Win32ToolkitConfigValue { param($Name, $Default) if ($script:cfg.ContainsKey($Name)) { $script:cfg[$Name] } else { $Default } }
+function Get-Win32ToolkitTestMode {
+    param($Backend, [switch]$Unattended, $TestMode)
+    $n = if ($Backend -eq 'HyperV') { 'HyperVTestMode' } else { 'SandboxTestMode' }
+    if ($Unattended -or $TestMode -eq 'Unattended' -or (Get-Win32ToolkitConfigValue -Name $n -Default 'Interactive') -eq 'Unattended') { 'Unattended' } else { 'Interactive' }
+}
 $script:apps = @()
 function Search-WingetApps { param($SearchTerm) $script:apps }
 
@@ -306,6 +319,34 @@ try {
     if ($tplTry.Count -eq 1 -and $tplTry[0].CatchClauses[0].Body.Statements[0].Extent.Text -ceq $c2) { Ok 'the template-tenant read catch starts with the C-2 line (K1)' } else { Bad 'template-tenant catch' }
     $gc = @($wAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-Content' }, $true))
     if ($gc.Count -ge 1 -and @($gc | Where-Object { $_.Extent.Text -notmatch '-Encoding UTF8' }).Count -eq 0) { Ok 'every Get-Content passes -Encoding UTF8' } else { Bad 'Get-Content without -Encoding' }
+
+    # == [9] the Review panel's Test mode row (TUI audit G3) =================================================
+    Write-Host '[9] the Review panel names the ticked test''s effective mode; no row without the test' -ForegroundColor Cyan
+    $testRow = { @(($script:panels -join "`n") -split "`n" | Where-Object { $_ -like 'Test mode    : *' }) }
+    $script:biResolved = 'HyperV'; $script:cfg = @{ HyperVTestMode = 'Unattended' }; $script:multiPattern = 'Run an install/uninstall test*'
+    $a = Invoke-Wizard -App $git -Probe $probeGit -Anchor $null
+    $rows = @(& $testRow)
+    if ($a -and $a['RunTest'] -eq 'InstallUninstall' -and $rows.Count -eq 1 -and $rows[0] -ceq 'Test mode    : Unattended (HyperVTestMode = Unattended)') { Ok "test ticked + HyperVTestMode=Unattended (Hyper-V): '$($rows[0])'" } else { Bad "rows=[$($rows -join ' | ')] runTest=$($a['RunTest'])" }
+    $script:biResolved = 'Sandbox'; $script:cfg = @{ HyperVTestMode = 'Unattended' }
+    $null = Invoke-Wizard -App $git -Probe $probeGit -Anchor $null
+    $rows = @(& $testRow)
+    if ($rows.Count -eq 1 -and $rows[0] -ceq 'Test mode    : Interactive (default)') { Ok "Sandbox runs the test: the Sandbox value counts (HyperVTestMode does not): '$($rows[0])'" } else { Bad "rows=[$($rows -join ' | ')]" }
+    $script:multiPattern = $null
+    $null = Invoke-Wizard -App $git -Probe $probeGit -Anchor $null
+    if (@(& $testRow).Count -eq 0 -and ($script:panels -join "`n") -match 'Test/capture : ') { Ok 'test not ticked -> no Test mode row' } else { Bad "panels: $($script:panels -join ' || ')" }
+
+    # The manual wizard's Review panel carries the same row (driven up to the panel; 'Continue?' is answered no).
+    . (Join-Path $repo 'Private\Invoke-Win32ToolkitManualWizard.ps1')
+    function Read-Win32ToolkitValidatedText { param($Message, $Validator, $ErrorMessage, [switch]$AllowEmpty) if ($Message -like 'Full path*') { 'C:\x\setup.msi' } elseif ($AllowEmpty) { '' } else { '1.0' } }
+    $script:biResolved = 'Sandbox'; $script:cfg = @{ SandboxTestMode = 'Unattended' }; $script:multiPattern = 'Run an install/uninstall test*'
+    $script:panels.Clear()
+    Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null
+    $rows = @(& $testRow)
+    if ($rows.Count -eq 1 -and $rows[0] -ceq 'Test mode    : Unattended (SandboxTestMode = Unattended)') { Ok "manual wizard, test ticked + SandboxTestMode=Unattended: '$($rows[0])'" } else { Bad "manual rows=[$($rows -join ' | ')] panels: $($script:panels -join ' || ')" }
+    $script:multiPattern = $null; $script:panels.Clear()
+    Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null
+    if (@(& $testRow).Count -eq 0 -and ($script:panels -join "`n") -match 'Test/capture : ') { Ok 'manual wizard, test not ticked -> no Test mode row' } else { Bad "manual panels: $($script:panels -join ' || ')" }
+    $script:cfg = @{}; $script:biResolved = 'Sandbox'
 }
 finally {
     Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue
