@@ -2,7 +2,10 @@ function Update-OrgTemplateIfNeeded {
     [CmdletBinding()]
     param(
         [PSCustomObject]$Template,
-        [string]$FilePath
+        [string]$FilePath,
+        # The run's base folder (TUI audit G4): the template wizard opened for the upgrade saves under it and checks
+        # the extension module in its Templates\ folder. Empty = the configured base folder.
+        [string]$BasePath
     )
 
     $schemaVer   = if ($Template.TemplateSchemaVersion) { $Template.TemplateSchemaVersion } else { '1.0' }
@@ -41,7 +44,7 @@ function Update-OrgTemplateIfNeeded {
         }
         if ("$ans".Trim() -in @('','y','Y','yes','Yes','1','true')) {
             Write-Host '  Opening template wizard with existing values pre-filled...' -ForegroundColor Cyan
-            $updated = New-OrgTemplate -ExistingTemplate $Template
+            $updated = New-OrgTemplate -ExistingTemplate $Template -BasePath $BasePath
             return $updated
         }
     }

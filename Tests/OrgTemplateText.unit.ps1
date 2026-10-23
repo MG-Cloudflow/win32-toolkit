@@ -654,7 +654,8 @@ try {
     $v2 = { [pscustomobject]@{ TemplateSchemaVersion = '2.0'; TemplateName = 'Arxus'; CompanyName = 'Arxus' } }
     $script:wizardCalls = 0
     $wizardSaved = ${function:New-OrgTemplate}
-    ${function:New-OrgTemplate} = { param($ExistingTemplate, $TemplateName, $BasePath) $script:wizardCalls++; $ExistingTemplate }
+    $script:wizardBase = 'unset'
+    ${function:New-OrgTemplate} = { param($ExistingTemplate, $TemplateName, $BasePath) $script:wizardCalls++; $script:wizardBase = $BasePath; $ExistingTemplate }
     foreach ($case in @(@{ Host = $true; Switch = $false; Tag = 'non-interactive host' }, @{ Host = $false; Switch = $true; Tag = 'pwsh -NonInteractive console' })) {
         $script:nonInteractiveHost = $case.Host; $script:nonInteractiveSwitch = $case.Switch
         Use-ScriptedAnswer @{}
@@ -683,6 +684,21 @@ try {
     Use-ScriptedAnswer @{ '  Update template?' = 'y' }
     $null = Update-OrgTemplateIfNeeded -Template (& $v2) 6>$null
     if ($script:wizardCalls -eq 1) { Ok "interactive 'y': opens the template wizard" } else { Bad "wizard calls: $($script:wizardCalls)" }
+    # TUI audit G4: the run's base folder reaches the wizard opened for the upgrade (it saved under the registry base).
+    $upBase = Join-Path $root 'upgrade-base'
+    Use-ScriptedAnswer @{ '  Update template?' = 'y' }
+    $null = Update-OrgTemplateIfNeeded -Template (& $v2) -BasePath $upBase 6>$null
+    if ($script:wizardCalls -eq 2 -and $script:wizardBase -eq $upBase) { Ok "interactive 'y' with -BasePath: New-OrgTemplate gets that base folder" } else { Bad "wizard base: [$($script:wizardBase)]" }
+    # Get-OrgTemplate passes its -BasePath on every load path (source: the three calls).
+    $getSrc = Get-Content -LiteralPath (Join-Path $repo 'Private\Get-OrgTemplate.ps1') -Raw
+    if (([regex]::Matches($getSrc, 'Update-OrgTemplateIfNeeded [^\r\n]*-BasePath \$BasePath')).Count -eq 3 -and ([regex]::Matches($getSrc, 'Update-OrgTemplateIfNeeded ')).Count -eq 3) { Ok 'Get-OrgTemplate passes -BasePath to Update-OrgTemplateIfNeeded on all three load paths' } else { Bad 'a Get-OrgTemplate load path does not pass -BasePath' }
+    # And for real: a v2.0 template loaded from another base folder opens the wizard with that base.
+    $v2Base = Join-Path $root 'v2'
+    Save-TemplateJson $v2Base (& $v2)
+    Use-ScriptedAnswer @{ '  Update template?' = 'y' }
+    $script:wizardBase = 'unset'
+    $null = Invoke-Get { Get-OrgTemplate -TemplateName 'Arxus' -BasePath $v2Base -SkipTextValidation }
+    if ($script:wizardBase -eq $v2Base) { Ok 'Get-OrgTemplate -TemplateName -BasePath <base> on a v2.0 template -> the upgrade wizard gets <base>' } else { Bad "get-orgtemplate wizard base: [$($script:wizardBase)]" }
     ${function:New-OrgTemplate} = $wizardSaved
 }
 finally {

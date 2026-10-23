@@ -30,7 +30,7 @@ function Get-OrgTemplate {
         $specificPath = Join-Path $templateFolder "$TemplateName.json"
         if (Test-Path $specificPath) {
             $t = Get-Content -Path $specificPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            $t = Update-OrgTemplateIfNeeded -Template $t -FilePath $specificPath
+            $t = Update-OrgTemplateIfNeeded -Template $t -FilePath $specificPath -BasePath $BasePath
             Assert-LoadedTemplate $t
             Write-Host "✓ Loaded org template: $($t.TemplateName)" -ForegroundColor Green
             return $t
@@ -50,7 +50,7 @@ function Get-OrgTemplate {
 
     if ($templates.Count -eq 1) {
         $t = Get-Content -Path $templates[0].FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-        $t = Update-OrgTemplateIfNeeded -Template $t -FilePath $templates[0].FullName
+        $t = Update-OrgTemplateIfNeeded -Template $t -FilePath $templates[0].FullName -BasePath $BasePath
         Assert-LoadedTemplate $t
         Write-Host "✓ Loaded org template: $($t.TemplateName)" -ForegroundColor Green
         return $t
@@ -96,7 +96,7 @@ function Get-OrgTemplate {
     }
 
     $t = Get-Content -Path $templates[$parsed - 1].FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-    $t = Update-OrgTemplateIfNeeded -Template $t -FilePath $templates[$parsed - 1].FullName
+    $t = Update-OrgTemplateIfNeeded -Template $t -FilePath $templates[$parsed - 1].FullName -BasePath $BasePath
     Assert-LoadedTemplate $t
     Write-Host "✓ Loaded org template: $($t.TemplateName)" -ForegroundColor Green
     return $t
