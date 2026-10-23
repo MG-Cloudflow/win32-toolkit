@@ -161,5 +161,7 @@ Update flow prompts for the baseline automatically.
 In [Show-Win32Toolkit](reference/Show-Win32Toolkit.md), choose **"Package a manual app"**. It asks the same
 questions (name, version, architecture, installer path, silent switches, template, dependencies) and shows
 the same review panel as the winget flow, then follows the Easy or Advanced path described above.
+An EXE with no silent switch becomes an Advanced app (the review says so); after scaffolding, any warning is
+shown before the Advanced step.
 
 <!-- SCREENSHOT: the TUI "Package a manual app" wizard with the review panel visible -->

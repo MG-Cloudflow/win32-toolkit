@@ -214,7 +214,8 @@ function New-Win32ToolkitManualApp {
         $markStage = 'Download'
         try {
             # ── Copy installer + detect type ──────────────────────────────────────────
-            Add-Win32ToolkitInstallerFiles -SourcePath $SourcePath -FilesPath $filesPath | Out-Null
+            # $null = (not | Out-Null): its warnings must reach the caller's -WarningVariable (TUI audit G6, B1 #2).
+            $null = Add-Win32ToolkitInstallerFiles -SourcePath $SourcePath -FilesPath $filesPath
             $fileInfo = Get-InstallerFileInfo -FilesPath $filesPath
             if (-not $fileInfo.FileName) { throw "No installer (msi/exe/msix/appx) detected in: $filesPath" }
             Write-Host "Installer      : $($fileInfo.FileName) ($($fileInfo.Type.ToUpper()))" -ForegroundColor Green
@@ -262,7 +263,7 @@ function New-Win32ToolkitManualApp {
                 }
             }
 
-            Set-Win32ToolkitAppConfig -ProjectPath $projectFullPath -Config $cfg | Out-Null
+            $null = Set-Win32ToolkitAppConfig -ProjectPath $projectFullPath -Config $cfg
             Write-Host '✓ Wrote SupportFiles\AppConfig.json' -ForegroundColor Green
 
             # Declare Intune app dependencies (data-only) now that AppConfig.json exists. They are resolved to

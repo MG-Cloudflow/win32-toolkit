@@ -61,7 +61,8 @@ function Read-SpectreText { param($Message) 'something' }
 function Get-SpectreEscapedText { param($Text) ([string]$Text).Replace('[', '[[').Replace(']', ']]') }
 $script:multi = @()
 function Read-SpectreMultiSelection { param($Message, $Choices, $Color, [switch]$AllowEmpty) @($Choices | Where-Object { $p = $_; @($script:multi | Where-Object { $p -like $_ }).Count }) }
-function Read-SpectreConfirm { param($Message, $DefaultAnswer) $Message -in @('Build this now?', 'Continue?') }
+$script:confirmPublish = $false   # [9]: also say yes to the 'Publishing UPLOADS ...' gate
+function Read-SpectreConfirm { param($Message, $DefaultAnswer) ($Message -in @('Build this now?', 'Continue?')) -or ($script:confirmPublish -and $Message -like 'Publishing UPLOADS*') }
 # Object choices take the next queued key; when none is left: 'back' / 'later' in the menus, else the first one.
 $script:keys = [System.Collections.Queue]::new()
 function Read-SpectreSelection {
@@ -75,8 +76,10 @@ function Read-SpectreSelection {
 }
 $script:selectionShadow = ${function:Read-SpectreSelection}   # [7] replaces it; later sections restore it
 $script:silentSwitch = '/S'   # the Easy wizard's silent-install answer ('' = blank switches)
+$script:textPrompts = [System.Collections.Generic.List[string]]::new()
 function Read-Win32ToolkitValidatedText {
     param($Message, $Validator, $ErrorMessage, [switch]$AllowEmpty)
+    $script:textPrompts.Add([string]$Message)
     if ($Message -like 'Full path*') { return $script:manualSource }
     if ($Message -like 'Application name*') { return 'Tool[1]' }
     if ($Message -like 'Silent-install*') { return $script:silentSwitch }
@@ -103,6 +106,7 @@ function Get-Win32ToolkitDependencies { param($ProjectPath) @() }
 # --- the commands: scripted output ------------------------------------------------------------------------
 # $script:output is what the next command returns (any objects); $script:throwThis is thrown instead when set.
 $script:output = @(); $script:throwThis = $null; $script:beforeRun = $null   # beforeRun: what the command does first (e.g. writes a marker)
+$script:completeOutput = $null
 $script:invokeArgs = $null; $script:newArgs = $null; $script:completeArgs = $null
 function Invoke-Win32Toolkit {
     param($Id, $Architecture, $TemplateName, $BasePath, [switch]$Force, $DependsOn, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, $InstallerType, [switch]$NoPublishPrompt)
@@ -111,10 +115,13 @@ function Invoke-Win32Toolkit {
     if ($script:throwThis) { throw $script:throwThis }
     $script:output
 }
+$script:newWarnings = @()   # [9]: the warnings the scaffold prints (they must reach the wizard's -WarningVariable)
 function New-Win32ToolkitManualApp {
+    [CmdletBinding()]   # common parameters: the Advanced scaffold is called with -WarningVariable (TUI audit G6)
     param($Name, $Version, $Architecture, $SourcePath, $TemplateName, $BasePath, [switch]$Force, $Publisher, $Description, $InformationUrl, $IconPath, $DependsOn,
         [switch]$Advanced, $SilentArgs, [switch]$Continue, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, [switch]$NoPublishPrompt)
     $script:newArgs = $PSBoundParameters
+    foreach ($w in $script:newWarnings) { Write-Warning $w }
     if ($script:beforeRun) { & $script:beforeRun }
     if ($script:throwThis) { throw $script:throwThis }
     $script:output
@@ -123,18 +130,18 @@ function Complete-Win32ToolkitManualApp {
     param($ProjectPath, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate, [switch]$AllowLegacyScript, [switch]$NoPublishPrompt)
     $script:completeArgs = $PSBoundParameters
     if ($script:throwThis) { throw $script:throwThis }
-    $script:output
+    if ($null -ne $script:completeOutput) { $script:completeOutput } else { $script:output }   # [9]: its own output after a scaffold
 }
 function New-RR {
-    param([string]$Command = 'Invoke-Win32Toolkit', [string[]]$Problems = @(), [switch]$Failed, [switch]$Scaffolded, [string]$ProjectPath = 'C:\B\Projects\Contoso\Git_x64_2.55.0')
-    $c = Initialize-Win32ToolkitRunResult -Command $Command -Mode 'Winget'
+    param([string]$Command = 'Invoke-Win32Toolkit', [string[]]$Problems = @(), [switch]$Failed, [switch]$Scaffolded, [string]$ProjectPath = 'C:\B\Projects\Contoso\Git_x64_2.55.0', [string]$Mode = 'Winget')
+    $c = Initialize-Win32ToolkitRunResult -Command $Command -Mode $Mode
     $c.ProjectPath = $ProjectPath; $c.ProjectName = Split-Path -Leaf $ProjectPath
     foreach ($p in $Problems) { $c.Problems.Add($p) }
     Complete-Win32ToolkitRunResult -Result $c -Failed:$Failed -Scaffolded:$Scaffolded
 }
 function Reset-Run([object[]]$Output, $Throw = $null) {
-    $script:output = $Output; $script:throwThis = $Throw; $script:beforeRun = $null
-    $script:panels.Clear(); $script:hostLines.Clear(); $script:keys = [System.Collections.Queue]::new()
+    $script:output = $Output; $script:throwThis = $Throw; $script:beforeRun = $null; $script:newWarnings = @(); $script:completeOutput = $null
+    $script:panels.Clear(); $script:hostLines.Clear(); $script:textPrompts.Clear(); $script:keys = [System.Collections.Queue]::new()
     $script:invokeArgs = $null; $script:newArgs = $null; $script:completeArgs = $null
 }
 # The last panel the run showed (the result panel comes after the Review panel).
@@ -400,6 +407,120 @@ try {
         if ($ca -and $ca.ContainsKey('NoPublishPrompt') -and $ca['NoPublishPrompt']) { Ok 'Project actions > Finalize / refresh: Complete-Win32ToolkitManualApp gets -NoPublishPrompt (uniform)' } else { Bad "complete args: $(if ($ca) { ($ca.Keys | Sort-Object) -join ',' })" }
     }
     finally { $script:multi = @() }
+
+    # == [9] the manual wizard keeps its scaffold result, warnings and chosen actions (TUI audit G6) =========
+    Write-Host '[9] the manual wizard keeps the scaffold result, its warnings and the chosen actions' -ForegroundColor Cyan
+    $rebuilt = Get-SpectreEscapedText -Text (Join-Path $tplDir ('{0}_x64_1.0' -f (Sanitize-ProjectName -Name 'Tool[1]')))   # what the wizard computes from the answers (escaped as shown)
+    $scaffolded = Join-Path $tplDir 'Tool_1_x64_1.0_scaffolded'   # what the scaffold says it created (must win)
+    $yourTurn = { @($script:panels | Where-Object { $_.Header -like 'Advanced app ? your turn' }) }   # ASCII only: '?' is the em dash
+
+    Reset-Run @(New-RR -Command 'New-Win32ToolkitManualApp' -Scaffolded -Mode 'Advanced' -ProjectPath $scaffolded)
+    $script:newWarnings = @('Deploy-script patching did not complete cleanly [x]', 'MSIX uninstall data could not be written')
+    $script:keys.Enqueue('advanced')
+    Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null
+    $wp = @($script:panels | Where-Object { $_.Header -eq 'Check these warnings' })
+    $wantW = "Scaffolding Tool[[1]] printed 2 warning(s):`n- Deploy-script patching did not complete cleanly [[x]]`n- MSIX uninstall data could not be written`n`nRead them before you write the install code."
+    if ($wp.Count -eq 1 -and $wp[0].Color -eq 'Yellow' -and $wp[0].Data -ceq $wantW) { Ok 'Advanced + two scaffold warnings -> one yellow "Check these warnings" panel listing both (escaped)' } else { Bad "warning panels: $($wp | ConvertTo-Json -Compress)" }
+    $yt = & $yourTurn
+    if ($yt.Count -ge 1 -and $yt[0].Data.Contains("[blue]$scaffolded[/]") -and -not $yt[0].Data.Contains("[blue]$rebuilt[/]")) { Ok "the Advanced step gets the result's ProjectPath, not a path rebuilt from the answers" } else { Bad "your-turn panels: $($yt | ConvertTo-Json -Compress)" }
+    if (@($script:panels).IndexOf($wp[0]) -lt @($script:panels).IndexOf($yt[0])) { Ok 'the warnings come before the Advanced step (which clears the screen)' } else { Bad 'the warnings panel is not before the Advanced step' }
+
+    Reset-Run @(New-RR -Command 'New-Win32ToolkitManualApp' -Scaffolded -Mode 'Advanced' -ProjectPath $scaffolded)
+    $script:keys.Enqueue('advanced')
+    Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null
+    if (-not @($script:panels | Where-Object { $_.Header -eq 'Check these warnings' }).Count -and (& $yourTurn).Count -ge 1) { Ok 'Advanced without warnings -> no warnings panel, straight to the Advanced step' } else { Bad "panels: $(@($script:panels | ForEach-Object Header) -join ', ')" }
+
+    Reset-Run @(New-RR -Command 'New-Win32ToolkitManualApp' -Failed -Problems 'Name, Version, and SourcePath are required.', 'boom [y]' -ProjectPath $scaffolded)
+    $script:keys.Enqueue('advanced')
+    Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null
+    $p = LastPanel
+    $wantF = "The project was not scaffolded:`n- Name, Version, and SourcePath are required.`n- boom [[y]]`n`nReview the messages above for details."
+    if ($p.Header -eq 'Scaffold failed' -and $p.Color -eq 'Red' -and $p.Data -ceq $wantF -and (& $yourTurn).Count -eq 0) { Ok 'Advanced + a Status Failed result -> red "Scaffold failed" with each problem; the Advanced step is not shown' } else { Bad "panel: $($p | ConvertTo-Json -Compress) your-turn=$((& $yourTurn).Count)" }
+
+    # A Failed result whose ProjectPath this run left marked not configured (a non-W32T error after the scaffold):
+    # the panel, then the two yellow kept-and-marked lines naming that folder (TUI audit G4 + G6).
+    & $resetMarkers
+    $keptProj = Join-Path $tplDir 'Tool_1_x64_1.0'
+    Reset-Run @(New-RR -Command 'New-Win32ToolkitManualApp' -Failed -Problems 'boom' -ProjectPath $keptProj)
+    $script:beforeRun = { Write-Win32ToolkitNotConfiguredMarker -ProjectPath $keptProj -Stage Configure -Reason 'boom' }
+    $script:keys.Enqueue('advanced')
+    Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null
+    $sf = @($script:panels | Where-Object { $_.Header -eq 'Scaffold failed' })
+    $keptLine = "[yellow]The project folder was kept and marked not configured: $keptProj[/]"
+    $y = @($script:hostLines | Where-Object { $_ -like '`[yellow`]*kept and marked*' })
+    if ($sf.Count -eq 1 -and $sf[0].Data -ceq "The project was not scaffolded:`n- boom`n`nReview the messages above for details." -and $y.Count -eq 1 -and $y[0] -ceq $keptLine -and $script:hostLines -ccontains "[yellow]$line2[/]" -and (& $yourTurn).Count -eq 0) {
+        Ok 'Advanced + a Failed result with a freshly marked ProjectPath -> "Scaffold failed", then the yellow kept-and-marked lines; the Advanced step is not shown'
+    } else { Bad "kept: panels=$($sf | ConvertTo-Json -Compress) lines=$($script:hostLines -join ' | ') your-turn=$((& $yourTurn).Count)" }
+    & $resetMarkers
+
+    Reset-Run @('stray')
+    $script:keys.Enqueue('advanced')
+    Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null
+    $p = LastPanel
+    if ($p.Header -eq 'Scaffold failed' -and $p.Data -ceq "The project was not scaffolded:`n- New-Win32ToolkitManualApp returned no result.`n`nReview the messages above for details." -and (& $yourTurn).Count -eq 0) { Ok 'Advanced + no result object -> "Scaffold failed: New-Win32ToolkitManualApp returned no result."' } else { Bad "panel: $($p | ConvertTo-Json -Compress)" }
+
+    # Easy + an EXE + blank switches: New-Win32ToolkitManualApp sets it up as an Advanced app (Mode Advanced).
+    $script:multi = @('Run an install*', 'Package*', 'Publish*'); $script:confirmPublish = $true; $script:silentSwitch = ''
+    try {
+        Reset-Run @(New-RR -Command 'New-Win32ToolkitManualApp' -Scaffolded -Mode 'Advanced' -ProjectPath $scaffolded) $null
+        $script:keys.Enqueue('easy'); $script:keys.Enqueue('finish')
+        $script:completeOutput = @(New-RR -Command 'Complete-Win32ToolkitManualApp' -ProjectPath $scaffolded)
+        Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null
+        $review = @($script:panels | Where-Object { $_.Header -eq 'Review' }) | Select-Object -First 1
+        if ($review -and $review.Data.Contains('Mode         : Advanced (an EXE with no silent switch: you write the install logic)')) { Ok "Easy + .exe + blank switches -> the Review panel says 'Mode         : Advanced (an EXE with no silent switch: ...)'" } else { Bad "review: $($review | ConvertTo-Json -Compress)" }
+        $ap = @($script:panels | Where-Object { $_.Header -eq 'Advanced app' })
+        $wantA = 'No silent switch was given for this EXE, so Tool[[1]] was set up as an Advanced app: write the install code yourself, then choose Finish setup. Your test, package and publish choices are kept.'
+        if ($ap.Count -eq 1 -and $ap[0].Color -eq 'Yellow' -and $ap[0].Data -ceq $wantA -and -not @($script:panels | Where-Object { $_.Header -eq 'Scaffolded' }).Count) { Ok 'a Mode Advanced result -> the yellow "Advanced app" panel (not "Scaffolded")' } else { Bad "panels: $($script:panels | ConvertTo-Json -Compress)" }
+        $ca = $script:completeArgs
+        if ((& $yourTurn).Count -ge 1 -and (& $yourTurn)[0].Data.Contains("[blue]$scaffolded[/]") -and $ca -and $ca['ProjectPath'] -eq $scaffolded -and $ca['RunTest'] -eq 'InstallUninstall' -and $ca['PackageIntune'] -and $ca['PublishIntune']) {
+            Ok 'then the Advanced step on that project, and Finish setup keeps the ticked test, package and publish'
+        } else { Bad "your-turn=$((& $yourTurn).Count) complete args: $(if ($ca) { ($ca.Keys | Sort-Object | ForEach-Object { "$_=$($ca[$_])" }) -join '; ' })" }
+        if (@($script:textPrompts) -ccontains 'Silent-install switch(es) (e.g. /S, or /qn /norestart). Blank for an MSI or MSIX; an EXE without a switch becomes an Advanced app') { Ok 'the silent-switch prompt says an EXE without a switch becomes an Advanced app' } else { Bad "prompts: $($script:textPrompts -join ' | ')" }
+    }
+    finally { $script:multi = @(); $script:confirmPublish = $false; $script:silentSwitch = '/S' }
+
+    # The Review row for blank switches by the installer's extension (a folder: the installer is not known yet).
+    $script:silentSwitch = ''
+    try {
+        foreach ($case in @(@('tool.msi', 'Easy (MSI / Zero-Config)'), @('tool.msix', 'Easy (MSIX / APPX package)'), @('tool.appx', 'Easy (MSIX / APPX package)'),
+                @('', 'Easy if the installer is an MSI or MSIX; an EXE without a switch becomes Advanced'))) {
+            $script:manualSource = if ($case[0]) { Join-Path $BASE "src\$($case[0])" } else { Join-Path $BASE 'src' }
+            if ($case[0]) { Set-Content -LiteralPath $script:manualSource 'x' }
+            Reset-Run @(New-RR -Command 'New-Win32ToolkitManualApp')
+            $script:keys.Enqueue('easy')
+            Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null
+            $review = @($script:panels | Where-Object { $_.Header -eq 'Review' }) | Select-Object -First 1
+            $what = if ($case[0]) { $case[0] } else { 'a folder' }
+            if ($review -and $review.Data.Contains("Mode         : $($case[1])")) { Ok "blank switches + $what -> 'Mode         : $($case[1])'" } else { Bad "${what}: review $($review | ConvertTo-Json -Compress)" }
+        }
+    }
+    finally { $script:silentSwitch = '/S'; $script:manualSource = Join-Path $BASE 'src\tool.exe' }
+
+    # == [12] blank problems and warnings never reach Get-SpectreEscapedText (it refuses an empty string) =====
+    Write-Host '[12] the scaffold panels skip blank problems and warnings (faithful Get-SpectreEscapedText)' -ForegroundColor Cyan
+    $script:threw12 = $null
+    $faithful = {
+        param([scriptblock]$Run)
+        function Get-SpectreEscapedText { param([Parameter(Mandatory)][string]$Text) $Text.Replace('[', '[[').Replace(']', ']]') }
+        try { & $Run } catch { $script:threw12 = $_ }
+    }
+    Reset-Run @(New-RR -Command 'New-Win32ToolkitManualApp' -Scaffolded -Mode 'Advanced' -ProjectPath $scaffolded)
+    $script:newWarnings = @('', 'real warning')
+    $script:keys.Enqueue('advanced')
+    & $faithful { Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null }
+    $wp = @($script:panels | Where-Object { $_.Header -eq 'Check these warnings' })
+    if (-not $script:threw12 -and $wp.Count -eq 1 -and $wp[0].Data -ceq "Scaffolding Tool[[1]] printed 1 warning(s):`n- real warning`n`nRead them before you write the install code.") { Ok 'a blank warning is skipped (no throw); the panel counts and lists the real one' } else { Bad "threw=$($script:threw12) panels: $($wp | ConvertTo-Json -Compress)" }
+
+    $script:threw12 = $null
+    # Hand-built (Complete-Win32ToolkitRunResult drops blank problems itself): a result from anywhere else may carry one.
+    $blankRR = [pscustomobject]@{ Command = 'New-Win32ToolkitManualApp'; ProjectPath = $scaffolded; ProjectName = 'x'; Mode = ''; Status = 'Failed'; Capture = 'NotRun'
+                                  Tests = @(); IntuneWinPath = ''; Published = @(); Problems = [string[]]@('', 'real problem') }
+    $blankRR.PSObject.TypeNames.Insert(0, 'Win32Toolkit.RunResult')
+    Reset-Run @($blankRR)
+    $script:keys.Enqueue('advanced')
+    & $faithful { Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null }
+    $p = LastPanel
+    if (-not $script:threw12 -and $p.Header -eq 'Scaffold failed' -and $p.Data -ceq "The project was not scaffolded:`n- real problem`n`nReview the messages above for details.") { Ok 'a blank problem is skipped (no throw); the real one is listed' } else { Bad "threw=$($script:threw12) panel: $($p | ConvertTo-Json -Compress)" }
 }
 finally {
     Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue

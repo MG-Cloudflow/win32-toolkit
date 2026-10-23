@@ -726,6 +726,23 @@ foreach ($npName in $npCases.Keys) {
     if (-not $r.Fqid -and $script:ExportNoPrompt -eq 'unbound') { Ok "$npName -PackageIntune without it -> NoPublishPrompt is not bound on the export (the CLI keeps its question)" } else { Bad "${npName}: fqid='$($r.Fqid)' export NoPublishPrompt=$script:ExportNoPrompt" }
 }
 
+# == [WV] the scaffold's warnings reach New-Win32ToolkitManualApp -WarningVariable (TUI audit G6) ===
+# The manual wizard shows them before the Advanced step clears the screen; a helper piped to Out-Null loses its
+# warnings for the caller's -WarningVariable (B1 #2). The two helpers are wrapped in a child scope to warn once each.
+Write-Host '[WV] the installer copy and the AppConfig write warnings reach New-Win32ToolkitManualApp -WarningVariable' -ForegroundColor Cyan
+$wvRun = {
+    $realAdd = ${function:Add-Win32ToolkitInstallerFiles}
+    $realSet = ${function:Set-Win32ToolkitAppConfig}
+    function Add-Win32ToolkitInstallerFiles { [CmdletBinding()] param($SourcePath, $FilesPath) Write-Warning 'installer copy warning (test shadow)'; & $realAdd -SourcePath $SourcePath -FilesPath $FilesPath }
+    function Set-Win32ToolkitAppConfig { [CmdletBinding()] param($ProjectPath, $Config) Write-Warning 'AppConfig write warning (test shadow)'; & $realSet -ProjectPath $ProjectPath -Config $Config }
+    $wv = $null
+    $null = New-Win32ToolkitManualApp -Name 'Tool' -Version '1.0' -Architecture x64 -SourcePath (Join-Path $src 'tool.msi') -TemplateName 'Contoso' -Force -Advanced -WarningVariable wv -WarningAction SilentlyContinue -ErrorAction SilentlyContinue 6>$null
+    @($wv | ForEach-Object { "$_" })
+}
+Clear-Project $toolProj; Reset-Case @{}
+$wvSeen = @(& $wvRun)
+if ($wvSeen -contains 'installer copy warning (test shadow)' -and $wvSeen -contains 'AppConfig write warning (test shadow)') { Ok 'both warnings are in New-Win32ToolkitManualApp -WarningVariable' } else { Bad "warnings: [$($wvSeen -join ' | ')]" }
+
 Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'PipelineFailClosed unit test PASSED' -ForegroundColor Green; exit 0 }
