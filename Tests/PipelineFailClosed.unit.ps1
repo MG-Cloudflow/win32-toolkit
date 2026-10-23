@@ -52,6 +52,9 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Assert-Win32ToolkitDependencyRef.ps1')
 . (Join-Path $repo 'Private\Initialize-Win32ToolkitRunResult.ps1')   # C-9: the result object (TUI audit G2, S8-F3)
 . (Join-Path $repo 'Private\Complete-Win32ToolkitRunResult.ps1')
+# C-9 (TUI audit G4): every error after the scaffold, before the end of the configure step, marks the project (temp folders).
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+. (Join-Path $repo 'Private\Write-Win32ToolkitNotConfiguredMarker.ps1')
 . (Join-Path $repo 'Public\Invoke-Win32Toolkit.ps1')
 . (Join-Path $repo 'Public\New-Win32ToolkitManualApp.ps1')
 . (Join-Path $repo 'Public\Complete-Win32ToolkitManualApp.ps1')
@@ -140,6 +143,7 @@ function Get-AppIconFromWinget {
     param($ProjectPath, $FilesPath)
     $script:Calls.Add('icon')
     if ($script:Mode.IconWarns) { Write-Warning 'No WinGet IconUrl found in YAML (test shadow)' }
+    if ($script:Mode.IconThrows) { throw (New-W32TError 'W32T.Test' 'icon step failed after the configure step') }
     $true
 }
 function Set-Win32ToolkitAppDependency { param($ProjectPath, $DependsOn, $DependencyType) $script:SetDepSeen = $PSBoundParameters }
@@ -621,6 +625,83 @@ Reset-Case @{}
 $script:NewTemplateCalls = 0
 $c = Invoke-Collect { Invoke-Win32Toolkit -NewTemplate -TemplateName 'Contoso' -ErrorAction SilentlyContinue -ErrorVariable ev }
 if ($script:NewTemplateCalls -eq 1 -and $c.Results.Count -eq 0 -and $c.Out.Count -eq 0 -and $c.Errors.Count -eq 0) { Ok 'Invoke-Win32Toolkit -NewTemplate returns no result object' } else { Bad "template calls=$script:NewTemplateCalls out=$($c.Out.Count) results=$($c.Results.Count) errors=[$($c.Errors -join ' | ')]" }
+
+# == [NC] a half-built project is marked not configured (TUI audit G4, S10-F2) =====================
+# Every error after a successful Create-PSADTProject and before the end of the configure step writes
+# Documentation\NotConfigured.json, then the error goes on unchanged. Each case starts from a removed project folder
+# (the Create-PSADTProject shadow keeps an existing folder), so no marker leaks between cases.
+Write-Host '[NC] every error between the scaffold and the end of the configure step marks the project not configured' -ForegroundColor Cyan
+$gitProj  = Join-Path $BASE 'Projects\Contoso\Git_x64_2.45.0'
+$toolProj = Join-Path $BASE 'Projects\Contoso\Tool_x64_1.0'
+function Get-Marker([string]$ProjectPath) {
+    $f = Join-Path $ProjectPath 'Documentation\NotConfigured.json'
+    if (Test-Path -LiteralPath $f) { Get-Content -LiteralPath $f -Raw | ConvertFrom-Json } else { $null }
+}
+function Clear-Project([string]$ProjectPath) { Remove-Item -LiteralPath $ProjectPath -Recurse -Force -ErrorAction SilentlyContinue }
+$markerText = { param($m) if ($m) { $m | Select-Object Stage, ErrorId, Reason | ConvertTo-Json -Compress } else { 'none' } }
+
+Clear-Project $gitProj; Reset-Case @{ GeneratorThrows = $true }
+$r = Invoke-Case $runInvoke
+$m = Get-Marker $gitProj
+if ($r.Fqid -eq 'W32T.UnsupportedTemplateShape' -and $m -and $m.Stage -eq 'Configure' -and $m.ErrorId -eq 'W32T.UnsupportedTemplateShape' -and ([string]$m.Reason).StartsWith('Unsupported PSADT template shape: ') -and $m.SchemaVersion -eq '1.0') {
+    Ok 'Invoke: a W32T generator error -> marker Stage Configure with that id and message; the error still reaches the caller unchanged'
+} else { Bad "fqid='$($r.Fqid)' marker=$(& $markerText $m)" }
+
+Clear-Project $gitProj; Reset-Case @{ ApplyFails = $true }
+$r = Invoke-Case $runInvoke
+$m = Get-Marker $gitProj
+if ($r.Fqid -eq 'W32T.PipelineAborted' -and $m -and $m.Stage -eq 'Configure' -and $m.ErrorId -eq 'W32T.PipelineAborted') { Ok 'Invoke: the org template not applied (W32T.PipelineAborted) -> marker Stage Configure' } else { Bad "fqid='$($r.Fqid)' marker=$(& $markerText $m)" }
+
+Clear-Project $gitProj; Reset-Case @{ DownloadUnavailable = $true }
+$r = Invoke-Case { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -InstallerType nullsoft -PackageIntune -PublishIntune -ErrorAction SilentlyContinue -ErrorVariable ev }
+$m = Get-Marker $gitProj
+if ($r.Fqid -eq 'W32T.InstallerVariantUnavailable' -and $r.Message.StartsWith('winget offers no vendor EXE installer for Git.Git (x64); tried: nullsoft, burn, inno, exe.') -and
+    $m -and $m.Stage -eq 'Download' -and $m.ErrorId -eq 'W32T.InstallerVariantUnavailable') {
+    Ok 'Invoke: no installer of the pinned family (W32T.InstallerVariantUnavailable) -> marker Stage Download; the error is unchanged'
+} else { Bad "fqid='$($r.Fqid)' marker=$(& $markerText $m)" }
+
+Clear-Project $gitProj; Reset-Case @{}
+$r = Invoke-Case $runInvoke
+if (-not $r.Fqid -and (Test-Path -LiteralPath $gitProj) -and $null -eq (Get-Marker $gitProj)) { Ok 'Invoke: a configured project is not marked' } else { Bad "fqid='$($r.Fqid)' marker=$(& $markerText (Get-Marker $gitProj))" }
+
+Clear-Project $gitProj; Reset-Case @{ IconThrows = $true }
+$r = Invoke-Case $runInvoke
+if ($r.Fqid -eq 'W32T.Test' -and 'icon' -in $script:Calls -and $null -eq (Get-Marker $gitProj)) { Ok 'Invoke: an error after the configure step (the icon step) is re-thrown and does NOT mark the project' } else { Bad "fqid='$($r.Fqid)' marker=$(& $markerText (Get-Marker $gitProj))" }
+
+# A re-created project starts without the marker its old folder had (Create-PSADTProject replaces the folder).
+Clear-Project $gitProj; Reset-Case @{ ApplyFails = $true }
+$null = Invoke-Case $runInvoke
+$had = $null -ne (Get-Marker $gitProj)
+Reset-Case @{ Recreate = $true }
+$r = Invoke-Case $runInvoke
+if ($had -and -not $r.Fqid -and $null -eq (Get-Marker $gitProj)) { Ok 'Invoke: re-creating the project removes the marker (the folder is replaced)' } else { Bad "had=$had fqid='$($r.Fqid)' marker=$(& $markerText (Get-Marker $gitProj))" }
+
+Clear-Project $toolProj; Reset-Case @{ ApplyFails = $true }
+$r = Invoke-Case $runManual
+$m = Get-Marker $toolProj
+if ($r.Fqid -eq 'W32T.PipelineAborted' -and $m -and $m.Stage -eq 'Configure' -and $m.ErrorId -eq 'W32T.PipelineAborted') { Ok 'New-: the org template not applied -> marker Stage Configure, W32T.PipelineAborted' } else { Bad "fqid='$($r.Fqid)' marker=$(& $markerText $m)" }
+
+$readmeSrc = Join-Path $BASE 'src-readme'; New-Item -ItemType Directory -Path $readmeSrc -Force | Out-Null; Set-Content (Join-Path $readmeSrc 'readme.txt') 'no installer here'
+Clear-Project $toolProj; Reset-Case @{}
+$r = Invoke-Case { New-Win32ToolkitManualApp -Name 'Tool' -Version '1.0' -Architecture x64 -SourcePath $readmeSrc -TemplateName 'Contoso' -Force -Continue -ErrorAction SilentlyContinue -ErrorVariable ev }
+$m = Get-Marker $toolProj
+if (-not $r.Fqid -and $m -and $m.Stage -eq 'Download' -and $m.ErrorId -eq '' -and ([string]$m.Reason).StartsWith('No installer (msi/exe/msix/appx) detected') -and
+    ($r.Errors | ForEach-Object { "$_" }) -match 'New-Win32ToolkitManualApp failed: No installer') {
+    Ok 'New-: a source without an installer -> marker Stage Download, ErrorId empty (non-W32T); the Write-Error still reaches -ErrorVariable'
+} else { Bad "fqid='$($r.Fqid)' marker=$(& $markerText $m) errors=[$($r.Errors -join ' | ')]" }
+
+Clear-Project $toolProj; Reset-Case @{ GeneratorPlainThrows = $true }
+$r = Invoke-Case $runManual
+$m = Get-Marker $toolProj
+if (-not $r.Fqid -and $m -and $m.Stage -eq 'Configure' -and $m.ErrorId -eq '' -and $m.Reason -eq 'plain generator failure') { Ok 'New-: a non-W32T generator error -> marker Stage Configure, ErrorId empty' } else { Bad "fqid='$($r.Fqid)' marker=$(& $markerText $m)" }
+
+Clear-Project $toolProj; Reset-Case @{}
+$r = Invoke-Case { New-Win32ToolkitManualApp -Name 'Tool' -Version '1.0' -Architecture x64 -SourcePath (Join-Path $BASE 'nope.msi') -TemplateName 'Contoso' -Force -ErrorAction SilentlyContinue -ErrorVariable ev }
+if (-not (Test-Path -LiteralPath (Join-Path $toolProj 'Documentation\NotConfigured.json'))) { Ok 'New-: a failure before the scaffold (source path not found) writes no marker' } else { Bad 'a marker was written before the scaffold' }
+
+Clear-Project $toolProj; Reset-Case @{}
+$r = Invoke-Case $runManual
+if (-not $r.Fqid -and (Test-Path -LiteralPath $toolProj) -and $null -eq (Get-Marker $toolProj)) { Ok 'New-: a configured project is not marked' } else { Bad "fqid='$($r.Fqid)' marker=$(& $markerText (Get-Marker $toolProj))" }
 
 Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''

@@ -24,7 +24,9 @@ function New-Win32ToolkitManualApp {
 
     Fails closed: when the project cannot be created, its deploy script uses a template layout this
     version does not support, or the org template cannot be applied, the command stops with a
-    terminating error.
+    terminating error. A project folder that was created but not configured (no installer found, a refused
+    configuration, any error before the org template is applied) is kept and marked not configured
+    (Documentation\NotConfigured.json) until the app is packaged again.
 
     Returns a result object (Win32Toolkit.RunResult): ProjectPath, ProjectName and Mode (Easy or Advanced)
     as before, plus Status (Succeeded, CompletedWithProblems, Failed, or Scaffolded when the project still
@@ -198,94 +200,112 @@ function New-Win32ToolkitManualApp {
         $runResult.ProjectPath = $projectFullPath
         $filesPath       = Join-Path $projectFullPath 'Files'
 
-        # ── Copy installer + detect type ──────────────────────────────────────────
-        Add-Win32ToolkitInstallerFiles -SourcePath $SourcePath -FilesPath $filesPath | Out-Null
-        $fileInfo = Get-InstallerFileInfo -FilesPath $filesPath
-        if (-not $fileInfo.FileName) { throw "No installer (msi/exe/msix/appx) detected in: $filesPath" }
-        Write-Host "Installer      : $($fileInfo.FileName) ($($fileInfo.Type.ToUpper()))" -ForegroundColor Green
+        # TUI audit G4 (S10-F2): Create-PSADTProject has just replaced the folder (and any earlier marker), so every
+        # error from here to the end of the configure step (the org template) leaves a half-built folder. The catch
+        # below marks it not configured (Documentation\NotConfigured.json; Export and Publish refuse it) and re-throws.
+        $markStage = 'Download'
+        try {
+            # ── Copy installer + detect type ──────────────────────────────────────────
+            Add-Win32ToolkitInstallerFiles -SourcePath $SourcePath -FilesPath $filesPath | Out-Null
+            $fileInfo = Get-InstallerFileInfo -FilesPath $filesPath
+            if (-not $fileInfo.FileName) { throw "No installer (msi/exe/msix/appx) detected in: $filesPath" }
+            Write-Host "Installer      : $($fileInfo.FileName) ($($fileInfo.Type.ToUpper()))" -ForegroundColor Green
 
-        # ── Write AppConfig (App + Installer) ─────────────────────────────────────
-        $isMsi = ($fileInfo.Type -eq 'msi')
-        $cfg = Get-Win32ToolkitAppConfig -ProjectPath $projectFullPath
-        $cfg | Add-Member -NotePropertyName App -NotePropertyValue ([pscustomobject]@{
-            Vendor         = if ($Publisher) { $Publisher } else { '' }
-            Name           = if ($isMsi) { '' } else { $Name }   # empty ⇒ Zero-Config MSI
-            DisplayName    = $Name                                # always populated (drives tattoo + detection)
-            Version        = $Version
-            Arch           = $Architecture
-            ScriptAuthor   = if ($script:OrgTemplate -and $script:OrgTemplate.AppScriptAuthor) { $script:OrgTemplate.AppScriptAuthor } else { '' }
-            ScriptDate     = (Get-Date -Format 'yyyy-MM-dd')
-            Description    = if ($Description) { $Description } else { '' }
-            InformationUrl = if ($InformationUrl) { $InformationUrl } else { '' }
-        }) -Force
-        $isAppx = $fileInfo.Type -in @('msix', 'appx')
-        $cfg | Add-Member -NotePropertyName Installer -NotePropertyValue ([pscustomobject]@{
-            Type       = $fileInfo.Type
-            FileName   = $fileInfo.FileName
-            SilentArgs = if ($isMsi -or $isAppx) { '' } elseif ($SilentArgs) { $SilentArgs } else { '' }
-        }) -Force
-        if (-not ($cfg.PSObject.Properties.Name -contains 'ProcessesToClose')) {
-            $cfg | Add-Member -NotePropertyName ProcessesToClose -NotePropertyValue @() -Force
-        }
+            $markStage = 'Configure'
+            # ── Write AppConfig (App + Installer) ─────────────────────────────────────
+            $isMsi = ($fileInfo.Type -eq 'msi')
+            $cfg = Get-Win32ToolkitAppConfig -ProjectPath $projectFullPath
+            $cfg | Add-Member -NotePropertyName App -NotePropertyValue ([pscustomobject]@{
+                Vendor         = if ($Publisher) { $Publisher } else { '' }
+                Name           = if ($isMsi) { '' } else { $Name }   # empty ⇒ Zero-Config MSI
+                DisplayName    = $Name                                # always populated (drives tattoo + detection)
+                Version        = $Version
+                Arch           = $Architecture
+                ScriptAuthor   = if ($script:OrgTemplate -and $script:OrgTemplate.AppScriptAuthor) { $script:OrgTemplate.AppScriptAuthor } else { '' }
+                ScriptDate     = (Get-Date -Format 'yyyy-MM-dd')
+                Description    = if ($Description) { $Description } else { '' }
+                InformationUrl = if ($InformationUrl) { $InformationUrl } else { '' }
+            }) -Force
+            $isAppx = $fileInfo.Type -in @('msix', 'appx')
+            $cfg | Add-Member -NotePropertyName Installer -NotePropertyValue ([pscustomobject]@{
+                Type       = $fileInfo.Type
+                FileName   = $fileInfo.FileName
+                SilentArgs = if ($isMsi -or $isAppx) { '' } elseif ($SilentArgs) { $SilentArgs } else { '' }
+            }) -Force
+            if (-not ($cfg.PSObject.Properties.Name -contains 'ProcessesToClose')) {
+                $cfg | Add-Member -NotePropertyName ProcessesToClose -NotePropertyValue @() -Force
+            }
 
-        # ---- Org-template Intune publish defaults + doc branding (data only) ----
-        # Mirrors Configure-PSADTForInstaller: a manual app never goes through that function, so without
-        # this every org-template Intune default (min-OS, restart behavior, max runtime, description
-        # boilerplate, privacy URL) and the doc branding were silently dropped for manual apps.
-        if ($script:OrgTemplate -and $script:OrgTemplate.PSObject.Properties['IntuneDefaults'] -and $script:OrgTemplate.IntuneDefaults) {
-            $cfg | Add-Member -NotePropertyName IntuneDefaults -NotePropertyValue (New-Win32ToolkitIntuneDefaults -Template $script:OrgTemplate) -Force
-        }
-        if ($script:OrgTemplate) {
-            $companyM   = if ($script:OrgTemplate.PSObject.Properties['CompanyName']) { [string]$script:OrgTemplate.CompanyName } else { '' }
-            $docFooterM = if ($script:OrgTemplate.PSObject.Properties['DocFooter'])   { [string]$script:OrgTemplate.DocFooter }   else { '' }
-            if (-not [string]::IsNullOrWhiteSpace($companyM) -or -not [string]::IsNullOrWhiteSpace($docFooterM)) {
-                $cfg | Add-Member -NotePropertyName Branding -NotePropertyValue ([pscustomobject]@{
-                    CompanyName = $companyM
-                    DocFooter   = $docFooterM
-                }) -Force
+            # ---- Org-template Intune publish defaults + doc branding (data only) ----
+            # Mirrors Configure-PSADTForInstaller: a manual app never goes through that function, so without
+            # this every org-template Intune default (min-OS, restart behavior, max runtime, description
+            # boilerplate, privacy URL) and the doc branding were silently dropped for manual apps.
+            if ($script:OrgTemplate -and $script:OrgTemplate.PSObject.Properties['IntuneDefaults'] -and $script:OrgTemplate.IntuneDefaults) {
+                $cfg | Add-Member -NotePropertyName IntuneDefaults -NotePropertyValue (New-Win32ToolkitIntuneDefaults -Template $script:OrgTemplate) -Force
+            }
+            if ($script:OrgTemplate) {
+                $companyM   = if ($script:OrgTemplate.PSObject.Properties['CompanyName']) { [string]$script:OrgTemplate.CompanyName } else { '' }
+                $docFooterM = if ($script:OrgTemplate.PSObject.Properties['DocFooter'])   { [string]$script:OrgTemplate.DocFooter }   else { '' }
+                if (-not [string]::IsNullOrWhiteSpace($companyM) -or -not [string]::IsNullOrWhiteSpace($docFooterM)) {
+                    $cfg | Add-Member -NotePropertyName Branding -NotePropertyValue ([pscustomobject]@{
+                        CompanyName = $companyM
+                        DocFooter   = $docFooterM
+                    }) -Force
+                }
+            }
+
+            Set-Win32ToolkitAppConfig -ProjectPath $projectFullPath -Config $cfg | Out-Null
+            Write-Host '✓ Wrote SupportFiles\AppConfig.json' -ForegroundColor Green
+
+            # Declare Intune app dependencies (data-only) now that AppConfig.json exists. They are resolved to
+            # real Intune app ids at publish time, and staged into the test/capture guest so the run installs
+            # them BEFORE this app — the same order Intune uses on a device.
+            if ($DependsOn) {
+                $declared = Set-Win32ToolkitAppDependency -ProjectPath $projectFullPath -DependsOn $DependsOn -DependencyType $DependencyType
+                Write-Host "✓ Dependencies   : $((@($declared) | ForEach-Object { "$($_.Source):$($_.Ref)" }) -join ', ')" -ForegroundColor Green
+            }
+
+            # MSIX/APPX: identity-driven uninstall data, written at configure time (capture-independent).
+            if ($isAppx) {
+                if (-not (Update-PSADTMsixUninstallLogic -ProjectPath $projectFullPath)) {
+                    Write-Warning 'MSIX uninstall data could not be written — the package would have no working uninstall.'
+                }
+            }
+
+            # ── Patch deploy script. Hard app = manual install region; uninstall always automated.
+            #    Only an EXE without silent args is hard (nothing to run automatically) — MSI uses
+            #    Zero-Config and msix/appx install via Add-AppxPackage/provisioning, no switches needed.
+            #    Critical generator problems throw W32T.* (propagated); $false = written and valid, with warnings.
+            $manual = [bool]$Advanced -or ($fileInfo.Type -eq 'exe' -and [string]::IsNullOrWhiteSpace($SilentArgs))
+            $patched = Set-PSADTDataDrivenScript -ScriptPath (Join-Path $projectFullPath 'Invoke-AppDeployToolkit.ps1') -ManualInstall:$manual
+            if ($patched) {
+                Write-Host ("✓ Deploy script patched ({0})" -f ($(if ($manual) { 'manual install region' } else { 'data-driven install' }))) -ForegroundColor Green
+            }
+            else {
+                Write-Warning 'Deploy-script patching did not complete cleanly (see warnings above) — review the project before packaging.'
+            }
+
+            # ── Org template ──────────────────────────────────────────────────────────
+            if ($script:OrgTemplate) {
+                Write-Verbose 'Applying org template...'
+                if (-not (Apply-OrgTemplate -ProjectPath $projectFullPath -Template $script:OrgTemplate -BasePath $BasePath)) {
+                    throw [System.Management.Automation.ErrorRecord]::new(
+                        [System.InvalidOperationException]::new('The org template could not be applied - the project was NOT finalised, tested, packaged or published (see the warnings above).'),
+                        'W32T.PipelineAborted', [System.Management.Automation.ErrorCategory]::InvalidResult, $projectFullPath)
+                }
             }
         }
-
-        Set-Win32ToolkitAppConfig -ProjectPath $projectFullPath -Config $cfg | Out-Null
-        Write-Host '✓ Wrote SupportFiles\AppConfig.json' -ForegroundColor Green
-
-        # Declare Intune app dependencies (data-only) now that AppConfig.json exists. They are resolved to
-        # real Intune app ids at publish time, and staged into the test/capture guest so the run installs
-        # them BEFORE this app — the same order Intune uses on a device.
-        if ($DependsOn) {
-            $declared = Set-Win32ToolkitAppDependency -ProjectPath $projectFullPath -DependsOn $DependsOn -DependencyType $DependencyType
-            Write-Host "✓ Dependencies   : $((@($declared) | ForEach-Object { "$($_.Source):$($_.Ref)" }) -join ', ')" -ForegroundColor Green
-        }
-
-        # MSIX/APPX: identity-driven uninstall data, written at configure time (capture-independent).
-        if ($isAppx) {
-            if (-not (Update-PSADTMsixUninstallLogic -ProjectPath $projectFullPath)) {
-                Write-Warning 'MSIX uninstall data could not be written — the package would have no working uninstall.'
+        catch {
+            # Every error between the scaffold and the end of the configure step leaves a half-built folder: mark it
+            # (G4), then re-throw it unchanged (W32T.* and non-W32T alike; the outer catch decides as before).
+            if ($markStage -ne 'Done') {
+                $markId = if ([string]$_.FullyQualifiedErrorId -like 'W32T.*') { [string]$_.FullyQualifiedErrorId } else { '' }
+                Write-Win32ToolkitNotConfiguredMarker -ProjectPath $projectFullPath -Stage $markStage -ErrorId $markId -Reason $_.Exception.Message
             }
+            throw
         }
 
-        # ── Patch deploy script. Hard app = manual install region; uninstall always automated.
-        #    Only an EXE without silent args is hard (nothing to run automatically) — MSI uses
-        #    Zero-Config and msix/appx install via Add-AppxPackage/provisioning, no switches needed.
-        #    Critical generator problems throw W32T.* (propagated); $false = written and valid, with warnings.
-        $manual = [bool]$Advanced -or ($fileInfo.Type -eq 'exe' -and [string]::IsNullOrWhiteSpace($SilentArgs))
-        $patched = Set-PSADTDataDrivenScript -ScriptPath (Join-Path $projectFullPath 'Invoke-AppDeployToolkit.ps1') -ManualInstall:$manual
-        if ($patched) {
-            Write-Host ("✓ Deploy script patched ({0})" -f ($(if ($manual) { 'manual install region' } else { 'data-driven install' }))) -ForegroundColor Green
-        }
-        else {
-            Write-Warning 'Deploy-script patching did not complete cleanly (see warnings above) — review the project before packaging.'
-        }
-
-        # ── Org template + optional icon ──────────────────────────────────────────
-        if ($script:OrgTemplate) {
-            Write-Verbose 'Applying org template...'
-            if (-not (Apply-OrgTemplate -ProjectPath $projectFullPath -Template $script:OrgTemplate -BasePath $BasePath)) {
-                throw [System.Management.Automation.ErrorRecord]::new(
-                    [System.InvalidOperationException]::new('The org template could not be applied - the project was NOT finalised, tested, packaged or published (see the warnings above).'),
-                    'W32T.PipelineAborted', [System.Management.Automation.ErrorCategory]::InvalidResult, $projectFullPath)
-            }
-        }
+        # ── Optional icon ─────────────────────────────────────────────────────────
         if ($IconPath -and (Test-Path -LiteralPath $IconPath)) {
             $assets = Join-Path $projectFullPath 'Assets'
             if (-not (Test-Path $assets)) { New-Item -Path $assets -ItemType Directory -Force | Out-Null }

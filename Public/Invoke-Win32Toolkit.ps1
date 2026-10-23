@@ -12,7 +12,9 @@ function Invoke-Win32Toolkit {
     configuration or the org template cannot be applied, or when the winget download fails
     (W32T.DownloadFailed; the warnings name every option that was skipped and the project folder is
     kept for a retry), the command stops with a terminating error and the project is NOT documented,
-    tested, packaged or published.
+    tested, packaged or published. A project folder that was created but not configured (a refused
+    configuration, a failed download, any error before the end of the configure step) is kept and marked
+    not configured (Documentation\NotConfigured.json) until the app is packaged again.
 
     Returns a result object (Win32Toolkit.RunResult): Status (Succeeded, CompletedWithProblems or Failed),
     the capture state, the test verdicts, the .intunewin built, the apps published and one plain sentence
@@ -359,131 +361,149 @@ function Invoke-Win32Toolkit {
         $projectCreated = Create-PSADTProject -ProjectName $projectName -ProjectPath $projectsDir -Force:$Force
 
         if ($projectCreated) {
-            $downloadPath    = Join-Path $projectFullPath 'Files'
+            # TUI audit G4 (S10-F2): Create-PSADTProject has just replaced the folder (and any earlier marker), so every
+            # error from here to the end of the configure step leaves a half-built folder. The catch below marks it
+            # not configured (Documentation\NotConfigured.json; Export and Publish refuse it) and re-throws the error.
+            $markStage = 'Download'
+            try {
+                $downloadPath    = Join-Path $projectFullPath 'Files'
 
-            if (!(Test-Path $downloadPath)) {
-                New-Item -Path $downloadPath -ItemType Directory -Force | Out-Null
-            }
-
-            if ($null -ne $publicationBackup -and -not (Test-Path -LiteralPath $publicationFile)) {
-                try {
-                    $null = New-Item -ItemType Directory -Path (Split-Path -Path $publicationFile -Parent) -Force
-                    [System.IO.File]::WriteAllBytes($publicationFile, $publicationBackup)
-                    Write-Verbose "Kept the Intune publication record of the rebuilt project: $publicationFile"
+                if (!(Test-Path $downloadPath)) {
+                    New-Item -Path $downloadPath -ItemType Directory -Force | Out-Null
                 }
-                catch {
-                    if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
-                    Write-Warning "Could not restore '$publicationFile' after the rebuild ($($_.Exception.Message)): republish the rebuilt version so later versions keep its installer technology."
+
+                if ($null -ne $publicationBackup -and -not (Test-Path -LiteralPath $publicationFile)) {
+                    try {
+                        $null = New-Item -ItemType Directory -Path (Split-Path -Path $publicationFile -Parent) -Force
+                        [System.IO.File]::WriteAllBytes($publicationFile, $publicationBackup)
+                        Write-Verbose "Kept the Intune publication record of the rebuilt project: $publicationFile"
+                    }
+                    catch {
+                        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                        Write-Warning "Could not restore '$publicationFile' after the rebuild ($($_.Exception.Message)): republish the rebuilt version so later versions keep its installer technology."
+                    }
                 }
-            }
 
-            # Installer technology (installer-identity PR 1): an explicit -InstallerType, else the technology of
-            # the version being rebuilt when it is itself published or pinned, else that of the highest
-            # published/pinned earlier version of this winget id in the template folder, else winget's choice.
-            # A pinned family with no installer for this version throws W32T.InstallerVariantUnavailable from
-            # the download (re-thrown by the catch below).
-            $pin = Resolve-Win32ToolkitInstallerPin -TemplateDirectory $projectsDir -WingetId $selectedApp.Id -Version $selectedApp.Version -InstallerType $InstallerType -ExcludePath $projectFullPath -TenantId $tenantId -SelfAnchor $selfAnchor
-            $techText = if ($pin.InstallerType) { "$($pin.InstallerType) ($($pin.Reason))" } else { "winget's choice" }
-            Write-Host "Installer technology: $techText" -ForegroundColor DarkGray
+                # Installer technology (installer-identity PR 1): an explicit -InstallerType, else the technology of
+                # the version being rebuilt when it is itself published or pinned, else that of the highest
+                # published/pinned earlier version of this winget id in the template folder, else winget's choice.
+                # A pinned family with no installer for this version throws W32T.InstallerVariantUnavailable from
+                # the download (re-thrown by the catch below).
+                $pin = Resolve-Win32ToolkitInstallerPin -TemplateDirectory $projectsDir -WingetId $selectedApp.Id -Version $selectedApp.Version -InstallerType $InstallerType -ExcludePath $projectFullPath -TenantId $tenantId -SelfAnchor $selfAnchor
+                $techText = if ($pin.InstallerType) { "$($pin.InstallerType) ($($pin.Reason))" } else { "winget's choice" }
+                Write-Host "Installer technology: $techText" -ForegroundColor DarkGray
 
-            Write-Verbose 'Downloading application to project Files directory...'
-            $downloadSuccess = Download-WingetApp -AppId $selectedApp.Id -AppName $selectedApp.Name -DownloadPath $downloadPath -Architecture $selectedArch -InstallerType $pin.InstallerType -PinnedBy $pin.PinnedBy -PinReason $pin.Reason
+                Write-Verbose 'Downloading application to project Files directory...'
+                $downloadSuccess = Download-WingetApp -AppId $selectedApp.Id -AppName $selectedApp.Name -DownloadPath $downloadPath -Architecture $selectedArch -InstallerType $pin.InstallerType -PinnedBy $pin.PinnedBy -PinReason $pin.Reason
 
-            if ($downloadSuccess) {
-                Write-Host "`n✓ App downloaded successfully!" -ForegroundColor Green
+                if ($downloadSuccess) {
+                    Write-Host "`n✓ App downloaded successfully!" -ForegroundColor Green
 
-                # Normalize the installer filename to AppName_arch_version.ext
-                Write-Verbose 'Normalizing installer filename...'
-                Rename-InstallerFile -FilesPath $downloadPath -AppName $selectedApp.Name -Version $selectedApp.Version -Architecture $selectedArch
+                    # Normalize the installer filename to AppName_arch_version.ext
+                    Write-Verbose 'Normalizing installer filename...'
+                    Rename-InstallerFile -FilesPath $downloadPath -AppName $selectedApp.Name -Version $selectedApp.Version -Architecture $selectedArch
 
-                # Configure PSADT based on downloaded installer type
-                Write-Verbose 'Configuring PSADT for installer type...'
-                # Critical generator problems throw W32T.* (propagated by the catch below); $false means
-                # the project is not configured - never document, test, package or publish it then.
-                $psadtConfigured = Configure-PSADTForInstaller -ProjectPath $projectFullPath -AppInfo $selectedApp -Architecture $selectedArch -InstallerPin $pin -BasePath $BasePath
-                if (-not $psadtConfigured) {
+                    # Configure PSADT based on downloaded installer type
+                    Write-Verbose 'Configuring PSADT for installer type...'
+                    # Critical generator problems throw W32T.* (propagated by the catch below); $false means
+                    # the project is not configured - never document, test, package or publish it then.
+                    $markStage = 'Configure'
+                    $psadtConfigured = Configure-PSADTForInstaller -ProjectPath $projectFullPath -AppInfo $selectedApp -Architecture $selectedArch -InstallerPin $pin -BasePath $BasePath
+                    if (-not $psadtConfigured) {
+                        throw [System.Management.Automation.ErrorRecord]::new(
+                            [System.InvalidOperationException]::new('PSADT configuration failed - the project was NOT documented, tested, packaged or published (see the warnings above).'),
+                            'W32T.PipelineAborted', [System.Management.Automation.ErrorCategory]::InvalidResult, $projectFullPath)
+                    }
+                    # Configured: an error after this point (icon, identity checks, dependencies, Finalize) is not marked.
+                    $markStage = 'Done'
+
+                    # Download and apply the app-specific icon from WinGet YAML
+                    Write-Verbose 'Downloading app icon from WinGet...'
+                    # '$null =', never '| Out-Null': a warning from a command in a pipeline does not reach this
+                    # command's -WarningVariable (re-verification 2026-10-21, B1 #2).
+                    $null = Get-AppIconFromWinget -ProjectPath $projectFullPath -FilesPath $downloadPath
+
+                    # Installer identity checks (other technologies winget ships, the earlier versions in this
+                    # template): warnings only, written to Documentation\IdentityDelta.json; never blocks (fail-open).
+                    $null = Write-Win32ToolkitIdentityDelta -ProjectPath $projectFullPath -TenantId $tenantId
+
+                    Write-Host "`n✓ SUCCESS: Project created, app downloaded, and PSADT configured!" -ForegroundColor Green
+
+                    Write-Host "Project location: $projectFullPath" -ForegroundColor Cyan
+                    Write-Host "Downloaded files:  $downloadPath"   -ForegroundColor Cyan
+
+                    # Declare Intune app dependencies (data-only). Written AFTER Configure-PSADTForInstaller so
+                    # AppConfig.json already exists, and BEFORE finalize so publishing can resolve + attach them.
+                    # The references were validated before the download; this re-check is the second line of defence.
+                    if ($DependsOn) {
+                        $declared = Set-Win32ToolkitAppDependency -ProjectPath $projectFullPath -DependsOn $DependsOn -DependencyType $DependencyType
+                        Write-Host "✓ Dependencies   : $((@($declared) | ForEach-Object { "$($_.Source):$($_.Ref)" }) -join ', ')" -ForegroundColor Green
+                    }
+
+                    # Documentation capture, uninstall automation, and optional test/package/publish
+                    # (shared with the manual-app flow — see Invoke-Win32ToolkitFinalize).
+                    # BasePath: the capture and every test stage 'project:' dependencies from this run's base folder.
+                    $finalize = @{ ProjectPath = $projectFullPath; ProjectName = $projectName; AppInfo = $selectedApp; BasePath = $BasePath; Result = $runResult }
+                    if ($RunTest) { $finalize['RunTest'] = $RunTest }   # omit when null (ValidateSet rejects $null)
+                    if ($UpdateVersionsBack)    { $finalize['UpdateVersionsBack']    = $UpdateVersionsBack }
+                    if ($UpdateSpecificVersion) { $finalize['UpdateSpecificVersion'] = $UpdateSpecificVersion }
+                    if ($PSBoundParameters.ContainsKey('UpdateBaselineInstallerType')) { $finalize['UpdateBaselineInstallerType'] = $UpdateBaselineInstallerType }
+                    Invoke-Win32ToolkitFinalize @finalize -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune -PublishUpdate:$PublishUpdate
+                    return (Complete-Win32ToolkitRunResult -Result $runResult)
+
+                }
+                else {
+                    # The download failed, so Rename/Configure/Finalize above were all skipped. Anything the
+                    # user asked for downstream (test, package, publish, dependencies) did NOT happen.
+                    # Name the options they actually supplied — a failed run must never look like a published one.
+                    # The warnings come first; then the run stops with W32T.DownloadFailed (TUI audit G2, S10-F6 a).
+                    # The project folder is deliberately kept so the run can be retried.
+                    Write-Warning "Download FAILED for '$($selectedApp.Id)' ($selectedArch) - no installer was placed in the project's Files folder."
+
+                    $skipped = [System.Collections.Generic.List[string]]::new()
+                    if ($PSBoundParameters.ContainsKey('RunTest') -and $RunTest) {
+                        $skipped.Add("-RunTest ($($RunTest -join ', ')): the package was NOT tested - no Sandbox/Hyper-V run happened.")
+                    }
+                    if ($PSBoundParameters.ContainsKey('PackageIntune') -and $PackageIntune) {
+                        $skipped.Add('-PackageIntune: NOTHING was packaged - no .intunewin file was produced.')
+                    }
+                    if ($PSBoundParameters.ContainsKey('PublishIntune') -and $PublishIntune) {
+                        $skipped.Add('-PublishIntune: NOTHING was published - no app was uploaded to Intune.')
+                    }
+                    if ($PSBoundParameters.ContainsKey('PublishUpdate') -and $PublishUpdate) {
+                        $skipped.Add('-PublishUpdate: no update app was published to Intune.')
+                    }
+                    if ($PSBoundParameters.ContainsKey('DependsOn') -and $DependsOn) {
+                        $skipped.Add("-DependsOn ($($DependsOn -join ', ')): no dependencies were declared on the project.")
+                    }
+
+                    if ($skipped.Count -gt 0) {
+                        Write-Warning 'The following options you passed were SKIPPED because the download failed:'
+                        foreach ($item in $skipped) { Write-Warning "  * $item" }
+                    }
+
+                    Write-Warning "The project folder was still created: $projectFullPath"
+                    Write-Warning "Next: if winget reported a transient error (network, timeout), re-run the same command. An authentication or 'no package found' error shown above fails the same way on a re-run."
+                    # Do NOT tell the user to drop an installer into Files\ and re-run: Create-PSADTProject removes
+                    # and recreates the project directory on every run, so anything placed there by hand is deleted
+                    # before the (still failing) download is retried. Supplying your own installer is the MANUAL
+                    # flow's job.
+                    Write-Warning "To package an installer you supply yourself, use the manual flow instead:"
+                    Write-Warning "  New-Win32ToolkitManualApp -Name '$($selectedApp.Name)' -Version '$($selectedApp.Version)' -Architecture $selectedArch -SourcePath <path-to-your-installer>"
+                    Write-Warning "Do not copy files into '$downloadPath' and re-run this command — the project folder is recreated from scratch each run, which would delete them."
                     throw [System.Management.Automation.ErrorRecord]::new(
-                        [System.InvalidOperationException]::new('PSADT configuration failed - the project was NOT documented, tested, packaged or published (see the warnings above).'),
-                        'W32T.PipelineAborted', [System.Management.Automation.ErrorCategory]::InvalidResult, $projectFullPath)
+                        [System.InvalidOperationException]::new("Download FAILED for '$($selectedApp.Id)' ($selectedArch): nothing was configured, tested, packaged or published. The project folder was kept for a retry and marked not configured: $projectFullPath (see the warnings above)."),
+                        'W32T.DownloadFailed', [System.Management.Automation.ErrorCategory]::ResourceUnavailable, $projectFullPath)
                 }
-
-                # Download and apply the app-specific icon from WinGet YAML
-                Write-Verbose 'Downloading app icon from WinGet...'
-                # '$null =', never '| Out-Null': a warning from a command in a pipeline does not reach this
-                # command's -WarningVariable (re-verification 2026-10-21, B1 #2).
-                $null = Get-AppIconFromWinget -ProjectPath $projectFullPath -FilesPath $downloadPath
-
-                # Installer identity checks (other technologies winget ships, the earlier versions in this
-                # template): warnings only, written to Documentation\IdentityDelta.json; never blocks (fail-open).
-                $null = Write-Win32ToolkitIdentityDelta -ProjectPath $projectFullPath -TenantId $tenantId
-
-                Write-Host "`n✓ SUCCESS: Project created, app downloaded, and PSADT configured!" -ForegroundColor Green
-
-                Write-Host "Project location: $projectFullPath" -ForegroundColor Cyan
-                Write-Host "Downloaded files:  $downloadPath"   -ForegroundColor Cyan
-
-                # Declare Intune app dependencies (data-only). Written AFTER Configure-PSADTForInstaller so
-                # AppConfig.json already exists, and BEFORE finalize so publishing can resolve + attach them.
-                # The references were validated before the download; this re-check is the second line of defence.
-                if ($DependsOn) {
-                    $declared = Set-Win32ToolkitAppDependency -ProjectPath $projectFullPath -DependsOn $DependsOn -DependencyType $DependencyType
-                    Write-Host "✓ Dependencies   : $((@($declared) | ForEach-Object { "$($_.Source):$($_.Ref)" }) -join ', ')" -ForegroundColor Green
-                }
-
-                # Documentation capture, uninstall automation, and optional test/package/publish
-                # (shared with the manual-app flow — see Invoke-Win32ToolkitFinalize).
-                # BasePath: the capture and every test stage 'project:' dependencies from this run's base folder.
-                $finalize = @{ ProjectPath = $projectFullPath; ProjectName = $projectName; AppInfo = $selectedApp; BasePath = $BasePath; Result = $runResult }
-                if ($RunTest) { $finalize['RunTest'] = $RunTest }   # omit when null (ValidateSet rejects $null)
-                if ($UpdateVersionsBack)    { $finalize['UpdateVersionsBack']    = $UpdateVersionsBack }
-                if ($UpdateSpecificVersion) { $finalize['UpdateSpecificVersion'] = $UpdateSpecificVersion }
-                if ($PSBoundParameters.ContainsKey('UpdateBaselineInstallerType')) { $finalize['UpdateBaselineInstallerType'] = $UpdateBaselineInstallerType }
-                Invoke-Win32ToolkitFinalize @finalize -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune -PublishUpdate:$PublishUpdate
-                return (Complete-Win32ToolkitRunResult -Result $runResult)
-
             }
-            else {
-                # The download failed, so Rename/Configure/Finalize above were all skipped. Anything the
-                # user asked for downstream (test, package, publish, dependencies) did NOT happen.
-                # Name the options they actually supplied — a failed run must never look like a published one.
-                # The warnings come first; then the run stops with W32T.DownloadFailed (TUI audit G2, S10-F6 a).
-                # The project folder is deliberately kept so the run can be retried.
-                Write-Warning "Download FAILED for '$($selectedApp.Id)' ($selectedArch) - no installer was placed in the project's Files folder."
-
-                $skipped = [System.Collections.Generic.List[string]]::new()
-                if ($PSBoundParameters.ContainsKey('RunTest') -and $RunTest) {
-                    $skipped.Add("-RunTest ($($RunTest -join ', ')): the package was NOT tested - no Sandbox/Hyper-V run happened.")
+            catch {
+                # Every error between the scaffold and the end of the configure step leaves a half-built folder: mark it
+                # (G4), then re-throw it unchanged (W32T.* and non-W32T alike; the outer catch decides as before).
+                if ($markStage -ne 'Done') {
+                    $markId = if ([string]$_.FullyQualifiedErrorId -like 'W32T.*') { [string]$_.FullyQualifiedErrorId } else { '' }
+                    Write-Win32ToolkitNotConfiguredMarker -ProjectPath $projectFullPath -Stage $markStage -ErrorId $markId -Reason $_.Exception.Message
                 }
-                if ($PSBoundParameters.ContainsKey('PackageIntune') -and $PackageIntune) {
-                    $skipped.Add('-PackageIntune: NOTHING was packaged - no .intunewin file was produced.')
-                }
-                if ($PSBoundParameters.ContainsKey('PublishIntune') -and $PublishIntune) {
-                    $skipped.Add('-PublishIntune: NOTHING was published - no app was uploaded to Intune.')
-                }
-                if ($PSBoundParameters.ContainsKey('PublishUpdate') -and $PublishUpdate) {
-                    $skipped.Add('-PublishUpdate: no update app was published to Intune.')
-                }
-                if ($PSBoundParameters.ContainsKey('DependsOn') -and $DependsOn) {
-                    $skipped.Add("-DependsOn ($($DependsOn -join ', ')): no dependencies were declared on the project.")
-                }
-
-                if ($skipped.Count -gt 0) {
-                    Write-Warning 'The following options you passed were SKIPPED because the download failed:'
-                    foreach ($item in $skipped) { Write-Warning "  * $item" }
-                }
-
-                Write-Warning "The project folder was still created: $projectFullPath"
-                Write-Warning "Next: if winget reported a transient error (network, timeout), re-run the same command. An authentication or 'no package found' error shown above fails the same way on a re-run."
-                # Do NOT tell the user to drop an installer into Files\ and re-run: Create-PSADTProject removes
-                # and recreates the project directory on every run, so anything placed there by hand is deleted
-                # before the (still failing) download is retried. Supplying your own installer is the MANUAL
-                # flow's job.
-                Write-Warning "To package an installer you supply yourself, use the manual flow instead:"
-                Write-Warning "  New-Win32ToolkitManualApp -Name '$($selectedApp.Name)' -Version '$($selectedApp.Version)' -Architecture $selectedArch -SourcePath <path-to-your-installer>"
-                Write-Warning "Do not copy files into '$downloadPath' and re-run this command — the project folder is recreated from scratch each run, which would delete them."
-                throw [System.Management.Automation.ErrorRecord]::new(
-                    [System.InvalidOperationException]::new("Download FAILED for '$($selectedApp.Id)' ($selectedArch): nothing was configured, tested, packaged or published. The project folder was kept for a retry: $projectFullPath (see the warnings above)."),
-                    'W32T.DownloadFailed', [System.Management.Automation.ErrorCategory]::ResourceUnavailable, $projectFullPath)
+                throw
             }
         }
         else {

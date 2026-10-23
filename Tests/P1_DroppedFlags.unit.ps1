@@ -42,6 +42,9 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Assert-Win32ToolkitDependencyRef.ps1')
 . (Join-Path $repo 'Private\Initialize-Win32ToolkitRunResult.ps1')   # C-9: the result object (TUI audit G2, S8-F3)
 . (Join-Path $repo 'Private\Complete-Win32ToolkitRunResult.ps1')
+# C-9 (TUI audit G4): every error after the scaffold, before the end of the configure step, marks the project (temp folders).
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+. (Join-Path $repo 'Private\Write-Win32ToolkitNotConfiguredMarker.ps1')
 . (Join-Path $repo 'Public\Invoke-Win32Toolkit.ps1')
 
 # ── shadows: everything that would touch winget / the registry / the disk / Intune ───────────────
@@ -136,6 +139,12 @@ $wantStart = "Download FAILED for 'Git.Git' (x64): nothing was configured, teste
 if ($r.Threw -and $r.Threw.Exception.Message.StartsWith($wantStart) -and $r.Threw.Exception.Message.Contains((Join-Path $script:tmpBase 'Projects\TestTpl\Git_x64_2.45.0'))) { Ok 'the error message names the app, the architecture and the kept project folder' }
 else { Bad "message: $(if ($r.Threw) { $r.Threw.Exception.Message })" }
 if ($r.Threw -and [string]$r.Threw.TargetObject -eq (Join-Path $script:tmpBase 'Projects\TestTpl\Git_x64_2.45.0')) { Ok 'its TargetObject is the project path' } else { Bad "TargetObject: $(if ($r.Threw) { $r.Threw.TargetObject })" }
+# TUI audit G4: the kept folder is marked not configured (Stage Download, the W32T id), and the message says so.
+$markerFile = Join-Path $script:tmpBase 'Projects\TestTpl\Git_x64_2.45.0\Documentation\NotConfigured.json'
+$marker = if (Test-Path -LiteralPath $markerFile) { Get-Content -LiteralPath $markerFile -Raw | ConvertFrom-Json } else { $null }
+if ($marker -and $marker.Stage -eq 'Download' -and $marker.ErrorId -eq 'W32T.DownloadFailed' -and ([string]$marker.Reason).StartsWith("Download FAILED for 'Git.Git' (x64)")) { Ok 'the kept project folder is marked not configured: Stage Download, ErrorId W32T.DownloadFailed' }
+else { Bad "marker: $(if ($marker) { $marker | ConvertTo-Json -Compress } else { 'none' })" }
+if ($r.Threw -and $r.Threw.Exception.Message.Contains('The project folder was kept for a retry and marked not configured: ')) { Ok "the message says 'kept for a retry and marked not configured'" } else { Bad "message: $(if ($r.Threw) { $r.Threw.Exception.Message })" }
 if ($r.Text -match '(?i)download\s+failed' -and $r.Text -match [regex]::Escape('-PublishIntune')) { Ok 'the warnings were written before the error (the error does not replace them)' }
 else { Bad "warnings before the error:`n$($r.Text)" }
 

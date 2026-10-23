@@ -55,7 +55,9 @@ The pipeline **fails closed**. If the project cannot be created, if its deploy s
 PSAppDeployToolkit template layout this version knows (the error starts with
 `Unsupported PSADT template shape:`), if the installer configuration or the org template cannot be
 applied, or if the winget download fails (`W32T.DownloadFailed`), the command stops with an error
-before anything is captured, tested, packaged or published.
+before anything is captured, tested, packaged or published. When the project folder was already
+created, it is kept and marked not configured (`Documentation\NotConfigured.json`) until you package
+the app again.
 It never ships a deploy script it could not generate correctly.
 
 Each pipeline command returns a result object (`Status`: Succeeded, CompletedWithProblems, Failed or
