@@ -22,6 +22,9 @@ Works with the win32-toolkit template-grouped folder layout:
 Steps performed:
 1.
 Resolves the target project (interactive picker if ProjectPath is omitted).
+   A project marked not configured (its build stopped after the project folder was created: a
+   refused configuration, a failed download, no installer found) is refused with
+   W32T.ProjectNotConfigured, also under -WhatIf and with no override: re-create it.
    Then refuses to package a deploy script win32-toolkit cannot vouch for
    (Assert-Win32ToolkitPackageReady -Stage Export), before anything is downloaded or copied: the
    script must exist and parse (also under Windows PowerShell 5.1, which Intune uses), carry the

@@ -26,7 +26,8 @@ kept for a retry), the command stops with a terminating error and the project is
 tested, packaged or published.
 A project folder that was created but not configured (a refused
 configuration, a failed download, any error before the end of the configure step) is kept and marked
-not configured (Documentation\NotConfigured.json) until the app is packaged again.
+not configured (Documentation\NotConfigured.json): Export-Win32ToolkitIntuneWin and
+Publish-Win32ToolkitIntuneApp refuse it (W32T.ProjectNotConfigured) until the app is packaged again.
 
 Returns a result object (Win32Toolkit.RunResult): Status (Succeeded, CompletedWithProblems or Failed),
 the capture state, the test verdicts, the .intunewin built, the apps published and one plain sentence

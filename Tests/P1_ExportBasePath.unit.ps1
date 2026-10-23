@@ -23,6 +23,10 @@ $fail = 0
 function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+# C-9 (TUI audit G4): the not-configured gate runs first (no marker here -> it returns nothing).
+. (Join-Path $repo 'Private\Get-Win32ToolkitNotConfiguredMarker.ps1')
+. (Join-Path $repo 'Private\Assert-Win32ToolkitProjectConfigured.ps1')
 . (Join-Path $repo 'Public\Export-Win32ToolkitIntuneWin.ps1')
 
 # ── Shadows: nothing real may run ────────────────────────────────────────────────────────────────

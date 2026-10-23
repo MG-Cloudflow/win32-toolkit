@@ -25,12 +25,17 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Get-Win32ToolkitTenantInfo.ps1')    # tenant banner lookup (Assert dep)
 . (Join-Path $repo 'Private\Assert-Win32ToolkitTenant.ps1')     # Publish verifies the tenant before writing
 . (Join-Path $repo 'Private\Get-Win32ToolkitIntuneCommandLine.ps1') # the install/uninstall command lines Publish sends
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+# C-9 (TUI audit G4): the not-configured gate runs first (no marker here -> it returns nothing).
+. (Join-Path $repo 'Private\Get-Win32ToolkitNotConfiguredMarker.ps1')
+. (Join-Path $repo 'Private\Assert-Win32ToolkitProjectConfigured.ps1')
 . (Join-Path $repo 'Public\Publish-Win32ToolkitIntuneApp.ps1')
 
 $APPID = '11111111-2222-3333-4444-555555555555'
 
 # --- shadow the entire Graph + packaging layer ----------------------------------------------------
-function Connect-Win32ToolkitGraph { }
+$script:connectCalls = 0; $script:advisoryCalls = 0; $script:configReads = 0
+function Connect-Win32ToolkitGraph { $script:connectCalls++ }
 function Get-Win32ToolkitTenantInfo { $null }   # never let the tenant-name lookup hit the network
 $INNER = 'IntuneWinPackage/Contents/payload.bin'
 function Get-Win32IntuneWinMetadata {
@@ -50,12 +55,12 @@ function Get-Win32IntuneWinMetadata {
 function Get-Win32DetectionRules { param($ProjectPath) @(@{ '@odata.type' = '#microsoft.graph.win32LobAppRegistryDetection' }) }
 # A real rule: Publish (rightly) refuses -AsUpdate without one, or the update app would hit every device.
 function Get-Win32ToolkitRequirementRule { param($ProjectPath) 'if ($true) { "Installed" }' }
-function Get-Win32ToolkitAppConfig { param($ProjectPath) [pscustomobject]@{ App = [pscustomobject]@{ DisplayName = 'Test App'; Version = '1.0'; Publisher = 'ACME' } } }
+function Get-Win32ToolkitAppConfig { param($ProjectPath) $script:configReads++; [pscustomobject]@{ App = [pscustomobject]@{ DisplayName = 'Test App'; Version = '1.0'; Publisher = 'ACME' } } }
 function Get-YAMLInstallerInfo { param($FilesPath) $null }
 # Publish now resolves + attaches app dependencies and records the publication; this project declares none.
 function Get-MgContext { [pscustomobject]@{ TenantId = 'tenant-1' } }
 function Resolve-Win32ToolkitDependencies { param($ProjectPath, $TenantId, $BaseUri) @() }
-function Write-Win32ToolkitPackageAdvisory { param($ProjectPath, $Context, $AppLabel, [switch]$ProbeIfMissing) $null = $ProjectPath, $Context, $AppLabel, $ProbeIfMissing }   # the package advisory (PackageAdvisory.unit covers it)
+function Write-Win32ToolkitPackageAdvisory { param($ProjectPath, $Context, $AppLabel, [switch]$ProbeIfMissing) $null = $ProjectPath, $Context, $AppLabel, $ProbeIfMissing; $script:advisoryCalls++ }   # the package advisory (PackageAdvisory.unit covers it)
 function Set-Win32ToolkitAppRelationships { param($AppId, $Dependency, $BaseUri) 0 }
 function Set-Win32ToolkitPublication { param($ProjectPath, $AppId, $TenantId, $DisplayName, $DisplayVersion, $WingetId) 'p' }
 function Invoke-AzBlobUpload { param($SasUri, $FilePath) }
@@ -104,6 +109,23 @@ Write-Host '[2] -AsUpdate flags the result (dependencies must NOT attach to the 
 $script:committed = $false
 $outU = @(Publish-Win32ToolkitIntuneApp -IntuneWinPath $win -ProjectPath $tmp -AsUpdate 6>$null)
 if ($outU[0].IsUpdateApp -eq $true) { Ok 'IsUpdateApp=true under -AsUpdate' } else { Bad "IsUpdateApp=$($outU[0].IsUpdateApp)" }
+
+Write-Host '[3] a project marked not configured is refused before anything is read or signed in to (TUI audit G4)' -ForegroundColor Cyan
+$marked = Join-Path $tmp 'Marked_x64_1.0'
+New-Item -ItemType Directory -Path (Join-Path $marked 'Documentation') -Force | Out-Null
+$markerFile = Join-Path $marked 'Documentation\NotConfigured.json'
+[System.IO.File]::WriteAllText($markerFile, '{ "SchemaVersion": "1.0", "Stage": "Configure", "ErrorId": "W32T.PipelineAborted", "Reason": "r", "TimestampUtc": "2026-10-23T10:15:00.0000000Z" }', [System.Text.UTF8Encoding]::new($false))
+foreach ($asUpdate in $false, $true) {
+    $script:connectCalls = 0; $script:advisoryCalls = 0; $script:configReads = 0; $script:committed = $false
+    $err = $null; $o = @()
+    try { $o = @(Publish-Win32ToolkitIntuneApp -IntuneWinPath $win -ProjectPath $marked -AsUpdate:$asUpdate 6>$null 3>$null) } catch { $err = $_ }
+    $msg = if ($err) { $err.Exception.Message } else { '' }
+    if ($err.FullyQualifiedErrorId -eq 'W32T.ProjectNotConfigured' -and $msg.StartsWith("'Marked_x64_1.0' is marked not configured and cannot be published: ") -and
+        $msg.EndsWith("Nothing was published. Marker: $markerFile") -and $o.Count -eq 0) {
+        Ok "marked project (-AsUpdate:$asUpdate) -> W32T.ProjectNotConfigured passes through Publish unchanged ('cannot be published', 'Nothing was published')"
+    } else { Bad "marked -> $($err.FullyQualifiedErrorId): $msg" }
+    if ($script:connectCalls -eq 0 -and $script:advisoryCalls -eq 0 -and $script:configReads -eq 0) { Ok 'no metadata read, no package advisory, no Graph sign-in' } else { Bad "connect=$script:connectCalls advisory=$script:advisoryCalls config reads=$script:configReads" }
+}
 
 Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 

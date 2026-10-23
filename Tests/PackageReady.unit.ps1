@@ -346,6 +346,10 @@ try {
 
     # == [15] Export wiring ============================================================================
     Write-Host '[15] Export-Win32ToolkitIntuneWin runs the gate first and lets W32T.* through (C-2)' -ForegroundColor Cyan
+    . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+    # C-9 (TUI audit G4): the not-configured gate runs first (no marker here -> it returns nothing).
+    . (Join-Path $repo 'Private\Get-Win32ToolkitNotConfiguredMarker.ps1')
+    . (Join-Path $repo 'Private\Assert-Win32ToolkitProjectConfigured.ps1')
     . (Join-Path $repo 'Public\Export-Win32ToolkitIntuneWin.ps1')
     # Export's first helper after the gate (called unconditionally, before IntuneWinAppUtil.exe is located,
     # downloaded or run, before Staging and before any publish): reaching it proves the gate passed, and
@@ -395,6 +399,59 @@ try {
     $x = Invoke-ExportGate -ProjectPath $expBad -AllowLegacyScript
     if ($x.Error.FullyQualifiedErrorId -eq 'W32T.TestSentinel' -and @($x.Warnings | Where-Object { $_ -match $prefixRx }).Count -eq 1) { Ok 'Export -AllowLegacyScript is passed to the gate -> past it with the shape warning' }
     else { Bad "Export -AllowLegacyScript -> $($x.Error.FullyQualifiedErrorId); warnings: $($x.Warnings -join ' | ')" }
+
+    # == [15b] a project marked not configured (TUI audit G4, S10-F2) ==================================
+    Write-Host '[15b] Export refuses a project marked not configured (W32T.ProjectNotConfigured) before the package gate' -ForegroundColor Cyan
+    $expMarked = Build-PkgProject -Name 'ExpMarked' -Parent $tier
+    $markerFile = Join-Path $expMarked 'Documentation\NotConfigured.json'
+    New-Item -ItemType Directory -Path (Split-Path $markerFile) -Force | Out-Null
+    $writeMarker = { param([string]$Json) [System.IO.File]::WriteAllText($markerFile, $Json, [System.Text.UTF8Encoding]::new($false)) }
+    # Count the package gate (the real one, restored after this section).
+    $realPackageGate = ${function:Assert-Win32ToolkitPackageReady}
+    $script:pkgGateCalls = 0
+    ${function:Assert-Win32ToolkitPackageReady} = {
+        param([string]$ProjectPath, [string]$Stage, [switch]$AllowLegacyScript)
+        $script:pkgGateCalls++
+        & $realPackageGate -ProjectPath $ProjectPath -Stage $Stage -AllowLegacyScript:$AllowLegacyScript
+    }
+    try {
+        & $writeMarker '{ "SchemaVersion": "1.0", "Stage": "Configure", "ErrorId": "W32T.OrgExtensionInvalid", "Reason": "Org extension module ''PSAppDeployToolkit.Contoso'' cannot be used: bad.", "TimestampUtc": "2026-10-23T10:15:00.0000000Z" }'
+        $want = "'ExpMarked' is marked not configured and cannot be packaged: its configuration failed or was refused (W32T.OrgExtensionInvalid: Org extension module 'PSAppDeployToolkit.Contoso' cannot be used: bad). " +
+                "It would ship without its org template or installer configuration (PSADT's default dialogs, no org hooks). " +
+                'Re-create it once the cause is fixed: package the app again (Invoke-Win32Toolkit or New-Win32ToolkitManualApp; in the menu, Package an app or Package a manual app), which replaces the folder. ' +
+                "Nothing was packaged or published. Marker: $markerFile"
+        Initialize-TestDouble; $script:pkgGateCalls = 0
+        $x = Invoke-ExportGate -ProjectPath $expMarked
+        if ($x.Error.FullyQualifiedErrorId -eq 'W32T.ProjectNotConfigured' -and $x.Error.Exception.Message -ceq $want -and $x.Error.CategoryInfo.Category -eq 'InvalidOperation' -and [string]$x.Error.TargetObject -eq $expMarked) {
+            Ok 'marked project -> W32T.ProjectNotConfigured with the exact message (stage, id, reason, no override, the marker path)'
+        } else { Bad "marked -> $($x.Error.FullyQualifiedErrorId): $($x.Error.Exception.Message)" }
+        if ($script:pkgGateCalls -eq 0) { Ok 'Assert-Win32ToolkitPackageReady was not reached (the not-configured gate runs first)' } else { Bad "package gate calls: $script:pkgGateCalls" }
+        Initialize-TestDouble; $script:pkgGateCalls = 0
+        $err = $null
+        try { Export-Win32ToolkitIntuneWin -ProjectPath $expMarked -NoPublishPrompt -WhatIf 3>$null 6>$null } catch { $err = $_ }
+        if ($err.FullyQualifiedErrorId -eq 'W32T.ProjectNotConfigured' -and $script:pkgGateCalls -eq 0) { Ok 'also under -WhatIf' } else { Bad "-WhatIf -> $($err.FullyQualifiedErrorId)" }
+        Initialize-TestDouble; $script:pkgGateCalls = 0
+        $x = Invoke-ExportGate -ProjectPath $expMarked -AllowLegacyScript
+        if ($x.Error.FullyQualifiedErrorId -eq 'W32T.ProjectNotConfigured' -and $script:pkgGateCalls -eq 0) { Ok 'also with -AllowLegacyScript (no override)' } else { Bad "-AllowLegacyScript -> $($x.Error.FullyQualifiedErrorId)" }
+
+        & $writeMarker '{ "SchemaVersion": "1.0", "Stage": "Download", "ErrorId": "", "Reason": "No installer (msi/exe/msix/appx) detected in: C:\\x\\Files", "TimestampUtc": "2026-10-23T10:15:00.0000000Z" }'
+        Initialize-TestDouble
+        $x = Invoke-ExportGate -ProjectPath $expMarked
+        if ($x.Error.FullyQualifiedErrorId -eq 'W32T.ProjectNotConfigured' -and $x.Error.Exception.Message.StartsWith("'ExpMarked' is marked not configured and cannot be packaged: its installer could not be downloaded or added (No installer (msi/exe/msix/appx) detected in: C:\x\Files). It would ship")) {
+            Ok "Stage Download without an id -> 'its installer could not be downloaded or added' and the bracket ({Reason})"
+        } else { Bad "download marker -> $($x.Error.Exception.Message)" }
+
+        & $writeMarker '{ not json'
+        Initialize-TestDouble
+        $x = Invoke-ExportGate -ProjectPath $expMarked
+        if ($x.Error.FullyQualifiedErrorId -eq 'W32T.ProjectNotConfigured' -and $x.Error.Exception.Message.StartsWith("'ExpMarked' is marked not configured and cannot be packaged: the marker could not be read. It would ship")) { Ok 'an unreadable marker still refuses (fail closed): "the marker could not be read"' } else { Bad "garbled marker -> $($x.Error.FullyQualifiedErrorId): $($x.Error.Exception.Message)" }
+
+        Remove-Item -LiteralPath $markerFile -Force
+        Initialize-TestDouble; $script:pkgGateCalls = 0
+        $x = Invoke-ExportGate -ProjectPath $expMarked
+        if ($x.Error.FullyQualifiedErrorId -eq 'W32T.TestSentinel' -and $script:pkgGateCalls -eq 1) { Ok 'without the marker the same project passes to the package gate' } else { Bad "unmarked -> $($x.Error.FullyQualifiedErrorId) gate calls=$script:pkgGateCalls" }
+    }
+    finally { ${function:Assert-Win32ToolkitPackageReady} = $realPackageGate }
 
     # == [16] C-2 lines in source ======================================================================
     Write-Host '[16] Export and Publish catches start with the C-2 re-throw' -ForegroundColor Cyan

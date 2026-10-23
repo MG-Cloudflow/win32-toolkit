@@ -112,6 +112,46 @@ try {
     $o = @($list | Where-Object { $_.Name -eq 'Other_x64_1.0' })
     $a = @($list | Where-Object { $_.Name -eq 'App_x64_1.0' })
     if ($marked.Count -eq 1 -and $a[0].NotConfigured -eq $true -and $o.Count -eq 1 -and $o[0].NotConfigured -eq $false) { Ok 'NotConfigured: true for the marked project, false for the other one' } else { Bad "list: $($list | Select-Object Name, NotConfigured | ConvertTo-Json -Compress)" }
+
+    Write-Host '[4] the gate Assert-Win32ToolkitProjectConfigured (W32T.ProjectNotConfigured)' -ForegroundColor Cyan
+    . (Join-Path $repo 'Private\Assert-Win32ToolkitProjectConfigured.ps1')
+    $gate = {
+        param([string]$Path, [string]$Operation)
+        try { Assert-Win32ToolkitProjectConfigured -ProjectPath $Path -Operation $Operation; [pscustomobject]@{ Fqid = ''; Message = ''; Target = $null; Category = '' } }
+        catch { [pscustomobject]@{ Fqid = $_.FullyQualifiedErrorId; Message = $_.Exception.Message; Target = $_.TargetObject; Category = [string]$_.CategoryInfo.Category } }
+    }
+    $g = & $gate $other 'Export'
+    if ($g.Fqid -eq '') { Ok 'no marker -> nothing (no error, no output)' } else { Bad "unmarked: $($g.Fqid)" }
+    $tail = ". It would ship without its org template or installer configuration (PSADT's default dialogs, no org hooks). Re-create it once the cause is fixed: package the app again (Invoke-Win32Toolkit or New-Win32ToolkitManualApp; in the menu, Package an app or Package a manual app), which replaces the folder. "
+    Write-Win32ToolkitNotConfiguredMarker -ProjectPath $proj -Stage Configure -ErrorId 'W32T.OrgExtensionInvalid' -Reason 'bad module'
+    $g = & $gate $proj 'Export'
+    $want = "'App_x64_1.0' is marked not configured and cannot be packaged: its configuration failed or was refused (W32T.OrgExtensionInvalid: bad module)$tail" + "Nothing was packaged or published. Marker: $markerFile"
+    if ($g.Fqid -eq 'W32T.ProjectNotConfigured' -and $g.Message -ceq $want -and $g.Category -eq 'InvalidOperation' -and [string]$g.Target -eq $proj) { Ok 'Export: the exact message, InvalidOperation, the project path as TargetObject' } else { Bad "export: $($g.Fqid) | $($g.Message)" }
+    $g = & $gate $proj 'Publish'
+    $want = "'App_x64_1.0' is marked not configured and cannot be published: its configuration failed or was refused (W32T.OrgExtensionInvalid: bad module)$tail" + "Nothing was published. Marker: $markerFile"
+    if ($g.Fqid -eq 'W32T.ProjectNotConfigured' -and $g.Message -ceq $want) { Ok "Publish: 'cannot be published' ... 'Nothing was published.'" } else { Bad "publish: $($g.Message)" }
+    # A reason that is a whole sentence (live V5: every W32T message ends with a period) loses that period inside the
+    # bracket, so the message never reads '.).'; an ellipsis (a reason cut at 1024 characters) stays.
+    Write-Win32ToolkitNotConfiguredMarker -ProjectPath $proj -Stage Download -ErrorId 'W32T.DownloadFailed' -Reason "Download FAILED for 'Postman.Postman' (x86): winget found no installer (see the warnings above)."
+    $g = & $gate $proj 'Export'
+    if ($g.Message.StartsWith("'App_x64_1.0' is marked not configured and cannot be packaged: its installer could not be downloaded or added (W32T.DownloadFailed: Download FAILED for 'Postman.Postman' (x86): winget found no installer (see the warnings above)). It would ship") -and -not $g.Message.Contains('.).')) {
+        Ok 'a reason ending with a period: the bracket closes without it (no ''.).'')'
+    } else { Bad "sentence reason: $($g.Message)" }
+    Write-Win32ToolkitNotConfiguredMarker -ProjectPath $proj -Stage Configure -ErrorId '' -Reason 'Cannot use both side by side.'
+    $g = & $gate $proj 'Publish'
+    if ($g.Message.StartsWith("'App_x64_1.0' is marked not configured and cannot be published: its configuration failed or was refused (Cannot use both side by side). It would ship")) { Ok 'a reason alone ending with a period: ({Reason}) without it' } else { Bad "sentence reason alone: $($g.Message)" }
+    Write-Win32ToolkitNotConfiguredMarker -ProjectPath $proj -Stage Configure -ErrorId 'W32T.X' -Reason ('r' * 1100)
+    $g = & $gate $proj 'Export'
+    if ($g.Message.Contains("(W32T.X: $('r' * 1021)...). It would ship")) { Ok 'a reason cut at 1024 characters keeps its ellipsis' } else { Bad "ellipsis: $($g.Message.Substring(0, [Math]::Min(200, $g.Message.Length)))" }
+    Write-Win32ToolkitNotConfiguredMarker -ProjectPath $proj -Stage Download -ErrorId 'W32T.DownloadFailed' -Reason ''
+    $g = & $gate $proj 'Export'
+    if ($g.Message.StartsWith("'App_x64_1.0' is marked not configured and cannot be packaged: its installer could not be downloaded or added (W32T.DownloadFailed). It would")) { Ok 'an id without a reason -> ({ErrorId})' } else { Bad "id only: $($g.Message)" }
+    Write-Win32ToolkitNotConfiguredMarker -ProjectPath $proj -Stage Configure -ErrorId '' -Reason ''
+    $g = & $gate $proj 'Export'
+    if ($g.Message.StartsWith("'App_x64_1.0' is marked not configured and cannot be packaged: its configuration failed or was refused. It would")) { Ok 'neither id nor reason -> no bracket' } else { Bad "none: $($g.Message)" }
+    [System.IO.File]::WriteAllText($markerFile, 'garbage', [System.Text.UTF8Encoding]::new($false))
+    $g = & $gate $proj 'Publish'
+    if ($g.Fqid -eq 'W32T.ProjectNotConfigured' -and $g.Message.StartsWith("'App_x64_1.0' is marked not configured and cannot be published: the marker could not be read. It would")) { Ok 'an unreadable marker -> still refused, "the marker could not be read"' } else { Bad "garbled: $($g.Fqid) | $($g.Message)" }
 }
 finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue

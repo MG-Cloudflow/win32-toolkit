@@ -39,6 +39,8 @@ flowchart LR
 
 win32-toolkit refuses to package a deploy script it cannot vouch for. Every problem is collected and reported at once, each with its fix, in one `W32T.PackageNotReady` error; nothing is packaged or published.
 
+A project whose build stopped after its folder was created (a refused configuration, a failed download, no installer found) is kept in `Projects\` and marked not configured (`Documentation\NotConfigured.json`): packaging and publishing refuse it with `W32T.ProjectNotConfigured` until you package the app again. Finalize and the tests still run on it, and the marker is an ordinary file (an installer under test, or a person, can delete it): re-create such a project instead of finishing it.
+
 | Check | Result when it fails |
 |---|---|
 | `Invoke-AppDeployToolkit.ps1` exists and parses | error |

@@ -12,6 +12,9 @@ function Export-Win32ToolkitIntuneWin {
 
     Steps performed:
     1. Resolves the target project (interactive picker if ProjectPath is omitted).
+       A project marked not configured (its build stopped after the project folder was created: a
+       refused configuration, a failed download, no installer found) is refused with
+       W32T.ProjectNotConfigured, also under -WhatIf and with no override: re-create it.
        Then refuses to package a deploy script win32-toolkit cannot vouch for
        (Assert-Win32ToolkitPackageReady -Stage Export), before anything is downloaded or copied: the
        script must exist and parse (also under Windows PowerShell 5.1, which Intune uses), carry the
@@ -182,6 +185,12 @@ function Export-Win32ToolkitIntuneWin {
         if (-not (Test-Path $setupFile)) {
             throw "Setup file not found: $setupFile`nVerify this is a valid PSADT v4 project folder."
         }
+
+        # ── Not-configured gate (TUI audit G4, S10-F2) ───────────────────────────
+        # A project whose build stopped after its folder was created would ship without its org template or
+        # installer configuration: W32T.ProjectNotConfigured, before the package gate and the ShouldProcess
+        # (so also under -WhatIf), with no override.
+        Assert-Win32ToolkitProjectConfigured -ProjectPath $ProjectPath -Operation Export
 
         # ── Package gate (D15 / PKG-04 / L5) ─────────────────────────────────────
         # Refuse to build (and later publish) a deploy script win32-toolkit cannot vouch for, BEFORE

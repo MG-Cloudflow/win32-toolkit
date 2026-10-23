@@ -26,7 +26,8 @@ function New-Win32ToolkitManualApp {
     version does not support, or the org template cannot be applied, the command stops with a
     terminating error. A project folder that was created but not configured (no installer found, a refused
     configuration, any error before the org template is applied) is kept and marked not configured
-    (Documentation\NotConfigured.json) until the app is packaged again.
+    (Documentation\NotConfigured.json): Export-Win32ToolkitIntuneWin and Publish-Win32ToolkitIntuneApp
+    refuse it (W32T.ProjectNotConfigured) until the app is packaged again.
 
     Returns a result object (Win32Toolkit.RunResult): ProjectPath, ProjectName and Mode (Easy or Advanced)
     as before, plus Status (Succeeded, CompletedWithProblems, Failed, or Scaffolded when the project still

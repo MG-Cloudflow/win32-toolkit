@@ -41,6 +41,10 @@ Links the content version to the app.
 
 Requires the Microsoft.Graph.Authentication module (installed automatically on prompt).
 
+A project marked not configured (its build stopped after the project folder was created: a refused
+configuration, a failed download, no installer found) is refused with W32T.ProjectNotConfigured before
+anything is read, warned about or signed in to, with no override: re-create it.
+
 Before the -WhatIf gate (so a dry run shows them too), Publish warns, and never stops, when the
 latest install/uninstall test of the project failed or gave no verdict, the latest Update test
 failed (naming the failed assertions), an Update test saw a
