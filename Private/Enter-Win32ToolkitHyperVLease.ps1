@@ -51,6 +51,10 @@ function Enter-Win32ToolkitHyperVLease {
         administrators, so the session must run elevated.
 
         Lock order (V-18): a project lease is always taken before the VM lease, never the other way round.
+
+        Speed-up PR 4: first, a background restore this process started (Start-Win32ToolkitHyperVBackgroundRestore: an
+        asynchronous teardown or a capture pre-warm) is joined (Wait-Win32ToolkitHyperVTeardown) - of this VM before its
+        lease, of any VM before a project lease (that restore holds its VM's lease: the lock order above).
     .PARAMETER VMName
         The test VM to lease.
     .PARAMETER VMId
@@ -118,6 +122,15 @@ function Enter-Win32ToolkitHyperVLease {
     )
 
     $isVm = $PSCmdlet.ParameterSetName -eq 'VM'
+
+    # Speed-up PR 4 (D13, D14): a background restore this process started (an asynchronous teardown, a capture pre-warm)
+    # is joined before its VM is used again. Every use of a VM in this process takes its lease here, so this one join
+    # covers the open, the Intune-parity pre-check and every VM command. Before a PROJECT lease a pending restore is
+    # joined too: it holds its VM's lease, and waiting for a project while holding a VM would break the lock order
+    # (project before VM, V-18).
+    $joinVm = if ($isVm) { $VMName } elseif ($null -ne $script:HyperVPendingRestore) { [string]$script:HyperVPendingRestore['VMName'] } else { '' }
+    if ($joinVm) { $null = Wait-Win32ToolkitHyperVTeardown -VMName $joinVm }
+
     $purposeText = ConvertTo-Win32ToolkitSafeText -Text $Purpose -MaxLength 32
     if (-not $LockRoot) { $LockRoot = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'win32-toolkit\locks' }
     $LockRoot = [System.IO.Path]::GetFullPath($LockRoot).TrimEnd('\', '/')

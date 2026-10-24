@@ -34,6 +34,11 @@ function Get-Win32ToolkitCheckpointAutoSetting { param($CheckpointId) }
 # C-9 (speed-up PR 3): the run takes the VM's lease first; inert doubles (a fake lease, a release that does nothing), never a lock file.
 function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose) [pscustomobject]@{ Kind = 'VM'; VMName = $VMName; Epoch = 'inert'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
 function Exit-Win32ToolkitHyperVLease { param($Lease) }
+# C-9 (speed-up PR 4): the asynchronous teardown's owner and background restore, inert (no owner; HyperVAsyncTeardown reads Off).
+function Get-Win32ToolkitAsyncTeardownOwner { $null }
+function Start-Win32ToolkitHyperVBackgroundRestore { param($VMName, $CheckpointName, $Mode, $Lease, $Kind, [switch]$NoStart, $Info) $false }
+# C-9 (speed-up PR 4, spec 7.5): the provider reads HyperVAsyncTeardown; no real HKCU read, the default (Off).
+function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }
 
 # ── (a) HOST guard: silenced DURING the run, restored AFTER — even when the run fails ───────────────
 Write-Host '[a] Invoke-Win32ToolkitHyperVRun silences $ProgressPreference during the run and restores it' -ForegroundColor Cyan

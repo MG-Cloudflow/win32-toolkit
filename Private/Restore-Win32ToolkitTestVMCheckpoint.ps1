@@ -31,6 +31,12 @@ function Restore-Win32ToolkitTestVMCheckpoint {
         Reset, FastSaving or any *Critical state: an orphaned background restore, another tool) is waited for, every
         2 seconds for up to 120 seconds; then the restore goes on and the cmdlets report whatever is still wrong. The
         callers hold the VM's lease (Enter-Win32ToolkitHyperVLease), which keeps out other win32-toolkit processes.
+
+        Speed-up PR 4 (V-15): Start-Win32ToolkitHyperVBackgroundRestore runs this function's own text in a background
+        thread job that has none of the module's other functions. It resolves the mode and the precondition first (in
+        the caller's session, where the advisory and its once-per-process memory live) and calls this with -Mode and
+        -SkipPrecondition: then no module function is called here (only Hyper-V cmdlets, Start-Sleep and the
+        stopwatch), and the A-9 notice is a constant warning.
     .PARAMETER VMName
         The test VM.
     .PARAMETER CheckpointName
@@ -39,6 +45,9 @@ function Restore-Win32ToolkitTestVMCheckpoint {
         TurnOffFirst or Legacy. Omitted: the HyperVRevertMode setting.
     .PARAMETER NoStart
         TurnOffFirst only: do not start the VM after the restore.
+    .PARAMETER SkipPrecondition
+        The caller already resolved -Mode (required with this switch) and the checkpoint's precondition: the
+        precondition is not read here, no advisory is printed, and no module function is called (speed-up PR 4, V-15).
     .OUTPUTS
         Exactly one object: Mode (the mode that ran: Legacy also when the precondition failed), Landed (the VM state read
         right after the restore and before any start by this helper: a VM that landed Off reads Off even after this
@@ -62,11 +71,25 @@ function Restore-Win32ToolkitTestVMCheckpoint {
         [ValidateSet('TurnOffFirst', 'Legacy')]
         [string]$Mode,
 
-        [switch]$NoStart
+        [switch]$NoStart,
+
+        [switch]$SkipPrecondition
     )
 
-    $vmText = ConvertTo-Win32ToolkitSafeText -Text $VMName -MaxLength 64
-    $cpText = ConvertTo-Win32ToolkitSafeText -Text $CheckpointName -MaxLength 64
+    if ($SkipPrecondition) {
+        # A background job (speed-up PR 4, V-15): the caller resolved the mode; nothing of the module is available here,
+        # so the names are neutralised inline as ConvertTo-Win32ToolkitSafeText does (control/format characters, U+2028/9).
+        if (-not $PSBoundParameters.ContainsKey('Mode')) { throw '-SkipPrecondition needs -Mode: the caller resolves the mode and the precondition.' }
+        $unsafe = '[\p{Cc}\p{Cf}' + [char]0x2028 + [char]0x2029 + ']'
+        $vmText = ($VMName -replace $unsafe, '?').Trim()
+        if ($vmText.Length -gt 64) { $vmText = $vmText.Substring(0, 61) + '...' }
+        $cpText = ($CheckpointName -replace $unsafe, '?').Trim()
+        if ($cpText.Length -gt 64) { $cpText = $cpText.Substring(0, 61) + '...' }
+    }
+    else {
+        $vmText = ConvertTo-Win32ToolkitSafeText -Text $VMName -MaxLength 64
+        $cpText = ConvertTo-Win32ToolkitSafeText -Text $CheckpointName -MaxLength 64
+    }
 
     if (-not $PSBoundParameters.ContainsKey('Mode')) {
         $raw = ''
@@ -112,7 +135,7 @@ function Restore-Win32ToolkitTestVMCheckpoint {
         Start-Sleep -Seconds 2
     }
 
-    if ($Mode -eq 'TurnOffFirst') {
+    if ($Mode -eq 'TurnOffFirst' -and -not $SkipPrecondition) {
         # The precondition is read on the target checkpoint itself (its own setting comes back with the restore).
         $cps = @(Get-VMCheckpoint -VMName $VMName -Name $CheckpointName -ErrorAction Stop | Where-Object { $null -ne $_ })
         $auto = $null
@@ -169,7 +192,11 @@ function Restore-Win32ToolkitTestVMCheckpoint {
     # Not expected (the checkpoint reads off): never start the VM with automatic checkpoints on (A-9).
     if ($after.AutomaticCheckpointsEnabled -eq $true) {
         $null = Set-VM -Name $VMName -AutomaticCheckpointsEnabled $false -Confirm:$false -ErrorAction Stop
-        $null = Write-Win32ToolkitCheckpointAdvisory -Kind AutoCheckpoints -Key $advKey -Message "The test VM '$vmText' had automatic checkpoints on after restoring '$cpText', although the checkpoint was taken with them off. They were turned off on the VM before it was started."
+        $a9 = "The test VM '$vmText' had automatic checkpoints on after restoring '$cpText', although the checkpoint was taken with them off. They were turned off on the VM before it was started."
+        # In a background job (-SkipPrecondition) the advisory's once-per-process memory is not available: a plain
+        # warning, relayed by Receive-Job when the caller joins the job.
+        if ($SkipPrecondition) { Write-Warning $a9 }
+        else { $null = Write-Win32ToolkitCheckpointAdvisory -Kind AutoCheckpoints -Key $advKey -Message $a9 }
     }
 
     if (-not $NoStart) {

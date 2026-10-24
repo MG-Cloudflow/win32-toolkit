@@ -48,6 +48,7 @@ Do **not** hand-edit `HyperVGuestUser` / `HyperVGuestSecret`. See [Guest credent
 | `HyperVRevertMode` | `TurnOffFirst` | `TurnOffFirst`, `Legacy` | How the test VM's checkpoint is restored: turn the VM off first, or the plain restore (see below). |
 | `TestProjectLease` | `Off` | `On`, `Off` | `On`: one test of a project at a time across PowerShell sessions, on either backend (elevated sessions only; see below). |
 | `HyperVLeaseWaitMinutes` | `60` | integer 1-240 | How long a Hyper-V test or VM command waits while another PowerShell session uses the test VM, before it stops with `W32T.HyperVLeaseTimeout` ([One VM, one PowerShell session at a time](hyperv-vm.md#make-hyper-v-tests-faster)). Any other value counts as `60`. No TUI control: set it in the registry. |
+| `HyperVAsyncTeardown` | `Off` | `On`, `Off` | `On`: inside the TUI and `Invoke-Win32Toolkit`, the restore at the end of an unattended Hyper-V test finishes in the background (see below). Any other value counts as `Off`. |
 
 ## BasePath
 
@@ -134,6 +135,12 @@ Set `Off` to ask the guest every time (and store nothing). This value has no TUI
 Every Hyper-V test run restores the test VM's checkpoint before and after the test, and [Reset-Win32ToolkitTestVM](reference/Reset-Win32ToolkitTestVM.md) restores it too. Restoring a checkpoint of a running VM makes Hyper-V save the VM's memory to disk first, only to discard it. With `TurnOffFirst` the toolkit turns the VM off, restores the checkpoint and starts the VM again (it resumes the checkpoint's memory state): nothing is saved, and on a nested host this is about a minute faster per run (estimate; the record's `Timing` shows your numbers).
 
 `TurnOffFirst` is used only for a checkpoint taken with Hyper-V automatic checkpoints off. A checkpoint taken with them on, or whose setting cannot be read, gets the plain restore and a warning once per PowerShell session; re-take it as described in [Make Hyper-V tests faster](hyperv-vm.md#make-hyper-v-tests-faster). `Legacy` uses the plain restore for every checkpoint. Any other value counts as `TurnOffFirst`. This value has no TUI control: set it in the registry.
+
+### `HyperVAsyncTeardown` (default `Off`)
+
+When `On`, the checkpoint restore at the end of an unattended Hyper-V test finishes in the background: the test returns as soon as its PowerShell Direct session is closed, and the next step (the capture's processing, packaging, the next test) runs while Hyper-V restores the VM. Only the TUI and [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md) do this, because they wait for the restore before they return; a direct [Test-Win32ToolkitProject](reference/Test-Win32ToolkitProject.md), [New-Win32ToolkitManualApp](reference/New-Win32ToolkitManualApp.md) or [Complete-Win32ToolkitManualApp](reference/Complete-Win32ToolkitManualApp.md) call, and every watched run, restore before returning, as with `Off`.
+
+The test VM stays with this PowerShell session until the session next uses it, or until the TUI or the `Invoke-Win32Toolkit` run ends, even when the restore finished long before: the next test or VM command in the session waits for the restore first (and the next test then usually skips its own first restore). Until then another PowerShell session waits for the VM's lease as usual (up to `HyperVLeaseWaitMinutes`), and its wait line names the earlier test run. So a TUI left open at a menu keeps the VM from other sessions until you use the VM again or leave the TUI. A background restore that fails prints one warning when it is waited for, and the next test restores the VM before it starts. The test record's `Timing.TeardownSeconds` is empty for such a run. Default `Off` until it is measured on your host; any value but `On` counts as `Off`. No TUI control: set it in the registry.
 
 ## Guest credential
 

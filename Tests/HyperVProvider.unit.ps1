@@ -51,6 +51,10 @@ function Restore-Win32ToolkitTestVMCheckpoint { param($VMName, $CheckpointName, 
 # before), a release that does nothing; never a lock file ([18] replaces them).
 function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose) [pscustomobject]@{ Kind = 'VM'; VMName = $VMName; Epoch = 'inert'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
 function Exit-Win32ToolkitHyperVLease { param($Lease) }
+# C-9 (speed-up PR 4): the asynchronous teardown's owner and background restore, inert (no owner; HyperVAsyncTeardown reads
+# Off through the config shadows below, so neither is reached by default; [19] replaces them).
+function Get-Win32ToolkitAsyncTeardownOwner { $null }
+function Start-Win32ToolkitHyperVBackgroundRestore { param($VMName, $CheckpointName, $Mode, $Lease, $Kind, [switch]$NoStart, $Info) $false }
 
 Write-Host '[1] Invoke-Win32ToolkitGuestPhase runs as SYSTEM and returns ONLY the exit code' -ForegroundColor Cyan
 # Simulate a guest that emits output lines followed by the exit code (the shape that broke the [int] cast).
@@ -458,13 +462,18 @@ $c12Files = @('Private\Invoke-Win32ToolkitHyperVRun.ps1', 'Private\New-Win32Tool
     # speed-up PR 2: the restore helper and its VM-command caller
     'Private\Restore-Win32ToolkitTestVMCheckpoint.ps1', 'Public\Reset-Win32ToolkitTestVM.ps1',
     # speed-up PR 3: the other VM commands (they take the VM's lease)
-    'Public\Set-Win32ToolkitTestVMResource.ps1', 'Public\Remove-Win32ToolkitTestVM.ps1', 'Public\New-Win32ToolkitTestVM.ps1', 'Private\Repair-Win32ToolkitTestVMCheckpoint.ps1')
+    'Public\Set-Win32ToolkitTestVMResource.ps1', 'Public\Remove-Win32ToolkitTestVM.ps1', 'Public\New-Win32ToolkitTestVM.ps1', 'Private\Repair-Win32ToolkitTestVMCheckpoint.ps1',
+    # speed-up PR 4: the lease's join, the background restore and its join, the two owners
+    'Private\Enter-Win32ToolkitHyperVLease.ps1', 'Private\Start-Win32ToolkitHyperVBackgroundRestore.ps1', 'Private\Wait-Win32ToolkitHyperVTeardown.ps1',
+    'Public\Invoke-Win32Toolkit.ps1', 'Public\Show-Win32Toolkit.ps1')
 $c12Names = @('Get-Win32ToolkitHyperVLane', 'Get-Win32ToolkitZipContentHash', 'New-Win32ToolkitHyperVSession', 'Remove-Win32ToolkitHyperVSession',
     'Get-Win32ToolkitParityProbeCache', 'Set-Win32ToolkitParityProbeCache', 'Clear-Win32ToolkitParityProbeCache', 'Test-Win32ToolkitVMConnectOpen',
     'Get-Win32ToolkitCheckpointAttestation', 'Write-Win32ToolkitCheckpointAdvisory', 'Get-Win32ToolkitCheckpointAutoSetting',
     'Restore-Win32ToolkitTestVMCheckpoint',
     # speed-up PR 3
-    'Enter-Win32ToolkitHyperVLease', 'Exit-Win32ToolkitHyperVLease')
+    'Enter-Win32ToolkitHyperVLease', 'Exit-Win32ToolkitHyperVLease',
+    # speed-up PR 4
+    'Start-Win32ToolkitHyperVBackgroundRestore', 'Wait-Win32ToolkitHyperVTeardown', 'Get-Win32ToolkitAsyncTeardownOwner')
 $c12Check = {
     param([string[]]$Files, [string[]]$Names)
     $bad = [System.Collections.Generic.List[string]]::new()
@@ -849,7 +858,82 @@ if ($c12L.Seen -ge 16 -and $c12L.Bad.Count -eq 0) { Ok "C-12: all $($c12L.Seen) 
 ${function:Enter-Win32ToolkitHyperVLease} = { param($VMName, $VMId, $ProjectPath, $Purpose) [pscustomobject]@{ Kind = 'VM'; VMName = $VMName; Epoch = 'inert'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
 ${function:Exit-Win32ToolkitHyperVLease} = { param($Lease) }
 
-Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential, Function:\Read-Host, Function:\Start-Process
+Write-Host '[19] asynchronous teardown (speed-up PR 4, D13, A-14): under an owner the restore and the lease go to a background job; the output stays one [bool]' -ForegroundColor Cyan
+$script:log19 = [System.Collections.Generic.List[string]]::new()
+$lease19 = [pscustomobject]@{ Kind = 'VM'; VMName = 'win32tk-golden'; Epoch = 'e19'; Generation = 7; PreviousGeneration = 6; Nested = $false }
+$script:cfg19 = @{ HyperVAsyncTeardown = 'On' }
+$script:owner19 = @{ Token = [guid]::NewGuid(); Command = 'Show-Win32Toolkit' }
+$script:start19 = $true
+$script:open19 = ''
+${function:Get-Win32ToolkitConfigValue} = { param($Name, $Default) if ($script:cfg19.ContainsKey($Name)) { $script:cfg19[$Name] } else { $Default } }
+${function:Enter-Win32ToolkitHyperVLease} = { param($VMName, $VMId, $ProjectPath, $Purpose) $script:log19.Add('enter'); $lease19 }
+# The release double RETURNS AN OBJECT: an unassigned call would add it to the run's [bool].
+${function:Exit-Win32ToolkitHyperVLease} = { param($Lease) $script:log19.Add("exit:same=$([object]::ReferenceEquals($Lease, $lease19))"); [pscustomobject]@{ Leak = 'exit' } }
+${function:Get-Win32ToolkitAsyncTeardownOwner} = { $script:log19.Add('owner?'); $script:owner19 }
+# The background-restore double returns a [bool] AND writes the mode it would run into -Info (as the real one does).
+${function:Start-Win32ToolkitHyperVBackgroundRestore} = {
+    param($VMName, $CheckpointName, $Mode, $Lease, $Kind, [switch]$NoStart, [hashtable]$Info)
+    $script:log19.Add("bg:${Kind}:${CheckpointName}:lease=$([object]::ReferenceEquals($Lease, $lease19))")
+    if ($script:start19 -and $null -ne $Info) { $Info['Mode'] = 'TurnOffFirst' }
+    $script:start19
+}
+${function:New-Win32ToolkitHyperVSession} = {
+    param($VMName, $Credential, $CheckpointName, [switch]$SkipRevert, [switch]$EnsureDesktop, [hashtable]$Info, $Lease)
+    $script:log19.Add("open:desktop=$($EnsureDesktop.IsPresent)")
+    if ($script:open19 -eq 'plain') { throw 'PowerShell Direct is not ready' }
+    'SESS'
+}
+${function:Remove-Win32ToolkitHyperVSession} = {
+    param($Session, $VMName, $CheckpointName, [switch]$Revert, [hashtable]$Info, $Lease)
+    $script:log19.Add("teardown:session=${Session}:revert=$($Revert.IsPresent)")
+    if ($Revert -and $null -ne $Info) { $Info['Restored'] = $true; $Info['RevertMode'] = 'Legacy' }
+    [pscustomobject]@{ Leak = 'teardown' }
+}
+${function:Invoke-Win32ToolkitGuestPhase} = { param($Session, $Command, $Label) $script:log19.Add("phase:$Label"); 0 }
+${function:Start-Process} = { param($FilePath, $ArgumentList, $ErrorAction) $script:log19.Add('vmconnect') }
+$run19 = {
+    param([object[]]$Phases = @(@{ Label = 'Install'; Command = '0' }))
+    $script:log19.Clear()
+    $ri = @{}
+    $o = @(Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase $Phases -RunInfo $ri 3>$null 6>$null)
+    [pscustomobject]@{ Out = $o; Log = ($script:log19 -join ' > '); Timing = $ri['Timing']; One = ($o.Count -eq 1 -and $o[0] -is [bool]) }
+}
+# On + an owner + unattended: the session closes, the job takes the lease, the run returns at once.
+$x19 = & $run19
+if ($x19.One -and $x19.Out[0] -and $x19.Log -eq 'enter > open:desktop=False > phase:Install > owner? > teardown:session=SESS:revert=False > bg:Teardown:clean-base:lease=True') {
+    Ok 'On + owner + unattended: the session is closed, the background restore gets the lease (no release here), exactly one [bool] $true'
+} else { Bad "async: out=$(@($x19.Out | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ') log=$($x19.Log)" }
+if ($x19.Timing -and $x19.Timing.ContainsKey('TeardownSeconds') -and $null -eq $x19.Timing['TeardownSeconds'] -and $x19.Timing['RevertMode'] -ceq 'TurnOffFirst' -and $x19.Timing['TotalSeconds'] -ge 0) {
+    Ok 'Timing: TeardownSeconds $null (the restore ends after the record), RevertMode = the mode the background restore runs'
+} else { Bad "async timing: $($x19.Timing | ConvertTo-Json -Compress -Depth 3)" }
+# The job could not start: the teardown restores before the run returns, as before, and releases the lease.
+$script:start19 = $false
+$x19 = & $run19
+$script:start19 = $true
+if ($x19.One -and $x19.Log -eq 'enter > open:desktop=False > phase:Install > owner? > teardown:session=SESS:revert=False > bg:Teardown:clean-base:lease=True > teardown:session=:revert=True > exit:same=True' -and
+    $x19.Timing['TeardownSeconds'] -is [double] -and $x19.Timing['RevertMode'] -ceq 'Legacy') {
+    Ok 'no background job (Start- returns $false): the synchronous restore, then the release; TeardownSeconds measured'
+} else { Bad "no job: log=$($x19.Log) timing=$($x19.Timing | ConvertTo-Json -Compress -Depth 3)" }
+# Off (the default), no owner, a watched run, an open that threw: the synchronous teardown, no background restore.
+foreach ($case in @(
+        @{ Tag = 'HyperVAsyncTeardown Off'; Set = { $script:cfg19 = @{} }; Want = 'enter > open:desktop=False > phase:Install > teardown:session=SESS:revert=True > exit:same=True' }
+        @{ Tag = 'HyperVAsyncTeardown banana (anything but On)'; Set = { $script:cfg19 = @{ HyperVAsyncTeardown = 'banana' } }; Want = 'enter > open:desktop=False > phase:Install > teardown:session=SESS:revert=True > exit:same=True' }
+        @{ Tag = 'On but no owner (a direct Test-Win32ToolkitProject call)'; Set = { $script:owner19 = $null }; Want = 'enter > open:desktop=False > phase:Install > owner? > teardown:session=SESS:revert=True > exit:same=True' }
+        @{ Tag = 'On + owner, a watched (interactive) phase'; Set = { }; Phases = @(@{ Label = 'Install'; Command = '0'; Interactive = $true }); Want = 'enter > open:desktop=True > vmconnect > phase:Install > teardown:session=SESS:revert=True > exit:same=True' }
+        @{ Tag = 'On + owner, the open threw (no session)'; Set = { $script:open19 = 'plain' }; Want = 'enter > open:desktop=False > teardown:session=:revert=True > exit:same=True'; NoCopyOut = $true })) {
+    $script:cfg19 = @{ HyperVAsyncTeardown = 'On' }; $script:owner19 = @{ Token = [guid]::NewGuid(); Command = 'Show-Win32Toolkit' }; $script:open19 = ''
+    & $case.Set
+    $x19 = if ($case.Phases) { & $run19 $case.Phases } else { & $run19 }
+    if ($x19.One -and $x19.Log -eq $case.Want -and ($case.NoCopyOut -or $x19.Timing['TeardownSeconds'] -is [double])) { Ok "$($case.Tag): the synchronous teardown, then the release; exactly one [bool]" }
+    else { Bad "$($case.Tag): out=$(@($x19.Out | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ') log=$($x19.Log)" }
+}
+$script:cfg19 = @{ HyperVAsyncTeardown = 'On' }; $script:open19 = ''
+${function:Get-Win32ToolkitAsyncTeardownOwner} = { $null }
+${function:Start-Win32ToolkitHyperVBackgroundRestore} = { param($VMName, $CheckpointName, $Mode, $Lease, $Kind, [switch]$NoStart, $Info) $false }
+${function:Enter-Win32ToolkitHyperVLease} = { param($VMName, $VMId, $ProjectPath, $Purpose) [pscustomobject]@{ Kind = 'VM'; VMName = $VMName; Epoch = 'inert'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
+${function:Exit-Win32ToolkitHyperVLease} = { param($Lease) }
+
+Remove-Item Function:\New-Win32ToolkitHyperVSession,Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential, Function:\Read-Host, Function:\Start-Process
 function Get-Win32ToolkitHyperVLane { param($VMName, $CheckpointName, $VM) }
 function Get-Win32ToolkitZipContentHash { param($ZipPath) }
 function Get-Win32ToolkitCheckpointAttestation { param($Session, $VMName, $CheckpointName, $VMId, $CheckpointId, $CreationTimeUtcTicks, [switch]$AllowLive, [switch]$AllowStore, $SignedInAnswer) }

@@ -77,6 +77,10 @@ function Show-Win32Toolkit {
     }
     catch { }
 
+    # Hyper-V speed-up PR 4 (D13, A-14, V-2): the TUI session owns asynchronous teardowns (HyperVAsyncTeardown): a test's
+    # checkpoint restore may finish in the background while the menu is back, and the finally below waits for it before
+    # the TUI returns. The token stays $null when an owner is already running (it then joins, not this one).
+    $w32tOwner = $null; if (-not (Get-Win32ToolkitAsyncTeardownOwner)) { $w32tOwner = [guid]::NewGuid(); $script:W32TAsyncTeardownOwner = @{ Token = $w32tOwner; Command = 'Show-Win32Toolkit' } }
     try {
         # ── Resolve the base folder (first-run setup via the UI if unset) ──────────
         $base = Get-Win32ToolkitBasePath -BasePath $BasePath -NonInteractive
@@ -136,5 +140,6 @@ function Show-Win32Toolkit {
     finally {
         $ProgressPreference = $prevProgress
         if ($prevOutputEncoding) { try { [System.Console]::OutputEncoding = $prevOutputEncoding } catch { } }
+        $null = Wait-Win32ToolkitHyperVTeardown -ReleaseOwner $w32tOwner
     }
 }

@@ -202,6 +202,19 @@ restored the same VM and checkpoint at the end of the previous run less than 10 
 running since then, no other PowerShell session used the VM in between (see the lease below), and that run was
 not a watched one. To restore before every test (for example a final check), start a new PowerShell session.
 
+**Optional, measured first.** These switches are `Off` until they are measured on your host; each is a registry value
+([Configuration](configuration.md#performance-switches)):
+
+- `HyperVAsyncTeardown`: the restore at the end of an unattended test finishes in the background while the next step
+  runs (processing the capture, packaging, the next test), which saves the end-of-run restore on the critical path.
+  Only the TUI and `Invoke-Win32Toolkit` do this, because they wait for the restore before they return: a direct
+  `Test-Win32ToolkitProject`, `New-` or `Complete-Win32ToolkitManualApp` call and every watched run keep restoring
+  before they return. The VM stays with your PowerShell session until the session next uses it, or until the TUI or
+  the `Invoke-Win32Toolkit` run ends, even when the restore finished long before: the next test in the session waits
+  for the restore, and another session waits for the lease. So a TUI left open at a menu keeps the VM from other
+  sessions until you use the VM again or leave the TUI. A restore that fails prints a warning and the next test
+  restores the VM first.
+
 **One VM, one PowerShell session at a time.** Every test run, the Intune-parity pre-check (when it restores the
 VM) and every VM command (`Reset-`, `Set-Win32ToolkitTestVMResource`, `Remove-` and `New-Win32ToolkitTestVM`, and the
 TUI's repair action) first take the test VM's lease: a lock file under `%ProgramData%\win32-toolkit\locks` that
@@ -323,5 +336,6 @@ typo is never stored).
 | `HyperVRevertMode` | `TurnOffFirst` (default) turns the VM off before each restore, `Legacy` keeps the plain restore. See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
 | `HyperVLeaseWaitMinutes` | How long (1-240 minutes, default 60) a test or a VM command waits while another PowerShell session uses the VM, then stops with `W32T.HyperVLeaseTimeout`. See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
 | `TestProjectLease` | `On` lets one PowerShell session at a time test a project (elevated sessions; default `Off`). See [Configuration](configuration.md) |
+| `HyperVAsyncTeardown` | `On` lets the end-of-test restore finish in the background inside the TUI and `Invoke-Win32Toolkit` (default `Off`). See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
 
 All keys live in the toolkit's registry config; see [Configuration](configuration.md) for the full list.

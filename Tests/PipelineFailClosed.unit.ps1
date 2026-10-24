@@ -75,6 +75,10 @@ function Test-WingetInstalled { $true }
 # Counters (not in $script:Calls, whose exact sequences other cases pin): the -DependsOn pre-flight runs before them.
 $script:BaseCalls = 0; $script:ResolveCalls = 0; $script:SetDepSeen = $null
 function Get-Win32ToolkitBasePath { param($BasePath, [switch]$Reconfigure) $script:BaseCalls++; $BASE }
+# C-9 (speed-up PR 4, V-14): Invoke-Win32Toolkit registers as the asynchronous-teardown owner and joins in its finally;
+# inert doubles: no live owner, a join that emits nothing.
+function Get-Win32ToolkitAsyncTeardownOwner { $null }
+function Wait-Win32ToolkitHyperVTeardown { param($VMName, $ReleaseOwner, [switch]$Prewarm) }
 function Get-OrgTemplate {
     param($TemplateName, $BasePath)
     $name = if ($script:Mode.TemplateName) { $script:Mode.TemplateName } else { 'Contoso' }
@@ -742,6 +746,113 @@ $wvRun = {
 Clear-Project $toolProj; Reset-Case @{}
 $wvSeen = @(& $wvRun)
 if ($wvSeen -contains 'installer copy warning (test shadow)' -and $wvSeen -contains 'AppConfig write warning (test shadow)') { Ok 'both warnings are in New-Win32ToolkitManualApp -WarningVariable' } else { Bad "warnings: [$($wvSeen -join ' | ')]" }
+
+# == [AO] asynchronous-teardown owners (Hyper-V speed-up PR 4, D13, A-14, V-2, V-7, V-16) ==========================
+# The real owner helpers replace the inert doubles here: Get-Win32ToolkitAsyncTeardownOwner, Wait-Win32ToolkitHyperVTeardown
+# (and Exit-Win32ToolkitHyperVLease for its join). The backend is HyperV and the capture completes, so Finalize calls the
+# provider double, which goes async the way the real provider does when HyperVAsyncTeardown is On (read through the config
+# double) and an owner is live: it records a pending background restore whose job (a real thread job running a DOUBLE
+# script, never the restore helper) returns the helper's result object and a warning. Nothing reaches Hyper-V.
+Write-Host '[AO] async-teardown owners: Show-/Invoke-Win32Toolkit only; nesting, stale tokens, a W32T error, the output shape ([RR-async])' -ForegroundColor Cyan
+$savedAO = @{ Owner = ${function:Get-Win32ToolkitAsyncTeardownOwner}; Wait = ${function:Wait-Win32ToolkitHyperVTeardown}; Backend = ${function:Get-Win32ToolkitTestBackend}; Run = ${function:Invoke-Win32ToolkitHyperVRun} }
+. (Join-Path $repo 'Private\Get-Win32ToolkitAsyncTeardownOwner.ps1')
+. (Join-Path $repo 'Private\Wait-Win32ToolkitHyperVTeardown.ps1')
+. (Join-Path $repo 'Private\Exit-Win32ToolkitHyperVLease.ps1')
+$script:cfgAO = @{ HyperVAsyncTeardown = 'On' }
+function Get-Win32ToolkitConfigValue { param($Name, $Default) if ($script:cfgAO.ContainsKey($Name)) { $script:cfgAO[$Name] } else { $Default } }
+function Get-VM { param($Name, $ErrorAction) [pscustomobject]@{ Name = $Name; Id = [guid]'0e5f9e66-1111-2222-3333-444455556666'; State = 'Running' } }
+${function:Get-Win32ToolkitTestBackend} = { 'HyperV' }
+$realStjAO = Get-Command -Name Start-ThreadJob -CommandType Cmdlet | Select-Object -First 1
+$script:AO = @{ Seen = [System.Collections.Generic.List[object]]::new() }
+${function:Invoke-Win32ToolkitHyperVRun} = {
+    param($ProjectPath, $Phase, $Output)
+    $owner = Get-Win32ToolkitAsyncTeardownOwner
+    $script:AO.Seen.Add($(if ($owner) { [pscustomobject]@{ Token = $owner.Token; Command = $owner.Command } } else { $null }))
+    if ((Get-Win32ToolkitConfigValue -Name 'HyperVAsyncTeardown' -Default 'Off') -eq 'On' -and $owner) {
+        $job = & $realStjAO -ScriptBlock {
+            Write-Warning 'background restore warning (double)'
+            $r = [pscustomobject]@{ Mode = 'TurnOffFirst'; Landed = 'Saved'; TurnOffSeconds = 0.1; RestoreSeconds = 0.2; StartSeconds = 0.3; Started = $true }
+            $r.PSObject.Properties.Add([psnoteproperty]::new('CompletedAt', [datetime]::UtcNow))
+            $r
+        }
+        $script:HyperVPendingRestore = @{ Job = $job; VMName = 'win32tk-golden'; CheckpointName = 'clean-base'; Kind = 'Teardown'; Parked = 'Running'; StartedAt = Get-Date; Mode = 'TurnOffFirst'
+            Lease = [pscustomobject]@{ Kind = 'VM'; Path = 'C:\no-such-lock'; Name = 'win32tk-golden'; Epoch = 'ao'; Generation = 1; PreviousGeneration = 0; Nested = $false; Released = $false } }
+    }
+    $true
+}
+$capAO = Join-Path $newProj 'Documentation\InstallationChanges_ao.json'
+function Reset-AO { param([hashtable]$Mode) Reset-Case $Mode; $script:AO.Seen.Clear(); $script:W32TAsyncTeardownOwner = $null; $script:HyperVPendingRestore = $null; $script:HyperVCleanMarker = $null; $script:cfgAO = @{ HyperVAsyncTeardown = 'On' } }
+# A stand-in for the TUI session with the real owner pattern: registers, runs the body, joins in its finally.
+function Show-Win32Toolkit {
+    param([scriptblock]$Body)
+    $w32tOwner = $null; if (-not (Get-Win32ToolkitAsyncTeardownOwner)) { $w32tOwner = [guid]::NewGuid(); $script:W32TAsyncTeardownOwner = @{ Token = $w32tOwner; Command = 'Show-Win32Toolkit' } }
+    try {
+        $script:AO.Outer = $w32tOwner
+        & $Body
+        $script:AO.OwnerAfterInner = $script:W32TAsyncTeardownOwner
+        $script:AO.PendingAfterInner = $null -ne $script:HyperVPendingRestore
+    }
+    finally { $null = Wait-Win32ToolkitHyperVTeardown -ReleaseOwner $w32tOwner }
+}
+
+# [RR-async] / [o]: async On + the Invoke owner -> exactly one RunResult, the same count as with Off; the join emits nothing.
+foreach ($async in 'On', 'Off') {
+    Reset-AO @{ CapturePath = $capAO; CaptureProcessed = $true; TestVerdict = $true }
+    $script:cfgAO['HyperVAsyncTeardown'] = $async
+    $c = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -PackageIntune -ErrorAction SilentlyContinue -ErrorVariable ev }
+    $seen = @($script:AO.Seen)
+    $wentAsync = $async -eq 'On' -and $seen.Count -eq 1 -and $seen[0] -and $seen[0].Command -eq 'Invoke-Win32Toolkit'
+    if ($c.Out.Count -eq 1 -and $c.Results.Count -eq 1 -and -not $c.Fqid -and ($async -eq 'Off' -or $wentAsync) -and $null -eq $script:HyperVPendingRestore -and $null -eq $script:W32TAsyncTeardownOwner -and
+        ($async -eq 'Off' -or $script:HyperVCleanMarker)) {
+        Ok "[RR-async] HyperVAsyncTeardown ${async}: Invoke-Win32Toolkit returns exactly one Win32Toolkit.RunResult$(if ($async -eq 'On') { '; its finally joined the background restore (marker kept) and cleared its owner token' })"
+    } else { Bad "[RR-async] ${async}: out=$($c.Out.Count) results=$($c.Results.Count) fqid='$($c.Fqid)' seen=$(@($seen | ForEach-Object { if ($_) { $_.Command } else { 'none' } }) -join ',') pending=$($null -ne $script:HyperVPendingRestore) owner=$($null -ne $script:W32TAsyncTeardownOwner)" }
+}
+
+# [n] nesting: the TUI owner calls the real Invoke-Win32Toolkit; Invoke registers nothing and does not release the outer token.
+Reset-AO @{ CapturePath = $capAO; CaptureProcessed = $true }
+$cN = Invoke-Collect { Show-Win32Toolkit { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -ErrorAction SilentlyContinue -ErrorVariable ev } }
+$seenN = @($script:AO.Seen)
+if ($cN.Results.Count -eq 1 -and -not $cN.Fqid -and $seenN.Count -eq 1 -and $seenN[0] -and $seenN[0].Command -eq 'Show-Win32Toolkit' -and $seenN[0].Token -eq $script:AO.Outer -and
+    $script:AO.OwnerAfterInner -and $script:AO.OwnerAfterInner.Token -eq $script:AO.Outer -and $script:AO.PendingAfterInner -and
+    $null -eq $script:W32TAsyncTeardownOwner -and $null -eq $script:HyperVPendingRestore -and $script:HyperVCleanMarker) {
+    Ok '[n] Show-Win32Toolkit -> Invoke-Win32Toolkit: the provider saw the TUI''s token, Invoke registered nothing and released nothing (the restore still pending after it returned); the outer finally joined and cleared'
+} else { Bad "[n] nesting: results=$($cN.Results.Count) fqid='$($cN.Fqid)' seen=$(@($seenN | ForEach-Object { if ($_) { $_.Command } else { 'none' } }) -join ',') ownerAfterInner=$($script:AO.OwnerAfterInner.Command) pendingAfterInner=$($script:AO.PendingAfterInner) owner=$($null -ne $script:W32TAsyncTeardownOwner)" }
+
+# A stale owner record (its finally never ran): a direct Invoke-Win32Toolkit registers and releases its own token, no binding error.
+Reset-AO @{ CapturePath = $capAO; CaptureProcessed = $true }
+$script:W32TAsyncTeardownOwner = @{ Token = [guid]::NewGuid(); Command = 'Show-Win32Toolkit' }
+$cS = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -ErrorAction SilentlyContinue -ErrorVariable ev }
+$seenS = @($script:AO.Seen)
+if ($cS.Results.Count -eq 1 -and -not $cS.Fqid -and @($cS.Errors).Count -eq 0 -and $seenS.Count -eq 1 -and $seenS[0] -and $seenS[0].Command -eq 'Invoke-Win32Toolkit' -and $null -eq $script:W32TAsyncTeardownOwner -and $null -eq $script:HyperVPendingRestore) {
+    Ok '[n] a stale owner record: a direct Invoke-Win32Toolkit registers its own token (no ParameterArgumentTransformationError), joins and releases it'
+} else { Bad "[n] stale: results=$($cS.Results.Count) fqid='$($cS.Fqid)' errors=[$($cS.Errors -join ' | ')] seen=$(@($seenS | ForEach-Object { if ($_) { $_.Command } else { 'none' } }) -join ',') owner=$($null -ne $script:W32TAsyncTeardownOwner)" }
+
+# A W32T error from Finalize's Export: it propagates, and Invoke's finally still joined and released its token.
+Reset-AO @{ CapturePath = $capAO; CaptureProcessed = $true; ExportThrows = (New-W32TError 'W32T.ProjectNotConfigured' 'not configured (test)') }
+$cE = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -PackageIntune -ErrorAction SilentlyContinue -ErrorVariable ev }
+if ($cE.Fqid -eq 'W32T.ProjectNotConfigured' -and $cE.Results.Count -eq 0 -and @($script:AO.Seen).Count -eq 1 -and $null -eq $script:W32TAsyncTeardownOwner -and $null -eq $script:HyperVPendingRestore) {
+    Ok '[n] a W32T error at the Export: it propagates; Invoke''s finally joined the restore and released its token'
+} else { Bad "[n] w32t: fqid='$($cE.Fqid)' results=$($cE.Results.Count) owner=$($null -ne $script:W32TAsyncTeardownOwner) pending=$($null -ne $script:HyperVPendingRestore)" }
+
+# New- and Complete-Win32ToolkitManualApp are no owners (V-16): a direct call keeps the synchronous teardown; one result each.
+Reset-AO @{ CapturePath = (Join-Path $toolProj 'Documentation\InstallationChanges_ao.json'); CaptureProcessed = $true }
+Clear-Project $toolProj
+$cM = Invoke-Collect $runManual
+$seenM = @($script:AO.Seen)
+$okNew = $cM.Out.Count -eq 1 -and $cM.Results.Count -eq 1 -and $seenM.Count -eq 1 -and $null -eq $seenM[0] -and $null -eq $script:W32TAsyncTeardownOwner -and $null -eq $script:HyperVPendingRestore
+$script:AO.Seen.Clear()
+$cC = Invoke-Collect { Complete-Win32ToolkitManualApp -ProjectPath $toolProj -PackageIntune -ErrorAction SilentlyContinue -ErrorVariable ev }
+$seenC = @($script:AO.Seen)
+$okComplete = $cC.Out.Count -eq 1 -and $cC.Results.Count -eq 1 -and $seenC.Count -eq 1 -and $null -eq $seenC[0] -and $null -eq $script:W32TAsyncTeardownOwner -and $null -eq $script:HyperVPendingRestore
+if ($okNew -and $okComplete) { Ok '[n]/[o] a direct New- / Complete-Win32ToolkitManualApp with async On: no owner (the capture''s teardown stays synchronous), exactly one result object each' }
+else { Bad "[n] manual: new out=$($cM.Out.Count) seen=$(@($seenM | ForEach-Object { if ($_) { $_.Command } else { 'none' } }) -join ',') complete out=$($cC.Out.Count) seen=$(@($seenC | ForEach-Object { if ($_) { $_.Command } else { 'none' } }) -join ',')" }
+
+# Back to the inert doubles for anything after this section.
+${function:Get-Win32ToolkitAsyncTeardownOwner} = $savedAO.Owner
+${function:Wait-Win32ToolkitHyperVTeardown} = $savedAO.Wait
+${function:Get-Win32ToolkitTestBackend} = $savedAO.Backend
+${function:Invoke-Win32ToolkitHyperVRun} = $savedAO.Run
+Remove-Item Function:\Get-Win32ToolkitConfigValue, Function:\Get-VM, Function:\Show-Win32Toolkit
 
 Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''

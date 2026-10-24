@@ -207,6 +207,9 @@ function Invoke-Win32Toolkit {
     )
 
     $runResult = $null
+    # Hyper-V speed-up PR 4 (D13, A-14, V-2): this run owns asynchronous teardowns (HyperVAsyncTeardown) unless an owner
+    # (the TUI) is already running; the finally waits for a background restore before the run returns.
+    $w32tOwner = $null; if (-not (Get-Win32ToolkitAsyncTeardownOwner)) { $w32tOwner = [guid]::NewGuid(); $script:W32TAsyncTeardownOwner = @{ Token = $w32tOwner; Command = 'Invoke-Win32Toolkit' } }
     try {
         # The run's result object (TUI audit G2, S8-F3): filled by this command and Finalize, returned at the end.
         $runResult = Initialize-Win32ToolkitRunResult -Command 'Invoke-Win32Toolkit' -Mode 'Winget'
@@ -540,5 +543,6 @@ function Invoke-Win32Toolkit {
         # command in the same session. Runs on both success and failure. $null is the
         # cleared state the module initialises at load.
         $script:OrgTemplate = $null
+        $null = Wait-Win32ToolkitHyperVTeardown -ReleaseOwner $w32tOwner
     }
 }

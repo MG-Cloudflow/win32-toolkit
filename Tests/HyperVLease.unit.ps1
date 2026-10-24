@@ -65,6 +65,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
 . (Join-Path $repo 'Private\Enter-Win32ToolkitHyperVLease.ps1')
 . (Join-Path $repo 'Private\Exit-Win32ToolkitHyperVLease.ps1')
+# C-9 (speed-up PR 4): Enter joins this process's background restore first; with none pending the real join does nothing.
+. (Join-Path $repo 'Private\Wait-Win32ToolkitHyperVTeardown.ps1')
 
 # -- shadows: HKCU in memory, Get-VM counted --------------------------------------------------------------------------
 $script:cfg = @{}

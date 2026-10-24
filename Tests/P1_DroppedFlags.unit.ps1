@@ -54,6 +54,10 @@ New-Item -ItemType Directory -Path $script:tmpBase -Force | Out-Null
 function Test-WingetInstalled { $true }
 function Get-Win32ToolkitBasePath { param($BasePath, [switch]$Reconfigure) $script:tmpBase }
 function Get-OrgTemplate { param($TemplateName, $BasePath) [pscustomobject]@{ TemplateName = 'TestTpl' } }
+# C-9 (speed-up PR 4, V-14): Invoke-Win32Toolkit registers as the asynchronous-teardown owner and joins in its finally;
+# inert doubles: no live owner, a join that emits nothing.
+function Get-Win32ToolkitAsyncTeardownOwner { $null }
+function Wait-Win32ToolkitHyperVTeardown { param($VMName, $ReleaseOwner, [switch]$Prewarm) }
 
 # The -Id fast path resolves via Resolve-Win32ToolkitWingetId. This test is about the DOWNLOAD failure,
 # not id resolution, so shadow the resolver to a valid app and let the pipeline reach the failing download.

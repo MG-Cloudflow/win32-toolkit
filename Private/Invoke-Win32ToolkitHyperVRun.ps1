@@ -15,6 +15,13 @@ function Invoke-Win32ToolkitHyperVRun {
         Before it touches the VM it takes the VM's machine-wide lease (Enter-Win32ToolkitHyperVLease, speed-up PR 3,
         D10): while another PowerShell process uses the VM this run waits, up to HyperVLeaseWaitMinutes, and then throws
         W32T.HyperVLeaseTimeout without restoring anything. The lease is held until the teardown restore is done.
+
+        Asynchronous teardown (speed-up PR 4, D13, A-14; HKCU HyperVAsyncTeardown, default Off): when it is On, the run is
+        unattended (no interactive phase) and an owner is running (Show-Win32Toolkit or Invoke-Win32Toolkit:
+        Get-Win32ToolkitAsyncTeardownOwner), the teardown closes the session and starts the checkpoint restore in a
+        background thread job (Start-Win32ToolkitHyperVBackgroundRestore), which keeps the lease, and returns at once.
+        The next use of the VM in this process (its lease), or the owner's end, waits for it. Otherwise (Off, no owner, a
+        watched run, no thread jobs, a job that could not start) the teardown restores before returning, as before.
     .PARAMETER ProjectPath
         The PSADT project under test (host path). Copied to C:\PSADT in the guest.
     .PARAMETER Phase
@@ -51,7 +58,8 @@ function Invoke-Win32ToolkitHyperVRun {
         Optional hashtable the run fills with Timing (seconds per step: open, copy-in, each phase that ran,
         teardown, total; whether the open skipped its restore; the copy-in zip's content hash) and Lane (the VM
         and checkpoint it used) for the caller's TestResults.json record (Hyper-V speed-up PR 1, D12). Best
-        effort: a measurement that fails leaves its value $null. The [bool] output is unchanged.
+        effort: a measurement that fails leaves its value $null. The [bool] output is unchanged. An asynchronous
+        teardown (PR 4) leaves TeardownSeconds $null; RevertMode is then the mode the background restore runs.
     .OUTPUTS
         [bool] — $true if the run completed (individual phase failures are warned, not fatal, matching
         the Sandbox fire-and-forget semantics; callers judge results from the copied-back outputs).
@@ -106,6 +114,8 @@ function Invoke-Win32ToolkitHyperVRun {
     $session = $null
     # The machine-wide lease of the VM (speed-up PR 3, D10): $null until taken; without it nothing is restored below.
     $lease = $null
+    # Speed-up PR 4 (D13): read once at the start of the try (never in the finally); Off until then.
+    $asyncTeardown = $false
     # Suppress HOST progress bars for the whole run. Copy-Item -To/-FromSession (the project copy in/out)
     # and the Hyper-V checkpoint cmdlets paint out-of-band, absolute-cursor progress regions that tear the
     # Spectre.Console TUI this runs under. The copy/session helpers below don't set their own
@@ -200,6 +210,14 @@ function Invoke-Win32ToolkitHyperVRun {
         # and inside this try, so the finally still cleans the zip jobs and restores $ProgressPreference. A lease timeout
         # (W32T.HyperVLeaseTimeout) propagates through the catch's C-2 line, and the finally restores nothing without it.
         $lease = Enter-Win32ToolkitHyperVLease -VMName $VMName -Purpose 'test run'
+        # The asynchronous teardown switch (speed-up PR 4, D13; HKCU HyperVAsyncTeardown, anything but On = Off): read here,
+        # once, fail-safe; the finally only reads this variable.
+        try { $asyncTeardown = ([string](Get-Win32ToolkitConfigValue -Name 'HyperVAsyncTeardown' -Default 'Off')).Trim() -eq 'On' }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Verbose "HyperVAsyncTeardown could not be read ($($_.Exception.Message)); the teardown restores before the run returns."
+            $asyncTeardown = $false
+        }
 
         # Interactive phases need a logged-in desktop, so ask the session to ensure/recover one.
         $needsDesktop = @($Phase | Where-Object { $_.Interactive }).Count -gt 0
@@ -430,9 +448,31 @@ function Invoke-Win32ToolkitHyperVRun {
         # project for the single-revert skip. Only while this run holds the VM's lease (speed-up PR 3, A-1): without it
         # no session was opened, and the VM may be another process's.
         $tdInfo = @{}
+        # Speed-up PR 4: $true once a background restore took the teardown, and the lease, over.
+        $handedOver = $false
         try {
             if ($null -ne $lease) {
-                $null = Remove-Win32ToolkitHyperVSession -Session $session -VMName $VMName -CheckpointName $effectiveCheckpoint -Revert -Info $tdInfo -Lease $lease
+                # Asynchronous teardown (D13, A-14): only when On, unattended, after an open, and while an owner (Show- or
+                # Invoke-Win32Toolkit) is running that joins the restore before it returns. The session is closed now; the
+                # restore and the lease go to a background job. Otherwise, or when no job could start: the restore below.
+                if ($asyncTeardown -and -not $needsDesktop -and $null -ne $session) {
+                    $owner = $null
+                    try { $owner = Get-Win32ToolkitAsyncTeardownOwner }
+                    catch {
+                        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                        $owner = $null
+                    }
+                    if ($null -ne $owner) {
+                        $null = Remove-Win32ToolkitHyperVSession -Session $session
+                        $session = $null
+                        $started = Start-Win32ToolkitHyperVBackgroundRestore -VMName $VMName -CheckpointName $effectiveCheckpoint -Lease $lease -Kind Teardown -Info $tdInfo
+                        $handedOver = $started -is [bool] -and $started
+                    }
+                    else { Write-Verbose 'HyperVAsyncTeardown is On, but no TUI session or Invoke-Win32Toolkit run will wait for a background restore: the teardown restores now.' }
+                }
+                if (-not $handedOver) {
+                    $null = Remove-Win32ToolkitHyperVSession -Session $session -VMName $VMName -CheckpointName $effectiveCheckpoint -Revert -Info $tdInfo -Lease $lease
+                }
             }
             # INTERACTIVE runs leave a vmconnect window attached to the reverted-but-running guest — the
             # operator can keep poking it after the teardown, invisibly dirtying the VM within the marker's
@@ -441,8 +481,9 @@ function Invoke-Win32ToolkitHyperVRun {
             if ($needsDesktop) { $script:HyperVCleanMarker = $null }
         }
         finally {
-            # The lease is released after the teardown restore, whatever happened above.
-            $null = Exit-Win32ToolkitHyperVLease -Lease $lease
+            # The lease is released after the teardown restore, whatever happened above - unless a background restore holds
+            # it now (released when that restore is joined).
+            if (-not $handedOver) { $null = Exit-Win32ToolkitHyperVLease -Lease $lease }
         }
         # Any unconsumed prebuild zips (job failed, run threw before the join) are cleaned here. The copy
         # helper normally consumed (deleted) the zip already, so only an existing one is removed: an absent
@@ -454,9 +495,11 @@ function Invoke-Win32ToolkitHyperVRun {
         }
         # The record's teardown and total timing, handed to the caller (speed-up PR 1): best effort, never throws.
         try {
-            if ($null -ne $teardownWatch) { $timing.TeardownSeconds = [math]::Round($teardownWatch.Elapsed.TotalSeconds, 1) }
-            # The mode the teardown restore used (speed-up PR 2); $null when no teardown restore ran.
-            $timing.RevertMode = if ($tdInfo['Restored'] -eq $true) { $tdInfo['RevertMode'] } else { $null }
+            # An asynchronous teardown (speed-up PR 4) is not timed: its restore ends after this record.
+            if ($null -ne $teardownWatch -and -not $handedOver) { $timing.TeardownSeconds = [math]::Round($teardownWatch.Elapsed.TotalSeconds, 1) }
+            # The mode the teardown restore used (speed-up PR 2), or the background restore runs (PR 4); $null when no
+            # teardown restore ran.
+            $timing.RevertMode = if ($tdInfo['Restored'] -eq $true) { $tdInfo['RevertMode'] } elseif ($handedOver) { $tdInfo['Mode'] } else { $null }
             $timing.TotalSeconds = [math]::Round($runWatch.Elapsed.TotalSeconds, 1)
             if ($null -ne $RunInfo) {
                 $RunInfo['Timing'] = $timing
