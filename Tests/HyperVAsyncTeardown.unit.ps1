@@ -30,6 +30,11 @@
           before it records the new one: no orphaned job, its lease released.
       [p] (P4-2) Saved parking: the job gets -NoStart under HyperVTeardownPark Saved (never under Legacy, A-15); the join
           stamps Parked Saved only when the VM is Saved then.
+      [pw] (P4-3) The capture pre-warm: Off (absent, Off, anything but On) = nothing; On + HyperV = the VM's lease held and a
+          background restore (Kind Prewarm); the capture's own lease joins it and its open skips the restore on the marker;
+          -Prewarm releases the hold; Sandbox, HyperVDepsCheckpoint On, no thread jobs, a held pre-warm, a job that cannot
+          start = nothing held; a busy VM = the lease error is thrown. The pre-warm never parks the VM (no -NoStart, even
+          under HyperVTeardownPark Saved: the capture follows).
       [w] Get-Win32ToolkitAsyncTeardownOwner: no record, a live one, a stale one.
       [s] Static: the two owners (Show-Win32Toolkit, Invoke-Win32Toolkit) register right before their try with the
           null-safe pattern and join as the last statement of their finally (after the reset/restore lines); New-,
@@ -68,6 +73,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Exit-Win32ToolkitHyperVLease.ps1')
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitHyperVRun.ps1')
 . (Join-Path $repo 'Private\Test-Win32ToolkitHyperVTeardownPark.ps1')   # P4-2: the real park decision (HKCU in memory)
+. (Join-Path $repo 'Private\Start-Win32ToolkitHyperVPrewarm.ps1')        # P4-3: the capture pre-warm
 Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue
 
 # -- shadows ----------------------------------------------------------------------------------------------------------
@@ -511,6 +517,90 @@ foreach ($case in @(
     } else { Bad "$($case.Tag): nostart=$($args0[4]) rec=$($rec['Parked']) marker=$($m | ConvertTo-Json -Compress)" }
 }
 $script:vmState = 'Running'
+# -- [pw] the capture pre-warm (P4-3, D14, A5, A-13) ---------------------------------------------------------------------
+Write-Host '[pw] (P4-3) HyperVCapturePrewarm: Off = nothing; On + HyperV = the lease held and a background restore; the capture''s open skips its restore' -ForegroundColor Cyan
+$script:backendPW = 'HyperV'
+function Get-Win32ToolkitTestBackend { param($Backend, [switch]$NoPinThrow) $script:pwBackendArgs = "nopin=$($NoPinThrow.IsPresent)"; $script:backendPW }
+function Get-Win32ToolkitHyperVTarget { [pscustomobject]@{ VMName = 'vmA'; CheckpointName = 'clean-base'; Pinned = $false } }
+$pwState = { [pscustomobject]@{ Hold = $script:HyperVPrewarmLease; Pending = $script:HyperVPendingRestore; Jobs = $script:jobCalls.Count; Free = (Test-Free) } }
+# Off (absent, Off, anything but On): nothing.
+foreach ($v in @($null, 'Off', 'Yes')) {
+    Reset-Case; $script:jobCalls.Clear()
+    if ($null -ne $v) { $script:cfg['HyperVCapturePrewarm'] = $v }
+    $o = @(Start-Win32ToolkitHyperVPrewarm)
+    $s = & $pwState
+    if ($o.Count -eq 0 -and $null -eq $s.Hold -and $null -eq $s.Pending -and $s.Jobs -eq 0 -and $s.Free) { Ok "HyperVCapturePrewarm $(if ($null -eq $v) { 'absent' } else { "'$v'" }): no lease, no job" } else { Bad "prewarm ${v}: hold=$($null -ne $s.Hold) jobs=$($s.Jobs)" }
+}
+# On + HyperV: the lease held, the pre-warm restore pending; then the capture (the real provider and open) joins it and
+# skips its own restore on the marker this session stamped; Finalize's -Prewarm releases the hold after the capture.
+Reset-Case; $script:jobCalls.Clear(); $script:cfg['HyperVCapturePrewarm'] = ' on '
+$o = @(Start-Win32ToolkitHyperVPrewarm)
+$s = & $pwState
+$args0 = if ($s.Jobs) { @($script:jobCalls[0].ArgumentList) } else { @() }
+if ($o.Count -eq 0 -and $s.Hold -and $s.Pending -and $s.Pending['Kind'] -eq 'Prewarm' -and [object]::ReferenceEquals($s.Pending['Lease'], $s.Hold) -and -not $s.Free -and $args0[1] -eq 'vmA' -and $args0[2] -eq 'clean-base' -and $script:pwBackendArgs -eq 'nopin=True') {
+    Ok "On + HyperV: the VM's lease is held (purpose 'capture pre-warm'), the pre-warm restore runs in the background; nothing emitted; the backend asked with -NoPinThrow"
+} else { Bad "prewarm on: out=$($o.Count) hold=$($null -ne $s.Hold) pending=$($s.Pending['Kind']) free=$($s.Free) args=$($args0[1])/$($args0[2]) backend=$($script:pwBackendArgs)" }
+$holdGen = $s.Hold.Generation
+${function:New-Win32ToolkitHyperVSession_Shadow} = ${function:New-Win32ToolkitHyperVSession}
+. (Join-Path $repo 'Private\New-Win32ToolkitHyperVSession.ps1')
+$script:helperRestores = 0
+function Restore-Win32ToolkitTestVMCheckpoint { param($VMName, $CheckpointName, $Mode, [switch]$NoStart, [switch]$SkipPrecondition) $script:helperRestores++; [pscustomobject]@{ Mode = 'TurnOffFirst'; Landed = 'Saved'; Started = $true } }
+function Wait-Win32ToolkitVMReady { param($VMName, $Credential, [switch]$SkipPrep, [switch]$ReturnSession) if ($ReturnSession) { 'SESS' } else { $true } }
+try { $x = Invoke-AsOwner }
+finally {
+    ${function:New-Win32ToolkitHyperVSession} = ${function:New-Win32ToolkitHyperVSession_Shadow}
+    Remove-Item Function:\New-Win32ToolkitHyperVSession_Shadow, Function:\Restore-Win32ToolkitTestVMCheckpoint, Function:\Wait-Win32ToolkitVMReady
+    . (Join-Path $repo 'Private\Restore-Win32ToolkitTestVMCheckpoint.ps1')
+}
+$heldAfterCapture = $null -ne $script:HyperVPrewarmLease -and -not (Test-Free)
+if ($x.One -and $x.Out[0] -and $x.Timing['OpenRevertSkipped'] -eq $true -and $script:helperRestores -eq 0 -and $null -eq $script:HyperVPendingRestore -and $heldAfterCapture) {
+    Ok "the capture's lease joined the pre-warm (generation $holdGen, nested in the hold) and its open skipped the restore (OpenRevertSkipped `$true); the hold is kept until -Prewarm"
+} else { Bad "capture: one=$($x.One) skipped=$($x.Timing['OpenRevertSkipped']) restores=$($script:helperRestores) pending=$($null -ne $script:HyperVPendingRestore) held=$heldAfterCapture verbose=$($x.Verbose -join ' | ')" }
+$null = Wait-Win32ToolkitHyperVTeardown -Prewarm 3>$null
+if ($null -eq $script:HyperVPrewarmLease -and (Test-Free)) { Ok 'Finalize''s -Prewarm release after the capture: the lease is free' } else { Bad "release: hold=$($null -ne $script:HyperVPrewarmLease) free=$(Test-Free)" }
+# No pre-warm when: the backend is Sandbox, HyperVDepsCheckpoint is On, no thread jobs, one is already held, the job cannot start.
+foreach ($case in @(
+        @{ Tag = 'the backend resolves Sandbox'; Set = { $script:backendPW = 'Sandbox' } }
+        @{ Tag = 'HyperVDepsCheckpoint On'; Set = { $script:cfg['HyperVDepsCheckpoint'] = 'On' } }
+        @{ Tag = 'no checkpoint (the job cannot start): the lease is released at once'; Set = { $script:cpCount = 0 } })) {
+    Reset-Case; $script:jobCalls.Clear(); $script:cfg['HyperVCapturePrewarm'] = 'On'; $script:backendPW = 'HyperV'
+    & $case.Set
+    $o = @(Start-Win32ToolkitHyperVPrewarm)
+    $s = & $pwState
+    if ($o.Count -eq 0 -and $null -eq $s.Hold -and $null -eq $s.Pending -and $s.Jobs -eq 0 -and $s.Free) { Ok "$($case.Tag): no pre-warm, no lease held" } else { Bad "$($case.Tag): hold=$($null -ne $s.Hold) pending=$($null -ne $s.Pending) jobs=$($s.Jobs) free=$($s.Free)" }
+}
+$script:backendPW = 'HyperV'
+Reset-Case; $script:jobCalls.Clear(); $script:cfg['HyperVCapturePrewarm'] = 'On'
+function Get-Command { [CmdletBinding()] param([Parameter(Position = 0)][string[]]$Name, [string[]]$CommandType)
+    if (@($Name) -contains 'Start-ThreadJob') { return $null }
+    Microsoft.PowerShell.Core\Get-Command @PSBoundParameters }
+try { $o = @(Start-Win32ToolkitHyperVPrewarm) } finally { Remove-Item Function:\Get-Command }
+if ($o.Count -eq 0 -and $null -eq $script:HyperVPrewarmLease -and $script:jobCalls.Count -eq 0 -and (Test-Free)) { Ok 'no thread jobs: no pre-warm, no lease' } else { Bad 'no threadjob prewarm' }
+Reset-Case; $script:jobCalls.Clear(); $script:cfg['HyperVCapturePrewarm'] = 'On'
+$null = Start-Win32ToolkitHyperVPrewarm
+$first = $script:HyperVPrewarmLease
+$null = Start-Win32ToolkitHyperVPrewarm
+if ($script:jobCalls.Count -eq 1 -and [object]::ReferenceEquals($script:HyperVPrewarmLease, $first)) { Ok 'a second call while one is held: nothing more' } else { Bad "second: jobs=$($script:jobCalls.Count)" }
+$null = Wait-Win32ToolkitHyperVTeardown -Prewarm 3>$null
+# Another process holds the VM: the pre-warm waits like any user of the VM; the lease error is thrown (here at once:
+# the test's lease wrapper makes one attempt), nothing held.
+Reset-Case; $script:jobCalls.Clear(); $script:cfg['HyperVCapturePrewarm'] = 'On'
+$null = [System.IO.Directory]::CreateDirectory($ROOT)
+$foreign = [System.IO.FileStream]::new($lockFile, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Read)
+$threw = $null
+try { $null = Start-Win32ToolkitHyperVPrewarm } catch { $threw = $_ } finally { $foreign.Dispose() }
+if ($threw -and $threw.FullyQualifiedErrorId -eq 'W32T.HyperVLeaseTimeout' -and $null -eq $script:HyperVPrewarmLease -and $script:jobCalls.Count -eq 0) { Ok 'a busy VM: W32T.HyperVLeaseTimeout is thrown (C-2), no pre-warm held' } else { Bad "busy: threw=$($threw.FullyQualifiedErrorId) hold=$($null -ne $script:HyperVPrewarmLease)" }
+# The pre-warm never parks (spec 7.3; parking is for the end-of-test restore): with HyperVTeardownPark Saved the
+# pre-warm's job still starts the VM, and the record is Parked Running, so the capture finds the VM running.
+Reset-Case; $script:jobCalls.Clear(); $script:cfg['HyperVCapturePrewarm'] = 'On'; $script:cfg['HyperVTeardownPark'] = 'Saved'
+$script:vmState = 'Saved'   # as a parked restore would leave it: only the record decides the marker's Parked
+$null = Start-Win32ToolkitHyperVPrewarm
+$recPw = $script:HyperVPendingRestore
+$argsPw = if ($script:jobCalls.Count) { @($script:jobCalls[0].ArgumentList) } else { @() }
+$okPw = $recPw -and $recPw['Kind'] -eq 'Prewarm' -and $recPw['Parked'] -ceq 'Running' -and $argsPw.Count -eq 5 -and $argsPw[4] -eq $false
+$null = Wait-Win32ToolkitHyperVTeardown -Prewarm 3>$null
+if ($okPw -and $script:HyperVCleanMarker -and $script:HyperVCleanMarker.Parked -ceq 'Running' -and (Test-Free)) { Ok 'HyperVTeardownPark Saved: the pre-warm''s job gets no -NoStart (record and marker Parked Running); the capture finds the VM running' } else { Bad "prewarm park: rec=$($recPw['Parked']) nostart=$($argsPw[4]) marker=$($script:HyperVCleanMarker.Parked)" }
+Remove-Item Function:\Get-Win32ToolkitTestBackend, Function:\Get-Win32ToolkitHyperVTarget
 # -- [w] Get-Win32ToolkitAsyncTeardownOwner -------------------------------------------------------------------------------
 Write-Host '[w] Get-Win32ToolkitAsyncTeardownOwner: none, live, stale' -ForegroundColor Cyan
 Reset-Case
@@ -542,12 +632,30 @@ foreach ($o in @(@{ Name = 'Show-Win32Toolkit'; First = '$ProgressPreference = $
     $orderOk = if ($o.First) { $fin[0].Extent.Text -ceq $o.First } else { @($fin | ForEach-Object { $_.Extent.Text }).IndexOf($o.Before) -ge 0 -and @($fin | ForEach-Object { $_.Extent.Text }).IndexOf($o.Before) -lt ($fin.Count - 1) }
     if ($regOk -and $joinOk -and $orderOk) { Ok "$($o.Name): the null-safe registration right before its try, the join last in its finally (after the existing reset/restore lines)" } else { Bad "$($o.Name): register=$regOk join=$joinOk order=$orderOk" }
 }
+# P4-3: Invoke releases the pre-warm in its finally after the org-template reset and before the owner join; Finalize
+# releases it once, right after the capture block, outside any try (no owner line, no join there).
+$astI = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'Public\Invoke-Win32Toolkit.ps1'), [ref]$null, [ref]$null)
+$tryI = @($astI.FindAll({ param($x) $x -is [System.Management.Automation.Language.TryStatementAst] -and $x.Finally }, $true)) | Where-Object { $_.Finally.Extent.Text -match 'ReleaseOwner' } | Select-Object -First 1
+$finI = if ($tryI) { @($tryI.Finally.Statements | ForEach-Object { $_.Extent.Text }) } else { @() }
+$finOk = ($finI -join ' | ') -ceq '$script:OrgTemplate = $null | $null = Wait-Win32ToolkitHyperVTeardown -Prewarm | $null = Wait-Win32ToolkitHyperVTeardown -ReleaseOwner $w32tOwner'
+$srcI = [System.IO.File]::ReadAllText((Join-Path $repo 'Public\Invoke-Win32Toolkit.ps1'))
+$startIdx = $srcI.IndexOf('$null = Start-Win32ToolkitHyperVPrewarm')
+$orderI = $startIdx -gt $srcI.IndexOf('$BasePath = Get-Win32ToolkitBasePath') -and $startIdx -lt $srcI.IndexOf('$script:OrgTemplate = Get-OrgTemplate')
+$astF = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'Private\Invoke-Win32ToolkitFinalize.ps1'), [ref]$null, [ref]$null)
+$relF = @($astF.FindAll({ param($x) $x -is [System.Management.Automation.Language.CommandAst] -and $x.GetCommandName() -eq 'Wait-Win32ToolkitHyperVTeardown' }, $true))
+$inTryF = $false
+if ($relF.Count -eq 1) { $up = $relF[0].Parent; while ($up) { if ($up -is [System.Management.Automation.Language.TryStatementAst]) { $inTryF = $true }; $up = $up.Parent } }
+$relFOk = $relF.Count -eq 1 -and $relF[0].Extent.Text -ceq 'Wait-Win32ToolkitHyperVTeardown -Prewarm' -and -not $inTryF
+$srcF = [System.IO.File]::ReadAllText((Join-Path $repo 'Private\Invoke-Win32ToolkitFinalize.ps1'))
+$posF = $srcF.IndexOf('$null = Wait-Win32ToolkitHyperVTeardown -Prewarm')
+$placeF = $posF -gt $srcF.IndexOf("Write-Warning 'Hyper-V documentation capture did not complete") -and $posF -lt $srcF.IndexOf('$jsonProcessed = $false')
+if ($finOk -and $orderI -and $relFOk -and $placeF) { Ok 'Invoke: the pre-warm starts after the base folder, before the org template; its finally: reset, -Prewarm release, owner join. Finalize: one -Prewarm release right after the capture block' } else { Bad "prewarm statics: finally=$finOk ($($finI -join ' | ')) order=$orderI finalize=$relFOk place=$placeF" }
 foreach ($n in @('Public\New-Win32ToolkitManualApp.ps1', 'Public\Complete-Win32ToolkitManualApp.ps1', 'Private\Invoke-Win32ToolkitFinalize.ps1')) {
     $t = [System.IO.File]::ReadAllText((Join-Path $repo $n))
     if ($t -notmatch 'W32TAsyncTeardownOwner' -and $t -notmatch 'ReleaseOwner' -and $t -notmatch 'Get-Win32ToolkitAsyncTeardownOwner') { Ok "$(Split-Path -Leaf $n): no owner registration, no owner join (V-16)" } else { Bad "$n registers or joins an owner" }
 }
 $c2 = "if (`$_.FullyQualifiedErrorId -like 'W32T.*') { throw }"
-foreach ($n in 'Start-Win32ToolkitHyperVBackgroundRestore', 'Wait-Win32ToolkitHyperVTeardown', 'Get-Win32ToolkitAsyncTeardownOwner', 'Test-Win32ToolkitHyperVTeardownPark') {
+foreach ($n in 'Start-Win32ToolkitHyperVBackgroundRestore', 'Wait-Win32ToolkitHyperVTeardown', 'Get-Win32ToolkitAsyncTeardownOwner', 'Test-Win32ToolkitHyperVTeardownPark', 'Start-Win32ToolkitHyperVPrewarm') {
     $file = Join-Path $repo "Private\$n.ps1"
     $errs = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$errs)

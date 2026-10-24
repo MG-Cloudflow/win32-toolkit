@@ -241,6 +241,11 @@ function Invoke-Win32Toolkit {
             return
         }
 
+        # Hyper-V speed-up PR 4 (D14; HKCU HyperVCapturePrewarm, default Off): with the Hyper-V test backend, the test VM's
+        # checkpoint is restored in the background while this run searches, downloads and configures; the capture's open
+        # then finds it clean. The lease it holds is released after the capture (Finalize) or in the finally below.
+        $null = Start-Win32ToolkitHyperVPrewarm
+
         # Load (or create) org template once for this run
         $script:OrgTemplate = Get-OrgTemplate -TemplateName $TemplateName -BasePath $BasePath
 
@@ -543,6 +548,7 @@ function Invoke-Win32Toolkit {
         # command in the same session. Runs on both success and failure. $null is the
         # cleared state the module initialises at load.
         $script:OrgTemplate = $null
+        $null = Wait-Win32ToolkitHyperVTeardown -Prewarm
         $null = Wait-Win32ToolkitHyperVTeardown -ReleaseOwner $w32tOwner
     }
 }

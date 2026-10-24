@@ -414,6 +414,8 @@ try {
     # == [3] Invoke-Win32ToolkitFinalize ==================================================================
     Write-Host '[3] Invoke-Win32ToolkitFinalize passes -BaselineInstallerType only when bound' -ForegroundColor Cyan
     . (Join-Path $repo 'Private\Invoke-Win32ToolkitFinalize.ps1')
+    # C-9 (speed-up PR 4): Finalize releases a capture pre-warm right after the capture; inert (emits nothing, no pre-warm).
+    function Wait-Win32ToolkitHyperVTeardown { param($VMName, $ReleaseOwner, [switch]$Prewarm) }
     function Assert-Win32ToolkitPackageReady { param($ProjectPath, $Stage, [switch]$AllowLegacyScript) [pscustomobject]@{ Ready = $true } }
     function Get-Win32ToolkitTestBackend { 'Sandbox' }
     $script:docCalls = [System.Collections.Generic.List[hashtable]]::new()

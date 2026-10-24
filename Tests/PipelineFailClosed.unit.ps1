@@ -78,7 +78,10 @@ function Get-Win32ToolkitBasePath { param($BasePath, [switch]$Reconfigure) $scri
 # C-9 (speed-up PR 4, V-14): Invoke-Win32Toolkit registers as the asynchronous-teardown owner and joins in its finally;
 # inert doubles: no live owner, a join that emits nothing.
 function Get-Win32ToolkitAsyncTeardownOwner { $null }
-function Wait-Win32ToolkitHyperVTeardown { param($VMName, $ReleaseOwner, [switch]$Prewarm) }
+function Wait-Win32ToolkitHyperVTeardown { param($VMName, $ReleaseOwner, [switch]$Prewarm) if ($Prewarm) { $script:PrewarmLog.Add("release:$($script:Calls -join ',')") } }
+# ...and the capture pre-warm (HyperVCapturePrewarm), inert: it records the counters of the steps before it.
+$script:PrewarmLog = [System.Collections.Generic.List[string]]::new()
+function Start-Win32ToolkitHyperVPrewarm { $script:PrewarmLog.Add("start:base=$($script:BaseCalls):resolve=$($script:ResolveCalls):calls=$($script:Calls -join ',')") }
 function Get-OrgTemplate {
     param($TemplateName, $BasePath)
     $name = if ($script:Mode.TemplateName) { $script:Mode.TemplateName } else { 'Contoso' }
@@ -746,6 +749,47 @@ $wvRun = {
 Clear-Project $toolProj; Reset-Case @{}
 $wvSeen = @(& $wvRun)
 if ($wvSeen -contains 'installer copy warning (test shadow)' -and $wvSeen -contains 'AppConfig write warning (test shadow)') { Ok 'both warnings are in New-Win32ToolkitManualApp -WarningVariable' } else { Bad "warnings: [$($wvSeen -join ' | ')]" }
+
+# == [PW] the capture pre-warm (Hyper-V speed-up PR 4, D14) ===========================================================
+# Invoke-Win32Toolkit starts it after the base folder and before the winget search; Finalize releases it right after the
+# capture (Sandbox or Hyper-V); Invoke's finally releases it whatever happened (idempotent). Inert logging doubles.
+Write-Host '[PW] the capture pre-warm: started after the base folder, before the search; released after the capture and in Invoke''s finally' -ForegroundColor Cyan
+Reset-Case @{ CapturePath = (Join-Path $newProj 'Documentation\InstallationChanges_pw.json'); CaptureProcessed = $true }
+$script:PrewarmLog.Clear()
+$basePW = $script:BaseCalls; $resolvePW = $script:ResolveCalls
+$c = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -PackageIntune -ErrorAction SilentlyContinue -ErrorVariable ev }
+$pwLog = @($script:PrewarmLog)
+if ($c.Results.Count -eq 1 -and $pwLog.Count -ge 1 -and $pwLog[0] -ceq "start:base=$($basePW + 1):resolve=${resolvePW}:calls=") {
+    Ok 'Invoke-Win32Toolkit: the pre-warm starts right after Get-Win32ToolkitBasePath, before the winget id is resolved (nothing else ran yet)'
+} else { Bad "start: $($pwLog -join ' | ')" }
+$rel = @($pwLog | Where-Object { $_ -like 'release:*' })
+if ($rel.Count -eq 2 -and $rel[0] -like 'release:*,document' -and $pwLog[-1] -like 'release:*,process,export:False') {
+    Ok 'Finalize releases it right after the capture (before the capture is processed); Invoke''s finally releases it again at the end (idempotent)'
+} else { Bad "release: $($pwLog -join ' | ')" }
+# Under Hyper-V the release follows the capture's run in the VM.
+$savedPW = @{ Backend = ${function:Get-Win32ToolkitTestBackend}; Run = ${function:Invoke-Win32ToolkitHyperVRun} }
+${function:Get-Win32ToolkitTestBackend} = { 'HyperV' }
+${function:Invoke-Win32ToolkitHyperVRun} = { param($ProjectPath, $Phase, $Output) $script:Calls.Add('hvrun'); $true }
+try {
+    Reset-Case @{ CapturePath = (Join-Path $newProj 'Documentation\InstallationChanges_pw.json'); CaptureProcessed = $true }
+    $script:PrewarmLog.Clear()
+    $c = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -ErrorAction SilentlyContinue -ErrorVariable ev }
+}
+finally { ${function:Get-Win32ToolkitTestBackend} = $savedPW.Backend; ${function:Invoke-Win32ToolkitHyperVRun} = $savedPW.Run }
+$rel = @($script:PrewarmLog | Where-Object { $_ -like 'release:*' })
+if ($c.Results.Count -eq 1 -and $rel.Count -eq 2 -and $rel[0] -like 'release:*,document,hvrun') { Ok 'Hyper-V capture: Finalize releases the pre-warm right after the capture''s run in the VM' } else { Bad "hyperv release: $($script:PrewarmLog -join ' | ')" }
+# A run that stops before Finalize: Invoke's finally releases it.
+Reset-Case @{ CreateFails = $true }
+$script:PrewarmLog.Clear()
+$c = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -ErrorAction SilentlyContinue -ErrorVariable ev }
+if ($c.Fqid -eq 'W32T.ProjectCreationFailed' -and @($script:PrewarmLog).Count -eq 2 -and $script:PrewarmLog[0] -like 'start:*' -and $script:PrewarmLog[1] -like 'release:*' -and 'document' -notin $script:Calls) {
+    Ok 'a run that stops before Finalize (W32T.ProjectCreationFailed): Invoke''s finally releases the pre-warm'
+} else { Bad "early stop: fqid='$($c.Fqid)' log=$($script:PrewarmLog -join ' | ')" }
+# -NewTemplate never pre-warms (it returns before).
+Reset-Case @{}
+$script:PrewarmLog.Clear()
+$null = Invoke-Collect { Invoke-Win32Toolkit -NewTemplate -TemplateName 'Contoso' -ErrorAction SilentlyContinue -ErrorVariable ev }
+if (@($script:PrewarmLog | Where-Object { $_ -like 'start:*' }).Count -eq 0) { Ok '-NewTemplate: no pre-warm' } else { Bad "newtemplate: $($script:PrewarmLog -join ' | ')" }
 
 # == [AO] asynchronous-teardown owners (Hyper-V speed-up PR 4, D13, A-14, V-2, V-7, V-16) ==========================
 # The real owner helpers replace the inert doubles here: Get-Win32ToolkitAsyncTeardownOwner, Wait-Win32ToolkitHyperVTeardown

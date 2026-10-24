@@ -58,6 +58,8 @@ function Get-OrgTemplate { param($TemplateName, $BasePath) [pscustomobject]@{ Te
 # inert doubles: no live owner, a join that emits nothing.
 function Get-Win32ToolkitAsyncTeardownOwner { $null }
 function Wait-Win32ToolkitHyperVTeardown { param($VMName, $ReleaseOwner, [switch]$Prewarm) }
+# ...and the capture pre-warm it starts after the base folder (HyperVCapturePrewarm), inert.
+function Start-Win32ToolkitHyperVPrewarm { }
 
 # The -Id fast path resolves via Resolve-Win32ToolkitWingetId. This test is about the DOWNLOAD failure,
 # not id resolution, so shadow the resolver to a valid app and let the pipeline reach the failing download.

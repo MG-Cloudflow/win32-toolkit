@@ -218,6 +218,10 @@ not a watched one. To restore before every test (for example a final check), sta
   `Saved`, so an idle VM holds no host memory, and the next test in the session only starts it. That test checks the
   VM's last state change: a VM that another tool started, or started and saved again, after the toolkit parked it is
   restored as usual. Needs `HyperVRevertMode` `TurnOffFirst`; a watched run never parks the VM.
+- `HyperVCapturePrewarm`: `Invoke-Win32Toolkit` (also the TUI's winget wizard) restores the VM in the background while
+  it searches, downloads and configures, so the documentation capture finds it ready. It holds the VM from then until the
+  capture is done, and waits first if another PowerShell session uses the VM. The head start is lost when the steps
+  before the capture take more than 10 minutes (the capture restores again).
 
 **One VM, one PowerShell session at a time.** Every test run, the Intune-parity pre-check (when it restores the
 VM) and every VM command (`Reset-`, `Set-Win32ToolkitTestVMResource`, `Remove-` and `New-Win32ToolkitTestVM`, and the
@@ -342,5 +346,6 @@ typo is never stored).
 | `TestProjectLease` | `On` lets one PowerShell session at a time test a project (elevated sessions; default `Off`). See [Configuration](configuration.md) |
 | `HyperVAsyncTeardown` | `On` lets the end-of-test restore finish in the background inside the TUI and `Invoke-Win32Toolkit` (default `Off`). See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
 | `HyperVTeardownPark` | `Saved` leaves the clean VM Saved between unattended tests (default `Running`; needs `HyperVRevertMode` `TurnOffFirst`). See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
+| `HyperVCapturePrewarm` | `On` restores the VM in the background at the start of `Invoke-Win32Toolkit`, ready for the documentation capture (default `Off`). See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
 
 All keys live in the toolkit's registry config; see [Configuration](configuration.md) for the full list.

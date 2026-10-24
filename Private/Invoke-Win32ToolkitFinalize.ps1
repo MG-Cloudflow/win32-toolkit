@@ -131,6 +131,10 @@ function Invoke-Win32ToolkitFinalize {
             Write-Warning 'Hyper-V documentation capture did not complete — skipping processing. Review the VM and its logs.'
         }
     }
+    # Hyper-V speed-up PR 4 (D14): a capture pre-warm (Invoke-Win32Toolkit, HyperVCapturePrewarm) is released here, right
+    # after the capture's teardown (its open joined the pre-warm and skipped its restore); when the capture ran under
+    # Sandbox or did not run, the pre-warm is joined and released here too. No pre-warm: nothing happens.
+    $null = Wait-Win32ToolkitHyperVTeardown -Prewarm
 
     $jsonProcessed = $false
     if ($captureReady) {

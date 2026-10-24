@@ -467,7 +467,7 @@ $c12Files = @('Private\Invoke-Win32ToolkitHyperVRun.ps1', 'Private\New-Win32Tool
     'Public\Set-Win32ToolkitTestVMResource.ps1', 'Public\Remove-Win32ToolkitTestVM.ps1', 'Public\New-Win32ToolkitTestVM.ps1', 'Private\Repair-Win32ToolkitTestVMCheckpoint.ps1',
     # speed-up PR 4: the lease's join, the background restore and its join, the two owners
     'Private\Enter-Win32ToolkitHyperVLease.ps1', 'Private\Start-Win32ToolkitHyperVBackgroundRestore.ps1', 'Private\Wait-Win32ToolkitHyperVTeardown.ps1',
-    'Public\Invoke-Win32Toolkit.ps1', 'Public\Show-Win32Toolkit.ps1')
+    'Public\Invoke-Win32Toolkit.ps1', 'Public\Show-Win32Toolkit.ps1', 'Private\Start-Win32ToolkitHyperVPrewarm.ps1', 'Private\Invoke-Win32ToolkitFinalize.ps1')
 $c12Names = @('Get-Win32ToolkitHyperVLane', 'Get-Win32ToolkitZipContentHash', 'New-Win32ToolkitHyperVSession', 'Remove-Win32ToolkitHyperVSession',
     'Get-Win32ToolkitParityProbeCache', 'Set-Win32ToolkitParityProbeCache', 'Clear-Win32ToolkitParityProbeCache', 'Test-Win32ToolkitVMConnectOpen',
     'Get-Win32ToolkitCheckpointAttestation', 'Write-Win32ToolkitCheckpointAdvisory', 'Get-Win32ToolkitCheckpointAutoSetting',
@@ -475,7 +475,7 @@ $c12Names = @('Get-Win32ToolkitHyperVLane', 'Get-Win32ToolkitZipContentHash', 'N
     # speed-up PR 3
     'Enter-Win32ToolkitHyperVLease', 'Exit-Win32ToolkitHyperVLease',
     # speed-up PR 4
-    'Start-Win32ToolkitHyperVBackgroundRestore', 'Wait-Win32ToolkitHyperVTeardown', 'Get-Win32ToolkitAsyncTeardownOwner', 'Test-Win32ToolkitHyperVTeardownPark')
+    'Start-Win32ToolkitHyperVBackgroundRestore', 'Wait-Win32ToolkitHyperVTeardown', 'Get-Win32ToolkitAsyncTeardownOwner', 'Test-Win32ToolkitHyperVTeardownPark', 'Start-Win32ToolkitHyperVPrewarm')
 $c12Check = {
     param([string[]]$Files, [string[]]$Names)
     $bad = [System.Collections.Generic.List[string]]::new()

@@ -50,6 +50,7 @@ Do **not** hand-edit `HyperVGuestUser` / `HyperVGuestSecret`. See [Guest credent
 | `HyperVLeaseWaitMinutes` | `60` | integer 1-240 | How long a Hyper-V test or VM command waits while another PowerShell session uses the test VM, before it stops with `W32T.HyperVLeaseTimeout` ([One VM, one PowerShell session at a time](hyperv-vm.md#make-hyper-v-tests-faster)). Any other value counts as `60`. No TUI control: set it in the registry. |
 | `HyperVAsyncTeardown` | `Off` | `On`, `Off` | `On`: inside the TUI and `Invoke-Win32Toolkit`, the restore at the end of an unattended Hyper-V test finishes in the background (see below). Any other value counts as `Off`. |
 | `HyperVTeardownPark` | `Running` | `Running`, `Saved` | `Saved`: after an unattended Hyper-V test the clean test VM is left Saved instead of running, and the next test in the same PowerShell session only starts it (needs `HyperVRevertMode` `TurnOffFirst`; see below). Any other value counts as `Running`. |
+| `HyperVCapturePrewarm` | `Off` | `On`, `Off` | `On`: with the Hyper-V test backend, `Invoke-Win32Toolkit` restores the test VM in the background while it searches, downloads and configures, so the documentation capture finds it ready (see below). Any other value counts as `Off`. |
 
 ## BasePath
 
@@ -146,6 +147,10 @@ The test VM stays with this PowerShell session until the session next uses it, o
 ### `HyperVTeardownPark` (default `Running`)
 
 After a test, the restored test VM normally keeps running at the clean checkpoint, holding its memory on the host until the next test. With `Saved`, the end-of-test restore of an unattended test leaves the VM `Saved` (Hyper-V restores a Standard checkpoint into the saved state): it holds no host memory while it waits, and the next test in the same PowerShell session only starts it, which resumes the clean checkpoint. That next test checks first that the VM is still `Saved` and that its last state change (Hyper-V's `TimeOfLastStateChange`) is not later than the restore: a VM that another tool started (and perhaps saved again) since then is restored as usual. Parking needs `HyperVRevertMode` `TurnOffFirst` (the default); with `Legacy` this value is ignored. A watched run never parks the VM. It also applies to the background restore of `HyperVAsyncTeardown`. Default `Running` until it is measured on your host; any value but `Saved` counts as `Running`. No TUI control: set it in the registry.
+
+### `HyperVCapturePrewarm` (default `Off`)
+
+The documentation capture of [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md) (also from the TUI's winget wizard) runs in the test VM after the winget search, the download and the configuration, and first restores the VM's checkpoint. When `On` and the Hyper-V test backend is in effect, `Invoke-Win32Toolkit` starts that restore in the background right after it resolves the base folder, and holds the test VM (its lease) until the capture is done: the capture then only checks the VM and starts. If the VM is in use by another PowerShell session, the run waits for it first, as the capture would (up to `HyperVLeaseWaitMinutes`). The head start is lost when the steps before the capture take longer than 10 minutes (the capture then restores again), and there is no pre-warm with `HyperVDepsCheckpoint` `On` (the capture may restore a project's own checkpoint). With the Sandbox backend nothing happens. Default `Off` until it is measured on your host; any value but `On` counts as `Off`. No TUI control: set it in the registry.
 
 ## Guest credential
 
