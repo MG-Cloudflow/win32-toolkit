@@ -22,12 +22,14 @@ if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
 }
 Import-Module PSScriptAnalyzer -ErrorAction Stop
 
-# Targets: the two source folders (recursed) plus the top-level manifest and loader.
+# Targets: the two source folders (recursed) plus the top-level manifest and loader, and the repository's lane runner
+# (Hyper-V speed-up PR 3, V-14: a script, not shipped, held to the same gate).
 $targets = @(
     Join-Path $repo 'Private'
     Join-Path $repo 'Public'
     Join-Path $repo 'win32-toolkit.psm1'
     Join-Path $repo 'win32-toolkit.psd1'
+    Join-Path $repo 'scripts\Invoke-Win32ToolkitHyperVLane.ps1'
 ) | Where-Object { Test-Path -LiteralPath $_ }
 
 $findings = @()
