@@ -15,6 +15,10 @@
     follows the one the teardown stamped (the sections above pass $L5 to the teardown and $L6 to the open). [n]: the
     generation rule (next outermost, nested, another holder in between, another epoch, no lease, a PR 1 marker).
 
+    Speed-up PR 4 (D9, A-15, V-17): [k] Saved parking: an unattended teardown (-AllowPark) with HyperVTeardownPark Saved and
+    TurnOffFirst leaves the VM as it landed and stamps Parked; the next open only starts a parked VM while it is Saved and
+    its last state change (WMI, a double here) is not later than the stamp.
+
     All Hyper-V cmdlets are shadowed; nothing touches a real VM.
 
     Run:  pwsh -File Tests\HyperVSessionRevert.unit.ps1
@@ -371,6 +375,93 @@ $vn = @(Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -Checkpoi
 if ($script:restores -eq 1 -and $tn['Restored'] -eq $true -and $null -eq $script:HyperVCleanMarker -and @($vn | Where-Object { $_ -like '*no VM lease is held, so no clean marker is kept*' }).Count -eq 1) {
     Ok 'a teardown without -Lease: the restore runs (Restored $true), no marker, one verbose line'
 } else { Bad "teardown no lease: restores=$($script:restores) marker=$($null -ne $script:HyperVCleanMarker) verbose=$($vn -join ' | ')" }
+Reset-State
+
+# ── (k) Hyper-V speed-up PR 4 (D9, A-15, V-17): Saved parking ─────────────────────────────────────────────────────────
+Write-Host '[k] (PR 4) an unattended teardown may park the clean VM Saved; the next open only starts it while its last state change is not later than the stamp' -ForegroundColor Cyan
+# C-9/C-5: the real park decision with HKCU in memory; WMI (Msvm_ComputerSystem.TimeOfLastStateChange) as a double.
+. (Join-Path $repo 'Private\Test-Win32ToolkitHyperVTeardownPark.ps1')
+$script:cfgK = @{}
+function Get-Win32ToolkitConfigValue { param($Name, $Default) if ($script:cfgK.ContainsKey($Name)) { $script:cfgK[$Name] } else { $Default } }
+$script:vmStateChange = $null; $script:cimThrows = $false; $script:cimCalls = 0; $script:cimFilter = $null
+function Get-CimInstance { param($Namespace, $ClassName, $Filter, $ErrorAction)
+    $script:cimCalls++; $script:cimFilter = "$Namespace|$ClassName|$Filter"
+    if ($script:cimThrows) { throw 'WMI is not available' }
+    [pscustomobject]@{ Name = '0E5F9E66-1111-2222-3333-444455556666'; TimeOfLastStateChange = $script:vmStateChange } }
+# The helper double records -NoStart; a parked VM is left as it landed (Started $false).
+${function:Restore-Win32ToolkitTestVMCheckpoint_Saved} = ${function:Restore-Win32ToolkitTestVMCheckpoint}
+$script:noStartSeen = $null
+function Restore-Win32ToolkitTestVMCheckpoint { param($VMName, $CheckpointName, $Mode, [switch]$NoStart)
+    $script:helperCalls++; $script:noStartSeen = [bool]$NoStart
+    $null = Restore-VMCheckpoint -VMName $VMName -Name $CheckpointName -Confirm:$false -ErrorAction Stop
+    [pscustomobject]@{ Mode = 'TurnOffFirst'; Landed = [string]$script:vmState; TurnOffSeconds = 0.1; RestoreSeconds = 0.1; StartSeconds = $null; Started = -not $NoStart } }
+${function:Wait-Win32ToolkitVMReady_Saved} = ${function:Wait-Win32ToolkitVMReady}
+$sessionK = [pscustomobject]@{ Kind = 'session-double' }
+function Wait-Win32ToolkitVMReady { param($VMName, $Credential, [switch]$SkipPrep, [switch]$ReturnSession) if ($ReturnSession) { $sessionK } else { $true } }
+$tearK = {
+    param([switch]$AllowPark)
+    $script:noStartSeen = $null
+    $v = @(Remove-Win32ToolkitHyperVSession -Session 'fake' -VMName 'vmA' -CheckpointName 'clean-base' -Revert -Lease $L5 -AllowPark:$AllowPark -Verbose 4>&1 3>$null)
+    [pscustomobject]@{ Out = @($v | Where-Object { $_ -isnot [System.Management.Automation.VerboseRecord] }); Verbose = @($v | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] } | ForEach-Object { $_.Message }) }
+}
+$openK = {
+    $info = @{}
+    $v = @(New-Win32ToolkitHyperVSession -VMName 'vmA' -Credential $cred -CheckpointName 'clean-base' -Info $info -Lease $L6 -Verbose 4>&1 3>$null)
+    [pscustomobject]@{ Info = $info; Exact = (@($v | Where-Object { $_ -isnot [System.Management.Automation.VerboseRecord] }).Count -eq 1)
+        Why = @($v | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] -and $_.Message -like '*clean marker is not used*' } | ForEach-Object { $_.Message }) }
+}
+# The teardown: park only when asked (-AllowPark = an unattended run), HyperVTeardownPark Saved and TurnOffFirst.
+foreach ($case in @(
+        @{ Tag = 'Saved + -AllowPark, the VM Saved afterwards'; Cfg = @{ HyperVTeardownPark = 'Saved' }; Allow = $true; State = 'Saved'; NoStart = $true; Parked = 'Saved' }
+        @{ Tag = 'saved (any case, blanks) + -AllowPark'; Cfg = @{ HyperVTeardownPark = ' saved ' }; Allow = $true; State = 'Saved'; NoStart = $true; Parked = 'Saved' }
+        @{ Tag = 'Saved + -AllowPark, but the VM is Running afterwards'; Cfg = @{ HyperVTeardownPark = 'Saved' }; Allow = $true; State = 'Running'; NoStart = $true; Parked = 'Running' }
+        @{ Tag = 'Saved without -AllowPark (a watched run)'; Cfg = @{ HyperVTeardownPark = 'Saved' }; Allow = $false; State = 'Saved'; NoStart = $false; Parked = 'Running' }
+        @{ Tag = 'Saved + Legacy (A-15: not parked, one verbose line)'; Cfg = @{ HyperVTeardownPark = 'Saved'; HyperVRevertMode = 'Legacy' }; Allow = $true; State = 'Saved'; NoStart = $false; Parked = 'Running'; Verbose = 'parking needs TurnOffFirst' }
+        @{ Tag = 'Running (the default)'; Cfg = @{}; Allow = $true; State = 'Saved'; NoStart = $false; Parked = 'Running' }
+        @{ Tag = 'banana (anything but Saved)'; Cfg = @{ HyperVTeardownPark = 'banana' }; Allow = $true; State = 'Saved'; NoStart = $false; Parked = 'Running' })) {
+    Reset-State; $script:cfgK = $case.Cfg; $script:vmState = $case.State
+    $t = & $tearK -AllowPark:$case.Allow
+    $m = $script:HyperVCleanMarker
+    $verboseOk = -not $case.Verbose -or @($t.Verbose | Where-Object { $_ -like "*$($case.Verbose)*" }).Count -eq 1
+    if ($t.Out.Count -eq 0 -and $script:noStartSeen -eq $case.NoStart -and $m -and $m.Parked -ceq $case.Parked -and $m.VMId -eq [string]$script:vmId -and $verboseOk) {
+        Ok "$($case.Tag): -NoStart $($case.NoStart), marker Parked $($case.Parked)$(if ($case.NoStart -and $case.Parked -eq 'Saved') { ' (the helper left it Saved: Started $false)' })"
+    } else { Bad "$($case.Tag): out=$($t.Out.Count) nostart=$($script:noStartSeen) marker=$($m | ConvertTo-Json -Compress) verbose=$($t.Verbose -join ' | ')" }
+}
+# The open after a parked teardown.
+$stampK = { param([int]$AgeSeconds = 30) $script:HyperVCleanMarker = @{ VMName = 'vmA'; VMId = [string]$script:vmId; CheckpointName = 'clean-base'; StampedAt = (Get-Date).AddSeconds(-$AgeSeconds); LeaseEpoch = 'epoch-a'; LeaseGeneration = 5; Parked = 'Saved' } }
+Reset-State; $script:cimCalls = 0; $script:cimThrows = $false; $script:vmState = 'Saved'; & $stampK 30
+$script:vmStateChange = (Get-Date).AddSeconds(-31)
+$k = & $openK
+if ($k.Exact -and $script:helperCalls -eq 0 -and $script:restores -eq 0 -and $script:started -eq 1 -and $k.Info['RevertSkipped'] -eq $true -and $k.Info['Warm'] -eq $true -and $k.Why.Count -eq 0 -and
+    $script:cimCalls -eq 1 -and $script:cimFilter -ceq "root\virtualization\v2|Msvm_ComputerSystem|Name = '0E5F9E66-1111-2222-3333-444455556666'") {
+    Ok 'parked marker + VM Saved + its last state change before the stamp: only Start-VM, RevertSkipped $true (WMI asked by the upper-case VM Id)'
+} else { Bad "parked hit: exact=$($k.Exact) helper=$($script:helperCalls) started=$($script:started) info=$($k.Info | ConvertTo-Json -Compress -Depth 1) why=$($k.Why -join ' | ') cim=$($script:cimCalls) $($script:cimFilter)" }
+Reset-State; $script:cimCalls = 0; $script:vmState = 'Saved'; & $stampK 30
+$script:vmStateChange = (Get-Date).AddSeconds(-27)   # 3 s after the stamp: within the 5 s slack
+$k = & $openK
+if ($script:helperCalls -eq 0 -and $k.Info['RevertSkipped'] -eq $true) { Ok 'a state change 3 s after the stamp (within the 5 s slack): still only Start-VM' } else { Bad "slack: helper=$($script:helperCalls) why=$($k.Why -join ' | ')" }
+foreach ($case in @(
+        @{ Tag = 'a state change 60 s after the stamp (another tool started and saved the VM)'; Set = { $script:vmState = 'Saved'; $script:vmStateChange = (Get-Date).AddSeconds(30) }; Want = 'is later than the teardown that parked it' }
+        @{ Tag = 'WMI throws'; Set = { $script:vmState = 'Saved'; $script:cimThrows = $true }; Want = 'last state change could not be read (WMI is not available)' }
+        @{ Tag = 'WMI returns no time'; Set = { $script:vmState = 'Saved'; $script:vmStateChange = $null }; Want = 'last state change could not be read' }
+        @{ Tag = 'the VM is Running (started since)'; Set = { $script:vmState = 'Running'; $script:vmStateChange = (Get-Date).AddSeconds(-31) }; Want = 'the teardown left the VM Saved, but it is Running now' })) {
+    Reset-State; $script:cimCalls = 0; $script:cimThrows = $false; & $stampK 30
+    & $case.Set
+    $k = & $openK
+    if ($k.Exact -and $script:helperCalls -eq 1 -and $k.Info['RevertSkipped'] -eq $false -and $k.Why.Count -eq 1 -and $k.Why[0] -like "*$($case.Want)*") { Ok "parked marker, $($case.Tag): the full restore, the verbose line names it" }
+    else { Bad "$($case.Tag): helper=$($script:helperCalls) info=$($k.Info | ConvertTo-Json -Compress -Depth 1) why=$($k.Why -join ' | ')" }
+}
+# No marker: the full sequence; a marker that is not parked never asks WMI.
+Reset-State; $script:cimCalls = 0; $script:vmState = 'Saved'
+$k = & $openK
+$missOk = $script:helperCalls -eq 1 -and $k.Info['RevertSkipped'] -eq $false
+Reset-State; $script:cimCalls = 0
+$script:HyperVCleanMarker = @{ VMName = 'vmA'; VMId = [string]$script:vmId; CheckpointName = 'clean-base'; StampedAt = (Get-Date).AddSeconds(-30); LeaseEpoch = 'epoch-a'; LeaseGeneration = 5; Parked = 'Running' }
+$k = & $openK
+if ($missOk -and $script:helperCalls -eq 0 -and $k.Info['RevertSkipped'] -eq $true -and $script:cimCalls -eq 0) { Ok 'no marker: the full restore; a Running-parked marker keeps the uptime rule and never asks WMI' } else { Bad "miss/running: miss=$missOk helper=$($script:helperCalls) cim=$($script:cimCalls)" }
+${function:Restore-Win32ToolkitTestVMCheckpoint} = ${function:Restore-Win32ToolkitTestVMCheckpoint_Saved}
+${function:Wait-Win32ToolkitVMReady} = ${function:Wait-Win32ToolkitVMReady_Saved}
+Remove-Item Function:\Restore-Win32ToolkitTestVMCheckpoint_Saved, Function:\Wait-Win32ToolkitVMReady_Saved, Function:\Get-CimInstance, Function:\Get-Win32ToolkitConfigValue
 Reset-State
 
 Write-Host ''

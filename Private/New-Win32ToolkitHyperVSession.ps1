@@ -30,6 +30,10 @@ function New-Win32ToolkitHyperVSession {
         The VM lease the caller holds (Enter-Win32ToolkitHyperVLease, speed-up PR 3). The clean marker is used only
         under a lease, and only when it was stamped under the same lease epoch with the generation this lease follows
         (A-2): no other process held the VM since the teardown that stamped it. Without -Lease the open always restores.
+
+        A marker whose teardown parked the VM Saved (speed-up PR 4, HyperVTeardownPark) is used only while the VM is still
+        Saved and its last state change (WMI Msvm_ComputerSystem.TimeOfLastStateChange) is not later than the marker's
+        stamp (V-17); the open then only starts the VM. Otherwise, or when that time cannot be read, it restores.
     .OUTPUTS
         A PSSession (System.Management.Automation.Runspaces.PSSession).
     #>
@@ -92,6 +96,32 @@ function New-Win32ToolkitHyperVSession {
             }
             if (-not $why) {
                 if (-not $m.VMId -or $null -eq $guardVm -or [string]$guardVm.Id -ne [string]$m.VMId) { $why = 'its VM Id is not the one the teardown left clean' }
+                elseif ([string]$m.Parked -eq 'Saved') {
+                    # Speed-up PR 4 (D9, V-17): the teardown parked the VM Saved (HyperVTeardownPark). The parked analogue of
+                    # the uptime rule: it must still be Saved, and its last state change (WMI Msvm_ComputerSystem
+                    # TimeOfLastStateChange) not later than the stamp (5 s of slack): a start and a save by another tool
+                    # since then move it. Unreadable: restore (fail-safe).
+                    if ([string]$guardVm.State -ne 'Saved') { $why = "the teardown left the VM Saved, but it is $($guardVm.State) now" }
+                    else {
+                        $changed = $null
+                        $cimWhy = ''
+                        $vmGuid = [guid]::Empty
+                        if ([guid]::TryParse([string]$m.VMId, [ref]$vmGuid)) {
+                            try {
+                                $cs = @(Get-CimInstance -Namespace 'root\virtualization\v2' -ClassName 'Msvm_ComputerSystem' -Filter "Name = '$($vmGuid.ToString('D').ToUpperInvariant())'" -ErrorAction Stop)
+                                if ($cs.Count -eq 1) { $changed = $cs[0].TimeOfLastStateChange }
+                            }
+                            catch {
+                                if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                                $cimWhy = " ($($_.Exception.Message))"
+                            }
+                        }
+                        if ($changed -isnot [datetime]) { $why = "the VM's last state change could not be read$cimWhy" }
+                        elseif ($changed.ToUniversalTime() -gt ([datetime]$m.StampedAt).ToUniversalTime().AddSeconds(5)) {
+                            $why = "the VM's last state change ($($changed.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss'))Z) is later than the teardown that parked it (it was started or saved since)"
+                        }
+                    }
+                }
                 elseif ([string]$guardVm.State -ne 'Running') { $why = "the VM is $($guardVm.State), not Running" }
                 elseif ($guardVm.Uptime -isnot [timespan] -or $guardVm.Uptime.TotalSeconds -lt ($age - 5)) {
                     $why = "the VM's uptime is shorter than the $([int]$age) s since the teardown restore (it was restored or started since)"

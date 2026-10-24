@@ -37,6 +37,8 @@ function Exit-Win32ToolkitHyperVLease { param($Lease) }
 # C-9 (speed-up PR 4): the asynchronous teardown's owner and background restore, inert (no owner; HyperVAsyncTeardown reads Off).
 function Get-Win32ToolkitAsyncTeardownOwner { $null }
 function Start-Win32ToolkitHyperVBackgroundRestore { param($VMName, $CheckpointName, $Mode, $Lease, $Kind, [switch]$NoStart, $Info) $false }
+# C-9 (speed-up PR 4): the park decision of the asynchronous teardown, inert (not parked).
+function Test-Win32ToolkitHyperVTeardownPark { $false }
 # C-9 (speed-up PR 4, spec 7.5): the provider reads HyperVAsyncTeardown; no real HKCU read, the default (Off).
 function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }
 

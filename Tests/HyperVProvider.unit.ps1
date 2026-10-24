@@ -55,6 +55,8 @@ function Exit-Win32ToolkitHyperVLease { param($Lease) }
 # Off through the config shadows below, so neither is reached by default; [19] replaces them).
 function Get-Win32ToolkitAsyncTeardownOwner { $null }
 function Start-Win32ToolkitHyperVBackgroundRestore { param($VMName, $CheckpointName, $Mode, $Lease, $Kind, [switch]$NoStart, $Info) $false }
+# C-9 (speed-up PR 4): the park decision of the asynchronous teardown, inert (not parked).
+function Test-Win32ToolkitHyperVTeardownPark { $false }
 
 Write-Host '[1] Invoke-Win32ToolkitGuestPhase runs as SYSTEM and returns ONLY the exit code' -ForegroundColor Cyan
 # Simulate a guest that emits output lines followed by the exit code (the shape that broke the [int] cast).
@@ -473,7 +475,7 @@ $c12Names = @('Get-Win32ToolkitHyperVLane', 'Get-Win32ToolkitZipContentHash', 'N
     # speed-up PR 3
     'Enter-Win32ToolkitHyperVLease', 'Exit-Win32ToolkitHyperVLease',
     # speed-up PR 4
-    'Start-Win32ToolkitHyperVBackgroundRestore', 'Wait-Win32ToolkitHyperVTeardown', 'Get-Win32ToolkitAsyncTeardownOwner')
+    'Start-Win32ToolkitHyperVBackgroundRestore', 'Wait-Win32ToolkitHyperVTeardown', 'Get-Win32ToolkitAsyncTeardownOwner', 'Test-Win32ToolkitHyperVTeardownPark')
 $c12Check = {
     param([string[]]$Files, [string[]]$Names)
     $bad = [System.Collections.Generic.List[string]]::new()
@@ -928,6 +930,33 @@ foreach ($case in @(
     else { Bad "$($case.Tag): out=$(@($x19.Out | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ') log=$($x19.Log)" }
 }
 $script:cfg19 = @{ HyperVAsyncTeardown = 'On' }; $script:open19 = ''
+
+Write-Host '[20] Saved parking (speed-up PR 4, D9): only an unattended run may park; the background restore honours the same rule' -ForegroundColor Cyan
+${function:Remove-Win32ToolkitHyperVSession} = {
+    param($Session, $VMName, $CheckpointName, [switch]$Revert, [hashtable]$Info, $Lease, [switch]$AllowPark)
+    $script:log19.Add("teardown:revert=$($Revert.IsPresent):allowPark=$($AllowPark.IsPresent)")
+    [pscustomobject]@{ Leak = 'teardown' }
+}
+${function:Start-Win32ToolkitHyperVBackgroundRestore} = {
+    param($VMName, $CheckpointName, $Mode, $Lease, $Kind, [switch]$NoStart, [hashtable]$Info)
+    $script:log19.Add("bg:noStart=$($NoStart.IsPresent)")
+    $true
+}
+$script:park20 = $true
+${function:Test-Win32ToolkitHyperVTeardownPark} = { $script:log19.Add('park?'); $script:park20 }
+$script:cfg19 = @{}
+$x20 = & $run19
+if ($x20.One -and $x20.Log -eq 'enter > open:desktop=False > phase:Install > teardown:revert=True:allowPark=True > exit:same=True') { Ok 'an unattended run: the synchronous teardown gets -AllowPark (the teardown decides with HyperVTeardownPark)' } else { Bad "unattended: $($x20.Log)" }
+$x20 = & $run19 @(@{ Label = 'Install'; Command = '0'; Interactive = $true })
+if ($x20.One -and $x20.Log -eq 'enter > open:desktop=True > vmconnect > phase:Install > teardown:revert=True:allowPark=False > exit:same=True') { Ok 'a watched run: no -AllowPark (its console stays on a running VM)' } else { Bad "watched: $($x20.Log)" }
+$script:cfg19 = @{ HyperVAsyncTeardown = 'On' }; $script:owner19 = @{ Token = [guid]::NewGuid(); Command = 'Show-Win32Toolkit' }
+foreach ($park in $true, $false) {
+    $script:park20 = $park
+    $x20 = & $run19
+    if ($x20.One -and $x20.Log -eq "enter > open:desktop=False > phase:Install > owner? > teardown:revert=False:allowPark=False > park? > bg:noStart=$park") { Ok "async + the park decision $($park): the background restore gets -NoStart $park; the output stays one [bool]" } else { Bad "async park ${park}: $($x20.Log)" }
+}
+$script:cfg19 = @{ HyperVAsyncTeardown = 'On' }
+${function:Test-Win32ToolkitHyperVTeardownPark} = { $false }
 ${function:Get-Win32ToolkitAsyncTeardownOwner} = { $null }
 ${function:Start-Win32ToolkitHyperVBackgroundRestore} = { param($VMName, $CheckpointName, $Mode, $Lease, $Kind, [switch]$NoStart, $Info) $false }
 ${function:Enter-Win32ToolkitHyperVLease} = { param($VMName, $VMId, $ProjectPath, $Purpose) [pscustomobject]@{ Kind = 'VM'; VMName = $VMName; Epoch = 'inert'; Generation = 1; PreviousGeneration = 0; Nested = $false } }

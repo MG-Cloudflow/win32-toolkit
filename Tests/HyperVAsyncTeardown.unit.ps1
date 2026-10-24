@@ -28,6 +28,8 @@
           returns its result object; Start-Win32ToolkitHyperVBackgroundRestore emits exactly one [bool]; -ReleaseOwner
           $null and a token that is not the live one do nothing. Start- joins a restore still pending (of another VM)
           before it records the new one: no orphaned job, its lease released.
+      [p] (P4-2) Saved parking: the job gets -NoStart under HyperVTeardownPark Saved (never under Legacy, A-15); the join
+          stamps Parked Saved only when the VM is Saved then.
       [w] Get-Win32ToolkitAsyncTeardownOwner: no record, a live one, a stale one.
       [s] Static: the two owners (Show-Win32Toolkit, Invoke-Win32Toolkit) register right before their try with the
           null-safe pattern and join as the last statement of their finally (after the reset/restore lines); New-,
@@ -65,6 +67,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Enter-Win32ToolkitHyperVLease.ps1')
 . (Join-Path $repo 'Private\Exit-Win32ToolkitHyperVLease.ps1')
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitHyperVRun.ps1')
+. (Join-Path $repo 'Private\Test-Win32ToolkitHyperVTeardownPark.ps1')   # P4-2: the real park decision (HKCU in memory)
 Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue
 
 # -- shadows ----------------------------------------------------------------------------------------------------------
@@ -489,6 +492,25 @@ $null = Wait-Win32ToolkitHyperVTeardown -VMName 'vmB' 3>$null
 if (-not $pA.Lease.Released) { $null = Exit-Win32ToolkitHyperVLease -Lease $pA.Lease; Remove-Job -Job $jobA -Force -ErrorAction SilentlyContinue }
 if (-not $lB.Released) { $null = Exit-Win32ToolkitHyperVLease -Lease $lB }
 
+# -- [p] Saved parking in the background restore (P4-2, D9) --------------------------------------------------------------
+Write-Host '[p] (P4-2) HyperVTeardownPark Saved: the background restore leaves the VM as it landed; the join stamps Parked Saved only for a Saved VM' -ForegroundColor Cyan
+foreach ($case in @(
+        @{ Tag = 'Saved, the VM Saved at the join'; Cfg = @{ HyperVTeardownPark = 'Saved' }; State = 'Saved'; NoStart = $true; Parked = 'Saved' }
+        @{ Tag = 'Saved, the VM Running at the join'; Cfg = @{ HyperVTeardownPark = 'Saved' }; State = 'Running'; NoStart = $true; Parked = 'Running' }
+        @{ Tag = 'Saved + HyperVRevertMode Legacy (A-15)'; Cfg = @{ HyperVTeardownPark = 'Saved'; HyperVRevertMode = 'Legacy' }; State = 'Saved'; NoStart = $false; Parked = 'Running' }
+        @{ Tag = 'Running (the default)'; Cfg = @{}; State = 'Saved'; NoStart = $false; Parked = 'Running' })) {
+    Reset-Case
+    $script:cfg = $case.Cfg.Clone(); $script:cfg['HyperVAsyncTeardown'] = 'On'; $script:vmState = $case.State
+    $x = Invoke-AsOwner -Owner
+    $args0 = if ($script:jobCalls.Count) { @($script:jobCalls[0].ArgumentList) } else { @() }
+    $rec = $script:HyperVPendingRestore
+    $null = Wait-Win32ToolkitHyperVTeardown -VMName 'vmA' 3>$null
+    $m = $script:HyperVCleanMarker
+    if ($x.One -and $args0.Count -eq 5 -and $args0[4] -eq $case.NoStart -and $rec -and $rec['Parked'] -ceq $(if ($case.NoStart) { 'Saved' } else { 'Running' }) -and $m -and $m.Parked -ceq $case.Parked) {
+        Ok "$($case.Tag): the job's -NoStart $($case.NoStart), the marker Parked $($case.Parked)"
+    } else { Bad "$($case.Tag): nostart=$($args0[4]) rec=$($rec['Parked']) marker=$($m | ConvertTo-Json -Compress)" }
+}
+$script:vmState = 'Running'
 # -- [w] Get-Win32ToolkitAsyncTeardownOwner -------------------------------------------------------------------------------
 Write-Host '[w] Get-Win32ToolkitAsyncTeardownOwner: none, live, stale' -ForegroundColor Cyan
 Reset-Case
@@ -525,7 +547,7 @@ foreach ($n in @('Public\New-Win32ToolkitManualApp.ps1', 'Public\Complete-Win32T
     if ($t -notmatch 'W32TAsyncTeardownOwner' -and $t -notmatch 'ReleaseOwner' -and $t -notmatch 'Get-Win32ToolkitAsyncTeardownOwner') { Ok "$(Split-Path -Leaf $n): no owner registration, no owner join (V-16)" } else { Bad "$n registers or joins an owner" }
 }
 $c2 = "if (`$_.FullyQualifiedErrorId -like 'W32T.*') { throw }"
-foreach ($n in 'Start-Win32ToolkitHyperVBackgroundRestore', 'Wait-Win32ToolkitHyperVTeardown', 'Get-Win32ToolkitAsyncTeardownOwner') {
+foreach ($n in 'Start-Win32ToolkitHyperVBackgroundRestore', 'Wait-Win32ToolkitHyperVTeardown', 'Get-Win32ToolkitAsyncTeardownOwner', 'Test-Win32ToolkitHyperVTeardownPark') {
     $file = Join-Path $repo "Private\$n.ps1"
     $errs = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$errs)

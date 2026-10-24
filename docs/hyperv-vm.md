@@ -214,6 +214,10 @@ not a watched one. To restore before every test (for example a final check), sta
   for the restore, and another session waits for the lease. So a TUI left open at a menu keeps the VM from other
   sessions until you use the VM again or leave the TUI. A restore that fails prints a warning and the next test
   restores the VM first.
+- `HyperVTeardownPark` (`Running` or `Saved`): with `Saved`, the restore after an unattended test leaves the clean VM
+  `Saved`, so an idle VM holds no host memory, and the next test in the session only starts it. That test checks the
+  VM's last state change: a VM that another tool started, or started and saved again, after the toolkit parked it is
+  restored as usual. Needs `HyperVRevertMode` `TurnOffFirst`; a watched run never parks the VM.
 
 **One VM, one PowerShell session at a time.** Every test run, the Intune-parity pre-check (when it restores the
 VM) and every VM command (`Reset-`, `Set-Win32ToolkitTestVMResource`, `Remove-` and `New-Win32ToolkitTestVM`, and the
@@ -337,5 +341,6 @@ typo is never stored).
 | `HyperVLeaseWaitMinutes` | How long (1-240 minutes, default 60) a test or a VM command waits while another PowerShell session uses the VM, then stops with `W32T.HyperVLeaseTimeout`. See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
 | `TestProjectLease` | `On` lets one PowerShell session at a time test a project (elevated sessions; default `Off`). See [Configuration](configuration.md) |
 | `HyperVAsyncTeardown` | `On` lets the end-of-test restore finish in the background inside the TUI and `Invoke-Win32Toolkit` (default `Off`). See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
+| `HyperVTeardownPark` | `Saved` leaves the clean VM Saved between unattended tests (default `Running`; needs `HyperVRevertMode` `TurnOffFirst`). See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
 
 All keys live in the toolkit's registry config; see [Configuration](configuration.md) for the full list.

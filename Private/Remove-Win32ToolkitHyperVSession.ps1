@@ -23,6 +23,10 @@ function Remove-Win32ToolkitHyperVSession {
         The VM lease the caller holds (Enter-Win32ToolkitHyperVLease, speed-up PR 3). The clean marker carries its
         epoch and generation (A-2), so the next open uses it only while no other process held the VM in between.
         Without -Lease the restore still runs but no marker is kept (the next run restores again).
+    .PARAMETER AllowPark
+        The caller's run was unattended (speed-up PR 4, D9): with HKCU HyperVTeardownPark = Saved (and HyperVRevertMode
+        TurnOffFirst, Test-Win32ToolkitHyperVTeardownPark) the restore leaves the VM as it landed (-NoStart), and a VM
+        that is Saved afterwards gets the marker's Parked = Saved, so the next open only starts it.
     #>
     [CmdletBinding()]
     param(
@@ -35,7 +39,10 @@ function Remove-Win32ToolkitHyperVSession {
         [hashtable]$Info,
 
         # The VM lease the caller holds (speed-up PR 3, A-2): stamped into the clean marker.
-        [object]$Lease
+        [object]$Lease,
+
+        # An unattended run (speed-up PR 4, D9): the VM may be parked Saved (HyperVTeardownPark).
+        [switch]$AllowPark
     )
 
     if ($null -ne $Info) { $Info['Restored'] = $false; $Info['RevertMode'] = $null }
@@ -48,7 +55,13 @@ function Remove-Win32ToolkitHyperVSession {
         # Speed-up PR 2 (D4): the restore helper turns the VM off, restores and starts it again (HyperVRevertMode); it
         # throws when any of these steps fails, so the marker is stamped only after the whole sequence succeeded.
         try {
-            $restore = Restore-Win32ToolkitTestVMCheckpoint -VMName $VMName -CheckpointName $CheckpointName
+            # Speed-up PR 4 (D9, A-15): an unattended run's VM may be parked Saved (HyperVTeardownPark; TurnOffFirst only):
+            # the restore then leaves it as it landed, and the next open in this process only starts it.
+            $noStart = $false
+            if ($AllowPark) { $noStart = Test-Win32ToolkitHyperVTeardownPark }
+            $restoreArgs = @{ VMName = $VMName; CheckpointName = $CheckpointName }
+            if ($noStart) { $restoreArgs['NoStart'] = $true }
+            $restore = Restore-Win32ToolkitTestVMCheckpoint @restoreArgs
             if ($null -ne $Info) {
                 $Info['Restored'] = $true
                 $Info['RevertMode'] = if ($restore -and $restore.Mode) { [string]$restore.Mode } else { $null }
@@ -56,11 +69,19 @@ function Remove-Win32ToolkitHyperVSession {
             # The marker carries the VM's Id (speed-up PR 1, D25): the next open uses it only for this very VM. When
             # the Id cannot be read there is no marker (one extra restore next time); the restore itself succeeded.
             $vmId = $null
-            try { $vmId = [string](Get-VM -Name $VMName -ErrorAction Stop).Id }
+            $vmState = ''
+            try {
+                $vmNow = Get-VM -Name $VMName -ErrorAction Stop
+                $vmId = [string]$vmNow.Id
+                $vmState = [string]$vmNow.State
+            }
             catch {
                 if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
                 $vmId = $null
             }
+            # Parked (speed-up PR 4): Saved only when parking was asked for and the VM is Saved now; the next open then
+            # checks that its last state change is not later than this stamp (V-17).
+            $parked = if ($noStart -and $vmState -eq 'Saved') { 'Saved' } else { 'Running' }
             # Speed-up PR 3 (A-2): the marker also carries the lease it was stamped under; without a lease there is none.
             if ($null -eq $Lease) {
                 $script:HyperVCleanMarker = $null
@@ -68,7 +89,7 @@ function Remove-Win32ToolkitHyperVSession {
             }
             elseif ($vmId) {
                 $script:HyperVCleanMarker = @{ VMName = $VMName; VMId = $vmId; CheckpointName = $CheckpointName; StampedAt = Get-Date
-                    LeaseEpoch = [string]$Lease.Epoch; LeaseGeneration = ($Lease.Generation -as [long]) }
+                    LeaseEpoch = [string]$Lease.Epoch; LeaseGeneration = ($Lease.Generation -as [long]); Parked = $parked }
             }
             else {
                 $script:HyperVCleanMarker = $null

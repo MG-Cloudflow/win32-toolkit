@@ -465,13 +465,16 @@ function Invoke-Win32ToolkitHyperVRun {
                     if ($null -ne $owner) {
                         $null = Remove-Win32ToolkitHyperVSession -Session $session
                         $session = $null
-                        $started = Start-Win32ToolkitHyperVBackgroundRestore -VMName $VMName -CheckpointName $effectiveCheckpoint -Lease $lease -Kind Teardown -Info $tdInfo
+                        # Saved parking (speed-up PR 4, D9) applies to the background restore too.
+                        $park = Test-Win32ToolkitHyperVTeardownPark
+                        $started = Start-Win32ToolkitHyperVBackgroundRestore -VMName $VMName -CheckpointName $effectiveCheckpoint -Lease $lease -Kind Teardown -Info $tdInfo -NoStart:($park -is [bool] -and $park)
                         $handedOver = $started -is [bool] -and $started
                     }
                     else { Write-Verbose 'HyperVAsyncTeardown is On, but no TUI session or Invoke-Win32Toolkit run will wait for a background restore: the teardown restores now.' }
                 }
                 if (-not $handedOver) {
-                    $null = Remove-Win32ToolkitHyperVSession -Session $session -VMName $VMName -CheckpointName $effectiveCheckpoint -Revert -Info $tdInfo -Lease $lease
+                    # An unattended run's VM may be parked Saved (speed-up PR 4, D9, HyperVTeardownPark); never a watched run's.
+                    $null = Remove-Win32ToolkitHyperVSession -Session $session -VMName $VMName -CheckpointName $effectiveCheckpoint -Revert -Info $tdInfo -Lease $lease -AllowPark:(-not $needsDesktop)
                 }
             }
             # INTERACTIVE runs leave a vmconnect window attached to the reverted-but-running guest — the
