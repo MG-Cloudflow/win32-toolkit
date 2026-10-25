@@ -136,6 +136,10 @@ function Wait-ForDocumentationAndProcess {
             }
         }
 
+        # The package's own uninstall identity (installer-identity PR 3, L1), for every installer type: the
+        # prior-install rules are never allowed to name it. Fail-open (one warning; Export then refuses rules).
+        $null = Write-Win32ToolkitOwnIdentity -ProjectPath $ProjectPath -Capture $parsed
+
         # Populate AppProcessesToClose for all installer types
         Write-Verbose "Detecting processes to close..."
         $procSuccess = Update-PSADTProcessesToClose -ProjectPath $ProjectPath -JsonFilePath $jsonFile

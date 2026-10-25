@@ -42,6 +42,9 @@ ${function:New-IntuneRequirementScript}    = { param($ProjectPath, $JsonFilePath
 ${function:Update-PSADTUninstallLogic}     = { param($ProjectPath, $JsonFilePath) Write-FakeConfig $ProjectPath 'uninstall' $JsonFilePath }
 ${function:Update-PSADTProcessesToClose}   = { param($ProjectPath, $JsonFilePath) Write-FakeConfig $ProjectPath 'processes' $JsonFilePath }
 ${function:Update-PSADTMsixUninstallLogic} = { param($ProjectPath) Write-FakeConfig $ProjectPath 'msix' '' }
+# Installer-identity PR 3 (C-9): the own-identity writer runs after the uninstall writers, for every installer type.
+${function:Write-Win32ToolkitOwnIdentity}  = { param($ProjectPath, $Capture) $script:ownCaptures += $Capture; Write-FakeConfig $ProjectPath 'ownidentity' '' }
+$script:ownCaptures = @()
 
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ('w32cx_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $root -Force | Out-Null
@@ -134,6 +137,20 @@ $script:jsonSeen = @()
 if ((RunCase $c 'exe') -eq $true) { Ok 'DependencyExitCode null (no dependencies) proceeds' } else { Bad 'null dependency code refused' }
 if (@($script:jsonSeen | Select-Object -Unique) -join ',' -eq 'InstallationChanges_20261015_101010.json') { Ok 'the writers are fed this run''s capture file' } else { Bad "json seen: $($script:jsonSeen -join ',')" }
 
+Write-Host '[a6] the own-identity writer runs once per processed capture, for msi, exe and msix (installer-identity PR 3)' -ForegroundColor Cyan
+foreach ($t in 'msi', 'exe', 'msix') {
+    $c = NewCase (Cap @{ PsadtExitCode = 0 })
+    $script:ownCaptures = @()
+    $r = RunCase $c $t
+    $own = @($script:calls | Where-Object { $_ -eq 'ownidentity' })
+    $ownAt = [array]::IndexOf(@($script:calls), 'ownidentity'); $procAt = [array]::IndexOf(@($script:calls), 'processes')
+    if ($r -eq $true -and $own.Count -eq 1 -and $ownAt -ge 0 -and $ownAt -lt $procAt -and @($script:ownCaptures).Count -eq 1 -and $script:ownCaptures[0].InstallationInfo.Timestamp -eq '20261015_101010') {
+        Ok "$t capture -> Write-Win32ToolkitOwnIdentity called once with the parsed capture, before the processes-to-close step"
+    } else { Bad "${t}: r=$r calls=$($script:calls -join ',')" }
+}
+$c = NewCase (Cap @{ PsadtExitCode = 60001 })
+$null = RunCase $c 'msi'
+if (-not ($script:calls -contains 'ownidentity')) { Ok 'a failed capture never reaches the own-identity writer' } else { Bad "calls: $($script:calls -join ',')" }
 # == (b) the capture script records the codes ======================================================
 Write-Host '[b] generated capture script: $LASTEXITCODE after InstallDependencies, ERROR on failure, codes in InstallationInfo' -ForegroundColor Cyan
 $ntd = Get-Content -LiteralPath (Join-Path $repo 'Private\New-TargetedDocumentation.ps1') -Raw

@@ -31,6 +31,9 @@ function Update-PSADTUninstallLogic  { param($ProjectPath, $JsonFilePath) $true 
 function Update-PSADTProcessesToClose { param($ProjectPath, $JsonFilePath) $true }
 function Update-PSADTMsixUninstallLogic { param($ProjectPath) $true }
 function Get-LatestInstallationCapture { param($ProjectPath) $null }
+# Installer-identity PR 3 (C-9): the own-identity writer runs for every processed capture.
+$script:ownCalls = 0
+function Write-Win32ToolkitOwnIdentity { param($ProjectPath, $Capture) $null = $ProjectPath, $Capture; $script:ownCalls++; $true }
 
 $tmp  = Join-Path ([System.IO.Path]::GetTempPath()) ('docw_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
@@ -49,6 +52,7 @@ $script:onTick = {
 $r = Wait-ForDocumentationAndProcess -ProjectPath $tmp -InstallerType 'msi' -ExpectedJsonPath $json 6>$null
 if ($r -eq $true) { Ok 'returns $true once the JSON is complete' } else { Bad "returned $r" }
 if (@($script:sleeps).Count -ge 3) { Ok "did NOT accept the torn file (polled $(@($script:sleeps).Count) times first)" } else { Bad "accepted too early (sleeps=$(@($script:sleeps).Count))" }
+if ($script:ownCalls -eq 1) { Ok 'the complete capture reaches the own-identity writer once (msi)' } else { Bad "own-identity writer calls: $($script:ownCalls)" }
 
 # ── (b) cadence is 2 s; the 30-min ceiling is unchanged ────────────────────────────────────────────
 Write-Host '[b] 2 s cadence, 30-min ceiling intact' -ForegroundColor Cyan
