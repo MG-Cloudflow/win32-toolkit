@@ -18,6 +18,12 @@ Set-Win32ToolkitPriorInstall [-ProjectPath] <String> -Mode <String> -Id <String[
  [-ProgressAction <ActionPreference>] [-WhatIf] [-Confirm] [<CommonParameters>]
 ```
 
+### FromSiblingCapture
+```
+Set-Win32ToolkitPriorInstall [-ProjectPath] <String> -Mode <String> [-FromSiblingCapture]
+ [-ProposalId <String[]>] [-ProgressAction <ActionPreference>] [-WhatIf] [-Confirm] [<CommonParameters>]
+```
+
 ### FromUpdateTest
 ```
 Set-Win32ToolkitPriorInstall [-ProjectPath] <String> -Mode <String> [-VersionMin <String>]
@@ -96,8 +102,20 @@ Writes nothing.
   Manual          one rule typed by the operator (Source Operator).
   FromUpdateTest  a rule from the last failed Update test's candidates (Documentation\PriorInstallCandidates.json,
                   Source UpdateTest): the High candidate, or -CandidateKey.
+  FromSiblingCapture
+                  rules from the proposals of a sibling capture (Test-Win32ToolkitProject -Scenario SiblingCapture;
+                  Source SiblingCapture), re-derived from the hash-verified capture records every time.
+Without
+                  -ProposalId (Block or Report only): every High-confidence proposal without flags whose identity
+                  is not a rule yet - the others are listed, never written, and an existing rule is never changed.
+                  With -ProposalId: those proposals, one confirmation each; Enforce needs -ProposalId, an
+                  Enforce-eligible proposal and records one approval per proposal (kept on the host).
+The window
+                  is never typed: VersionMin is the oldest capture's observed version, VersionMax the newest one
+                  of the same identity.
   SetMode         change the mode of existing rules (Block -\> Enforce after the proof; Enforce -\> Block in an
                   incident).
+A rule from a sibling capture becomes Enforce only through -FromSiblingCapture.
   Remove          remove rules (the merged process names stay).
   Waive / Acknowledge / Revoke   host-side decisions (Documentation\PriorInstallDecisions.json; never shipped).
 
@@ -126,11 +144,18 @@ Set-Win32ToolkitPriorInstall -ProjectPath $p -Id nsis-x64 -Mode Enforce
 
 ### EXAMPLE 4
 ```
+# After a sibling capture: Block every High, flag-free proposal; then approve one for removal
+Set-Win32ToolkitPriorInstall -ProjectPath $p -FromSiblingCapture -Mode Block
+Set-Win32ToolkitPriorInstall -ProjectPath $p -FromSiblingCapture -Mode Enforce -ProposalId nsis-x64
+```
+
+### EXAMPLE 5
+```
 Set-Win32ToolkitPriorInstall -ProjectPath $p -Mode Block -Key 'Notepad++' -View Native -Publisher 'Notepad++ Team' `
     -DisplayName 'Notepad++ (64-bit x64)' -VersionMin 8.7.9 -VersionMax 8.9.8.1
 ```
 
-### EXAMPLE 5
+### EXAMPLE 6
 ```
 Set-Win32ToolkitPriorInstall -ProjectPath $p -Acknowledge DATA-LOSS -Target nsis-x64 -Reason 'user settings live in %APPDATA%'
 ```
@@ -157,7 +182,7 @@ Block, Enforce or Report (no default).
 
 ```yaml
 Type: String
-Parameter Sets: SetMode, FromUpdateTest, Manual
+Parameter Sets: SetMode, FromSiblingCapture, FromUpdateTest, Manual
 Aliases:
 
 Required: True
@@ -452,6 +477,38 @@ Accept pipeline input: False
 Accept wildcard characters: False
 ```
 
+### -FromSiblingCapture
+Declare rules from the proposals of the project's sibling capture (Documentation\SiblingCapture\*.json).
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: FromSiblingCapture
+Aliases:
+
+Required: True
+Position: Named
+Default value: False
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -ProposalId
+FromSiblingCapture: the proposals to apply (for example nsis-x64; the List and the capture name them).
+Required
+with -Mode Enforce: one confirmation and one approval per proposal.
+
+```yaml
+Type: String[]
+Parameter Sets: FromSiblingCapture
+Aliases:
+
+Required: False
+Position: Named
+Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
 ### -Remove
 The ids of the rules to remove.
 
@@ -486,7 +543,8 @@ Accept wildcard characters: False
 
 ### -Acknowledge
 ID-PRIOR-DROPPED (a rule of the previous version is gone on purpose), DATA-LOSS (the prior's uninstaller deleted
-user data in the proof run) or SIGNER-MISMATCH, for -Target, with -Reason.
+user data in the proof run, or - for a rule from a sibling capture - the capture's removability probe saw it delete
+configuration files in its install folder) or SIGNER-MISMATCH, for -Target, with -Reason.
 
 ```yaml
 Type: String

@@ -34,8 +34,17 @@ function Set-Win32ToolkitPriorInstall {
           Manual          one rule typed by the operator (Source Operator).
           FromUpdateTest  a rule from the last failed Update test's candidates (Documentation\PriorInstallCandidates.json,
                           Source UpdateTest): the High candidate, or -CandidateKey.
+          FromSiblingCapture
+                          rules from the proposals of a sibling capture (Test-Win32ToolkitProject -Scenario SiblingCapture;
+                          Source SiblingCapture), re-derived from the hash-verified capture records every time. Without
+                          -ProposalId (Block or Report only): every High-confidence proposal without flags whose identity
+                          is not a rule yet - the others are listed, never written, and an existing rule is never changed.
+                          With -ProposalId: those proposals, one confirmation each; Enforce needs -ProposalId, an
+                          Enforce-eligible proposal and records one approval per proposal (kept on the host). The window
+                          is never typed: VersionMin is the oldest capture's observed version, VersionMax the newest one
+                          of the same identity.
           SetMode         change the mode of existing rules (Block -> Enforce after the proof; Enforce -> Block in an
-                          incident).
+                          incident). A rule from a sibling capture becomes Enforce only through -FromSiblingCapture.
           Remove          remove rules (the merged process names stay).
           Waive / Acknowledge / Revoke   host-side decisions (Documentation\PriorInstallDecisions.json; never shipped).
 
@@ -81,6 +90,11 @@ function Set-Win32ToolkitPriorInstall {
         Declare the rule from the last failed Update test's candidates.
     .PARAMETER CandidateKey
         FromUpdateTest: the uninstall key of the candidate to use when it is not the single High candidate.
+    .PARAMETER FromSiblingCapture
+        Declare rules from the proposals of the project's sibling capture (Documentation\SiblingCapture\*.json).
+    .PARAMETER ProposalId
+        FromSiblingCapture: the proposals to apply (for example nsis-x64; the List and the capture name them). Required
+        with -Mode Enforce: one confirmation and one approval per proposal.
     .PARAMETER Remove
         The ids of the rules to remove.
     .PARAMETER Waive
@@ -88,7 +102,8 @@ function Set-Win32ToolkitPriorInstall {
         (no display name) for -Target, with -Reason. Never for a rule from a sibling capture.
     .PARAMETER Acknowledge
         ID-PRIOR-DROPPED (a rule of the previous version is gone on purpose), DATA-LOSS (the prior's uninstaller deleted
-        user data in the proof run) or SIGNER-MISMATCH, for -Target, with -Reason.
+        user data in the proof run, or - for a rule from a sibling capture - the capture's removability probe saw it delete
+        configuration files in its install folder) or SIGNER-MISMATCH, for -Target, with -Reason.
     .PARAMETER Revoke
         Remove the Waive or Acknowledge decision of that code for -Target.
     .PARAMETER Target
@@ -106,6 +121,10 @@ function Set-Win32ToolkitPriorInstall {
         # After the Hyper-V proof run: remove it before installing
         Set-Win32ToolkitPriorInstall -ProjectPath $p -Id nsis-x64 -Mode Enforce
     .EXAMPLE
+        # After a sibling capture: Block every High, flag-free proposal; then approve one for removal
+        Set-Win32ToolkitPriorInstall -ProjectPath $p -FromSiblingCapture -Mode Block
+        Set-Win32ToolkitPriorInstall -ProjectPath $p -FromSiblingCapture -Mode Enforce -ProposalId nsis-x64
+    .EXAMPLE
         Set-Win32ToolkitPriorInstall -ProjectPath $p -Mode Block -Key 'Notepad++' -View Native -Publisher 'Notepad++ Team' `
             -DisplayName 'Notepad++ (64-bit x64)' -VersionMin 8.7.9 -VersionMax 8.9.8.1
     .EXAMPLE
@@ -120,6 +139,7 @@ function Set-Win32ToolkitPriorInstall {
 
         [Parameter(Mandatory, ParameterSetName = 'Manual')]
         [Parameter(Mandatory, ParameterSetName = 'FromUpdateTest')]
+        [Parameter(Mandatory, ParameterSetName = 'FromSiblingCapture')]
         [Parameter(Mandatory, ParameterSetName = 'SetMode')]
         [ValidateSet('Block', 'Enforce', 'Report')]
         [string]$Mode,
@@ -181,6 +201,12 @@ function Set-Win32ToolkitPriorInstall {
         [Parameter(ParameterSetName = 'FromUpdateTest')]
         [string]$CandidateKey,
 
+        [Parameter(Mandatory, ParameterSetName = 'FromSiblingCapture')]
+        [switch]$FromSiblingCapture,
+
+        [Parameter(ParameterSetName = 'FromSiblingCapture')]
+        [string[]]$ProposalId,
+
         [Parameter(Mandatory, ParameterSetName = 'Remove')]
         [string[]]$Remove,
 
@@ -236,12 +262,18 @@ function Set-Win32ToolkitPriorInstall {
     $records = @(Get-Win32ToolkitSiblingCaptureRecord -ProjectPath $ProjectPath)
     $appVersion = [string](& $prop (& $prop $cfg 'App') 'Version')
     $ownFamily = [string](& $prop (& $prop $cfg 'Installer') 'Type') -eq 'exe'
+    # The current proposals, re-derived from the hash-verified capture records (spec 2.14.8): only when there are records.
+    $sibling = $null
+    if ($records.Count -gt 0) { $sibling = ConvertTo-Win32ToolkitSiblingProposal -ProjectPath $ProjectPath -ProposalId ([string[]]@($ProposalId | Where-Object { $_ })) }
+    $proposalHashes = [string[]]@(if ($sibling) { @($sibling.Proposals) | ForEach-Object { $_.ProposalHash } })
 
-    # Lineage (SV5): Source SiblingCapture, a CaptureId, or an Approval record for the id make a rule a captured one.
+    # Lineage (SV5): Source SiblingCapture, a CaptureId, an Approval record for the id, or the identity (Tuple) of a
+    # current proposal make a rule a captured one.
     $lineageOf = {
         param($E)
         $eid = [string](& $prop $E 'Id')
         if ([string](& $prop $E 'Source') -ceq 'SiblingCapture' -or [string](& $prop $E 'CaptureId') -or @($decisions | Where-Object { $_.Kind -eq 'Approval' -and $_.Target -ceq $eid }).Count -gt 0) { return 'Capture' }
+        if ($proposalHashes.Count -gt 0 -and $proposalHashes -ccontains (Get-Win32ToolkitPriorInstallHash -Kind Tuple -Entry $E)) { return 'Capture' }
         if ([string](& $prop $E 'Source') -ceq 'UpdateTest') { return 'UpdateTest' }
         return 'Operator'
     }
@@ -251,7 +283,7 @@ function Set-Win32ToolkitPriorInstall {
         if ($lo) { "$(& $safe $lo 64) <= version <= $(& $safe $hi 64)" } else { "version <= $(& $safe $hi 64)" }
     }
     $consequenceOf = {
-        param($E)
+        param($E, $Proposal = $null)
         $root = if ([string](& $prop $E 'View') -eq 'Wow6432') { 'HKLM\SOFTWARE\WOW6432Node\...\Uninstall' } else { 'HKLM\SOFTWARE\...\Uninstall' }
         $keyText = & $safe (& $prop $E 'Key')
         switch -CaseSensitive ([string](& $prop $E 'Mode')) {
@@ -260,7 +292,16 @@ function Set-Win32ToolkitPriorInstall {
                 $switches = if ([string](& $prop $E 'UninstallerType') -eq 'inno') { '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' } else { '/S _?=<folder>' }
                 "On devices with $root\$keyText (publisher $(& $safe (& $prop $E 'Publisher')), $(& $windowOf $E)) the package runs $leaf $switches in $(& $safe (& $prop $E 'InstallDir') 260) before it installs. A newer one fails the install (69102); an older or different one is left as it is; one in another folder fails the install (69105)."
             }
-            'Block' { "Devices with $root\$keyText ($(& $windowOf $E)) FAIL this install (69101) until the rule is Enforce." }
+            'Block' {
+                # The identity condition and what is left alone, as for Enforce (live row OP-UNPROVEN: "Devices with <key>
+                # (<window>) FAIL" read as if any install under that key failed; the device leaves another publisher or name, or
+                # an older version, as it is and installs).
+                $who = "On devices with $root\$keyText (publisher $(& $safe (& $prop $E 'Publisher')), $(& $windowOf $E))"
+                $rest = 'A newer one fails the install too (69102); an older or different one is left as it is and the install goes on.'
+                # An identity a Windows Sandbox or assisted capture saw stays Block-only (live rows SB-CAPTURE and ASSISTED).
+                if ($Proposal -and (@($Proposal.Flags) -contains 'Sandbox' -or @($Proposal.Flags) -contains 'Assisted')) { "$who this install FAILS (69101); this identity stays Block-only (a Windows Sandbox or assisted capture saw it). $rest" }
+                else { "$who this install FAILS (69101) until the rule is Enforce. $rest" }
+            }
             'Report' { "Devices with $root\$keyText get a marker (LastSeen) and the install goes on; nothing is removed." }
             default { 'This rule is invalid: every device refuses the install (69105).' }
         }
@@ -288,7 +329,7 @@ function Set-Win32ToolkitPriorInstall {
                 Lineage     = & $lineageOf $e
                 Proof       = if ($st) { [string]$st.State } else { '' }
                 Decisions   = (@($nowDecisions | Where-Object { $_.Target -ceq $eid } | ForEach-Object { "$($_.Kind) $($_.Code)$(if ($_.Demoted) { ' (demoted)' })" }) -join ', ')
-                Consequence = & $consequenceOf $e
+                Consequence = & $consequenceOf $e $(if ($sibling) { $eTuple = Get-Win32ToolkitPriorInstallHash -Kind Tuple -Entry $e; @(@($sibling.Proposals) | Where-Object { $_.ProposalHash -ceq $eTuple }) | Select-Object -First 1 })
             }
             $o.PSObject.Members.Add([System.Management.Automation.PSMemberSet]::new('PSStandardMembers', [System.Management.Automation.PSMemberInfo[]]@(
                         [System.Management.Automation.PSPropertySet]::new('DefaultDisplayPropertySet', [string[]]@('Id', 'Mode', 'Key', 'Proof')))))
@@ -329,6 +370,23 @@ function Set-Win32ToolkitPriorInstall {
                     if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
                     Write-Verbose "Prior-install candidates not read: $($_.Exception.Message)"
                 }
+            }
+        }
+        if ($sibling -and @($sibling.Proposals).Count -gt 0) {
+            Write-Host 'Sibling-capture proposals (apply with -FromSiblingCapture -Mode <mode> -ProposalId <id>):' -ForegroundColor Cyan
+            foreach ($p in @($sibling.Proposals)) {
+                $applied = @($entries | Where-Object { (Get-Win32ToolkitPriorInstallHash -Kind Tuple -Entry $_) -ceq $p.ProposalHash }) | Select-Object -First 1
+                $state = if ($applied) { "rule '$(& $safe (& $prop $applied 'Id') 40)' ($(& $safe (& $prop $applied 'Mode') 16))" } else { 'not applied' }
+                $enforce = if ($p.EnforceEligible) { 'Enforce-eligible' } else { 'Block only' }
+                $flagText = if (@($p.Flags).Count) { "; flags $(@($p.Flags) -join ', ')" } else { '' }
+                # Live row GOAL-APPROVE: the probe's data loss showed only at Export. GOAL-EXPORT: once the rule's DATA-LOSS
+                # acknowledgement is recorded, the line says so instead of asking for it again.
+                # Only for an identity that can become Enforce (live row ASSISTED: a Block-only identity removes nothing).
+                if ($p.DataLoss -and $p.EnforceEligible) {
+                    $dlAck = $applied -and @($decisions | Where-Object { $_.Kind -eq 'Acknowledgement' -and $_.Code -eq 'DATA-LOSS' -and $_.Target -ceq [string](& $prop $applied 'Id') }).Count -gt 0
+                    $flagText += if ($dlAck) { '; data loss (its uninstaller deletes configuration in its folder; acknowledged)' } else { '; data loss (its uninstaller deletes configuration in its folder: Enforce needs -Acknowledge DATA-LOSS)' }
+                }
+                Write-Host ("  {0,-12} {1} [{2}] {3} {4} <= version <= {5}; {6}, {7}, {8}; {9}{10}" -f $p.ProposalId, (& $safe $p.Key), $p.View, $p.SiblingType, $p.VersionMin, $p.VersionMax, $p.Confidence, $p.Track, $enforce, $state, $flagText)
             }
         }
         return @(& $listObjects)
@@ -376,7 +434,11 @@ function Set-Win32ToolkitPriorInstall {
         return @(& $listObjects)
     }
 
-    # ---- add / change: the project must have this catalog's remove-prior pair (D12, L3, L38, L39) ----
+    # ---- add / change: Enforce from a capture names its proposals (SV2) ----
+    if ($set -eq 'FromSiblingCapture' -and $Mode -eq 'Enforce' -and @($ProposalId | Where-Object { $_ }).Count -eq 0) {
+        throw (& $newError 'W32T.PriorInstallRefused' "A rule from a sibling capture becomes Enforce only by name, one approval per proposal: Set-Win32ToolkitPriorInstall -ProjectPath '$ProjectPath' -FromSiblingCapture -Mode Enforce -ProposalId <id> (the List names the proposals). Nothing was written." ([System.Management.Automation.ErrorCategory]::PermissionDenied))
+    }
+    # ---- the project must have this catalog's remove-prior pair (D12, L3, L38, L39) ----
     $shape = Get-Win32ToolkitDeployScriptShape -Path (Join-Path $ProjectPath 'Invoke-AppDeployToolkit.ps1')
     $catalogRevision = Get-Win32ToolkitDeployScriptBlock -Name RemovePriorRevision
     if ($shape.RemovePriorRevision -lt 1 -or $shape.RemovePriorRevision -ne $catalogRevision -or -not $shape.PriorCheckFirst) {
@@ -397,13 +459,14 @@ function Set-Win32ToolkitPriorInstall {
         throw (& $newError 'W32T.PriorInstallInvalid' '-Id takes exactly one rule id when a rule is added.')
     }
 
+    $changed = [System.Collections.Generic.List[object]]::new()
     $newIdFor = {
         param([string]$Stem)
         $cand = $Stem; $n = 1
-        while (@($entries | Where-Object { [string](& $prop $_ 'Id') -ceq $cand }).Count -gt 0) { $n++; $cand = "$Stem-$n" }
+        while (@(@($entries) + @($changed) | Where-Object { [string](& $prop $_ 'Id') -ceq $cand }).Count -gt 0) { $n++; $cand = "$Stem-$n" }
         $cand
     }
-    $changed = [System.Collections.Generic.List[object]]::new()
+    $proposalFor = @{}
     switch ($set) {
         'Manual' {
             if ($PSBoundParameters.ContainsKey('DisplayName') -and $DisplayName -and $DisplayNameTemplate) { throw (& $newError 'W32T.PriorInstallInvalid' 'Give -DisplayName or -DisplayNameTemplate, not both.') }
@@ -458,12 +521,84 @@ function Set-Win32ToolkitPriorInstall {
                     Source = 'UpdateTest'; Track = 'Current'; AddedOn = $today
                 })
         }
+        'FromSiblingCapture' {
+            $props = @(if ($sibling) { @($sibling.Proposals) })
+            if ($props.Count -eq 0) {
+                throw (& $newError 'W32T.PriorInstallInvalid' "This project has no sibling-capture proposal: capture the other installer technologies first (Test-Win32ToolkitProject -ProjectPath '$ProjectPath' -Scenario SiblingCapture). Nothing was written.")
+            }
+            $tupleOf = @{}
+            foreach ($e in $entries) { $tupleOf[[string](& $prop $e 'Id')] = Get-Win32ToolkitPriorInstallHash -Kind Tuple -Entry $e }
+            $existingFor = { param($P) @($entries | Where-Object { $tupleOf[[string](& $prop $_ 'Id')] -ceq $P.ProposalHash }) | Select-Object -First 1 }
+            $pick = [System.Collections.Generic.List[object]]::new()
+            $wanted = @($ProposalId | Where-Object { $_ } | Select-Object -Unique)
+            if ($wanted.Count -gt 0) {
+                $known = [string[]]@($props | ForEach-Object { $_.ProposalId })
+                $unknown = @($wanted | Where-Object { $known -cnotcontains $_ })
+                if ($unknown.Count) { throw (& $newError 'W32T.PriorInstallInvalid' "No sibling-capture proposal $((@($unknown) | ForEach-Object { "'$(& $safe $_ 40)'" }) -join ', ') (proposals: $($known -join ', ')). Nothing was written.") }
+                foreach ($w in $wanted) { $pick.Add((@($props | Where-Object { $_.ProposalId -ceq $w }))[0]) }
+                if ($Mode -eq 'Enforce') {
+                    $refused = @($pick | Where-Object { -not $_.EnforceEligible })
+                    if ($refused.Count) {
+                        $lines = @($refused | ForEach-Object { "$($_.ProposalId): $((@($_.IneligibleReasons) | ForEach-Object { & $safe $_ 200 }) -join '; ')" })
+                        # A reason comes from a flag of a capture record of that identity, and a proposal carries the flags of all of
+                        # its records: a later capture does not take it back (live rows SB-CAPTURE, GOAL-APPROVE), so no "capture again".
+                        $tail = 'Apply it as Block (-FromSiblingCapture -Mode Block -ProposalId <id>): these reasons come from capture records of that identity and stay with it (a later capture does not take them back).'
+                        throw (& $newError 'W32T.PriorInstallRefused' ("Not eligible for Enforce; nothing was written:`n  - " + ($lines -join "`n  - ") + "`n" + $tail) ([System.Management.Automation.ErrorCategory]::PermissionDenied))
+                    }
+                }
+            }
+            else {
+                # The bulk form (spec 2.12 rule 7, B27): High, flag-free, and an identity that is not a rule yet.
+                foreach ($p in $props) {
+                    $ex = & $existingFor $p
+                    $why = if ($ex) { "already a rule ('$(& $safe (& $prop $ex 'Id') 40)', $(& $safe (& $prop $ex 'Mode') 16)): changed only by -ProposalId" }
+                    elseif ($p.Confidence -ne 'High') { 'Medium confidence: name it with -ProposalId' }
+                    elseif (-not $p.FlagFree) { "flags: $(@($p.Flags) -join ', ')" }
+                    else { '' }
+                    if ($why) { Write-Host "  not applied: $($p.ProposalId) $(& $safe $p.Key) [$($p.View)] - $why" -ForegroundColor DarkGray }
+                    else { $pick.Add($p) }
+                }
+                if ($pick.Count -eq 0) {
+                    Write-Host 'No sibling-capture proposal to apply in bulk (each one is listed above with the reason).' -ForegroundColor Yellow
+                    return @(& $listObjects)
+                }
+            }
+            foreach ($p in $pick) {
+                $ex = & $existingFor $p
+                $below = if ($p.SameFamily) { $appVersion } else { '' }
+                if ($ex) {
+                    $c = $ex.PSObject.Copy()
+                    $floorId = if ([string](& $prop $ex 'CaptureId')) { [string]$ex.CaptureId } else { $p.FloorCaptureId }
+                    $w = Get-Win32ToolkitPriorInstallWindow -Captures $sibling.Captures -Tuple $p.ProposalHash -FloorCaptureId $floorId -Below $below
+                    if (-not $w.Found) { $w = Get-Win32ToolkitPriorInstallWindow -Captures $sibling.Captures -Tuple $p.ProposalHash -FloorCaptureId $p.FloorCaptureId -Below $below }
+                    foreach ($kv in @{ Mode = $Mode; Source = 'SiblingCapture'; CaptureId = $w.FloorCaptureId; Track = $p.Track; VersionMin = $w.VersionMin; VersionMax = $w.VersionMax }.GetEnumerator()) {
+                        $c | Add-Member -NotePropertyName $kv.Key -NotePropertyValue $kv.Value -Force
+                    }
+                }
+                else {
+                    $eid = & $newIdFor $p.ProposalId
+                    $c = [pscustomobject][ordered]@{
+                        Id = $eid; Kind = 'ArpKey'; Mode = $Mode; Key = $p.Key; View = $p.View; Publisher = $p.Publisher; DisplayName = $p.DisplayName
+                        DisplayNameTemplate = $p.DisplayNameTemplate; VersionMin = $p.VersionMin; VersionMax = $p.VersionMax; UninstallerType = $p.UninstallerType
+                        UninstallerFileName = $p.UninstallerFileName; UninstallerSigner = $p.UninstallerSigner; InstallDir = $p.InstallDir; MainExe = $p.MainExe
+                        ProcessNames = [string[]]@($p.ProcessNames); Source = 'SiblingCapture'; CaptureId = $p.FloorCaptureId; Track = $p.Track; AddedOn = $today
+                    }
+                }
+                $proposalFor[[string]$c.Id] = $p
+                $changed.Add($c)
+            }
+        }
         'SetMode' {
             foreach ($i in @($Id | Where-Object { $_ })) {
                 $e = @($entries | Where-Object { [string](& $prop $_ 'Id') -ceq $i }) | Select-Object -First 1
                 if (-not $e) { throw (& $newError 'W32T.PriorInstallInvalid' "No prior-install rule '$(& $safe $i 40)' in this project.") }
                 if ($Mode -eq 'Enforce' -and (& $lineageOf $e) -eq 'Capture') {
-                    throw (& $newError 'W32T.PriorInstallRefused' "Rule '$i' comes from a sibling capture: it becomes Enforce only through its proposal, one approval each: Set-Win32ToolkitPriorInstall -ProjectPath '$ProjectPath' -FromSiblingCapture -Mode Enforce -ProposalId $i" ([System.Management.Automation.ErrorCategory]::PermissionDenied))
+                    # The command names the current proposal of the rule's identity (proposal ids follow the records; a
+                    # rule id need not be one), else the rule id.
+                    $tupleNow = Get-Win32ToolkitPriorInstallHash -Kind Tuple -Entry $e
+                    $cur = @(if ($sibling) { @($sibling.Proposals) | Where-Object { $_.ProposalHash -ceq $tupleNow } }) | Select-Object -First 1
+                    $propId = if ($cur) { [string]$cur.ProposalId } else { $i }
+                    throw (& $newError 'W32T.PriorInstallRefused' "Rule '$(& $safe $i 40)' comes from a sibling capture: it becomes Enforce only through its proposal, one approval each: Set-Win32ToolkitPriorInstall -ProjectPath '$ProjectPath' -FromSiblingCapture -Mode Enforce -ProposalId $propId" ([System.Management.Automation.ErrorCategory]::PermissionDenied))
                 }
                 $copy = $e.PSObject.Copy()
                 # A hand-edited rule may have no Mode property at all (the set is validated below); an existing one keeps
@@ -478,6 +613,10 @@ function Set-Win32ToolkitPriorInstall {
     if ($set -in 'Manual', 'FromUpdateTest') {
         $n = $changed[0]
         $tuple = Get-Win32ToolkitPriorInstallHash -Kind Tuple -Entry $n
+        $same = @(if ($sibling) { @($sibling.Proposals) | Where-Object { $_.ProposalHash -ceq $tuple } }) | Select-Object -First 1
+        if ($same) {
+            throw (& $newError 'W32T.PriorInstallRefused' "This identity is the sibling-capture proposal '$($same.ProposalId)': a captured identity is declared only from its capture (Set-Win32ToolkitPriorInstall -ProjectPath '$ProjectPath' -FromSiblingCapture -Mode <mode> -ProposalId $($same.ProposalId)). Nothing was written." ([System.Management.Automation.ErrorCategory]::PermissionDenied))
+        }
         foreach ($e in $entries) {
             if ((& $lineageOf $e) -ne 'Capture') { continue }
             if ([string](& $prop $e 'Id') -ceq $n.Id -or (Get-Win32ToolkitPriorInstallHash -Kind Tuple -Entry $e) -ceq $tuple) {
@@ -490,23 +629,28 @@ function Set-Win32ToolkitPriorInstall {
     }
 
     # The resulting set, validated as a whole (the spec 2.1 rules, decisions and capture records bound).
-    $result = [System.Collections.Generic.List[object]]::new()
-    foreach ($e in $entries) { if (@($changed | Where-Object { $_.Id -ceq [string](& $prop $e 'Id') }).Count -eq 0) { $result.Add($e) } }
-    foreach ($c in $changed) { $result.Add($c) }
-    $ids = [string[]]@($result | ForEach-Object { [string](& $prop $_ 'Id') })
-    $order = [int[]]@(0..([Math]::Max(0, $result.Count - 1)))
-    if ($result.Count -gt 1) { [Array]::Sort($ids, $order, [System.StringComparer]::Ordinal) }
-    $sorted = @(if ($result.Count -gt 0) { $order | ForEach-Object { $result[$_] } })
-    $newCfg = $cfg.PSObject.Copy()
-    $newCfg | Add-Member -NotePropertyName PriorInstalls -NotePropertyValue ([pscustomobject][ordered]@{ SchemaVersion = '1.0'; Entries = $sorted }) -Force
-    $check = Test-Win32ToolkitPriorInstallEntry -Config $newCfg -Decisions $decisions -Records $records
-    if (-not $check.Valid) {
-        throw (& $newError 'W32T.PriorInstallInvalid' ("The prior-install rules would be invalid; nothing was written:`n  - " + (($check.Problems | ForEach-Object { & $safe $_ 400 }) -join "`n  - ")))
+    $resultOf = {
+        param($Changes)
+        $result = [System.Collections.Generic.List[object]]::new()
+        foreach ($e in $entries) { if (@($Changes | Where-Object { $_.Id -ceq [string](& $prop $e 'Id') }).Count -eq 0) { $result.Add($e) } }
+        foreach ($c in $Changes) { $result.Add($c) }
+        $ids = [string[]]@($result | ForEach-Object { [string](& $prop $_ 'Id') })
+        $order = [int[]]@(0..([Math]::Max(0, $result.Count - 1)))
+        if ($result.Count -gt 1) { [Array]::Sort($ids, $order, [System.StringComparer]::Ordinal) }
+        $sortedSet = @(if ($result.Count -gt 0) { $order | ForEach-Object { $result[$_] } })
+        $newCfg = $cfg.PSObject.Copy()
+        $newCfg | Add-Member -NotePropertyName PriorInstalls -NotePropertyValue ([pscustomobject][ordered]@{ SchemaVersion = '1.0'; Entries = $sortedSet }) -Force
+        $check = Test-Win32ToolkitPriorInstallEntry -Config $newCfg -Decisions $decisions -Records $records
+        if (-not $check.Valid) {
+            throw (& $newError 'W32T.PriorInstallInvalid' ("The prior-install rules would be invalid; nothing was written:`n  - " + (($check.Problems | ForEach-Object { & $safe $_ 400 }) -join "`n  - ")))
+        }
+        , $sortedSet
     }
+    $sorted = & $resultOf $changed
 
-    # Preview and the device consequence, then one confirmation per changed rule.
-    $written = 0
-    foreach ($c in $changed) {
+    # Preview and the device consequence, then the confirmation: one per proposal for a capture (SV2), else one.
+    $previewOf = {
+        param($c)
         Write-Host ''
         Write-Host "Prior-install rule $($c.Id) ($($c.Mode), source $($c.Source)):" -ForegroundColor Cyan
         foreach ($f in 'Key', 'View', 'Publisher', 'DisplayName', 'DisplayNameTemplate', 'VersionMin', 'VersionMax', 'UninstallerType', 'UninstallerFileName', 'InstallDir', 'MainExe', 'UninstallerSigner') {
@@ -514,10 +658,40 @@ function Set-Win32ToolkitPriorInstall {
             if ($v) { Write-Host ('  {0,-20}: {1}' -f $f, (& $safe $v 260)) }
         }
         if (@($c.ProcessNames).Count) { Write-Host ('  {0,-20}: {1}' -f 'ProcessNames', (& $safe (@($c.ProcessNames) -join ', ') 260)) }
-        Write-Host "  Device consequence  : $(& $consequenceOf $c)" -ForegroundColor Yellow
+        if ($proposalFor.ContainsKey([string]$c.Id)) {
+            $pp = $proposalFor[[string]$c.Id]
+            $flagText = if (@($pp.Flags).Count) { "; flags $(@($pp.Flags) -join ', ')" } else { '' }
+            Write-Host ('  {0,-20}: {1}' -f 'Proposal', "$($pp.ProposalId) ($($pp.Confidence) confidence, $($pp.Track); captures $(@($pp.CaptureIds) -join ', ')$flagText)")
+            # Live row GOAL-APPROVE: the data loss the removability probe saw is said before the approval, not first at Export -
+            # for an identity that can become Enforce (live row ASSISTED: a Block-only identity never removes anything).
+            if ($pp.DataLoss -and $pp.EnforceEligible) { Write-Host ('  {0,-20}: {1}' -f 'Data loss', 'the removability probe saw its uninstaller delete configuration in its install folder (RootConfigRemoved): Export of an Enforce rule needs -Acknowledge DATA-LOSS') -ForegroundColor Yellow }
+        }
+        $ppFor = if ($proposalFor.ContainsKey([string]$c.Id)) { $proposalFor[[string]$c.Id] } else { $null }
+        Write-Host "  Device consequence  : $(& $consequenceOf $c $ppFor)" -ForegroundColor Yellow
     }
-    $what = "Write $($changed.Count) prior-install rule(s) ($(@($changed | ForEach-Object { "$($_.Id) $($_.Mode)" }) -join ', '))"
-    if (-not $PSCmdlet.ShouldProcess((@($changed | ForEach-Object { $_.Id }) -join ', '), $what)) { return @(& $listObjects) }
+    $written = 0
+    if ($set -eq 'FromSiblingCapture') {
+        $accepted = [System.Collections.Generic.List[object]]::new()
+        foreach ($c in $changed) {
+            & $previewOf $c
+            if ($PSCmdlet.ShouldProcess([string]$c.Id, "Write the prior-install rule $($c.Id) ($($c.Mode)) from the sibling-capture proposal $($proposalFor[[string]$c.Id].ProposalId)")) { $accepted.Add($c) }
+        }
+        if ($accepted.Count -eq 0) { return @(& $listObjects) }
+        if ($accepted.Count -ne $changed.Count) { $sorted = & $resultOf $accepted }
+        $changed = $accepted
+        # One approval per Enforce proposal (SV2), kept on the host; written before the rule it approves.
+        foreach ($c in @($changed | Where-Object { $_.Mode -eq 'Enforce' })) {
+            $pp = $proposalFor[[string]$c.Id]
+            $null = Set-Win32ToolkitPriorInstallDecision -ProjectPath $ProjectPath -Record @{ Kind = 'Approval'; Code = 'SIBLING-ENFORCE'; Target = [string]$c.Id; Reason = ''; On = $today
+                ProposalId = [string]$pp.ProposalId; ProposalHash = [string]$pp.ProposalHash; CaptureIds = @($pp.CaptureIds); Demoted = '' } -Confirm:$false
+            Write-Host "Approval recorded: $($c.Id) = proposal $($pp.ProposalId) (Documentation\PriorInstallDecisions.json; kept on this computer, never shipped)." -ForegroundColor Green
+        }
+    }
+    else {
+        foreach ($c in $changed) { & $previewOf $c }
+        $what = "Write $($changed.Count) prior-install rule(s) ($(@($changed | ForEach-Object { "$($_.Id) $($_.Mode)" }) -join ', '))"
+        if (-not $PSCmdlet.ShouldProcess((@($changed | ForEach-Object { $_.Id }) -join ', '), $what)) { return @(& $listObjects) }
+    }
 
     $cfg | Add-Member -NotePropertyName PriorInstalls -NotePropertyValue ([pscustomobject][ordered]@{ SchemaVersion = '1.0'; Entries = $sorted }) -Force
     $addedNames = @(Add-Win32ToolkitPriorInstallProcessName -Config $cfg)
@@ -546,6 +720,18 @@ function Set-Win32ToolkitPriorInstall {
         }
         if ($provenIds.Count -eq $enforcedIds.Count) { Write-Host "Proven: $($provenIds -join ', ') (a Hyper-V Unattended Update test already proved this package with these rules)." -ForegroundColor Green }
         else { Write-Host "Prove it: Test-Win32ToolkitProject -ProjectPath '$ProjectPath' -Scenario Update -Backend HyperV -TestMode Unattended$groupArg" -ForegroundColor Yellow }
+        # Live row GOAL-APPROVE: what else Export needs that is known now (the proposal's data loss or signer mismatch) is said
+        # here, not first when Export refuses.
+        foreach ($c in @($changed | Where-Object { $_.Mode -eq 'Enforce' -and $proposalFor.ContainsKey([string]$_.Id) })) {
+            $pp = $proposalFor[[string]$c.Id]
+            $acked = { param([string]$Code) @($decisions | Where-Object { $_.Kind -eq 'Acknowledgement' -and $_.Code -eq $Code -and $_.Target -ceq [string]$c.Id }).Count -gt 0 }
+            if ($pp.DataLoss -and -not (& $acked 'DATA-LOSS')) {
+                Write-Host "Export also needs the data-loss acknowledgement (its uninstaller deletes configuration in its folder): Set-Win32ToolkitPriorInstall -ProjectPath '$ProjectPath' -Acknowledge DATA-LOSS -Target $($c.Id) -Reason '<why>'" -ForegroundColor Yellow
+            }
+            if (@($pp.Flags) -contains 'SignerMismatch' -and -not (& $acked 'SIGNER-MISMATCH')) {
+                Write-Host "Export also needs the signer acknowledgement (its uninstaller's signer differs from this package's): Set-Win32ToolkitPriorInstall -ProjectPath '$ProjectPath' -Acknowledge SIGNER-MISMATCH -Target $($c.Id) -Reason '<why>'" -ForegroundColor Yellow
+            }
+        }
     }
     return @(& $listObjects)
 }

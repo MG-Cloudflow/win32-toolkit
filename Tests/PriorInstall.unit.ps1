@@ -22,10 +22,16 @@
           refused; SetMode -Mode Enforce refused with the exact -FromSiblingCapture command.
       [7] decisions: one record per Kind + Code + Target (a newer one replaces it); -Revoke removes a waiver but never an
           Approval; a DISPLAYNAME waiver declared first allows an empty name.
+      [8] FromSiblingCapture (PR 3b, A1; records from Tests\Fixtures\sibling-proposal): Enforce without -ProposalId refused;
+          one confirmation and one Approval per proposal; an ineligible proposal is never written; the bulk Block writes only
+          High flag-free proposals whose identity is not a rule yet (a carried Enforce rule stays Enforce); a Manual rule with
+          a proposal's identity (a relabel) is refused; List shows the proposals; SetMode Enforce on a captured rule whose
+          id is not its proposal's names the proposal (found by identity) in the refused command.
 
     Projects are generated under %TEMP% from the PSADT 4.1.8 golden with the real generator. Run:  pwsh -File Tests\PriorInstall.unit.ps1
 #>
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'test fixture builders')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidOverwritingBuiltInCmdlets', '', Justification = 'a test shadow of Get-AuthenticodeSignature (the capture fixtures carry no real signature)')]
 [CmdletBinding()]
 param()
 
@@ -78,8 +84,8 @@ try {
     $cb = $ast.Find({ param($n) $n -is [Management.Automation.Language.AttributeAst] -and $n.TypeName.Name -eq 'CmdletBinding' }, $true)
     $named = @{}; foreach ($a in $cb.NamedArguments) { $named[$a.ArgumentName] = $a.Argument.Extent.Text }
     if ($named['ConfirmImpact'] -eq "'High'" -and $named['DefaultParameterSetName'] -eq "'List'" -and $named.ContainsKey('SupportsShouldProcess')) { Ok 'CmdletBinding: SupportsShouldProcess, ConfirmImpact High, DefaultParameterSetName List' } else { Bad "CmdletBinding: $($cb.Extent.Text)" }
-    $modeSets = @('Manual', 'FromUpdateTest', 'SetMode') | Where-Object { -not ($cmd.ParameterSets | Where-Object Name -eq $_).Parameters.Where({ $_.Name -eq 'Mode' })[0].IsMandatory }
-    if (@($modeSets).Count -eq 0 -and -not $cmd.ScriptBlock.Ast.Body.ParamBlock.Parameters.Where({ $_.Name.VariablePath.UserPath -eq 'Mode' })[0].DefaultValue) { Ok '-Mode is mandatory in Manual, FromUpdateTest and SetMode, with no default (D24)' } else { Bad "Mode not mandatory in: $($modeSets -join ',')" }
+    $modeSets = @('Manual', 'FromUpdateTest', 'FromSiblingCapture', 'SetMode') | Where-Object { -not ($cmd.ParameterSets | Where-Object Name -eq $_).Parameters.Where({ $_.Name -eq 'Mode' })[0].IsMandatory }
+    if (@($modeSets).Count -eq 0 -and -not $cmd.ScriptBlock.Ast.Body.ParamBlock.Parameters.Where({ $_.Name.VariablePath.UserPath -eq 'Mode' })[0].DefaultValue) { Ok '-Mode is mandatory in Manual, FromUpdateTest, FromSiblingCapture and SetMode, with no default (D24)' } else { Bad "Mode not mandatory in: $($modeSets -join ',')" }
     $psd1 = Import-PowerShellDataFile (Join-Path $repo 'win32-toolkit.psd1')
     if (@($psd1.FunctionsToExport).Count -eq 17 -and @($psd1.FunctionsToExport) -contains 'Set-Win32ToolkitPriorInstall') { Ok 'the manifest exports 17 functions, Set-Win32ToolkitPriorInstall among them' } else { Bad "exports: $(@($psd1.FunctionsToExport).Count)" }
     if (@([IO.File]::ReadAllBytes((Join-Path $repo 'Public\Set-Win32ToolkitPriorInstall.ps1')) | Where-Object { $_ -gt 127 }).Count -eq 0) { Ok 'the source file is ASCII-only' } else { Bad 'non-ASCII bytes in the command' }
@@ -90,6 +96,8 @@ try {
         @{ Set = 'Manual'; Args = @{ Mode = 'Enforce'; Key = 'k'; View = 'Native'; Publisher = 'p'; DisplayNameTemplate = 'd {v}'; VersionMin = '1'; VersionMax = '2'; Id = 'a'; UninstallerType = 'inno' } }
         @{ Set = 'FromUpdateTest'; Args = @{ FromUpdateTest = $true; Mode = 'Block' } }
         @{ Set = 'FromUpdateTest'; Args = @{ FromUpdateTest = $true; Mode = 'Enforce'; CandidateKey = 'k'; VersionMax = '3'; Id = 'a' } }
+        @{ Set = 'FromSiblingCapture'; Args = @{ FromSiblingCapture = $true; Mode = 'Block' } }
+        @{ Set = 'FromSiblingCapture'; Args = @{ FromSiblingCapture = $true; Mode = 'Enforce'; ProposalId = 'nsis-x64', 'inno-x64' } }
         @{ Set = 'SetMode'; Args = @{ Id = 'a'; Mode = 'Enforce' } }
         @{ Set = 'Remove'; Args = @{ Remove = 'a' } }
         @{ Set = 'Waive'; Args = @{ Waive = 'PROOF'; Target = 'a'; Reason = 'r' } }
@@ -176,7 +184,12 @@ try {
     $out = @(Set-Win32ToolkitPriorInstall -ProjectPath $p @manual 6>$null)
     $cfg = Get-Cfg $p
     $e = @($cfg.PriorInstalls.Entries)[0]
-    if ($cfg.PriorInstalls.SchemaVersion -eq '1.0' -and $e.Id -eq 'exe-x64' -and $e.Mode -eq 'Block' -and $e.Source -eq 'Operator' -and $e.AddedOn -match '^\d{4}-\d{2}-\d{2}$' -and $out.Count -eq 1 -and $out[0].Proof -eq 'NotNeeded' -and $out[0].Consequence -match 'FAIL this install \(69101\)') { Ok 'Manual Block: the rule written (Id exe-x64, Source Operator, AddedOn); the List object says what a device does' } else { Bad "manual: $($e | ConvertTo-Json -Compress)" }
+    if ($cfg.PriorInstalls.SchemaVersion -eq '1.0' -and $e.Id -eq 'exe-x64' -and $e.Mode -eq 'Block' -and $e.Source -eq 'Operator' -and $e.AddedOn -match '^\d{4}-\d{2}-\d{2}$' -and $out.Count -eq 1 -and $out[0].Proof -eq 'NotNeeded' -and $out[0].Consequence -match 'this install FAILS \(69101\)') { Ok 'Manual Block: the rule written (Id exe-x64, Source Operator, AddedOn); the List object says what a device does' } else { Bad "manual: $($e | ConvertTo-Json -Compress)" }
+    # Live row OP-UNPROVEN (round 2): the Block consequence named only the key and the window, as if any install under that key
+    # failed; the device leaves another publisher or name, or an older version, as it is (D14) and refuses a newer one (69102).
+    if ($out[0].Consequence -ceq 'On devices with HKLM\SOFTWARE\...\Uninstall\Notepad++ (publisher Notepad++ Team, 8.7.9 <= version <= 8.9.8.1) this install FAILS (69101) until the rule is Enforce. A newer one fails the install too (69102); an older or different one is left as it is and the install goes on.') {
+        Ok 'the Block consequence names the publisher and what the device leaves alone (another publisher or name, an older version) and refuses (newer)'
+    } else { Bad "block consequence: $($out[0].Consequence)" }
     if ((@($cfg.ProcessesToClose) -join ',') -ceq 'notepad++,zeta') { Ok 'D20: notepad++ merged into ProcessesToClose (union, sorted)' } else { Bad "ptc: $(@($cfg.ProcessesToClose) -join ',')" }
     # Live rows OP-BLOCK, RC2-BLOCK, ASSISTED: the D20 line promised "before the removal" for a Block rule, which removes nothing.
     $qb = New-PiProject 'd20block'
@@ -307,6 +320,115 @@ try {
     if (-not ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB) -and -not (Test-Path -LiteralPath (Join-Path $qd 'Documentation\PriorInstallDecisions.json.tmp'))) { Ok 'the decisions file is BOM-less, written through a .tmp file' } else { Bad 'decisions file' }
     $r = Get-Thrown { Set-Win32ToolkitPriorInstall -ProjectPath $qd -Acknowledge DATA-LOSS -Target 'BAD ID' -Reason 'x' -Confirm:$false }
     if ($r -like 'W32T.PriorInstallInvalid|*') { Ok 'a decision for an invalid target id -> W32T.PriorInstallInvalid' } else { Bad "bad target: $r" }
+
+    # == [8] FromSiblingCapture =============================================================================
+    Write-Host '[8] FromSiblingCapture (installer-identity PR 3b, A1)' -ForegroundColor Cyan
+    . (Join-Path $repo 'Tests\Fixtures\sibling-proposal\SiblingFixture.ps1')
+    function Get-AuthenticodeSignature { [CmdletBinding()] param([string]$LiteralPath) $null = $LiteralPath; [pscustomobject]@{ Status = 'Valid'; SignerCertificate = [pscustomobject]@{ Subject = $script:TestSiblingSigner } } }
+    function New-SibProject([string]$Name) {
+        $sp = New-PiProject $Name
+        [IO.File]::WriteAllBytes((Join-Path $sp 'Files\npp.msi'), [byte[]](1, 2, 3))
+        $innoArgs = @{ Type = 'inno'; Key = 'Notepad++ Inno_is1'; InnoMarkers = $true; ProductCodes = @('Notepad++ Inno_is1'); DisplayName = 'Notepad++ Inno'; Dir = 'Notepad++ Inno'; Main = 'npp.exe'; Uninstaller = 'unins000.exe'; DefaultInstallLocation = '' }
+        $flagArgs = @{ NoNsis = $true; Key = 'NppPortable'; View = 'Wow6432'; ProductCodes = @('NppPortable'); DisplayName = 'Npp Portable'; Dir = 'NppPortable'; Main = 'npp.exe'; DefaultInstallLocation = '' }
+        foreach ($set in @(@{}, $innoArgs, $flagArgs)) {
+            foreach ($v in @(@{ Version = '8.7.9'; Role = 'Floor' }, @{ Version = '8.9.8'; Role = 'Newest' })) {
+                $all = $set.Clone(); foreach ($k in $v.Keys) { $all[$k] = $v[$k] }
+                $null = Write-TestSiblingRecord -ProjectPath $sp -Record (New-TestSiblingRecord @all)
+            }
+        }
+        $sp
+    }
+    $ps = New-SibProject 'sibling'
+    $h = Get-Hash $ps
+    $r = Get-Thrown { Set-Win32ToolkitPriorInstall -ProjectPath $ps -FromSiblingCapture -Mode Enforce -Confirm:$false }
+    if ($r -like 'W32T.PriorInstallRefused|*only by name*-ProposalId*' -and (Get-Hash $ps) -ceq $h) { Ok 'Enforce from a capture without -ProposalId -> W32T.PriorInstallRefused, nothing written' } else { Bad "enforce no id: $r" }
+    $listOut = @(Set-Win32ToolkitPriorInstall -ProjectPath $ps 6>&1 | ForEach-Object { "$_" }) -join "`n"
+    if ($listOut -match 'nsis-x64 +Notepad\+\+ \[Native\] nullsoft 8\.7\.9\.0 <= version <= 8\.9\.8\.0; High, Current, Enforce-eligible; not applied' -and $listOut -match 'exe-x86 .*Block only; not applied; flags GenericExe') { Ok 'List shows the proposals (window, confidence, eligibility, applied or not, flags)' } else { Bad "list: $listOut" }
+    $r = Get-Thrown { Set-Win32ToolkitPriorInstall -ProjectPath $ps -FromSiblingCapture -Mode Enforce -ProposalId 'exe-x86' -Confirm:$false }
+    if ($r -like 'W32T.PriorInstallRefused|*Not eligible for Enforce*exe-x86: GenericExe*' -and (Get-Hash $ps) -ceq $h) { Ok 'an ineligible proposal (GenericExe) as Enforce -> refused and listed, nothing written' } else { Bad "ineligible: $r" }
+    $r = Get-Thrown { Set-Win32ToolkitPriorInstall -ProjectPath $ps -FromSiblingCapture -Mode Block -ProposalId 'nope' -Confirm:$false }
+    if ($r -like "W32T.PriorInstallInvalid|*No sibling-capture proposal 'nope'*nsis-x64*") { Ok 'an unknown -ProposalId -> W32T.PriorInstallInvalid naming the proposals' } else { Bad "unknown id: $r" }
+    $tr = Join-Path $root 'whatif.txt'
+    $null = Start-Transcript -LiteralPath $tr -Force
+    $null = Set-Win32ToolkitPriorInstall -ProjectPath $ps -FromSiblingCapture -Mode Enforce -ProposalId 'nsis-x64', 'inno-x64' -WhatIf 6>$null
+    $null = Stop-Transcript
+    $whatIf = @(Get-Content -LiteralPath $tr | Where-Object { $_ -match '^What if: .*from the sibling-capture proposal' })
+    if ($whatIf.Count -eq 2 -and (Get-Hash $ps) -ceq $h) { Ok 'two proposals -> two confirmations (-WhatIf: two What if lines), nothing written' } else { Bad "whatif count: $($whatIf.Count)" }
+    $null = Set-Win32ToolkitPriorInstall -ProjectPath $ps -FromSiblingCapture -Mode Enforce -ProposalId 'nsis-x64', 'inno-x64' -Confirm:$false 6>$null
+    $cfg = Get-Cfg $ps
+    $sib = ConvertTo-Win32ToolkitSiblingProposal -ProjectPath $ps
+    $pn = @($sib.Proposals | Where-Object ProposalId -ceq 'nsis-x64')[0]; $pi = @($sib.Proposals | Where-Object ProposalId -ceq 'inno-x64')[0]
+    $en = @($cfg.PriorInstalls.Entries | Where-Object Id -ceq 'nsis-x64')[0]; $ei = @($cfg.PriorInstalls.Entries | Where-Object Id -ceq 'inno-x64')[0]
+    if (@($cfg.PriorInstalls.Entries).Count -eq 2 -and $en.Mode -eq 'Enforce' -and $en.Source -eq 'SiblingCapture' -and $en.CaptureId -ceq $pn.FloorCaptureId -and $en.VersionMin -eq '8.7.9.0' -and $en.VersionMax -eq '8.9.8.0' -and $en.Track -eq 'Current' -and $ei.UninstallerType -eq 'inno' -and
+        (Get-Win32ToolkitPriorInstallHash -Kind Tuple -Entry $en) -ceq $pn.ProposalHash) {
+        Ok 'the two rules written: Source SiblingCapture, CaptureId = the floor record, the window from the records (8.7.9.0..8.9.8.0), the proposal''s identity'
+    } else { Bad "written: $($cfg.PriorInstalls | ConvertTo-Json -Depth 5 -Compress)" }
+    $ap = @(Get-Win32ToolkitPriorInstallDecision -ProjectPath $ps | Where-Object Kind -eq 'Approval')
+    if ($ap.Count -eq 2 -and @($ap | Where-Object { $_.Target -ceq 'nsis-x64' -and $_.ProposalId -ceq 'nsis-x64' -and $_.ProposalHash -ceq $pn.ProposalHash -and (@($_.CaptureIds) -join ',') -ceq (@($pn.CaptureIds) -join ',') -and $_.Latest }).Count -eq 1 -and @($ap | Where-Object { $_.Target -ceq 'inno-x64' -and $_.ProposalHash -ceq $pi.ProposalHash }).Count -eq 1) {
+        Ok 'one Approval per proposal (ProposalId, ProposalHash = the Tuple, CaptureIds floor first)'
+    } else { Bad "approvals: $($ap | ConvertTo-Json -Compress)" }
+    if ((@($cfg.ProcessesToClose) -join ',') -ceq 'notepad++,npp,zeta') { Ok 'D20: the process names of the captured rules merged into ProcessesToClose' } else { Bad "ptc: $(@($cfg.ProcessesToClose) -join ',')" }
+
+    # Installer-identity PR 3 live checks: a Windows Sandbox record keeps its identity Block-only, so the refusal never
+    # says "capture again" for it and the Block consequence never says "until the rule is Enforce" (SB-CAPTURE, ASSISTED);
+    # the probe's data loss is said in the List and the preview, not first at Export (GOAL-APPROVE).
+    $psb = New-PiProject 'sandbox-tainted'
+    [IO.File]::WriteAllBytes((Join-Path $psb 'Files\npp.msi'), [byte[]](1, 2, 3))
+    foreach ($v in @(@{ Version = '8.7.9'; Role = 'Floor' }, @{ Version = '8.9.8'; Role = 'Newest'; Backend = 'Sandbox' })) { $null = Write-TestSiblingRecord -ProjectPath $psb -Record (New-TestSiblingRecord @v) }
+    $r = Get-Thrown { Set-Win32ToolkitPriorInstall -ProjectPath $psb -FromSiblingCapture -Mode Enforce -ProposalId 'nsis-x64' -Confirm:$false }
+    if ($r -like 'W32T.PriorInstallRefused|*Not eligible for Enforce*' -and $r -match 'these reasons come from capture records of that identity and stay with it \(a later capture does not take them back\)\.$' -and $r -notmatch 'capture again') { Ok 'a Sandbox-flagged proposal as Enforce -> refused without "capture again" (the identity stays Block-only)' } else { Bad "sandbox refusal: $r" }
+    $out = try { @(Set-Win32ToolkitPriorInstall -ProjectPath $psb -FromSiblingCapture -Mode Block -ProposalId 'nsis-x64' -Confirm:$false 6>&1 | ForEach-Object { "$_" }) -join "`n" } catch { "THREW: $($_.Exception.Message)" }
+    if ($out -match 'Device consequence  : On devices with .* this install FAILS \(69101\); this identity stays Block-only' -and $out -notmatch 'until the rule is Enforce') { Ok 'the Block preview of a Sandbox-flagged identity says it stays Block-only (no "until the rule is Enforce")' } else { Bad "sandbox block preview: $out" }
+    # Live row ASSISTED (round 2): a Block-only identity's List line and Block preview asked for the Enforce-only DATA-LOSS
+    # acknowledgement although such a rule never removes anything.
+    $psd = New-PiProject 'sandbox-dataloss'
+    [IO.File]::WriteAllBytes((Join-Path $psd 'Files\npp.msi'), [byte[]](1, 2, 3))
+    foreach ($v in @(@{ Version = '8.7.9'; Role = 'Floor'; RootConfigRemoved = $true }, @{ Version = '8.9.8'; Role = 'Newest'; Backend = 'Sandbox' })) { $null = Write-TestSiblingRecord -ProjectPath $psd -Record (New-TestSiblingRecord @v) }
+    $listSd = @(Set-Win32ToolkitPriorInstall -ProjectPath $psd 6>&1 | ForEach-Object { "$_" }) -join "`n"
+    $prevSd = @(Set-Win32ToolkitPriorInstall -ProjectPath $psd -FromSiblingCapture -Mode Block -ProposalId 'nsis-x64' -WhatIf 6>&1 | ForEach-Object { "$_" }) -join "`n"
+    if ($listSd -match 'nsis-x64 .*Block only' -and $listSd -notmatch 'data loss|DATA-LOSS' -and $prevSd -match 'Device consequence' -and $prevSd -notmatch 'Data loss|DATA-LOSS') { Ok 'a Block-only identity with the probe''s data loss: no Enforce-only DATA-LOSS line in the List or the Block preview' } else { Bad "block-only data loss: list=$listSd preview=$prevSd" }
+    $pdl = New-PiProject 'dataloss'
+    [IO.File]::WriteAllBytes((Join-Path $pdl 'Files\npp.msi'), [byte[]](1, 2, 3))
+    foreach ($v in @(@{ Version = '8.7.9'; Role = 'Floor'; RootConfigRemoved = $true }, @{ Version = '8.9.8'; Role = 'Newest' })) { $null = Write-TestSiblingRecord -ProjectPath $pdl -Record (New-TestSiblingRecord @v) }
+    $listDl = @(Set-Win32ToolkitPriorInstall -ProjectPath $pdl 6>&1 | ForEach-Object { "$_" }) -join "`n"
+    $prevDl = @(Set-Win32ToolkitPriorInstall -ProjectPath $pdl -FromSiblingCapture -Mode Enforce -ProposalId 'nsis-x64' -WhatIf 6>&1 | ForEach-Object { "$_" }) -join "`n"
+    if ($listDl -match 'nsis-x64 .*; data loss \(its uninstaller deletes configuration in its folder: Enforce needs -Acknowledge DATA-LOSS\)' -and $prevDl -match 'Data loss +: the removability probe saw its uninstaller delete configuration in its install folder') { Ok 'a proposal with the probe''s data loss: the List and the Enforce preview say so (before the approval)' } else { Bad "data loss: list=$listDl preview=$prevDl" }
+    # Live row GOAL-APPROVE: after the Enforce approval only the proof was named as the next step; Export also needed the
+    # DATA-LOSS acknowledgement. GOAL-EXPORT: once acknowledged, the List still asked for it.
+    $appDl = @(Set-Win32ToolkitPriorInstall -ProjectPath $pdl -FromSiblingCapture -Mode Enforce -ProposalId 'nsis-x64' -Confirm:$false 6>&1 | ForEach-Object { "$_" }) -join "`n"
+    if ($appDl -match 'Prove it: Test-Win32ToolkitProject' -and $appDl -match "Export also needs the data-loss acknowledgement .*: Set-Win32ToolkitPriorInstall -ProjectPath '.*' -Acknowledge DATA-LOSS -Target nsis-x64 -Reason '<why>'") { Ok 'Enforce approval of a proposal with data loss: the next steps name the proof AND the DATA-LOSS acknowledgement' } else { Bad "next steps: $appDl" }
+    $null = Set-Win32ToolkitPriorInstall -ProjectPath $pdl -Acknowledge DATA-LOSS -Target 'nsis-x64' -Reason 'settings live in %APPDATA%' -Confirm:$false 6>$null
+    $listAck = @(Set-Win32ToolkitPriorInstall -ProjectPath $pdl 6>&1 | ForEach-Object { "$_" }) -join "`n"
+    if ($listAck -match 'nsis-x64 .*; data loss \(its uninstaller deletes configuration in its folder; acknowledged\)' -and $listAck -notmatch 'Enforce needs -Acknowledge DATA-LOSS') { Ok 'after the acknowledgement the List says "acknowledged" instead of asking for it' } else { Bad "ack list: $listAck" }
+
+    # the bulk form never touches an existing rule (B27)
+    $pb = New-SibProject 'bulk'
+    $null = Set-Win32ToolkitPriorInstall -ProjectPath $pb -FromSiblingCapture -Mode Enforce -ProposalId 'nsis-x64' -Confirm:$false 6>$null
+    $before = (Get-Cfg $pb).PriorInstalls.Entries | Where-Object Id -ceq 'nsis-x64' | ConvertTo-Json -Compress
+    $ap0 = @(Get-Win32ToolkitPriorInstallDecision -ProjectPath $pb | Where-Object Kind -eq 'Approval').Count
+    $out = @(Set-Win32ToolkitPriorInstall -ProjectPath $pb -FromSiblingCapture -Mode Block -Confirm:$false 6>&1 | ForEach-Object { "$_" }) -join "`n"
+    $cfg = Get-Cfg $pb
+    $ids = (@($cfg.PriorInstalls.Entries) | ForEach-Object { "$($_.Id)=$($_.Mode)" }) -join ','
+    $after = $cfg.PriorInstalls.Entries | Where-Object Id -ceq 'nsis-x64' | ConvertTo-Json -Compress
+    if ($ids -ceq 'inno-x64=Block,nsis-x64=Enforce' -and $after -ceq $before -and @(Get-Win32ToolkitPriorInstallDecision -ProjectPath $pb | Where-Object Kind -eq 'Approval').Count -eq $ap0 -and $out -match 'not applied: nsis-x64 .*already a rule' -and $out -match 'not applied: exe-x86 .*flags: GenericExe') {
+        Ok 'bulk Block: only the High flag-free proposal that is not a rule yet (inno-x64); the existing Enforce rule unchanged; the flagged one listed, never written; no approval'
+    } else { Bad "bulk: $ids / $out" }
+
+    # SetMode Enforce on a captured rule whose id is not its proposal's: the command names the proposal (by identity)
+    $pn = New-SibProject 'renamed'
+    $null = Set-Win32ToolkitPriorInstall -ProjectPath $pn -FromSiblingCapture -Mode Block -ProposalId 'nsis-x64' -Confirm:$false 6>$null
+    $cfg = Get-Cfg $pn
+    $cfg.PriorInstalls.Entries[0].Id = 'npp-nsis'
+    [IO.File]::WriteAllText((Join-Path $pn 'SupportFiles\AppConfig.json'), ($cfg | ConvertTo-Json -Depth 8), $utf8)
+    $r = Get-Thrown { Set-Win32ToolkitPriorInstall -ProjectPath $pn -Id 'npp-nsis' -Mode Enforce -Confirm:$false }
+    if ($r -like "W32T.PriorInstallRefused|*-FromSiblingCapture -Mode Enforce -ProposalId nsis-x64*" -and $r -notlike '*-ProposalId npp-nsis*') { Ok "SetMode Enforce on the captured rule 'npp-nsis' -> refused; the command names its proposal 'nsis-x64'" } else { Bad "setmode proposal id: $r" }
+
+    # a relabel: the operator types a proposal's identity by hand
+    $pr = New-SibProject 'relabel'
+    $hr = Get-Hash $pr
+    $r = Get-Thrown { Set-Win32ToolkitPriorInstall -ProjectPath $pr @manual @enforceArgs -Mode Block -Id 'mine' -UninstallerSigner $script:TestSiblingSigner }
+    if ($r -like "W32T.PriorInstallRefused|*is the sibling-capture proposal 'nsis-x64'*-FromSiblingCapture*" -and (Get-Hash $pr) -ceq $hr) { Ok 'a Manual rule with a current proposal''s identity (a relabel) -> refused with the -FromSiblingCapture command, nothing written' } else { Bad "relabel: $r" }
+    Remove-Item Function:\Get-AuthenticodeSignature
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

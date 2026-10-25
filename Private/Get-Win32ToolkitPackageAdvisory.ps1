@@ -64,7 +64,9 @@ function Get-Win32ToolkitPackageAdvisory {
         Prior installs (installer-identity PR 3; every context): the Warning and Info rows of
         Get-Win32ToolkitPriorInstallFinding -Stage Advisory (Source PriorInstalls, message prefix 'Prior install: '):
         PRIOR-BLOCK-FLEET, PRIOR-NO-WELCOME, PRIOR-PREDECESSOR-PUBLISHED, PRIOR-ENFORCE-PILOT, ID-PRIOR-OWN,
-        PRIOR-CLASS-E (warnings) and PRIOR-UNCOVERED (Info). Export refuses the Error rows itself.
+        PRIOR-CLASS-E (warnings) and PRIOR-UNCOVERED (Info); the ID-SIBLING-* rows of the sibling capture (installer-identity
+        PR 3b: UNAPPLIED, PERUSER, SAME-KEY, SAME-FAMILY, NEW-FAMILY, NOT-CAPTURABLE, REPORT-ONLY, DRIFT-GAP, ASSISTED,
+        SANDBOX) come with Source SiblingCapture and the prefix 'Sibling capture: '. Export refuses the Error rows itself.
 
         Order: UNSAFE-CLEANUP, INSTALL-FAILED, UPDATE-FAILED, ID-TECH-SWITCH, INSTALL-INCONCLUSIVE, ID-FAMILY,
         ID-SIBLING-UNTESTED, ID-SIBLING-FAMILY, ID-NO-ANCHOR, ID-TATTOO, ID-SCOPE, ID-PROBE-UNAVAILABLE,
@@ -82,7 +84,8 @@ function Get-Win32ToolkitPackageAdvisory {
         [pscustomobject] SchemaVersion, PackageType, PackageFamily, Update (BaselineFamily, BaselineType,
         BaselineVersion, Verdict, FailedAssertions, TimestampUtc, Backend, Mode, Legacy, LogFolder), Install ($null,
         or the latest judged install/uninstall record: Verdict, FailedAssertions, TimestampUtc, Backend, Mode,
-        LogFolder), Findings (Code, Severity, Source = UpdateTest|InstallTest|IdentityDelta|AppConfig|PriorInstalls, Message).
+        LogFolder), Findings (Code, Severity, Source = UpdateTest|InstallTest|IdentityDelta|AppConfig|PriorInstalls|SiblingCapture,
+        Message).
     .EXAMPLE
         (Get-Win32ToolkitPackageAdvisory -ProjectPath $proj -Context Publish -ProbeIfMissing).Findings
     #>
@@ -631,7 +634,8 @@ function Get-Win32ToolkitPackageAdvisory {
     # ---- Prior-install rules (installer-identity PR 3, spec 2.11): the warnings and notes; Export refuses the errors ----
     try {
         foreach ($pf in @(Get-Win32ToolkitPriorInstallFinding -ProjectPath $ProjectPath -Stage Advisory)) {
-            & $add ([string]$pf.Code) ([string]$pf.Severity) 'PriorInstalls' ('Prior install: ' + [string]$pf.Message)
+            if ([string]$pf.Code -like 'ID-SIBLING-*') { & $add ([string]$pf.Code) ([string]$pf.Severity) 'SiblingCapture' ('Sibling capture: ' + [string]$pf.Message) }
+            else { & $add ([string]$pf.Code) ([string]$pf.Severity) 'PriorInstalls' ('Prior install: ' + [string]$pf.Message) }
         }
     } catch {
         if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }

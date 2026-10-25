@@ -18,12 +18,21 @@
       [8] advisory rows and stages: PRIOR-BLOCK-FLEET, PRIOR-ENFORCE-PILOT (the kill switch), PRIOR-NO-WELCOME,
           PRIOR-CLASS-E (a warning only), PRIOR-PREDECESSOR-PUBLISHED; Export returns only errors, Advisory only the rest;
           Get-Win32ToolkitPackageAdvisory shows them (Source PriorInstalls) in their order.
+      [9] captured rules re-derived from their records (PR 3b, A1; records from Tests\Fixtures\sibling-proposal): a rule
+          applied from its proposal -> no capture row (PRIOR-UNCOVERED names the floor's release date); a window or an
+          identity that the records do not give (also a cross-family rule's lower VersionMax that a record observed) ->
+          PRIOR-CAPTURE-RECORD; an ineligible re-derived proposal -> PRIOR-NOT-ELIGIBLE, and so is an Enforce rule whose
+          records no longer make a proposal (one capture left, same window: fail-closed); PRIOR-APPROVAL names the current
+          proposal of the rule's identity, not the rule id; another signer -> PRIOR-SIGNER (a
+          SIGNER-MISMATCH acknowledgement removes it); the probe removed configuration -> PRIOR-DATA-LOSS; the ID-SIBLING-*
+          warnings (UNAPPLIED with the exact command, SANDBOX, PERUSER, DRIFT-GAP, NOT-CAPTURABLE) with Source SiblingCapture.
       [10] a rule of the version before naming a key of Uninstall.PrimaryKeys ({ Name; View }) -> ID-PRIOR-OWN, not
           ID-PRIOR-DROPPED; an Enforce rule the proof state does not name -> PRIOR-PROOF (fail-closed).
 
     Run:  pwsh -File Tests\PriorInstallFinding.unit.ps1
 #>
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'test fixture builders')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidOverwritingBuiltInCmdlets', '', Justification = 'a test shadow of Get-AuthenticodeSignature (the capture fixtures carry no real signature)')]
 [CmdletBinding()]
 param()
 
@@ -259,6 +268,127 @@ try {
     $prior = @($pa.Findings | Where-Object Source -eq 'PriorInstalls')
     $order = @($prior | Where-Object Severity -eq 'Warning' | ForEach-Object Code) -join ','
     if ($order -eq 'PRIOR-BLOCK-FLEET,PRIOR-NO-WELCOME,PRIOR-PREDECESSOR-PUBLISHED,PRIOR-ENFORCE-PILOT,PRIOR-CLASS-E' -and @($prior | Where-Object { $_.Message -notlike 'Prior install: *' }).Count -eq 0) { Ok "Get-Win32ToolkitPackageAdvisory shows them (Source PriorInstalls, 'Prior install: ') in their order" } else { Bad "advisory order: $order" }
+
+    # == [9] ===================================================================================================
+    Write-Host '[9] captured rules re-derived from their records (A1)' -ForegroundColor Cyan
+    . (Join-Path $repo 'Tests\Fixtures\sibling-proposal\SiblingFixture.ps1')
+    $script:pkgSubject = $script:TestSiblingSigner
+    function Get-AuthenticodeSignature { [CmdletBinding()] param([string]$LiteralPath) $null = $LiteralPath; [pscustomobject]@{ Status = 'Valid'; SignerCertificate = [pscustomobject]@{ Subject = $script:pkgSubject } } }
+    function New-CapProject([string]$Name, [hashtable]$RecArgs = @{}, [string]$Mode = 'Enforce', [switch]$NoApproval, [string]$Id = 'nsis-x64',
+        [object[]]$Recs = @(@{ Version = '8.7.9'; Role = 'Floor' }, @{ Version = '8.9.8'; Role = 'Newest' })) {
+        $cp = New-FProject $Name @() -Template 'C'
+        foreach ($v in $Recs) {
+            $all = $RecArgs.Clone(); foreach ($k in $v.Keys) { $all[$k] = $v[$k] }
+            $null = Write-TestSiblingRecord -ProjectPath $cp -Record (New-TestSiblingRecord @all)
+        }
+        $pp = @((ConvertTo-Win32ToolkitSiblingProposal -ProjectPath $cp).Proposals)[0]
+        $e = [ordered]@{ Id = $Id; Kind = 'ArpKey'; Mode = $Mode }
+        foreach ($k in 'Key', 'View', 'Publisher', 'DisplayName', 'DisplayNameTemplate', 'VersionMin', 'VersionMax', 'UninstallerType', 'UninstallerFileName', 'UninstallerSigner', 'InstallDir', 'MainExe') { $e[$k] = [string]$pp.$k }
+        $e['ProcessNames'] = @($pp.ProcessNames); $e['Source'] = 'SiblingCapture'; $e['CaptureId'] = $pp.FloorCaptureId; $e['Track'] = 'Current'; $e['AddedOn'] = '2026-10-25'
+        $cfg = Get-Content -LiteralPath (Join-Path $cp 'SupportFiles\AppConfig.json') -Raw | ConvertFrom-Json
+        $cfg.PriorInstalls = [pscustomobject]@{ SchemaVersion = '1.0'; Entries = @([pscustomobject]$e) }
+        [IO.File]::WriteAllText((Join-Path $cp 'SupportFiles\AppConfig.json'), ($cfg | ConvertTo-Json -Depth 8), $utf8)
+        if (-not $NoApproval) { Decide $cp @{ Kind = 'Approval'; Code = 'SIBLING-ENFORCE'; Target = $Id; ProposalId = $pp.ProposalId; ProposalHash = $pp.ProposalHash; CaptureIds = @($pp.CaptureIds); Demoted = '' } }
+        $cp
+    }
+    function Set-Rule([string]$P, [hashtable]$O) {
+        $cfg = Get-Content -LiteralPath (Join-Path $P 'SupportFiles\AppConfig.json') -Raw | ConvertFrom-Json
+        foreach ($k in $O.Keys) { $cfg.PriorInstalls.Entries[0].$k = $O[$k] }
+        [IO.File]::WriteAllText((Join-Path $P 'SupportFiles\AppConfig.json'), ($cfg | ConvertTo-Json -Depth 8), $utf8)
+    }
+    $captureCodes = 'PRIOR-CAPTURE-RECORD', 'PRIOR-NOT-ELIGIBLE', 'PRIOR-SIGNER', 'PRIOR-APPROVAL', 'PRIOR-DATA-LOSS'
+    $p = New-CapProject 'cap-ok'
+    $c = @(Rows $p | Where-Object { $captureCodes -contains $_.Code })
+    if ($c.Count -eq 0 -and (Codes $p) -eq 'PRIOR-PROOF') { Ok 'a rule applied from its proposal (with its approval) -> no capture row; only PRIOR-PROOF until the floor proof' } else { Bad "cap-ok: $(Codes $p)" }
+    Set-Rule $p @{ VersionMax = '8.9.9' }
+    $r = @(Rows $p | Where-Object Code -eq 'PRIOR-CAPTURE-RECORD')
+    if ($r.Count -eq 1 -and $r[0].Message -match 'covers 8\.7\.9\.0\.\.8\.9\.9, but its capture records give 8\.7\.9\.0\.\.8\.9\.8\.0') { Ok 'a typed VersionMax the records do not give -> PRIOR-CAPTURE-RECORD (the window is never typed)' } else { Bad "window: $($r | ConvertTo-Json -Compress)" }
+    # Cross-family (an MSI package, an NSIS sibling) stays exact: a lower VersionMax is refused even when a record of the
+    # rule's own identity observed it (8.7.9). Only a sibling of the package's own family may keep one (S3 cut, D61).
+    Set-Rule $p @{ VersionMax = '8.7.9.0' }
+    $r = @(Rows $p | Where-Object Code -eq 'PRIOR-CAPTURE-RECORD')
+    if ($r.Count -eq 1 -and $r[0].Message -match 'covers 8\.7\.9\.0\.\.8\.7\.9\.0, but its capture records give 8\.7\.9\.0\.\.8\.9\.8\.0') { Ok 'a cross-family rule with a lower VersionMax a same-identity record observed (8.7.9.0) -> PRIOR-CAPTURE-RECORD (same family only)' } else { Bad "cross-family lower max: $($r | ConvertTo-Json -Compress)" }
+    Set-Rule $p @{ VersionMax = '8.9.8.0'; MainExe = 'npp.exe'; ProcessNames = @('npp') }
+    $r = @(Rows $p | Where-Object Code -eq 'PRIOR-CAPTURE-RECORD')
+    if ($r.Count -eq 1 -and $r[0].Message -match 'not the identity its capture records re-derive' -and (Codes $p) -match 'PRIOR-APPROVAL') { Ok 'an edited identity (MainExe) -> PRIOR-CAPTURE-RECORD and PRIOR-APPROVAL (the approval is of the captured identity)' } else { Bad "identity: $(Codes $p)" }
+    $p = New-CapProject 'cap-date' @{ ReleaseDate = '2025-11-02' }
+    $u = @(Rows $p 'Advisory' | Where-Object Code -eq 'PRIOR-UNCOVERED')
+    if ($u.Count -eq 1 -and $u[0].Message -match 'below 8\.7\.9\.0 \(released 2025-11-02\) keep it' -and $u[0].Message -match 'above 8\.9\.8\.0 fail with 69102') { Ok 'PRIOR-UNCOVERED names the release date of the floor capture' } else { Bad "uncovered date: $($u | ConvertTo-Json -Compress)" }
+    $p = New-CapProject 'cap-noise' @{ Noise = 'Unverified' }
+    $r = @(Rows $p | Where-Object Code -eq 'PRIOR-NOT-ELIGIBLE')
+    if ($r.Count -eq 1 -and $r[0].Message -match 'NoiseUnverified' -and $r[0].Message -match '-Mode Block') { Ok 'a captured Enforce rule whose re-derived proposal is ineligible (NoiseUnverified) -> PRIOR-NOT-ELIGIBLE (no override)' } else { Bad "not eligible: $(Codes $p)" }
+    $p = New-CapProject 'cap-block' @{ Noise = 'Unverified' } -Mode Block -NoApproval
+    if (@(Rows $p | Where-Object { $captureCodes -contains $_.Code }).Count -eq 0) { Ok 'the same identity as Block -> no row (eligibility matters for Enforce only)' } else { Bad "block: $(Codes $p)" }
+    # Fail closed: two captures of one version made the proposal; with one record gone the window is the same, but an
+    # identity seen in one capture is no proposal (S30 "fewer than two captures"), so the Enforce rule is not eligible.
+    $p = New-CapProject 'cap-one' -Recs @(@{ Version = '8.7.9'; Role = 'Floor' }, @{ Version = '8.7.9'; Role = 'Repeat' })
+    $ok0 = @(Rows $p | Where-Object { $captureCodes -contains $_.Code }).Count -eq 0
+    $floorOf = [string](Get-Content -LiteralPath (Join-Path $p 'SupportFiles\AppConfig.json') -Raw | ConvertFrom-Json).PriorInstalls.Entries[0].CaptureId
+    Get-ChildItem -LiteralPath (Join-Path $p 'Documentation\SiblingCapture') -File | Where-Object { $_.BaseName -cne $floorOf } | Remove-Item
+    $r = @(Rows $p | Where-Object Code -eq 'PRIOR-NOT-ELIGIBLE')
+    if ($ok0 -and $r.Count -eq 1 -and $r[0].Target -eq 'nsis-x64' -and $r[0].Message -match 'two captures' -and @(Rows $p | Where-Object Code -eq 'PRIOR-CAPTURE-RECORD').Count -eq 0) {
+        Ok 'a captured Enforce rule whose records no longer make a proposal (one capture left, same window) -> PRIOR-NOT-ELIGIBLE (fail-closed)'
+    } else { Bad "one capture: ok0=$ok0 $(Codes $p)" }
+    # The exact command names the CURRENT proposal of the rule's identity, not the rule id.
+    $p = New-CapProject 'cap-id' -Id 'npp-nsis' -NoApproval
+    $r = @(Rows $p | Where-Object Code -eq 'PRIOR-APPROVAL')
+    if ($r.Count -eq 1 -and $r[0].Message -match [regex]::Escape('-FromSiblingCapture -Mode Enforce -ProposalId nsis-x64)') -and $r[0].Message -notmatch '-ProposalId npp-nsis') {
+        Ok "PRIOR-APPROVAL of the rule 'npp-nsis' names its proposal 'nsis-x64' in the command"
+    } else { Bad "approval command: $($r | ConvertTo-Json -Compress)" }
+    $p = New-CapProject 'cap-signer'
+    $script:pkgSubject = 'CN=Somebody else'
+    $r = @(Rows $p | Where-Object Code -eq 'PRIOR-SIGNER')
+    $ok1 = $r.Count -eq 1 -and $r[0].Message -match '-Acknowledge SIGNER-MISMATCH -Target nsis-x64'
+    Decide $p @{ Kind = 'Acknowledgement'; Code = 'SIGNER-MISMATCH'; Target = 'nsis-x64'; Reason = 'the vendor signs the MSI with another certificate' }
+    $ok2 = @(Rows $p | Where-Object Code -eq 'PRIOR-SIGNER').Count -eq 0
+    $script:pkgSubject = $script:TestSiblingSigner
+    if ($ok1 -and $ok2) { Ok 'a package installer of another signer -> PRIOR-SIGNER; a SIGNER-MISMATCH acknowledgement removes it' } else { Bad "signer: $ok1 $ok2" }
+    $p = New-CapProject 'cap-loss' @{ RootConfigRemoved = $true }
+    $r = @(Rows $p | Where-Object Code -eq 'PRIOR-DATA-LOSS')
+    $ok1 = $r.Count -eq 1
+    Decide $p @{ Kind = 'Acknowledgement'; Code = 'DATA-LOSS'; Target = 'nsis-x64'; Reason = 'local-config mode not used' }
+    if ($ok1 -and @(Rows $p | Where-Object Code -eq 'PRIOR-DATA-LOSS').Count -eq 0) { Ok 'the probe saw the uninstaller remove configuration -> PRIOR-DATA-LOSS; a DATA-LOSS acknowledgement removes it' } else { Bad "data loss: $(Codes $p)" }
+
+    # the ID-SIBLING warnings
+    $p = New-FProject 'cap-adv' -NoPrior -Template 'C'
+    foreach ($a in @(
+            @{ Version = '8.7.9'; Role = 'Floor' }, @{ Version = '8.9.8' }
+            @{ Type = 'inno'; Key = 'NppInno_is1'; InnoMarkers = $true; ProductCodes = @('NppInno_is1'); DisplayName = 'Npp Inno'; Dir = 'NppInno'; Main = 'npp.exe'; Uninstaller = 'unins000.exe'; Version = '8.5.0'; Role = 'Floor'; Backend = 'Sandbox' }
+            @{ Type = 'inno'; Key = 'NppInno_is1'; InnoMarkers = $true; ProductCodes = @('NppInno_is1'); DisplayName = 'Npp Inno'; Dir = 'NppInno'; Main = 'npp.exe'; Uninstaller = 'unins000.exe'; Version = '8.6.0'; Backend = 'Sandbox' }
+            @{ Type = 'inno'; Key = 'NppInno_is1'; InnoMarkers = $true; ProductCodes = @('NppInno_is1'); DisplayName = 'Npp Inno'; Publisher = 'Npp Team 2'; Dir = 'NppInno'; Main = 'npp.exe'; Uninstaller = 'unins000.exe'; Version = '8.8.0'; Backend = 'Sandbox' }
+            @{ Type = 'inno'; Key = 'NppInno_is1'; InnoMarkers = $true; ProductCodes = @('NppInno_is1'); DisplayName = 'Npp Inno'; Publisher = 'Npp Team 2'; Dir = 'NppInno'; Main = 'npp.exe'; Uninstaller = 'unins000.exe'; Version = '8.9.0'; Backend = 'Sandbox' }
+            @{ Type = 'exe'; Version = '8.9.8'; NoPrimaryCandidate = $true; Hkcu = @([ordered]@{ Key = 'NppUser'; DisplayName = 'Npp (user)' }); ProvisionalPrimary = '' }
+        )) { $null = Write-TestSiblingRecord -ProjectPath $p -Record (New-TestSiblingRecord @a) }
+    [IO.File]::WriteAllText((Join-Path $p 'Documentation\SiblingCapture.json'), '{"SchemaVersion":"1.1","NotCapturable":[{"Type":"zip","Reason":"a portable zip registers nothing"}],"ReportOnly":[],"Failed":[]}', $utf8)
+    $adv = @(Rows $p 'Advisory')
+    $un = @($adv | Where-Object { $_.Code -eq 'ID-SIBLING-UNAPPLIED' -and $_.Target -eq 'nsis-x64' })
+    $want = 'ID-SIBLING-UNAPPLIED', 'ID-SIBLING-SANDBOX', 'ID-SIBLING-PERUSER', 'ID-SIBLING-DRIFT-GAP', 'ID-SIBLING-NOT-CAPTURABLE'
+    $missing = @($want | Where-Object { @($adv.Code) -notcontains $_ })
+    if ($missing.Count -eq 0 -and $un.Count -eq 1 -and $un[0].Message -match [regex]::Escape("Set-Win32ToolkitPriorInstall -ProjectPath '$p' -FromSiblingCapture -Mode Block -ProposalId nsis-x64") -and @($adv | Where-Object Severity -ne 'Warning').Count -eq 0 -and (Codes $p) -eq '') {
+        Ok 'ID-SIBLING-UNAPPLIED (the exact command), -SANDBOX, -PERUSER, -DRIFT-GAP, -NOT-CAPTURABLE: warnings only, no Export error'
+    } else { Bad "sibling advisory: missing $($missing -join ',') / $(@($adv.Code) -join ',')" }
+    # Live row SB-CAPTURE (2026-10-26): "capture it on Hyper-V to make it removable" promised a remedy that does not exist
+    # (a Sandbox record stays with its identity). The row says so instead; a Block rule of that identity never says "until".
+    $sbRow = @($adv | Where-Object Code -eq 'ID-SIBLING-SANDBOX')[0]
+    if ($sbRow.Message -match 'it can only Block, also after a later Hyper-V capture \(a Sandbox record stays with the records of the identity it saw\)\.$' -and $sbRow.Message -notmatch 'to make it removable') { Ok 'ID-SIBLING-SANDBOX: Block-only also after a later Hyper-V capture (no false remedy)' } else { Bad "sandbox row: $($sbRow.Message)" }
+    $ip = @((ConvertTo-Win32ToolkitSiblingProposal -ProjectPath $p).Proposals | Where-Object ProposalId -eq 'inno-x64')[0]
+    $cfgSb = Get-Content -LiteralPath (Join-Path $p 'SupportFiles\AppConfig.json') -Raw | ConvertFrom-Json
+    $cfgSb | Add-Member -NotePropertyName PriorInstalls -NotePropertyValue ([pscustomobject]@{ SchemaVersion = '1.0'; Entries = @([pscustomobject][ordered]@{ Id = 'inno-x64'; Kind = 'ArpKey'; Mode = 'Block'; Key = $ip.Key; View = $ip.View
+                    Publisher = $ip.Publisher; DisplayName = $ip.DisplayName; DisplayNameTemplate = $ip.DisplayNameTemplate; VersionMin = $ip.VersionMin; VersionMax = $ip.VersionMax; UninstallerType = $ip.UninstallerType
+                    UninstallerFileName = $ip.UninstallerFileName; UninstallerSigner = $ip.UninstallerSigner; InstallDir = $ip.InstallDir; MainExe = $ip.MainExe; ProcessNames = @($ip.ProcessNames)
+                    Source = 'SiblingCapture'; CaptureId = $ip.FloorCaptureId; Track = $ip.Track; AddedOn = '2026-10-27' }) }) -Force
+    [IO.File]::WriteAllText((Join-Path $p 'SupportFiles\AppConfig.json'), ($cfgSb | ConvertTo-Json -Depth 8), $utf8)
+    $fleetSb = @(Rows $p 'Advisory' | Where-Object { $_.Code -eq 'PRIOR-BLOCK-FLEET' })
+    if ($fleetSb.Count -eq 1 -and $fleetSb[0].Message -match 'FAIL this install \(69101\) \(its identity stays Block-only: a Windows Sandbox or assisted capture saw it\): assign it to a pilot group first\.' -and $fleetSb[0].Message -notmatch 'until the rule is Enforce') { Ok 'PRIOR-BLOCK-FLEET of a Sandbox-flagged identity: Block-only (no "until the rule is Enforce")' } else { Bad "fleet sandbox: $($fleetSb.Message)" }
+    $pa = Get-Win32ToolkitPackageAdvisory -ProjectPath $p -Context Export 3>$null
+    $sib = @($pa.Findings | Where-Object Source -eq 'SiblingCapture')
+    if ($sib.Count -ge 5 -and @($sib | Where-Object { $_.Code -notlike 'ID-SIBLING-*' -or $_.Message -notlike 'Sibling capture: *' }).Count -eq 0) { Ok "Get-Win32ToolkitPackageAdvisory shows them with Source SiblingCapture and 'Sibling capture: '" } else { Bad "advisory source: $(@($pa.Findings | ForEach-Object { "$($_.Source):$($_.Code)" }) -join ',')" }
+    # Live row ASSISTED: the row cited the internal decision id '(D62)'.
+    $p = New-FProject 'cap-assisted' -NoPrior -Template 'CA'
+    foreach ($a in @(@{ Version = '8.7.9'; Role = 'Floor'; Mode = 'Assisted' }, @{ Version = '8.9.8'; Mode = 'Assisted' })) { $null = Write-TestSiblingRecord -ProjectPath $p -Record (New-TestSiblingRecord @a) }
+    $asRow = @(Rows $p 'Advisory' | Where-Object Code -eq 'ID-SIBLING-ASSISTED') | Select-Object -First 1
+    if ($asRow -and $asRow.Message -match 'comes from an assisted capture: it can only Block, also after a later unattended capture' -and $asRow.Message -notmatch '\(D\d+\)') { Ok 'ID-SIBLING-ASSISTED: Block-only, no internal decision id' } else { Bad "assisted row: $($asRow.Message)" }
+    Remove-Item Function:\Get-AuthenticodeSignature
 
     # == [10] ==================================================================================================
     Write-Host '[10] the own keys of Uninstall.PrimaryKeys; a proof state that names no rule' -ForegroundColor Cyan

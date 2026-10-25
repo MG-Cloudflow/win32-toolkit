@@ -21,12 +21,16 @@ function Copy-Win32ToolkitPriorInstallState {
            Per entry: Operator / UpdateTest lineage of another family -> VersionMax raised to the new App.Version (D18);
            of the package's own family (an EXE package) -> raised to the SOURCE project's App.Version (L33, always below
            the new one); SiblingCapture lineage -> unchanged (D61). Waivers and acknowledgements are NOT carried (they
-           were decisions about the previous package). The source's lost rules (its PriorInstallDropped.json) that it neither
-           declared again nor acknowledged are recorded in the new project's file too, so a lost rule is never forgotten by
-           the next version. A source that a test guest changed (Documentation\GuestTamper.json) gives NOTHING (Action
-           Refused, one warning): the new project gets an empty list, the identities of that version's rules and of its lost
-           rules are recorded in the new project's PriorInstallDropped.json, and Export lists each one as ID-PRIOR-DROPPED
-           until it is declared again or acknowledged.
+           were decisions about the previous package). For every carried capture-lineage rule the capture records
+           it rests on (its CaptureId and every source record that re-derives the same identity) are copied byte for
+           byte into Documentation\SiblingCapture\, and its latest Approval into the decisions file: host files only,
+           re-verified by Get-Win32ToolkitSiblingCaptureRecord (hash prefix) on every later use (installer-identity
+           PR 3b, A1). The source's lost rules (its PriorInstallDropped.json) that it neither declared again nor
+           acknowledged are recorded in the new project's file too, so a lost rule is never forgotten by the next version.
+           A source that a test guest changed (Documentation\GuestTamper.json) gives NOTHING (Action Refused, one
+           warning): the new project gets an empty list, the identities of that version's rules and of its lost rules
+           are recorded in the new project's PriorInstallDropped.json, and Export lists each one as ID-PRIOR-DROPPED until
+           it is declared again or acknowledged.
 
         Then every entry is checked with Test-Win32ToolkitPriorInstallEntry -PreCapture against the new project (L34: no
         own-identity precondition; the own key is the packaged MSI's Source.ProductCode): an entry naming it is dropped
@@ -46,8 +50,8 @@ function Copy-Win32ToolkitPriorInstallState {
         The project to carry from (default: Get-Win32ToolkitPriorCarrySource).
     .OUTPUTS
         [pscustomobject] Action (Restored | Carried | Refused | None), Source, Entries (ids written), Dropped (@{ Id; Reason }),
-        Own (ids dropped as the package's own key), ProcessNamesAdded, Lost (ids recorded in
-        Documentation\PriorInstallDropped.json by this call).
+        Own (ids dropped as the package's own key), ProcessNamesAdded, Records (capture records copied), Approvals
+        (approvals copied), Lost (ids recorded in Documentation\PriorInstallDropped.json by this call).
     .EXAMPLE
         $null = Copy-Win32ToolkitPriorInstallState -ProjectPath $projectFullPath -Snapshot $priorSnapshot
     #>
@@ -65,7 +69,7 @@ function Copy-Win32ToolkitPriorInstallState {
         [string]$SourceProjectPath = ''
     )
 
-    $summary = [pscustomobject]@{ Action = 'None'; Source = ''; Entries = @(); Dropped = @(); Own = @(); ProcessNamesAdded = @(); Lost = @() }
+    $summary = [pscustomobject]@{ Action = 'None'; Source = ''; Entries = @(); Dropped = @(); Own = @(); ProcessNamesAdded = @(); Records = 0; Approvals = 0; Lost = @() }
     $prop = { param($Object, [string]$Name) if ($null -ne $Object -and $Object.PSObject.Properties[$Name] -and $null -ne $Object.$Name) { $Object.$Name } else { $null } }
     $safe = { param($Value, [int]$Max = 256) ConvertTo-Win32ToolkitSafeText -Text ([string]$Value) -MaxLength $Max }
     # The identities of rules this project does not get (Documentation\PriorInstallDropped.json): Export lists each one as
@@ -246,6 +250,40 @@ function Copy-Win32ToolkitPriorInstallState {
         $summary.Dropped = @($dropped.ToArray())
         $summary.Own = [string[]]@($own.ToArray())
         $summary.ProcessNamesAdded = [string[]]$added
+
+        # The capture records and approvals of carried capture-lineage rules (spec 2.13, A1).
+        $capturedKept = @($sorted | Where-Object { [string](& $prop $_ 'Source') -ceq 'SiblingCapture' -or [string](& $prop $_ 'CaptureId') })
+        if ($summary.Action -eq 'Carried' -and $summary.Source -and $capturedKept.Count -gt 0) {
+            $srcSibling = ConvertTo-Win32ToolkitSiblingProposal -ProjectPath $summary.Source
+            $want = [ordered]@{}
+            foreach ($e in $capturedKept) {
+                $cid = [string](& $prop $e 'CaptureId')
+                if ($cid) { $want[$cid] = $true }
+                $tuple = Get-Win32ToolkitPriorInstallHash -Kind Tuple -Entry $e
+                foreach ($row in @($srcSibling.Captures | Where-Object { $_.Tuple -ceq $tuple })) { $want[[string]$row.CaptureId] = $true }
+            }
+            $srcDir = Join-Path $summary.Source 'Documentation\SiblingCapture'
+            $dstDir = Join-Path $ProjectPath 'Documentation\SiblingCapture'
+            foreach ($id in @($want.Keys)) {
+                $from = Join-Path $srcDir "$id.json"
+                if ($id -cnotmatch '^[a-f0-9]{16}$' -or -not (Test-Path -LiteralPath $from -PathType Leaf)) { continue }
+                if ($PSCmdlet.ShouldProcess((Join-Path $dstDir "$id.json"), 'Copy the capture record of a carried prior-install rule')) {
+                    $null = New-Item -ItemType Directory -Path $dstDir -Force
+                    Copy-Item -LiteralPath $from -Destination (Join-Path $dstDir "$id.json") -Force
+                    $summary.Records++
+                }
+            }
+            $srcDecisions = @(Get-Win32ToolkitPriorInstallDecision -ProjectPath $summary.Source)
+            foreach ($e in $capturedKept) {
+                $eid = [string](& $prop $e 'Id')
+                $ap = @($srcDecisions | Where-Object { $_.Kind -eq 'Approval' -and $_.Target -ceq $eid -and $_.Latest }) | Select-Object -First 1
+                if ($ap -and $PSCmdlet.ShouldProcess($eid, 'Copy the approval of a carried prior-install rule')) {
+                    $null = Set-Win32ToolkitPriorInstallDecision -ProjectPath $ProjectPath -Record @{ Kind = 'Approval'; Code = [string]$ap.Code; Target = $eid; Reason = ''; On = [string]$ap.On
+                        ProposalId = [string]$ap.ProposalId; ProposalHash = [string]$ap.ProposalHash; CaptureIds = @($ap.CaptureIds); Demoted = [string]$ap.Demoted } -Confirm:$false
+                    $summary.Approvals++
+                }
+            }
+        }
         if ($sorted.Count -gt 0) {
             $parts = @($sorted | ForEach-Object { "$(& $safe (& $prop $_ 'Mode') 16): ARP $(& $safe (& $prop $_ 'Key'))" }) -join ', '
             $enforce = @($sorted | Where-Object { [string](& $prop $_ 'Mode') -ceq 'Enforce' }).Count

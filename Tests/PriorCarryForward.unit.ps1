@@ -16,6 +16,12 @@
       [6] after the install capture (L34): an EXE package whose capture shows the carried key as its own -> ID-PRIOR-OWN,
           the rule removed and the rest valid with the full rules; a carry followed by a re-capture
           (Update-PSADTProcessesToClose) keeps notepad++ in ProcessesToClose.
+      [7] capture lineage (PR 3b, A1): a carried captured rule brings its capture records (its CaptureId and every record
+          of the same identity, byte for byte; a record of another identity stays behind) and its latest Approval (not the
+          waivers); in the new project they are hash-verified and re-derive the rule (no PRIOR-CAPTURE-RECORD, no PRIOR-APPROVAL).
+      A same-family rule (an EXE package; S3 cut its window below the old package version) carried to the next version
+      keeps its VersionMax and passes while a record observed it; a VersionMax no record observed, or one only a record
+      of another identity observed -> PRIOR-CAPTURE-RECORD (PriorInstallFinding.unit [9]: a cross-family rule stays exact).
       [8] per entry (C-7): a hand-edited rule without a VersionMax property, an invalid Id, a duplicate Id and the entries
           that are not objects (a string, [] and [null]) never cost the valid rules next to them; each bad one is dropped
           with a warning.
@@ -181,6 +187,75 @@ try {
     $null = Update-PSADTProcessesToClose -ProjectPath $ex -JsonFilePath $capJson 3>$null 6>$null
     $ptc = @((Get-Cfg $ex).ProcessesToClose)
     if ($ptc -contains 'notepad++' -and $ptc -contains 'npp-inno' -and $ptc -contains 'otherapp') { Ok 'carry + a re-capture (Update-PSADTProcessesToClose): ProcessesToClose keeps notepad++ next to the captured app' } else { Bad "ptc after capture: $($ptc -join ',')" }
+
+    # == [7] capture lineage: records and approvals ==========================================================
+    Write-Host '[7] a carried captured rule brings its records and its approval (A1)' -ForegroundColor Cyan
+    . (Join-Path $repo 'Tests\Fixtures\sibling-proposal\SiblingFixture.ps1')
+    $src = New-CfProject -Template 'T8' -Version '8.9.8.1' -NoPrior
+    $floorId = Write-TestSiblingRecord -ProjectPath $src -Record (New-TestSiblingRecord -Version '8.7.9' -Role Floor)
+    $newId = Write-TestSiblingRecord -ProjectPath $src -Record (New-TestSiblingRecord -Version '8.9.8')
+    $innoIds = @(foreach ($v in '8.7.9', '8.9.8') { Write-TestSiblingRecord -ProjectPath $src -Record (New-TestSiblingRecord -Type inno -Version $v -Key 'NppInno_is1' -InnoMarkers -ProductCodes @('NppInno_is1') -DisplayName 'Npp Inno' -Dir 'NppInno' -Main 'npp.exe' -Uninstaller 'unins000.exe') })
+    $sib = ConvertTo-Win32ToolkitSiblingProposal -ProjectPath $src -PackageSigner ([pscustomobject]@{ Status = 'Valid'; Subject = $script:TestSiblingSigner })
+    $pp = @($sib.Proposals | Where-Object ProposalId -ceq 'nsis-x64')[0]
+    $entry = New-Entry @{ Source = 'SiblingCapture'; CaptureId = $floorId; VersionMin = $pp.VersionMin; VersionMax = $pp.VersionMax; UninstallerSigner = $pp.UninstallerSigner }
+    $cfg = Get-Cfg $src
+    $cfg | Add-Member -NotePropertyName PriorInstalls -NotePropertyValue ([pscustomobject]@{ SchemaVersion = '1.0'; Entries = @([pscustomobject]$entry) }) -Force
+    [IO.File]::WriteAllText((Join-Path $src 'SupportFiles\AppConfig.json'), ($cfg | ConvertTo-Json -Depth 8), $utf8)
+    $tuple = Get-Win32ToolkitPriorInstallHash -Kind Tuple -Entry (Get-Cfg $src).PriorInstalls.Entries[0]
+    $null = Set-Win32ToolkitPriorInstallDecision -ProjectPath $src -Record @{ Kind = 'Approval'; Code = 'SIBLING-ENFORCE'; Target = 'nsis-x64'; ProposalId = 'nsis-x64'; ProposalHash = $tuple; CaptureIds = @($floorId, $newId); On = '2026-10-20'; Demoted = '' } -Confirm:$false
+    $null = Set-Win32ToolkitPriorInstallDecision -ProjectPath $src -Record @{ Kind = 'Acknowledgement'; Code = 'DATA-LOSS'; Target = 'nsis-x64'; Reason = 'old package'; On = '2026-10-20' } -Confirm:$false
+    $dst = New-CfProject -Template 'T8' -Version '8.9.9' -NoPrior
+    $sum = Invoke-Copy $dst $null
+    $copied = @(Get-ChildItem -LiteralPath (Join-Path $dst 'Documentation\SiblingCapture') -File -ErrorAction SilentlyContinue | ForEach-Object { $_.BaseName } | Sort-Object)
+    $same = @($floorId, $newId | ForEach-Object { (Get-FileHash (Join-Path $src "Documentation\SiblingCapture\$_.json")).Hash -ceq (Get-FileHash (Join-Path $dst "Documentation\SiblingCapture\$_.json")).Hash }) -notcontains $false
+    if ($sum.Records -eq 2 -and ($copied -join ',') -ceq ((@($floorId, $newId) | Sort-Object) -join ',') -and $same -and @($copied | Where-Object { $innoIds -ccontains $_ }).Count -eq 0) {
+        Ok 'the records of the carried rule copied byte for byte (its floor and the same-identity newest); the other identity''s records stay behind'
+    } else { Bad "records: $($sum.Records) $($copied -join ',')" }
+    $verified = @(Get-Win32ToolkitSiblingCaptureRecord -ProjectPath $dst | ForEach-Object { $_.CaptureId } | Sort-Object)
+    $dec = @(Get-Win32ToolkitPriorInstallDecision -ProjectPath $dst)
+    if (($verified -join ',') -ceq ($copied -join ',') -and $sum.Approvals -eq 1 -and $dec.Count -eq 1 -and $dec[0].Kind -eq 'Approval' -and $dec[0].ProposalHash -ceq $tuple -and $dec[0].Latest -and -not $dec[0].Demoted) {
+        Ok 'in the new project the records are hash-verified; the latest Approval copied (the DATA-LOSS acknowledgement was not)'
+    } else { Bad "verified: $($verified -join ',') / $($dec | ConvertTo-Json -Compress)" }
+    $rows = @(Get-Win32ToolkitPriorInstallFinding -ProjectPath $dst -Stage Export | Where-Object { $_.Code -in 'PRIOR-CAPTURE-RECORD', 'PRIOR-APPROVAL' })
+    $e = @((Get-Cfg $dst).PriorInstalls.Entries)[0]
+    if ($rows.Count -eq 0 -and $e.VersionMax -ceq $pp.VersionMax -and $e.CaptureId -ceq $floorId) { Ok 'the carried rule re-derives from the copied records (no PRIOR-CAPTURE-RECORD, no PRIOR-APPROVAL); VersionMax unchanged (D61)' } else { Bad "export rows: $($rows | ForEach-Object { "$($_.Code): $($_.Message)" })" }
+    # A sibling of the package's own family (an EXE package, NSIS sibling): S3 cut the window below the package version
+    # 8.9.8, so the 8.9.8 capture is outside it. The next version (8.9.9) carries the rule unchanged (D61) with both
+    # records: the window waits for a new capture's raise, and Export accepts it while VersionMax is an observed version.
+    $fSrc = New-CfProject -Template 'T8F' -Version '8.9.8' -Type 'exe' -NoPrior
+    $fFloor = Write-TestSiblingRecord -ProjectPath $fSrc -Record (New-TestSiblingRecord -Version '8.7.9' -Role Floor)
+    $null = Write-TestSiblingRecord -ProjectPath $fSrc -Record (New-TestSiblingRecord -Version '8.9.8')
+    $fp = @((ConvertTo-Win32ToolkitSiblingProposal -ProjectPath $fSrc -PackageSigner ([pscustomobject]@{ Status = 'Valid'; Subject = $script:TestSiblingSigner })).Proposals)[0]
+    $cfg = Get-Cfg $fSrc
+    $cfg | Add-Member -NotePropertyName PriorInstalls -NotePropertyValue ([pscustomobject]@{ SchemaVersion = '1.0'; Entries = @([pscustomobject](New-Entry @{ Mode = 'Block'; Source = 'SiblingCapture'; CaptureId = $fFloor; VersionMin = $fp.VersionMin; VersionMax = $fp.VersionMax; UninstallerSigner = $fp.UninstallerSigner })) }) -Force
+    [IO.File]::WriteAllText((Join-Path $fSrc 'SupportFiles\AppConfig.json'), ($cfg | ConvertTo-Json -Depth 8), $utf8)
+    $srcRows = @(Get-Win32ToolkitPriorInstallFinding -ProjectPath $fSrc -Stage Export | Where-Object Code -eq 'PRIOR-CAPTURE-RECORD')
+    $fDst = New-CfProject -Template 'T8F' -Version '8.9.9' -Type 'exe' -NoPrior
+    $fSum = Invoke-Copy $fDst $null
+    $fRows = @(Get-Win32ToolkitPriorInstallFinding -ProjectPath $fDst -Stage Export | Where-Object Code -eq 'PRIOR-CAPTURE-RECORD')
+    $fe = @((Get-Cfg $fDst).PriorInstalls.Entries)[0]
+    if ($fp.SameFamily -and $fp.VersionMax -eq '8.7.9.0' -and $srcRows.Count -eq 0 -and $fSum.Records -eq 2 -and $fe.VersionMax -eq '8.7.9.0' -and $fRows.Count -eq 0) {
+        Ok 'a same-family captured rule (window cut below 8.9.8, S3) carried to 8.9.9 with both records: VersionMax unchanged (D61), no PRIOR-CAPTURE-RECORD'
+    } else { Bad "same family: sf=$($fp.SameFamily) max=$($fp.VersionMax) src=$($srcRows.Count) records=$($fSum.Records) carried=$($fe.VersionMax) rows=$($fRows | ForEach-Object { $_.Message })" }
+    $cfg = Get-Cfg $fDst
+    $cfg.PriorInstalls.Entries[0].VersionMax = '8.8.0'
+    [IO.File]::WriteAllText((Join-Path $fDst 'SupportFiles\AppConfig.json'), ($cfg | ConvertTo-Json -Depth 8), $utf8)
+    $fRows = @(Get-Win32ToolkitPriorInstallFinding -ProjectPath $fDst -Stage Export | Where-Object Code -eq 'PRIOR-CAPTURE-RECORD')
+    if ($fRows.Count -eq 1 -and $fRows[0].Message -match 'covers 8\.7\.9\.0\.\.8\.8\.0') { Ok '...a VersionMax no record observed (8.8.0) -> PRIOR-CAPTURE-RECORD (the window is never typed)' } else { Bad "same family typed max: $($fRows | ForEach-Object { $_.Message })" }
+    # ...nor a VersionMax only a record of ANOTHER identity observed: a third NSIS record at 8.8.0 with another main
+    # program (npp.exe) is hash-verified but re-derives another Tuple, so 8.8.0.0 stays a typed window for this rule.
+    $null = Write-TestSiblingRecord -ProjectPath $fDst -Record (New-TestSiblingRecord -Version '8.8.0' -Main 'npp.exe')
+    $cfg = Get-Cfg $fDst
+    $cfg.PriorInstalls.Entries[0].VersionMax = '8.8.0.0'
+    [IO.File]::WriteAllText((Join-Path $fDst 'SupportFiles\AppConfig.json'), ($cfg | ConvertTo-Json -Depth 8), $utf8)
+    $fTuple = Get-Win32ToolkitPriorInstallHash -Kind Tuple -Entry (Get-Cfg $fDst).PriorInstalls.Entries[0]
+    $fCaps = @((ConvertTo-Win32ToolkitSiblingProposal -ProjectPath $fDst -PackageSigner ([pscustomobject]@{ Status = 'Valid'; Subject = $script:TestSiblingSigner })).Captures)
+    $other = @($fCaps | Where-Object { (ConvertTo-Win32ToolkitPriorVersion -Text ([string]$_.ObservedVersion)) -eq [version]'8.8.0.0' -and $_.Tuple -and $_.Tuple -cne $fTuple })
+    $mine = @($fCaps | Where-Object { $_.Tuple -ceq $fTuple }).Count
+    $fRows = @(Get-Win32ToolkitPriorInstallFinding -ProjectPath $fDst -Stage Export | Where-Object Code -eq 'PRIOR-CAPTURE-RECORD')
+    if ($other.Count -eq 1 -and $mine -eq 2 -and $fRows.Count -eq 1 -and $fRows[0].Message -match 'covers 8\.7\.9\.0\.\.8\.8\.0\.0, but its capture records give 8\.7\.9\.0\.\.8\.9\.8\.0') {
+        Ok '...a lower VersionMax (8.8.0.0) only a record of another identity observed -> PRIOR-CAPTURE-RECORD (a same-identity record only)'
+    } else { Bad "same family, other identity's version: other=$($other.Count) mine=$mine rows=$($fRows | ForEach-Object { $_.Message })" }
 
     # == [8] per entry (C-7) ===================================================================================
     Write-Host '[8] one bad rule never costs the others (C-7: fail-open per entry)' -ForegroundColor Cyan

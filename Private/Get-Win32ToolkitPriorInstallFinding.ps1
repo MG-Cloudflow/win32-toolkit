@@ -24,13 +24,22 @@ function Get-Win32ToolkitPriorInstallFinding {
           PRIOR-NO-OWNIDENTITY         Error     rules and no known own identity, or an Enforce rule and no OwnIdentity (none:
                                                  run the install capture)
           PRIOR-INVALID                Error     a rule or the set fails the spec 2.1 rules (none)
-          PRIOR-CAPTURE-RECORD         Error     a captured rule without its hash-verified capture record, or whose window the
-                                                 record does not give (none: re-capture)
+          PRIOR-CAPTURE-RECORD         Error     a captured rule without its hash-verified capture record, or whose identity
+                                                 (Tuple) or window its records re-derive differently (none: re-capture); a
+                                                 sibling of the package's own family may keep a lower VersionMax that a
+                                                 same-identity record observed (S3 cut it at an older package version; a
+                                                 carried rule keeps it until a new capture raises it, D61)
+          PRIOR-NOT-ELIGIBLE           Error     a captured Enforce rule whose re-derived proposal is not Enforce-eligible,
+                                                 or whose records no longer make it a proposal (S30; class E is not a
+                                                 reason) (none: Block, or capture again)
+          PRIOR-SIGNER                 Error     a captured Enforce rule whose proposal has SignerMismatch (a SIGNER-MISMATCH
+                                                 acknowledgement)
           PRIOR-PROOF                  Error     an Enforce rule not proven by a Hyper-V Unattended Update test (a PROOF waiver;
                                                  never for a captured rule)
           PRIOR-VERSIONMIN             Error     a proven Enforce rule whose VersionMin is below the oldest proven version, exact
                                                  (a VERSIONMIN waiver; never for a captured rule)
-          PRIOR-DATA-LOSS              Error     the proof run saw the prior's uninstaller delete user data (a DATA-LOSS
+          PRIOR-DATA-LOSS              Error     the proof run saw the prior's uninstaller delete user data, or the capture's
+                                                 removability probe saw it delete configuration in its folder (a DATA-LOSS
                                                  acknowledgement)
           PRIOR-APPROVAL               Error     a captured Enforce rule without a latest, not demoted Approval of exactly its
                                                  identity (none: approve its proposal again)
@@ -40,7 +49,12 @@ function Get-Win32ToolkitPriorInstallFinding {
           PRIOR-PREDECESSOR-PUBLISHED  Warning   Enforce rules and an earlier version of the app in this template is published
           ID-PRIOR-OWN                 Warning   a rule of the carry-forward source is now this package's own uninstall key
           PRIOR-CLASS-E                Warning   an Enforce rule in a versioned-family winget id (Python.Python.*, ...)
-          PRIOR-UNCOVERED              Info      a captured rule: what devices outside its window keep or get
+          PRIOR-UNCOVERED              Info      a captured rule: what devices outside its window keep or get (with the
+                                                 release date of its floor capture when the record has one)
+          ID-SIBLING-UNAPPLIED         Warning   a current sibling-capture proposal that is not a rule (the exact command)
+          ID-SIBLING-PERUSER, -SAME-KEY, -SAME-FAMILY, -NEW-FAMILY, -NOT-CAPTURABLE, -REPORT-ONLY, -DRIFT-GAP, -ASSISTED,
+          -SANDBOX                     Warning   from the proposals re-derived from the hash-verified capture records
+                                                 (ConvertTo-Win32ToolkitSiblingProposal) and the capture index
 
         Waivers and acknowledgements come from Documentation\PriorInstallDecisions.json (Get-Win32ToolkitPriorInstallDecision);
         a waiver never applies to a captured rule (D59b, SV14). A project without rules gives at most GUEST-TAMPER,
@@ -157,6 +171,42 @@ function Get-Win32ToolkitPriorInstallFinding {
             & $add 'ID-PRIOR-DROPPED' 'Error' $dId ("the rule '$dId' ($(& $safe $d.Key) [$(& $safe $d.View 16)]) of $from was not kept because a test guest changed that project, so devices with that install keep it next to this one. " +
                 "Declare it again ($set ..., or capture the sibling technologies again and apply its proposal), or acknowledge the drop: $set -Acknowledge ID-PRIOR-DROPPED -Target $dId -Reason '<why>'")
         }
+        # ---- the sibling-capture proposals, re-derived from the hash-verified records (spec 2.14.8, A1) ----
+        $records = @(Get-Win32ToolkitSiblingCaptureRecord -ProjectPath $ProjectPath)
+        $sibling = $null
+        if ($records.Count -gt 0 -or (Test-Path -LiteralPath (Join-Path $ProjectPath 'Documentation\SiblingCapture.json') -PathType Leaf)) {
+            $sibling = ConvertTo-Win32ToolkitSiblingProposal -ProjectPath $ProjectPath
+        }
+        $tupleOf = @{}
+        foreach ($e in $entries) { $tupleOf[[string](& $prop $e 'Id')] = Get-Win32ToolkitPriorInstallHash -Kind Tuple -Entry $e }
+        if ($sibling) {
+            $seen = @{}
+            $once = { param([string]$Code, [string]$Key) $k = "$Code|$($Key.ToUpperInvariant())"; if ($seen.ContainsKey($k)) { return $false }; $seen[$k] = $true; return $true }
+            foreach ($p in @($sibling.Proposals)) {
+                $pid1 = & $safe $p.ProposalId 40
+                $what = "$(& $safe $p.Key) [$($p.View)], $($p.SiblingType), $(& $safe $p.VersionMin 64)..$(& $safe $p.VersionMax 64)"
+                if (@($tupleOf.Values | Where-Object { $_ -ceq $p.ProposalHash }).Count -eq 0) {
+                    & $add 'ID-SIBLING-UNAPPLIED' 'Warning' $pid1 "the sibling-capture proposal '$pid1' ($what, $($p.Confidence) confidence) is not a rule: devices with that install keep it next to this package. Apply it: $set -FromSiblingCapture -Mode Block -ProposalId $pid1"
+                }
+                if ($p.Flags -contains 'Sandbox' -and (& $once 'SANDBOX' $p.ProposalId)) { & $add 'ID-SIBLING-SANDBOX' 'Warning' $pid1 "the proposal '$pid1' ($what) comes from a Windows Sandbox capture: it can only Block, also after a later Hyper-V capture (a Sandbox record stays with the records of the identity it saw)." }
+                if ($p.Flags -contains 'Assisted' -and (& $once 'ASSISTED' $p.ProposalId)) { & $add 'ID-SIBLING-ASSISTED' 'Warning' $pid1 "the proposal '$pid1' ($what) comes from an assisted capture: it can only Block, also after a later unattended capture (an assisted record stays with the records of the identity it saw)." }
+            }
+            foreach ($x in @($sibling.PerUser)) { if (& $once 'PERUSER' $x.Key) { & $add 'ID-SIBLING-PERUSER' 'Warning' '' "the $(& $safe $x.Type 32) installer of this app registers $(& $safe $x.Key) per user ($(& $safe $x.Reason 120)): no rule is proposed (the package runs as SYSTEM and never touches per-user installs)." } }
+            foreach ($x in @($sibling.SameKey)) { if (& $once 'SAMEKEY' $x.Key) { & $add 'ID-SIBLING-SAME-KEY' 'Warning' '' "the $(& $safe $x.Type 32) installer of this app writes this package's own uninstall key $(& $safe $x.Key): no rule is proposed (an in-place upgrade question, not a prior install)." } }
+            foreach ($x in @($sibling.SameFamily)) { if (& $once 'SAMEFAMILY' $x.Key) { & $add 'ID-SIBLING-SAME-FAMILY' 'Warning' '' "$(& $safe $x.Reason 200): its rule keeps only versions below the package version." } }
+            foreach ($x in @($sibling.NotCapturable)) { if (& $once 'NOTCAPTURABLE' $x.Type) { & $add 'ID-SIBLING-NOT-CAPTURABLE' 'Warning' '' "winget also ships a $($x.Type) installer of this app that cannot be captured ($($x.Reason)): devices with it are not covered." } }
+            foreach ($x in @($sibling.ReportOnly)) { if (& $once 'REPORTONLY' $x.Type) { & $add 'ID-SIBLING-REPORT-ONLY' 'Warning' '' "winget also ships a $($x.Type) installer of this app that a rule can only report ($($x.Reason))." } }
+            foreach ($x in @($sibling.Gaps)) { & $add 'ID-SIBLING-DRIFT-GAP' 'Warning' '' "the $($x.Type) installer changed its identity between $($x.From) and $($x.To): the versions in between were not captured (capture them: Test-Win32ToolkitProject -ProjectPath '$ProjectPath' -Scenario SiblingCapture -SiblingVersion <version>)." }
+            $ruleTypes = @(foreach ($e in $entries) {
+                    $cid = [string](& $prop $e 'CaptureId')
+                    if ($cid) { @($sibling.Captures | Where-Object { $_.CaptureId -ceq $cid } | ForEach-Object { $_.Type }) }
+                })
+            if ($ruleTypes.Count -gt 0) {
+                foreach ($t in @($sibling.Proposals | ForEach-Object { $_.SiblingType } | Sort-Object -Unique)) {
+                    if ($ruleTypes -notcontains $t) { & $add 'ID-SIBLING-NEW-FAMILY' 'Warning' '' "a $t installer of this app appeared since the captured rules were applied: review its proposal ($set)." }
+                }
+            }
+        }
         if ($entries.Count -eq 0) { return (& $finish) }
 
         # ---- the deploy script must hold this catalog's remove-prior pair (D12, L3, L38, L39) ----
@@ -172,7 +222,6 @@ function Get-Win32ToolkitPriorInstallFinding {
         }
 
         # ---- the rules themselves (spec 2.1) ----
-        $records = @(Get-Win32ToolkitSiblingCaptureRecord -ProjectPath $ProjectPath)
         $check = Test-Win32ToolkitPriorInstallEntry -Config $cfg -Decisions $decisions -Records $records
         $ownKnown = ($own -and ([string](& $prop $own 'ProductCode') -or [string](& $prop $own 'UpgradeCode') -or @(& $prop $own 'ArpKeys' | Where-Object { $_ }).Count -gt 0)) -or
             @(& $prop $uninstall 'PrimaryKeys' | Where-Object { $_ }).Count -gt 0 -or @(& $prop $uninstall 'ProductCodes' | Where-Object { $_ }).Count -gt 0
@@ -193,6 +242,56 @@ function Get-Win32ToolkitPriorInstallFinding {
             $rec = @($pe.Problems | Where-Object { [string]$_ -like 'capture record:*' })
             if ($plain.Count) { & $add 'PRIOR-INVALID' 'Error' $eid "the rule '$eid' is invalid: $((@($plain) | ForEach-Object { & $safe $_ 300 }) -join '; '). Fix it with $set or remove it (-Remove $eid)." }
             if ($rec.Count) { & $add 'PRIOR-CAPTURE-RECORD' 'Error' $eid "the captured rule '$eid' does not match a hash-verified capture record ($((@($rec) | ForEach-Object { & $safe (([string]$_).Substring(15).Trim()) 300 }) -join '; ')): re-capture the sibling technologies (Test-Win32ToolkitProject -Scenario SiblingCapture)." }
+        }
+
+        # ---- captured rules re-derived from their records (L36, SV5, S30): identity, window, eligibility, signer ----
+        $pkgVersionText = [string](& $prop (& $prop $cfg 'App') 'Version')
+        $pkgFamily = (Get-Win32ToolkitInstallerFamily -Type ([string](& $prop (& $prop $cfg 'Installer') 'Type'))).Family
+        foreach ($e in $entries) {
+            $eid = [string](& $prop $e 'Id')
+            $sid = & $safe $eid 40
+            if ([string]$check.Lineage[$eid] -ne 'Capture' -or $null -eq $sibling) { continue }
+            if (@($rows | Where-Object { $_.Code -eq 'PRIOR-CAPTURE-RECORD' -and $_.Target -ceq $sid }).Count) { continue }
+            $cid = [string](& $prop $e 'CaptureId')
+            $floorRow = @($sibling.Captures | Where-Object { $_.CaptureId -ceq $cid }) | Select-Object -First 1
+            $sf = $floorRow -and (Get-Win32ToolkitInstallerFamily -Type $floorRow.Type).Family -eq $pkgFamily -and $pkgFamily -ne 'other'
+            $w = Get-Win32ToolkitPriorInstallWindow -Captures $sibling.Captures -Tuple $tupleOf[$eid] -FloorCaptureId $cid -Below $(if ($sf) { $pkgVersionText } else { '' })
+            if (-not $w.Found) {
+                & $add 'PRIOR-CAPTURE-RECORD' 'Error' $sid "the captured rule '$sid' is not the identity its capture records re-derive ($(& $safe $w.Reason 200)): it was edited or its records changed. Capture again or apply its proposal again ($set -FromSiblingCapture -Mode <mode> -ProposalId <id>)."
+                continue
+            }
+            $lo = ConvertTo-Win32ToolkitPriorVersion -Text ([string](& $prop $e 'VersionMin')); $hi = ConvertTo-Win32ToolkitPriorVersion -Text ([string](& $prop $e 'VersionMax'))
+            $maxOk = $null -ne $hi -and $hi.ToString() -ceq $w.VersionMax
+            if (-not $maxOk -and $sf -and $null -ne $hi -and $null -ne $lo -and $hi -ge $lo -and $hi -lt (ConvertTo-Win32ToolkitPriorVersion -Text $w.VersionMax)) {
+                # A sibling of the package's own family: S3 cut the window below the package version it was applied with.
+                # A carried rule keeps it (D61) until a new capture raises it, so a lower VersionMax is accepted while a
+                # same-identity record observed exactly that version (never typed).
+                $maxOk = @($sibling.Captures | Where-Object { $_.Tuple -ceq $tupleOf[$eid] -and (ConvertTo-Win32ToolkitPriorVersion -Text ([string]$_.ObservedVersion)) -eq $hi }).Count -gt 0
+            }
+            if ($null -eq $lo -or $lo.ToString() -cne $w.VersionMin -or -not $maxOk) {
+                & $add 'PRIOR-CAPTURE-RECORD' 'Error' $sid "the captured rule '$sid' covers $(& $safe (& $prop $e 'VersionMin') 64)..$(& $safe (& $prop $e 'VersionMax') 64), but its capture records give $($w.VersionMin)..$($w.VersionMax) (the window is never typed). Update it from the records (Invoke-Win32Toolkit -CaptureSiblingTechnologies, or apply its proposal again)."
+            }
+            if ([string](& $prop $e 'Mode') -cne 'Enforce') { continue }
+            $p = @($sibling.Proposals | Where-Object { $_.ProposalHash -ceq $tupleOf[$eid] }) | Select-Object -First 1
+            if (-not $p) {
+                # Fail closed: the records still give the window but no longer make the identity a proposal (S30: fewer
+                # than two captures register it identically), so its re-derived EnforceEligible is false.
+                & $add 'PRIOR-NOT-ELIGIBLE' 'Error' $sid "the captured Enforce rule '$sid' is not removable on its capture evidence (its records no longer make it a proposal: an identity needs at least two captures that register it identically): set it to Block ($set -Id $sid -Mode Block) or capture again."
+                continue
+            }
+            $approved = @($decisions | Where-Object { $_.Kind -eq 'Approval' -and $_.Target -ceq $eid -and $_.Latest -and -not $_.Demoted -and [string]$_.ProposalHash -ceq $tupleOf[$eid] }).Count -gt 0
+            $reasons = @($p.IneligibleReasons | Where-Object { -not ($approved -and [string]$_ -like 'MediumNotNamed*') })
+            if ($reasons.Count) {
+                & $add 'PRIOR-NOT-ELIGIBLE' 'Error' $sid "the captured Enforce rule '$sid' is not removable on its capture evidence ($((@($reasons) | ForEach-Object { & $safe $_ 200 }) -join '; ')): set it to Block ($set -Id $sid -Mode Block); these reasons stay with the capture records of that identity."
+            }
+            if ($p.Flags -contains 'SignerMismatch' -and -not (& $hasDecision 'Acknowledgement' 'SIGNER-MISMATCH' $eid)) {
+                & $add 'PRIOR-SIGNER' 'Error' $sid ("the signer of the captured install '$sid' does not match this package's ($(& $safe $p.FlagText['SignerMismatch'] 300)): a winget manifest may name another vendor's product. " +
+                    "If you checked it: $set -Acknowledge SIGNER-MISMATCH -Target $sid -Reason '<why>'")
+            }
+            if ($p.DataLoss -and -not (& $hasDecision 'Acknowledgement' 'DATA-LOSS' $eid) -and @($rows | Where-Object { $_.Code -eq 'PRIOR-DATA-LOSS' -and $_.Target -ceq $sid }).Count -eq 0) {
+                & $add 'PRIOR-DATA-LOSS' 'Error' $sid ("the removability probe saw the uninstaller of '$sid' delete configuration in its folder. If that is acceptable for your users: " +
+                    "$set -Acknowledge DATA-LOSS -Target $sid -Reason '<why>'")
+            }
         }
 
         # ---- proof, window, data loss, approval (D17, L13, SV2, SV14) ----
@@ -278,7 +377,11 @@ function Get-Win32ToolkitPriorInstallFinding {
                 $tuple = Get-Win32ToolkitPriorInstallHash -Kind Tuple -Entry $e
                 $ok = @($decisions | Where-Object { $_.Kind -eq 'Approval' -and $_.Target -ceq $eid -and $_.Latest -and -not $_.Demoted -and [string]$_.ProposalHash -ceq $tuple }).Count -gt 0
                 if (-not $ok) {
-                    & $add 'PRIOR-APPROVAL' 'Error' $sid "the captured Enforce rule '$sid' has no current approval of exactly this identity (its approval is missing, was demoted, or the rule changed since): approve its proposal again ($set -FromSiblingCapture -Mode Enforce -ProposalId $sid)."
+                    # The command names the current proposal of this identity (proposal ids follow the records; a rule id
+                    # need not be one), else the rule id.
+                    $cur = @(if ($sibling) { @($sibling.Proposals) | Where-Object { $_.ProposalHash -ceq $tuple } }) | Select-Object -First 1
+                    $propId = if ($cur) { & $safe $cur.ProposalId 40 } else { $sid }
+                    & $add 'PRIOR-APPROVAL' 'Error' $sid "the captured Enforce rule '$sid' has no current approval of exactly this identity (its approval is missing, was demoted, or the rule changed since): approve its proposal again ($set -FromSiblingCapture -Mode Enforce -ProposalId $propId)."
                 }
             }
         }
@@ -288,7 +391,10 @@ function Get-Win32ToolkitPriorInstallFinding {
             $tech = switch ([string](& $prop $e 'UninstallerType')) { 'nullsoft' { 'the NSIS install' } 'inno' { 'the Inno Setup install' } default { 'the other install' } }
             $lo = [string](& $prop $e 'VersionMin'); $hi = [string](& $prop $e 'VersionMax')
             $window = if ($lo) { "$(& $safe $lo 64) <= version <= $(& $safe $hi 64)" } else { "version <= $(& $safe $hi 64)" }
-            & $add 'PRIOR-BLOCK-FLEET' 'Warning' (& $safe (& $prop $e 'Id') 40) "devices with $tech ($(& $safe (& $prop $e 'Key')), $window) FAIL this install (69101) until the rule is Enforce: assign it to a pilot group first."
+            # An identity a Windows Sandbox or assisted capture saw stays Block-only (live rows SB-CAPTURE and ASSISTED): no "until".
+            $blockOnly = @(if ($sibling) { @($sibling.Proposals) | Where-Object { $_.ProposalHash -ceq $tupleOf[[string](& $prop $e 'Id')] -and ($_.Flags -contains 'Sandbox' -or $_.Flags -contains 'Assisted') } }).Count -gt 0
+            $until = if ($blockOnly) { ' (its identity stays Block-only: a Windows Sandbox or assisted capture saw it)' } else { ' until the rule is Enforce' }
+            & $add 'PRIOR-BLOCK-FLEET' 'Warning' (& $safe (& $prop $e 'Id') 40) "devices with $tech ($(& $safe (& $prop $e 'Key')), $window) FAIL this install (69101)$($until): assign it to a pilot group first."
         }
         if ($enforce.Count -gt 0) {
             $keys = (@($enforce | ForEach-Object { & $safe (& $prop $_ 'Key') 128 }) -join ', ')
@@ -317,7 +423,11 @@ function Get-Win32ToolkitPriorInstallFinding {
         foreach ($e in $entries) {
             $eid = [string](& $prop $e 'Id')
             if ([string]$check.Lineage[$eid] -ne 'Capture') { continue }
-            & $add 'PRIOR-UNCOVERED' 'Info' (& $safe $eid 40) "devices with $(& $safe (& $prop $e 'Key')) below $(& $safe (& $prop $e 'VersionMin') 64) keep it next to this package (left as it is); devices above $(& $safe (& $prop $e 'VersionMax') 64) fail with 69102."
+            # The floor capture's release date (spec 2.11 PRIOR-UNCOVERED; D60: the floor is the oldest release of the last 12 months).
+            $cid = [string](& $prop $e 'CaptureId')
+            $floorDate = if ($sibling -and $cid) { [string](@($sibling.Captures | Where-Object { $_.CaptureId -ceq $cid }) | Select-Object -First 1 | ForEach-Object { $_.ReleaseDate }) } else { '' }
+            $released = if ($floorDate -cmatch '^\d{4}-\d{2}-\d{2}$') { " (released $floorDate)" } else { '' }
+            & $add 'PRIOR-UNCOVERED' 'Info' (& $safe $eid 40) "devices with $(& $safe (& $prop $e 'Key')) below $(& $safe (& $prop $e 'VersionMin') 64)$released keep it next to this package (left as it is); devices above $(& $safe (& $prop $e 'VersionMax') 64) fail with 69102."
         }
         return (& $finish)
     }
