@@ -140,7 +140,7 @@ $fail = & $mod {
     $installSlots = @(if ($is42) { 'msp' }) + @('install', 'install-done')
     $expectAuto = [ordered]@{
         'Session'        = @('loader')
-        'Pre-Install'    = @('org-ui', 'hook')
+        'Pre-Install'    = @('prior-check', 'org-ui', 'hook', 'remove-prior')
         'Install'        = $installSlots
         'Post-Install'   = @('hook', 'tattoo', 'org-ui')
         'Pre-Uninstall'  = @('org-ui', 'hook')
@@ -306,13 +306,24 @@ InstallerSwitches:
             }
             if (@($blocks | Where-Object { $_.Slot -eq 'org-ui' }).Count -eq 5) { Ok '5 org-ui blocks' } else { Bad 'org-ui block count is not 5' }
             if (@($blocks | Where-Object { $_.Slot -eq 'hook' }).Count -eq 6) { Ok '6 hook blocks' } else { Bad 'hook block count is not 6' }
-            # Hooks: last in every Pre-* phase, first in every Post-* phase (D10).
+            # Hooks: last in Pre-Uninstall and Pre-Repair, first in every Post-* phase (D10). Installer-identity PR 3: in
+            # Pre-Install only the remove-prior block follows the hook (the D10 hook-last contract, amended).
             foreach ($phase in 'Pre-Install', 'Pre-Uninstall', 'Pre-Repair') {
                 $pt = Get-PhaseText $c $shape $phase
                 $hookEnd = [regex]::Match($pt, "(?m)^[ \t]*## win32-toolkit:${phase}:hook \(end\)[^\r\n]*")
-                if ($hookEnd.Success -and -not (Get-CodeOnly $pt.Substring($hookEnd.Index + $hookEnd.Length))) { Ok "$phase hook block is the last code of the phase" }
+                $after = if ($hookEnd.Success) { $pt.Substring($hookEnd.Index + $hookEnd.Length) } else { 'x' }
+                if ($phase -eq 'Pre-Install') {
+                    $rp = [regex]::Match($after, '(?s)^\s*## win32-toolkit:Pre-Install:remove-prior \(begin\)[^\r\n]*\r?\n.*?## win32-toolkit:Pre-Install:remove-prior \(end\)[^\r\n]*')
+                    if ($hookEnd.Success -and $rp.Success -and -not (Get-CodeOnly $after.Substring($rp.Index + $rp.Length))) { Ok 'Pre-Install: only the remove-prior block follows the hook block' }
+                    else { Bad 'Pre-Install: code other than the remove-prior block follows the hook block' }
+                }
+                elseif ($hookEnd.Success -and -not (Get-CodeOnly $after)) { Ok "$phase hook block is the last code of the phase" }
                 else { Bad "$phase hook block is not the last code of the phase" }
             }
+            # The remove-prior pair (installer-identity PR 3): the catalog's revision (2 since the live-check fixer round) and the
+            # dialog-order guard.
+            if ($shape.RemovePriorRevision -eq 2 -and $shape.PriorCheckFirst) { Ok 'RemovePriorRevision 2, PriorCheckFirst (prior-check before the org dialogs, no default dialog left)' }
+            else { Bad "RemovePriorRevision $($shape.RemovePriorRevision), PriorCheckFirst $($shape.PriorCheckFirst)" }
             foreach ($phase in 'Post-Install', 'Post-Uninstall', 'Post-Repair') {
                 $pt = Get-PhaseText $c $shape $phase
                 $hookBegin = [regex]::Match($pt, "(?m)^[ \t]*## win32-toolkit:${phase}:hook \(begin\)")

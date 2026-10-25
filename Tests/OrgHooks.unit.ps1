@@ -92,18 +92,21 @@ function Invoke-OrgHook([string]$Proj, $Template) {
 foreach ($golden in 'psadt-4.1.8', 'psadt-4.2.0-zeroconfig') {
     Write-Host "`n=== $golden ===" -ForegroundColor White
 
-    Write-Host '[1] all six hooks: one hook block per phase, LAST in Pre-*, FIRST in Post-* (hook < tattoo < org-ui)' -ForegroundColor Cyan
+    Write-Host '[1] all six hooks: one hook block per phase, LAST in Pre-Uninstall/Pre-Repair (in Pre-Install only remove-prior follows it), FIRST in Post-* (hook < tattoo < org-ui)' -ForegroundColor Cyan
     $fx = New-Fixture -Golden $golden -HooksEnabled $true -ExtModule $false -HookFiles $allHooks
     $script:ASSET = $fx.Assets
     $r = Invoke-OrgHook $fx.Proj (Tmpl -Hooks $true -Ext $false)
     $s = Get-Text $fx.Script
     if (-not $r.Fqid -and ([regex]::Matches($s, '(?m)^[ \t]*## win32-toolkit:[\w-]+:hook \(begin\)')).Count -eq 6) { Ok '6 hook blocks placed' } else { Bad "hook blocks: $(([regex]::Matches($s, ':hook \(begin\)')).Count) $($r.Message)" }
-    $expect = @{ 'Pre-Install' = 'org-ui,hook'; 'Pre-Uninstall' = 'org-ui,hook'; 'Pre-Repair' = 'org-ui,hook'; 'Post-Install' = 'hook,tattoo,org-ui'; 'Post-Uninstall' = 'hook,tattoo'; 'Post-Repair' = 'hook,org-ui' }
+    $expect = @{ 'Pre-Install' = 'prior-check,org-ui,hook,remove-prior'; 'Pre-Uninstall' = 'org-ui,hook'; 'Pre-Repair' = 'org-ui,hook'; 'Post-Install' = 'hook,tattoo,org-ui'; 'Post-Uninstall' = 'hook,tattoo'; 'Post-Repair' = 'hook,org-ui' }
     $wrong = @(foreach ($ph in $expect.Keys) { $o = (Get-SlotOrder $s $ph) -join ','; if ($o -ne $expect[$ph]) { "$ph=[$o]" } })
     if ($wrong.Count -eq 0) { Ok 'block order per phase is canonical' } else { Bad "order: $($wrong -join '; ')" }
     if ($golden -eq 'psadt-4.2.0-zeroconfig') {
         if ($s.Contains("New-Variable -Name Post-Install -Force -Value {`n    ## win32-toolkit:Post-Install:hook (begin)")) { Ok '4.2: the Post-Install hook is the first statement of the phase' } else { Bad '4.2: Post-Install hook not first' }
-        if ($s -match "## win32-toolkit:Pre-Install:hook \(end\)\n\}") { Ok '4.2: the Pre-Install hook is the last statement of the phase' } else { Bad '4.2: Pre-Install hook not last' }
+        # Installer-identity PR 3: in Pre-Install only the remove-prior block follows the hook (it removes a proven prior
+        # install after the org dialogs and the hook); Pre-Uninstall and Pre-Repair keep the hook last.
+        if ($s -match "## win32-toolkit:Pre-Install:hook \(end\)\n    ## win32-toolkit:Pre-Install:remove-prior \(begin\)[^\n]*\n(?:[^\n]*\n)*?    ## win32-toolkit:Pre-Install:remove-prior \(end\)\n\}") { Ok '4.2: only the remove-prior block follows the Pre-Install hook (it ends the phase)' } else { Bad '4.2: the Pre-Install hook is not directly followed by the remove-prior block that ends the phase' }
+        if ($s -match "## win32-toolkit:Pre-Uninstall:hook \(end\)\n\}" -and $s -match "## win32-toolkit:Pre-Repair:hook \(end\)\n\}") { Ok '4.2: the Pre-Uninstall and Pre-Repair hooks are the last statements of their phases' } else { Bad '4.2: Pre-Uninstall/Pre-Repair hook not last' }
     } else {
         if ($s.Contains("    ## <Perform Post-Installation tasks here>`n    ## win32-toolkit:Post-Install:hook (begin)")) { Ok '4.1: the Post-Install hook directly follows its marker (first in the phase)' } else { Bad '4.1: Post-Install hook not after the marker' }
     }

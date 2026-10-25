@@ -35,6 +35,14 @@ function Get-Win32ToolkitDeployScriptShape {
         time limit, child processes, NSIS in place, cleanup paths re-checked on the device). A marker outside
         the block, or one with more than 4 digits, does not count.
 
+        RemovePriorRevision (installer-identity PR 3): 0 unless both the '## win32-toolkit:Pre-Install:prior-check' and
+        the '...:remove-prior' blocks exist and the prior-check block holds '## remove-prior catalog revision <n>
+        (win32-toolkit)' (at most 4 digits); then <n>. PriorCheckFirst: true only when RemovePriorRevision >= 1, the
+        Pre-Install toolkit blocks are ordered prior-check < org-ui < remove-prior (a hook block, when present, between
+        org-ui and remove-prior) and no Show-ADTInstallationWelcome / Show-ADTInstallationProgress statement lies in
+        Pre-Install outside a toolkit block. A script created before PR 3 has 0 / false: it gets no prior-install rules
+        (re-create it, D12).
+
         With -IncludeLayout the result also carries the offsets the phase-block helpers need (phase
         scriptblock braces on 4.2, marker/region per phase on 4.1, the $adtSession line, and every
         '## win32-toolkit:<Phase>:<Slot>' block with its integrity problems). Offsets are relative to the
@@ -49,7 +57,8 @@ function Get-Win32ToolkitDeployScriptShape {
         Also return the Layout used by Set-/Remove-Win32ToolkitPhaseBlock and Remove-Win32ToolkitPhaseDefaultUi.
     .OUTPUTS
         [pscustomobject] Shape, DeployAppScriptVersion, IsSupportedVersion, IsPatched, GeneratorVersion,
-        HasTattoo, ParseErrors, MarkerIssues, Support, SupportReason, Reason, Layout, UninstallRevision.
+        HasTattoo, ParseErrors, MarkerIssues, Support, SupportReason, Reason, Layout, UninstallRevision,
+        RemovePriorRevision, PriorCheckFirst.
     #>
     [CmdletBinding(DefaultParameterSetName = 'Path')]
     [OutputType([pscustomobject])]
@@ -81,6 +90,7 @@ function Get-Win32ToolkitDeployScriptShape {
 
     $shape = 'Unknown'; $reason = ''; $version = $null; $parseErrors = 0
     $isPatched = $false; $generatorVersion = $null; $hasTattoo = $false; $uninstallRevision = 0
+    $removePriorRevision = 0; $priorCheckFirst = $false
     $markerIssues = [System.Collections.Generic.List[string]]::new()
     $layout = $null
 
@@ -112,6 +122,13 @@ function Get-Win32ToolkitDeployScriptShape {
             # risk reader) with a raw, non-W32T error.
             $rm = [regex]::Match($um.Groups[1].Value, '## Uninstall revision (\d{1,4}) \(win32-toolkit\)')
             $uninstallRevision = if ($rm.Success) { [int]$rm.Groups[1].Value } else { 1 }
+        }
+        # Installer-identity PR 3: the remove-prior pair. 0 unless BOTH Pre-Install blocks exist and the prior-check block
+        # holds the catalog revision marker (at most 4 digits, as the uninstall revision).
+        $pcm = [regex]::Match($text, '(?s)## win32-toolkit:Pre-Install:prior-check \(begin\)[^\r\n]*\r?\n(.*?)## win32-toolkit:Pre-Install:prior-check \(end\)')
+        if ($pcm.Success -and $text.Contains('## win32-toolkit:Pre-Install:remove-prior (begin)')) {
+            $rpm = [regex]::Match($pcm.Groups[1].Value, '## remove-prior catalog revision (\d{1,4}) \(win32-toolkit\)')
+            if ($rpm.Success) { $removePriorRevision = [int]$rpm.Groups[1].Value }
         }
 
         # ---- AST ----
@@ -248,6 +265,44 @@ function Get-Win32ToolkitDeployScriptShape {
             }
         }
 
+        # ---- PriorCheckFirst (installer-identity PR 3, L39) ----
+        # True only when the Pre-Install toolkit blocks run prior-check < org-ui < [hook <] remove-prior and no PSADT
+        # default welcome/progress statement is left in Pre-Install outside a toolkit block: then nothing closes or
+        # shows anything before prior-check has refused, and the org welcome closes the prior's app before remove-prior.
+        if ($removePriorRevision -ge 1 -and $shape -in 'Psadt41', 'Psadt42ZeroConfig') {
+            $pre = @{}
+            $spans = [System.Collections.Generic.List[object]]::new()
+            foreach ($bm in [regex]::Matches($text, '(?m)^[ \t]*## win32-toolkit:Pre-Install:(?<slot>[\w-]+) \(begin\)')) {
+                $slot = $bm.Groups['slot'].Value
+                if (-not $pre.ContainsKey($slot)) { $pre[$slot] = [System.Collections.Generic.List[int]]::new() }
+                $pre[$slot].Add($bm.Index)
+                $em = [regex]::Match($text.Substring($bm.Index), '(?m)^[ \t]*## win32-toolkit:Pre-Install:' + [regex]::Escape($slot) + ' \(end\)[^\r\n]*')
+                if ($em.Success) { $spans.Add(@{ Start = $bm.Index; End = $bm.Index + $em.Index + $em.Length }) }
+            }
+            $one = { param([string]$Slot) if ($pre.ContainsKey($Slot) -and $pre[$Slot].Count -eq 1) { $pre[$Slot][0] } else { -1 } }
+            $pc = & $one 'prior-check'; $ou = & $one 'org-ui'; $rp = & $one 'remove-prior'
+            $hk = if (-not $pre.ContainsKey('hook')) { $null } else { & $one 'hook' }
+            $ordered = $pc -ge 0 -and $ou -gt $pc -and $rp -gt $ou -and ($null -eq $hk -or ($hk -gt $ou -and $hk -lt $rp))
+            if ($ordered) {
+                $phaseStart = -1; $phaseEnd = -1
+                if ($shape -eq 'Psadt42ZeroConfig') {
+                    $phaseStart = $phaseBlocks['Pre-Install'].Extent.StartOffset; $phaseEnd = $phaseBlocks['Pre-Install'].Extent.EndOffset
+                }
+                else {
+                    $phaseStart = $assignments41['Install'][0].Extent.EndOffset; $phaseEnd = $assignments41['Install'][1].Extent.StartOffset
+                }
+                $dialogs = @($ast.FindAll({
+                            param($n)
+                            $n -is [System.Management.Automation.Language.CommandAst] -and
+                            @('Show-ADTInstallationWelcome', 'Show-ADTInstallationProgress') -contains $n.GetCommandName()
+                        }, $true) | Where-Object {
+                        $s = $_.Extent.StartOffset
+                        $s -ge $phaseStart -and $s -lt $phaseEnd -and -not ($spans | Where-Object { $s -ge $_.Start -and $s -lt $_.End })
+                    })
+                $priorCheckFirst = $dialogs.Count -eq 0
+            }
+        }
+
         # ---- layout (phase-block helpers only) ----
         if ($IncludeLayout) {
             $layout = @{ Session = $null; Phases = @{}; Blocks = @(); BlockIssues = @() }
@@ -369,5 +424,7 @@ function Get-Win32ToolkitDeployScriptShape {
         Reason                 = $reason
         Layout                 = $layout
         UninstallRevision      = $uninstallRevision
+        RemovePriorRevision    = $removePriorRevision
+        PriorCheckFirst        = $priorCheckFirst
     }
 }

@@ -207,8 +207,9 @@ function Get-Phase([string]$Text, [string]$Name) {
     $a = $Text.IndexOf("New-Variable -Name $Name -Force -Value {`n"); $b = $Text.IndexOf("`n}`n", $a) + 3
     $Text.Substring($a, $b - $a)
 }
-$expPre = @'
-New-Variable -Name Pre-Install -Force -Value {
+# Installer-identity PR 3: the Pre-Install phase now starts with the prior-check block and ends with the remove-prior
+# block (both catalog texts, indented 4); the org-ui and hook part between them is unchanged.
+$expPreMiddle = @'
     ## win32-toolkit:Pre-Install:org-ui (begin) - managed by win32-toolkit; regenerated, do not edit inside
     ## Org template dialogs - policy is DATA in SupportFiles\AppConfig.json (OrgUi); nothing is spliced here.
     ## PSADT 4.2 note: DeployMode Auto resolves to Silent when no listed process is running (or the list is
@@ -242,8 +243,12 @@ New-Variable -Name Pre-Install -Force -Value {
     $orgHookScript = Join-Path -Path $adtSession.DirSupportFiles -ChildPath 'OrgHooks\PreInstall.ps1'
     if (Test-Path -LiteralPath $orgHookScript) { . $orgHookScript }
     ## win32-toolkit:Pre-Install:hook (end)
-}
 '@ -replace "`r`n", "`n" | ForEach-Object { $_ + "`n" }
+function Get-IndentedBlock([string]$Slot, [string]$Name) {
+    $body = @((Get-Win32ToolkitDeployScriptBlock -Name $Name) -split "`n" | ForEach-Object { if ($_.Trim()) { '    ' + $_ } else { '' } }) -join "`n"
+    "    ## win32-toolkit:Pre-Install:$Slot (begin) - managed by win32-toolkit; regenerated, do not edit inside`n$body`n    ## win32-toolkit:Pre-Install:$Slot (end)`n"
+}
+$expPre = "New-Variable -Name Pre-Install -Force -Value {`n" + (Get-IndentedBlock 'prior-check' 'RemovePriorCheck') + $expPreMiddle + (Get-IndentedBlock 'remove-prior' 'RemovePrior') + "}`n"
 $expPost = @'
 New-Variable -Name Post-Install -Force -Value {
     ## win32-toolkit:Post-Install:hook (begin) - managed by win32-toolkit; regenerated, do not edit inside

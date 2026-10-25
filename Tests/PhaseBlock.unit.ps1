@@ -48,7 +48,7 @@ function Get-Thrown([scriptblock]$Action) {
 
 $canonical = [ordered]@{
     'Session'        = @('loader')
-    'Pre-Install'    = @('org-ui', 'hook')
+    'Pre-Install'    = @('prior-check', 'org-ui', 'hook', 'remove-prior')
     'Install'        = @('msp', 'install', 'install-done')
     'Post-Install'   = @('hook', 'tattoo', 'org-ui')
     'Pre-Uninstall'  = @('org-ui', 'hook')
@@ -157,7 +157,12 @@ foreach ($c in @(
         @{ N = 'Repair has no slots';     A = { Set-Win32ToolkitPhaseBlock -Content $g42z -Phase 'Repair' -Slot 'install' -Code '#' } }
         @{ N = 'unknown phase';           A = { Set-Win32ToolkitPhaseBlock -Content $g42z -Phase 'Deploy' -Slot 'hook' -Code '#' } }
         @{ N = 'code with a sentinel';    A = { Set-Win32ToolkitPhaseBlock -Content $g42z -Phase 'Install' -Slot 'install' -Code "x`n## win32-toolkit:Install:msp (begin)" } }
-        @{ N = 'remove: invalid phase';   A = { Remove-Win32ToolkitPhaseBlock -Content $g42z -Phase 'Deploy' -Slot 'hook' } })) {
+        @{ N = 'remove: invalid phase';   A = { Remove-Win32ToolkitPhaseBlock -Content $g42z -Phase 'Deploy' -Slot 'hook' } }
+        # Installer-identity PR 3: the remove-prior pair exists in Pre-Install only.
+        @{ N = 'prior-check in Pre-Uninstall';  A = { Set-Win32ToolkitPhaseBlock -Content $g42z -Phase 'Pre-Uninstall' -Slot 'prior-check' -Code '#' } }
+        @{ N = 'remove-prior in Pre-Uninstall'; A = { Set-Win32ToolkitPhaseBlock -Content $g42z -Phase 'Pre-Uninstall' -Slot 'remove-prior' -Code '#' } }
+        @{ N = 'prior-check in Pre-Repair';     A = { Set-Win32ToolkitPhaseBlock -Content $g418 -Phase 'Pre-Repair' -Slot 'prior-check' -Code '#' } }
+        @{ N = 'remove-prior in Pre-Repair';    A = { Set-Win32ToolkitPhaseBlock -Content $g418 -Phase 'Pre-Repair' -Slot 'remove-prior' -Code '#' } })) {
     $r = Get-Thrown $c.A
     if ($r -eq 'ArgumentException') { Ok "$($c.N) -> ArgumentException" } else { Bad "$($c.N) -> '$r'" }
 }
@@ -205,6 +210,40 @@ foreach ($g in 'psadt-4.1.8', 'psadt-4.2.0-zeroconfig') {
 $t = $goldens['psadt-4.1.8']; foreach ($p in $uiPhases) { $t = Remove-Win32ToolkitPhaseDefaultUi -Content $t -Phase $p }
 if ($t.Contains("    `$adtSession.InstallPhase = `"Pre-`$(`$adtSession.DeploymentType)`"`n`n    ## <Perform Pre-Installation tasks here>")) { Ok '4.1: no doubled blank lines left in Pre-Install' } else { Bad '4.1 Pre-Install layout after removal unexpected' }
 
+# -- [9] the remove-prior pair in the generation order (installer-identity PR 3, spec 2.7) ---------
+# Set-PSADTDataDrivenScript places prior-check and remove-prior; Apply-OrgTemplate then removes the PSADT default
+# dialogs and places org-ui and hook: the result must be prior-check < org-ui < hook < remove-prior, all before the
+# Zero-Config install, and the template welcome (removed) never inside a toolkit block.
+Write-Host '[9] the remove-prior pair in the generation order: prior-check, org-ui, hook, remove-prior before the install' -ForegroundColor Cyan
+foreach ($g in 'psadt-4.1.8', 'psadt-4.2.0-zeroconfig') {
+    $t = $goldens[$g]
+    $t = Set-Win32ToolkitPhaseBlock -Content $t -Phase 'Pre-Install' -Slot 'prior-check' -Code '$w32tPrPlan = @()'
+    $t = Set-Win32ToolkitPhaseBlock -Content $t -Phase 'Pre-Install' -Slot 'remove-prior' -Code '$w32tPrDo = @()'
+    $before = $t
+    $t = Remove-Win32ToolkitPhaseDefaultUi -Content $t -Phase 'Pre-Install'
+    $t = Set-Win32ToolkitPhaseBlock -Content $t -Phase 'Pre-Install' -Slot 'org-ui' -Code '# org dialogs'
+    $t = Set-Win32ToolkitPhaseBlock -Content $t -Phase 'Pre-Install' -Slot 'hook' -Code '# org hook'
+    $order = (Get-SlotOrder $t 'Pre-Install') -join ','
+    if ($order -ceq 'prior-check,org-ui,hook,remove-prior') { Ok "$g : Pre-Install order prior-check, org-ui, hook, remove-prior" } else { Bad "$g : Pre-Install order [$order]" }
+    $rpEnd = [regex]::Match($t, '## win32-toolkit:Pre-Install:remove-prior \(end\)')
+    $pcAt = $t.IndexOf('## win32-toolkit:Pre-Install:prior-check (begin)')
+    if ($g -eq 'psadt-4.1.8') {
+        $installMarker = $t.IndexOf('## <Perform Installation tasks here>'); $zeroConfig = $t.IndexOf('## Handle Zero-Config MSI installations.')
+        if ($pcAt -gt 0 -and $rpEnd.Index -lt $installMarker -and $rpEnd.Index -lt $zeroConfig -and $t.Contains("    ## <Perform Pre-Installation tasks here>`n    ## win32-toolkit:Pre-Install:prior-check (begin)")) { Ok "$g : both blocks right after the Pre-Install marker, before the Install marker and the Zero-Config install" } else { Bad "$g : placement (prior-check $pcAt, remove-prior end $($rpEnd.Index), install marker $installMarker, zero-config $zeroConfig)" }
+    }
+    else {
+        $sh = Get-Win32ToolkitDeployScriptShape -Content $t -IncludeLayout
+        $ph = $sh.Layout.Phases['Pre-Install']
+        if ($pcAt -gt $ph.Open -and $rpEnd.Index -lt $ph.Close -and $t -match "## win32-toolkit:Pre-Install:remove-prior \(end\)\n\}") { Ok "$g : both blocks inside the Pre-Install scriptblock (the Install phase with Zero-Config runs after it); remove-prior ends the phase" } else { Bad "$g : 4.2 placement" }
+    }
+    # The PSADT welcome that the org template removed sat outside every toolkit block (it was never inside prior-check).
+    $astB = [System.Management.Automation.Language.Parser]::ParseInput($before, [ref]$null, [ref]$null)
+    $spansB = @([regex]::Matches($before, '(?ms)^[ \t]*## win32-toolkit:(?<p>[\w-]+):(?<s>[\w-]+) \(begin\).*?## win32-toolkit:\k<p>:\k<s> \(end\)'))
+    $welcome = @($astB.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Show-ADTInstallationWelcome' }, $true))
+    $inside = @($welcome | Where-Object { $o = $_.Extent.StartOffset; $spansB | Where-Object { $o -ge $_.Index -and $o -lt $_.Index + $_.Length } })
+    $left = @(([System.Management.Automation.Language.Parser]::ParseInput($t, [ref]$null, [ref]$null)).FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Show-ADTInstallationWelcome' }, $true))
+    if ($welcome.Count -ge 1 -and $inside.Count -eq 0 -and $left.Count -eq ($welcome.Count - 1)) { Ok "$g : the template's Pre-Install welcome lay outside every toolkit block and is the one removed" } else { Bad "$g : welcome statements $($welcome.Count), inside blocks $($inside.Count), left $($left.Count)" }
+}
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'PhaseBlock unit test PASSED' -ForegroundColor Green; exit 0 }
 Write-Host "$fail FAILURE(S)" -ForegroundColor Red

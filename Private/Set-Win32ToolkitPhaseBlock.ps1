@@ -24,9 +24,11 @@ function Set-Win32ToolkitPhaseBlock {
         the indentation of the $adtSession line); blank lines stay empty; the line ending follows the
         content (CRLF when it contains CRLF, else LF).
 
-        Slot order: Session loader(10); Pre-* org-ui(10) hook(20); Install msp(10) install|manual-install(20)
-        install-done(90); Uninstall uninstall(20); Post-Install hook(10) tattoo(20) org-ui(30); Post-Repair
-        hook(10) org-ui(30); Post-Uninstall hook(10) tattoo(20). Repair has no slots.
+        Slot order: Session loader(10); Pre-Install prior-check(5) org-ui(10) hook(20) remove-prior(30);
+        Pre-Uninstall and Pre-Repair org-ui(10) hook(20); Install msp(10) install|manual-install(20) install-done(90);
+        Uninstall uninstall(20); Post-Install hook(10) tattoo(20) org-ui(30); Post-Repair hook(10) org-ui(30);
+        Post-Uninstall hook(10) tattoo(20). Repair has no slots. In Pre-Install only the remove-prior block follows the
+        org hook (installer-identity PR 3).
 
         Errors: an unknown phase/slot pair or code containing a sentinel line -> ArgumentException (a
         programming error); an Unknown template shape -> W32T.UnsupportedTemplateShape; a missing, duplicated
@@ -64,7 +66,7 @@ function Set-Win32ToolkitPhaseBlock {
     $preSlots = @{ 'org-ui' = 10; 'hook' = 20 }
     $slotOrder = @{
         'Session'        = @{ 'loader' = 10 }
-        'Pre-Install'    = $preSlots
+        'Pre-Install'    = @{ 'prior-check' = 5; 'org-ui' = 10; 'hook' = 20; 'remove-prior' = 30 }
         'Pre-Uninstall'  = $preSlots
         'Pre-Repair'     = $preSlots
         'Install'        = @{ 'msp' = 10; 'install' = 20; 'manual-install' = 20; 'install-done' = 90 }

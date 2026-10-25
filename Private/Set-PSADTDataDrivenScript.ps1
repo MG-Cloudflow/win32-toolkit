@@ -23,6 +23,10 @@ function Set-PSADTDataDrivenScript {
           5. Post-Install / Post-Uninstall: the install "tattoo" (HKLM:\SOFTWARE\<Author>\<Vendor>\<Name>
              \Version) that the Intune detection rule keys on; Post-Install writes it only when the Install
              phase reached its end; Post-Uninstall also removes a legacy WOW6432Node copy.
+          6. Pre-Install: the remove-prior pair (installer-identity PR 3) - 'prior-check' (slot 5, before the org
+             dialogs: evaluates AppConfig.PriorInstalls and refuses with a 691xx exit code before any app is closed)
+             and 'remove-prior' (slot 30, after the org dialogs and hook: removes only the proven priors). Without
+             PriorInstalls entries both do nothing. Placed on every new project, never re-rendered later (D12).
 
         Each block sits between '## win32-toolkit:<Phase>:<Slot>' sentinels (Set-Win32ToolkitPhaseBlock),
         so a re-run re-renders every block in place - byte-identical when nothing changed - and never
@@ -197,6 +201,10 @@ function Set-PSADTDataDrivenScript {
     }
     $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Install' -Slot 'install-done' -Code (Get-Win32ToolkitDeployScriptBlock -Name InstallDone)
     $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Uninstall' -Slot 'uninstall' -Code (Get-Win32ToolkitDeployScriptBlock -Name Uninstall)
+    # Installer-identity PR 3: the remove-prior pair on EVERY new project. With no PriorInstalls entries in AppConfig.json
+    # both blocks do nothing; entries are data read at run time, so adding one later never changes this script (D12).
+    $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Pre-Install' -Slot 'prior-check' -Code (Get-Win32ToolkitDeployScriptBlock -Name RemovePriorCheck)
+    $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Pre-Install' -Slot 'remove-prior' -Code (Get-Win32ToolkitDeployScriptBlock -Name RemovePrior)
     $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Post-Install' -Slot 'tattoo' -Code (Get-Win32ToolkitDeployScriptBlock -Name TattooInstall)
     $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Post-Uninstall' -Slot 'tattoo' -Code (Get-Win32ToolkitDeployScriptBlock -Name TattooUninstall)
 

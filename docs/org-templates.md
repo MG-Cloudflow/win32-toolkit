@@ -155,7 +155,8 @@ Where a hook runs inside its phase (the same on PSADT 4.1 and 4.2):
 
 | Hook | Runs |
 |---|---|
-| `PreInstall.ps1`, `PreUninstall.ps1`, `PreRepair.ps1` | **last** in the phase, after the org welcome and progress dialogs |
+| `PreInstall.ps1` | after the org welcome and progress dialogs, before the remove-prior step (which only acts when the package has prior-install rules, see [Packaging](packaging.md)) |
+| `PreUninstall.ps1`, `PreRepair.ps1` | **last** in the phase, after the org welcome and progress dialogs |
 | `PostInstall.ps1`, `PostUninstall.ps1`, `PostRepair.ps1` | **first** in the phase, before the detection tattoo is written (or removed) and before the completion prompt |
 
 Important:

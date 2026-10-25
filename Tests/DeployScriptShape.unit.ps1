@@ -9,7 +9,9 @@
     InstallPhase assignment, mixed layouts, parse error, partial Zero-Config); 4.1 marker census; foreign
     AppConfig loader; out-of-range / mismatched DeployAppScriptVersion; -Path vs -Content; missing file;
     relative paths (shape reader, generator, writer) resolve against the PowerShell location;
-    UninstallRevision (0 / 1 / 2, the marker only inside the toolkit uninstall block, an oversized number).
+    UninstallRevision (0 / 1 / 2, the marker only inside the toolkit uninstall block, an oversized number);
+    RemovePriorRevision and PriorCheckFirst (installer-identity PR 3: 0/false before PR 3 and without the org dialogs,
+    1/true generated with them; a hand-written welcome, a moved org-ui block, one block only, the marker outside).
 
     Fixtures are copied/normalised in memory (C-5); nothing in Tests\Fixtures is modified. No PSADT needed.
 
@@ -257,6 +259,58 @@ try {
     if ($m.UninstallRevision -eq 0) { Ok 'missing file -> UninstallRevision 0' } else { Bad "missing file -> $($m.UninstallRevision)" }
 } catch { Bad "UninstallRevision threw: $($_.Exception.Message)" }
 
+# -- [11] RemovePriorRevision / PriorCheckFirst (installer-identity PR 3, spec 2.7, L38, L39) ---------------
+Write-Host '[11] RemovePriorRevision and PriorCheckFirst: 0/false before PR 3, the catalog revision (2)/true generated with the org dialogs' -ForegroundColor Cyan
+foreach ($c in @(@{ N = 'psadt-4.1.8'; T = $g418 }, @{ N = 'psadt-4.2.0'; T = $g42d }, @{ N = 'psadt-4.2.0-zeroconfig'; T = $g42z },
+        @{ N = 'legacy-1.1.6-auto'; T = (Get-Fixture 'legacy-1.1.6-auto') }, @{ N = 'legacy-1.1.6-org'; T = (Get-Fixture 'legacy-1.1.6-org') })) {
+    $r = Shape $c.T
+    if ($r.RemovePriorRevision -is [int] -and $r.RemovePriorRevision -eq 0 -and $r.PriorCheckFirst -is [bool] -and -not $r.PriorCheckFirst) { Ok "$($c.N) -> RemovePriorRevision 0, PriorCheckFirst false" } else { Bad "$($c.N) -> $($r.RemovePriorRevision) / $($r.PriorCheckFirst)" }
+}
+foreach ($c in @(@{ N = 'psadt-4.1.8'; T = $g418; S = 'Psadt41' }, @{ N = 'psadt-4.2.0-zeroconfig'; T = $g42z; S = 'Psadt42ZeroConfig' })) {
+    $p = Join-Path $TMP "prior-$($c.N).ps1"
+    [System.IO.File]::WriteAllText($p, ($c.T -replace "`n", "`r`n"), (New-Object System.Text.UTF8Encoding($true)))
+    $null = Set-PSADTDataDrivenScript -ScriptPath $p -WarningAction SilentlyContinue
+    $bare = ([System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)) -replace "`r`n", "`n"
+    $r = Shape $bare
+    if ($r.RemovePriorRevision -eq 2 -and -not $r.PriorCheckFirst) { Ok "$($c.N) generated WITHOUT the org template -> revision 2, PriorCheckFirst false (the PSADT welcome runs before prior-check)" } else { Bad "$($c.N) no org -> $($r.RemovePriorRevision) / $($r.PriorCheckFirst)" }
+    $o = $bare
+    $o = Remove-Win32ToolkitPhaseDefaultUi -Content $o -Phase 'Pre-Install'
+    $o = Set-Win32ToolkitPhaseBlock -Content $o -Phase 'Pre-Install' -Slot 'org-ui' -Code (Get-Win32ToolkitDeployScriptBlock -Name OrgUiPreInstall)
+    $r = Shape $o
+    if ($r.RemovePriorRevision -eq 2 -and $r.PriorCheckFirst -and $r.Shape -eq $c.S -and $r.Support -eq 'Supported') { Ok "$($c.N) generated with the org dialogs -> revision 2, PriorCheckFirst true" } else { Bad "$($c.N) org -> $($r.RemovePriorRevision) / $($r.PriorCheckFirst)" }
+    $h = Set-Win32ToolkitPhaseBlock -Content $o -Phase 'Pre-Install' -Slot 'hook' -Code (Get-Win32ToolkitDeployScriptBlock -Name Hook -Phase 'Pre-Install' -HookFile 'PreInstall.ps1')
+    $r = Shape $h
+    if ($r.PriorCheckFirst) { Ok "$($c.N): an org hook between org-ui and remove-prior keeps PriorCheckFirst" } else { Bad "$($c.N) hook -> PriorCheckFirst false" }
+    # A PSADT welcome added by hand in Pre-Install outside every block.
+    $byHand = if ($c.S -eq 'Psadt41') { $h.Replace("    ## <Perform Pre-Installation tasks here>`n", "    ## <Perform Pre-Installation tasks here>`n    Show-ADTInstallationWelcome -CloseProcesses 'x'`n") }
+              else { $h.Replace("New-Variable -Name Pre-Install -Force -Value {`n", "New-Variable -Name Pre-Install -Force -Value {`n    Show-ADTInstallationWelcome -CloseProcesses 'x'`n") }
+    $r = Shape $byHand
+    if ($byHand -ne $h -and $r.RemovePriorRevision -eq 2 -and -not $r.PriorCheckFirst) { Ok "$($c.N): a Show-ADTInstallationWelcome written by hand in Pre-Install outside a block -> PriorCheckFirst false" } else { Bad "$($c.N) hand welcome -> $($r.PriorCheckFirst)" }
+    $prog = if ($c.S -eq 'Psadt41') { $h.Replace("    ## <Perform Pre-Installation tasks here>`n", "    ## <Perform Pre-Installation tasks here>`n    Show-ADTInstallationProgress`n") } else { $h.Replace("New-Variable -Name Pre-Install -Force -Value {`n", "New-Variable -Name Pre-Install -Force -Value {`n    Show-ADTInstallationProgress`n") }
+    if (-not (Shape $prog).PriorCheckFirst) { Ok "$($c.N): a hand-written Show-ADTInstallationProgress -> PriorCheckFirst false" } else { Bad "$($c.N) hand progress kept PriorCheckFirst" }
+    # The org-ui block moved before prior-check.
+    $orgBlock = [regex]::Match($h, '(?ms)^[ \t]*## win32-toolkit:Pre-Install:org-ui \(begin\).*?## win32-toolkit:Pre-Install:org-ui \(end\)\n').Value
+    $pcBegin = [regex]::Match($h, '(?m)^[ \t]*## win32-toolkit:Pre-Install:prior-check \(begin\)')
+    $moved = $h.Replace($orgBlock, '').Insert($pcBegin.Index, $orgBlock)
+    if ((Shape $moved).PriorCheckFirst -eq $false -and (Shape $moved).RemovePriorRevision -eq 2) { Ok "$($c.N): org-ui placed before prior-check -> PriorCheckFirst false" } else { Bad "$($c.N) moved org-ui kept PriorCheckFirst" }
+    # Only one of the two blocks; the marker outside the block; an oversized revision.
+    $rpBlock = [regex]::Match($h, '(?ms)^[ \t]*## win32-toolkit:Pre-Install:remove-prior \(begin\).*?## win32-toolkit:Pre-Install:remove-prior \(end\)\n').Value
+    $r = Shape ($h.Replace($rpBlock, ''))
+    if ($rpBlock -and $r.RemovePriorRevision -eq 0 -and -not $r.PriorCheckFirst) { Ok "$($c.N): only the prior-check block -> revision 0" } else { Bad "$($c.N) one block -> $($r.RemovePriorRevision)" }
+    $noMark = $h.Replace('## remove-prior catalog revision 2 (win32-toolkit)', '## (marker removed)')
+    $r = Shape ($noMark + "`n## remove-prior catalog revision 2 (win32-toolkit)`n")
+    if ($noMark -ne $h -and $r.RemovePriorRevision -eq 0) { Ok "$($c.N): the revision marker outside the prior-check block -> revision 0" } else { Bad "$($c.N) marker outside -> $($r.RemovePriorRevision)" }
+    try {
+        $r = Shape ($h.Replace('## remove-prior catalog revision 2 (win32-toolkit)', '## remove-prior catalog revision 99999999999 (win32-toolkit)'))
+        if ($r.RemovePriorRevision -eq 0 -and $r.Shape -eq $c.S) { Ok "$($c.N): 'revision 99999999999' -> 0, no throw" } else { Bad "$($c.N) huge -> $($r.RemovePriorRevision)" }
+    } catch { Bad "$($c.N) huge revision threw: $($_.Exception.Message)" }
+    $r = Shape ($h.Replace('## remove-prior catalog revision 1 (win32-toolkit)', '## remove-prior catalog revision 2 (win32-toolkit)'))
+    if ($r.RemovePriorRevision -eq 2) { Ok "$($c.N): 'revision 2' -> 2 (the number is read)" } else { Bad "$($c.N) rev 2 -> $($r.RemovePriorRevision)" }
+}
+try {
+    $r = Get-Win32ToolkitDeployScriptShape -Content ''
+    if ($r.RemovePriorRevision -eq 0 -and -not $r.PriorCheckFirst) { Ok "-Content '' -> RemovePriorRevision 0, PriorCheckFirst false, no throw" } else { Bad "-Content '' -> $($r.RemovePriorRevision)" }
+} catch { Bad "RemovePriorRevision threw: $($_.Exception.Message)" }
 Remove-Item -LiteralPath $TMP -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'DeployScriptShape unit test PASSED' -ForegroundColor Green; exit 0 }
