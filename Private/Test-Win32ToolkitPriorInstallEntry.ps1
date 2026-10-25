@@ -45,7 +45,8 @@ function Test-Win32ToolkitPriorInstallEntry {
     .PARAMETER PreCapture
         Validate before the install capture wrote OwnIdentity (L34).
     .OUTPUTS
-        [pscustomobject] Valid, Problems[], Lineage (hashtable Id -> lineage), PerEntry[] {Id, Valid, Problems[], Lineage}.
+        [pscustomobject] Valid, Problems[] (all, entry problems prefixed '<id>: '), SetProblems[] (the set rules), Lineage
+        (hashtable Id -> lineage), PerEntry[] {Id, Valid, Problems[], Lineage}.
     .EXAMPLE
         $v = Test-Win32ToolkitPriorInstallEntry -Config $cfg -Decisions $decisions -Records $records
     #>
@@ -246,9 +247,10 @@ function Test-Win32ToolkitPriorInstallEntry {
     foreach ($sp in $setProblems) { $all.Add($sp) }
     foreach ($pe in $perEntry) { foreach ($x in $pe.Problems) { $all.Add("$($pe.Id): $x") } }
     return [pscustomobject]@{
-        Valid    = ($all.Count -eq 0)
-        Problems = [string[]]$all.ToArray()
-        Lineage  = $lineage
-        PerEntry = [object[]]$perEntry.ToArray()
+        Valid       = ($all.Count -eq 0)
+        Problems    = [string[]]$all.ToArray()
+        SetProblems = [string[]]$setProblems.ToArray()
+        Lineage     = $lineage
+        PerEntry    = [object[]]$perEntry.ToArray()
     }
 }

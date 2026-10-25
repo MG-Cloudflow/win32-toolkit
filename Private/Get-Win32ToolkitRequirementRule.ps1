@@ -22,10 +22,17 @@ function Get-Win32ToolkitRequirementRule {
              MSI in Files\ so MSI Zero-Config apps (empty App.Name, no tattoo) are covered,
           3. any captured MSI product code (Test-Path -LiteralPath), and
           4. an exact Add/Remove-Programs DisplayName -eq the clean App.Name (or the MSI ProductName).
+          5. (installer-identity PR 3, D28) a prior install of another installer technology that an ENFORCE
+             AppConfig.PriorInstalls entry proves - the same predicate text as the deploy script's prior-check
+             (catalog 'PriorPredicate', verbatim); the entries travel as one base64 literal of a JSON object (only the
+             fields the predicate reads). Not used for Block/Report entries, for entries that fail the prior-install
+             rules (one warning), or when the project's remove-prior blocks are not this catalog revision (one warning:
+             re-create the project). Without this a vendor install of another technology (Notepad++ NSIS next to a
+             WiX package) never made the update app applicable.
         A first-word substring "-like" match is deliberately NOT used (it matched e.g. every
         "Microsoft *" product). If none of a tattoo key, an UpgradeCode, or a name is available, no
-        reliable cross-version signal exists and the function returns $null so the caller aborts rather
-        than shipping an over- or under-matching update app.
+        reliable cross-version signal exists (and no Enforce prior-install entry) and the function returns $null so the
+        caller aborts rather than shipping an over- or under-matching update app.
 
         Presence (not version >=) is deliberate: the update app's detection rule already checks the
         exact version, so the requirement only needs to gate on "the app is here to be updated". A
@@ -112,10 +119,45 @@ function Get-Win32ToolkitRequirementRule {
     $cleanNames = @(@($appName; $msiName) | Where-Object { $_ } | Select-Object -Unique)
     $cleanName  = if ($cleanNames.Count) { $cleanNames[0] } else { $null }   # display/reporting name
 
+    # Fifth signal (installer-identity PR 3, D28, S13): a prior install that an ENFORCE entry proves (another installer
+    # technology of the app that the package removes before it installs). Block entries would make the update app
+    # applicable only to fail (69101), Report entries never remove: neither counts. Only entries that pass the device
+    # rules are used, and only while the project's prior-check block is the catalog's revision (L38): the requirement
+    # embeds the CURRENT predicate text, which must be the one the device runs.
+    $enforce = @()
+    $priorEntries = @()
+    if ($cfg.PSObject.Properties['PriorInstalls'] -and $cfg.PriorInstalls -and $cfg.PriorInstalls.PSObject.Properties['Entries']) {
+        $priorEntries = @(@($cfg.PriorInstalls.Entries) | Where-Object { $null -ne $_ })
+    }
+    $enforceEntries = @($priorEntries | Where-Object { [string]$_.Mode -ceq 'Enforce' })
+    if ($enforceEntries.Count -gt 0) {
+        $check = Test-Win32ToolkitPriorInstallEntry -Config $cfg
+        # A set-level problem (marker root, package version, own identity) makes the device refuse every entry.
+        $okIds = @(if (@($check.SetProblems).Count -eq 0) { @($check.PerEntry | Where-Object { $_.Valid } | ForEach-Object { $_.Id }) })
+        $left = @($enforceEntries | Where-Object { $okIds -cnotcontains [string]$_.Id })
+        if ($left.Count -gt 0) { Write-Warning ('Update requirement: prior-install rule(s) ' + (($left | ForEach-Object { ConvertTo-Win32ToolkitSafeText -Text ([string]$_.Id) -MaxLength 40 }) -join ', ') + ' fail the prior-install rules and are not used to find devices that need this update.') }
+        $valid = @($enforceEntries | Where-Object { $okIds -ccontains [string]$_.Id })
+        if ($valid.Count -gt 0) {
+            $projectRevision = (Get-Win32ToolkitDeployScriptShape -Path (Join-Path $ProjectPath 'Invoke-AppDeployToolkit.ps1')).RemovePriorRevision
+            if ($projectRevision -ne (Get-Win32ToolkitDeployScriptBlock -Name RemovePriorRevision)) {
+                Write-Warning "Update requirement: the project's remove-prior blocks are not this version's catalog (revision $projectRevision): the prior installs it removes are not used to find devices. Re-create the project."
+            }
+            else {
+                $text = { param($E, [string]$Name) if ($E.PSObject.Properties[$Name] -and $null -ne $E.$Name) { [string]$E.$Name } else { '' } }
+                # EXACTLY what the predicate reads (never the tuple: it has no window).
+                $enforce = @(foreach ($e in $valid) {
+                        [ordered]@{ Id = & $text $e 'Id'; Mode = & $text $e 'Mode'; Kind = & $text $e 'Kind'; Key = & $text $e 'Key'; View = & $text $e 'View'
+                            Publisher = & $text $e 'Publisher'; DisplayName = & $text $e 'DisplayName'; DisplayNameTemplate = & $text $e 'DisplayNameTemplate'
+                            VersionMin = & $text $e 'VersionMin'; VersionMax = & $text $e 'VersionMax' }
+                    })
+            }
+        }
+    }
+
     # Require a signal that can identify the app across versions: the tattoo key, the MSI UpgradeCode, or a
-    # clean name for an exact ARP match. Product codes alone are per-version, so they never gate the rule on
-    # their own. If none exist (e.g. an MSI with no UpgradeCode), abort rather than ship a bad rule.
-    if (-not $tattooKey -and -not $cleanName -and -not $upgradeCode) {
+    # clean name for an exact ARP match (or a proven prior install, above). Product codes alone are per-version, so
+    # they never gate the rule on their own. If none exist (e.g. an MSI with no UpgradeCode), abort rather than ship a bad rule.
+    if (-not $tattooKey -and -not $cleanName -and -not $upgradeCode -and $enforce.Count -eq 0) {
         Write-Warning 'Cannot build a reliable update requirement rule (no install tattoo, MSI UpgradeCode, or app name). Use the install app, or supersedence.'
         return $null
     }
@@ -167,6 +209,22 @@ function Get-Win32ToolkitRequirementRule {
         $lines.Add('    )) {')
         $lines.Add('        if (Get-ItemProperty -Path $p -ErrorAction SilentlyContinue | Where-Object { $targets -contains $_.DisplayName }) { $found = $true; break }')
         $lines.Add('    }')
+        $lines.Add('}')
+    }
+    if ($enforce.Count -gt 0) {
+        # The entries travel as ONE base64 literal of a UTF-8 JSON object (L7): only [A-Za-z0-9+/=] is spliced, and the
+        # predicate is the catalog text, verbatim at column 0 (the deploy script's prior-check runs the same text).
+        $json = ConvertTo-Json -InputObject ([ordered]@{ Entries = $enforce }) -Depth 5 -Compress -EscapeHandling EscapeNonAscii
+        $priorData = [Convert]::ToBase64String([System.Text.UTF8Encoding]::new($false).GetBytes($json))
+        $lines.Add('# Prior install (installer-identity PR 3): another installer technology of this app that the package removes')
+        $lines.Add('# before it installs (Enforce rules only), found with the same predicate as the deploy script.')
+        $lines.Add('if (-not $found) {')
+        $lines.Add('    try {')
+        $lines.Add("        `$w32tPrData = '$priorData'")
+        $lines.Add('        $w32tPrSet = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($w32tPrData)) | ConvertFrom-Json')
+        foreach ($l in ((Get-Win32ToolkitDeployScriptBlock -Name PriorPredicate) -split "`n")) { $lines.Add($l) }
+        $lines.Add('        foreach ($w32tPrE in @($w32tPrSet.Entries)) { if ((& $w32tPrState $w32tPrE).State -eq ''Proven'') { $found = $true; break } }')
+        $lines.Add('    } catch { }')
         $lines.Add('}')
     }
     $lines.Add('if ($found) { Write-Output 1; exit 0 } else { exit 1 }')

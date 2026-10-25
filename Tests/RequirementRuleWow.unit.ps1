@@ -28,6 +28,10 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\ConvertTo-PSSingleQuoted.ps1')
 . (Join-Path $repo 'Private\Test-Win32ToolkitProductCode.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitRequirementRule.ps1')
+# Installer-identity PR 3 (C-9): the fifth signal validates the prior-install entries and reads the catalog revision.
+foreach ($f in 'Test-Win32ToolkitPriorInstallEntry', 'ConvertTo-Win32ToolkitPriorVersion', 'Get-Win32ToolkitDeployScriptBlock', 'Get-Win32ToolkitDeployScriptShape',
+    'Test-Win32ToolkitPsadtVersionSupported', 'ConvertTo-Win32ToolkitSafeText') { . (Join-Path $repo "Private\$f.ps1") }
+$script:PsadtSupportedRange = [pscustomobject]@{ Min = [version]'4.1.0'; MaxExclusive = [version]'4.3.0'; Display = '4.1.x and 4.2.x' }
 # No MSI in these projects; never touch the WindowsInstaller COM object from a unit test.
 function Get-Win32ToolkitMsiProperty { param([string]$Path, [string]$Property) $null = $Path, $Property; '' }
 
@@ -232,6 +236,81 @@ try {
     $src = Get-Content -LiteralPath (Join-Path $repo 'Private\Get-Win32ToolkitRequirementRule.ps1') -Raw
     $escaped = [regex]::Matches($src, "Test-Path -LiteralPath '\`$\(ConvertTo-PSSingleQuoted \`$\w+\)'")
     if ($escaped.Count -ge 2) { Ok "$($escaped.Count) tattoo probes, each built with ConvertTo-PSSingleQuoted" } else { Bad "escaped tattoo probes in source: $($escaped.Count)" }
+    # == [7] the fifth signal: proven prior installs of Enforce entries (installer-identity PR 3, D28, L7, L38) ==
+    Write-Host '[7] the fifth signal: Enforce entries only, one base64 literal, the catalog predicate verbatim, the revision guard' -ForegroundColor Cyan
+    $PC = '{5C6F8543-7EA8-40B9-B78F-04C78300DE7F}'
+    $blocks = "## win32-toolkit:Pre-Install:prior-check (begin) - x`r`n## remove-prior catalog revision $(Get-Win32ToolkitDeployScriptBlock -Name RemovePriorRevision) (win32-toolkit)`r`n## win32-toolkit:Pre-Install:prior-check (end)`r`n## win32-toolkit:Pre-Install:remove-prior (begin) - x`r`n## win32-toolkit:Pre-Install:remove-prior (end)`r`n"
+    function Build-PriorProject([string]$Name, [object[]]$Entries, [string]$Publisher = 'Notepad++ Team', [switch]$NoBlocks) {
+        $p = Join-Path $root $Name
+        New-Item -ItemType Directory -Path (Join-Path $p 'SupportFiles'), (Join-Path $p 'Files') -Force | Out-Null
+        $cfg = [ordered]@{ SchemaVersion = '1.0'
+            App = [ordered]@{ Vendor = 'Notepad++ Team'; Name = ''; DisplayName = 'Notepad++'; Version = '8.9.9'; ScriptAuthor = 'Contoso IT' }
+            Installer = [ordered]@{ Type = 'msi'; FileName = 'npp.msi' }
+            OwnIdentity = [ordered]@{ SchemaVersion = '1.0'; ProductCode = $PC; UpgradeCode = ''; ArpKeys = @([ordered]@{ Key = $PC; View = 'Native' }); CapturedOn = '2026-10-25' }
+            PriorInstalls = [ordered]@{ SchemaVersion = '1.0'; Entries = @($Entries) } }
+        [System.IO.File]::WriteAllText((Join-Path $p 'SupportFiles\AppConfig.json'), ($cfg | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
+        if (-not $NoBlocks) { [System.IO.File]::WriteAllText((Join-Path $p 'Invoke-AppDeployToolkit.ps1'), $blocks, (New-Object System.Text.UTF8Encoding($true))) }
+        $p
+    }
+    function PriorEntry([string]$Id, [string]$Mode, [string]$Publisher = 'Notepad++ Team', [string]$Key = 'Notepad++') {
+        [ordered]@{ Id = $Id; Kind = 'ArpKey'; Mode = $Mode; Key = $Key; View = 'Native'; Publisher = $Publisher; DisplayName = 'Notepad++ (64-bit x64)'; DisplayNameTemplate = ''
+            VersionMin = '8.7.9'; VersionMax = '8.9.8.1'; UninstallerType = 'nullsoft'; UninstallerFileName = 'uninstall.exe'; UninstallerSigner = ''; InstallDir = '%ProgramFiles%\Notepad++'
+            MainExe = 'notepad++.exe'; ProcessNames = @('notepad++'); Source = 'Operator'; Track = 'Current'; AddedOn = '2026-10-25' }
+    }
+    $predicate = Get-Win32ToolkitDeployScriptBlock -Name PriorPredicate
+    $hostile = "O'Brien #> `$(calc) Team"
+    $pe = Build-PriorProject 'Prior' @((PriorEntry 'nsis-x64' 'Enforce' $hostile), (PriorEntry 'block-x64' 'Block' 'Other' 'Other'), (PriorEntry 'rep-x64' 'Report' 'Rep' 'Rep'))
+    $w = $null
+    $re = Get-Win32ToolkitRequirementRule -ProjectPath $pe -WarningVariable w -WarningAction SilentlyContinue
+    $se = Get-ReqScript $re
+    $lit = [regex]::Matches($se, "(?m)^        \`$w32tPrData = '([A-Za-z0-9+/=]+)'\r?$")
+    if ($lit.Count -eq 1) { Ok 'one base64 literal $w32tPrData (only [A-Za-z0-9+/=] spliced)' } else { Bad "base64 literal count: $($lit.Count)`n$se" }
+    $decoded = if ($lit.Count -eq 1) { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($lit[0].Groups[1].Value)) | ConvertFrom-Json } else { $null }
+    $fields = if ($decoded) { @($decoded.Entries[0].PSObject.Properties.Name) -join ',' } else { '' }
+    if ($decoded -and @($decoded.Entries).Count -eq 1 -and $decoded.Entries[0].Id -ceq 'nsis-x64' -and $fields -ceq 'Id,Mode,Kind,Key,View,Publisher,DisplayName,DisplayNameTemplate,VersionMin,VersionMax' -and
+        $decoded.Entries[0].VersionMin -ceq '8.7.9' -and $decoded.Entries[0].VersionMax -ceq '8.9.8.1' -and $decoded.Entries[0].Publisher -ceq $hostile) {
+        Ok 'it decodes to the Enforce entry only, exactly the ten fields the predicate reads (VersionMin and VersionMax included)'
+    } else { Bad "decoded: $($decoded | ConvertTo-Json -Depth 4 -Compress)" }
+    if ($se.Contains(($predicate -replace "`n", "`r`n"))) { Ok 'the catalog PriorPredicate text is embedded verbatim (column 0)' } else { Bad 'predicate not verbatim' }
+    if (-not $se.Contains("O'Brien") -and -not $se.Contains('calc') -and $re['displayName'] -ceq 'Notepad++ is installed') { Ok 'the hostile publisher is in no comment, no code and not in the displayName (only inside the base64)' } else { Bad 'hostile publisher leaked' }
+    $pe2 = $null; [void][System.Management.Automation.Language.Parser]::ParseInput($se, [ref]$null, [ref]$pe2)
+    if (@($pe2).Count -eq 0) { Ok 'the script with the fifth signal parses (host)' } else { Bad "host parse: $($pe2[0].Message)" }
+    $r51 = Get-PS51Probe (Join-Path $pe 'SupportFiles\UpdateRequirement.ps1')
+    if ($null -eq $r51 -or $r51.Errors -eq 0) { Ok 'the script with the fifth signal parses under Windows PowerShell 5.1' } else { Bad "5.1 parse errors: $($r51.Errors)" }
+    if (@($w).Count -eq 0) { Ok 'no warning for valid entries' } else { Bad "warnings: $($w -join ' | ')" }
+
+    $pb = Build-PriorProject 'BlockOnly' @((PriorEntry 'block-x64' 'Block'), (PriorEntry 'rep-x64' 'Report' 'Rep' 'Rep'))
+    $sb = Get-ReqScript (Get-Win32ToolkitRequirementRule -ProjectPath $pb 3>$null)
+    if (-not $sb.Contains('$w32tPrData') -and -not $sb.Contains('$w32tPrState')) { Ok 'a Block / Report-only project gets no fifth signal (D28)' } else { Bad 'fifth signal for Block/Report' }
+
+    $pi = Build-PriorProject 'Invalid' @((PriorEntry 'nsis-x64' 'Enforce' "Bad`rPublisher"))
+    $w = $null
+    $si = Get-ReqScript (Get-Win32ToolkitRequirementRule -ProjectPath $pi -WarningVariable w -WarningAction SilentlyContinue)
+    if (-not $si.Contains('$w32tPrData') -and @($w | Where-Object { "$_" -match 'nsis-x64 fail the prior-install rules' }).Count -eq 1) { Ok 'an invalid Enforce entry (CR in the publisher) is left out with one warning naming it' } else { Bad "invalid: $($w -join ' | ')" }
+
+    $pnb = Build-PriorProject 'NoBlocks' @((PriorEntry 'nsis-x64' 'Enforce')) -NoBlocks
+    $w = $null
+    $sn = Get-ReqScript (Get-Win32ToolkitRequirementRule -ProjectPath $pnb -WarningVariable w -WarningAction SilentlyContinue)
+    if (-not $sn.Contains('$w32tPrData') -and @($w | Where-Object { "$_" -match 'Re-create the project' }).Count -eq 1) { Ok 'a project without the remove-prior blocks: no fifth signal, one warning (re-create)' } else { Bad "no blocks: $($w -join ' | ')" }
+
+    # A project created with this catalog's revision against a later catalog (the next revision, test-time shadow): L38.
+    $realBlock = ${function:Get-Win32ToolkitDeployScriptBlock}
+    $curRev = [int](& $realBlock -Name RemovePriorRevision)
+    function Get-Win32ToolkitDeployScriptBlock { param([string]$Name) if ($Name -eq 'RemovePriorRevision') { return ($curRev + 1) }; & $realBlock -Name $Name }
+    $w = $null
+    $sr = Get-ReqScript (Get-Win32ToolkitRequirementRule -ProjectPath $pe -WarningVariable w -WarningAction SilentlyContinue)
+    ${function:Get-Win32ToolkitDeployScriptBlock} = $realBlock
+    if (-not $sr.Contains('$w32tPrData') -and @($w | Where-Object { "$_" -match "revision $curRev\b" -and "$_" -match 'Re-create the project' }).Count -eq 1) { Ok "revision-$curRev blocks against a revision-$($curRev + 1) catalog: no fifth signal, one warning (L38)" } else { Bad "revision: $($w -join ' | ')" }
+
+    # Only Enforce entries are a reliable signal: no tattoo, no names, no MSI -> the rule is still built.
+    $po = Join-Path $root 'OnlyFifth'
+    New-Item -ItemType Directory -Path (Join-Path $po 'SupportFiles'), (Join-Path $po 'Files') -Force | Out-Null
+    $cfgo = [ordered]@{ App = [ordered]@{ Vendor = ''; Name = ''; DisplayName = ''; Version = '8.9.9'; ScriptAuthor = 'Contoso IT' }; Installer = [ordered]@{ Type = 'msi' }
+        OwnIdentity = [ordered]@{ ProductCode = $PC; ArpKeys = @([ordered]@{ Key = $PC; View = 'Native' }) }; PriorInstalls = [ordered]@{ Entries = @((PriorEntry 'nsis-x64' 'Enforce')) } }
+    [System.IO.File]::WriteAllText((Join-Path $po 'SupportFiles\AppConfig.json'), ($cfgo | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText((Join-Path $po 'Invoke-AppDeployToolkit.ps1'), $blocks, (New-Object System.Text.UTF8Encoding($true)))
+    $ro = Get-Win32ToolkitRequirementRule -ProjectPath $po 3>$null
+    if ($ro -and (Get-ReqScript $ro).Contains('$w32tPrData') -and $ro['displayName'] -ceq 'App is installed') { Ok 'Enforce entries alone are a signal (the early return accepts them); displayName stays generic' } else { Bad 'only-fifth rule' }
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
