@@ -330,6 +330,26 @@ $null = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(
     @{ Label = 'CollectLogs'; Command = '0'; IgnoreExit = $true; Always = $true }
 ) -Output @('Sandbox\Logs\*') 3>$null 6>$null
 if ((@($script:log9 | Where-Object { $_ -like 'phase:*' }) -join ' ') -eq 'phase:Install dependencies phase:Install phase:CollectLogs') { Ok 'a successful dependency phase changes nothing' } else { Bad "phases: $($script:log9 -join ' > ')" }
+Write-Host '[10b] StopRunOnFailure; -ResultDestination and the copy-back checks (installer-identity PR 3b, spec 2.14.5)' -ForegroundColor Cyan
+$script:copyArgs = $null
+function Copy-Win32ToolkitResultsFromGuest { param($Session, $GuestPath, $Destination, $GuestRoot, $AllowedEntry, $MaxEntryBytes, $MaxTotalBytes) $script:copyArgs = $PSBoundParameters; $script:log9 += 'copyout' }
+$script:log9 = @(); $warn10b = @()
+$r10b = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\run\in' -Phase @(
+    @{ Label = 'Sibling: snapshot before'; Command = '0'; StopRunOnFailure = $true }
+    @{ Label = 'Sibling: install'; Command = '1'; StopRunOnFailure = $true }
+    @{ Label = 'Sibling: snapshot after'; Command = '0'; StopRunOnFailure = $true }
+    @{ Label = 'Sibling: removability probe'; Command = '0' }
+    @{ Label = 'CollectLogs'; Command = '0'; IgnoreExit = $true; Always = $true }
+) -Output @('Out\*') -ResultDestination 'C:\run\quarantine' -ResultAllowedEntry '^Out/x$' -ResultMaxEntryBytes 64MB -ResultMaxTotalBytes 160MB -WarningVariable warn10b 3>$null 6>$null
+$ran10b = @($script:log9 | Where-Object { $_ -like 'phase:*' })
+if (($ran10b -join ' > ') -eq 'phase:Sibling: snapshot before > phase:Sibling: install > phase:CollectLogs') { Ok 'a failed StopRunOnFailure phase skips the later phases; the Always phase (log collection) still runs' } else { Bad "phases: $($ran10b -join ' > ')" }
+if (@($warn10b | Where-Object { "$_" -match "Guest phase 'Sibling: install' failed: the later phases of this run are skipped" }).Count -eq 1 -and $r10b -eq $true) { Ok 'one warning names the failed phase; the run still completes' } else { Bad "warnings: $($warn10b -join ' | ') r=$r10b" }
+$ca = $script:copyArgs
+if ($ca -and $ca['Destination'] -eq 'C:\run\quarantine' -and $ca['AllowedEntry'] -eq '^Out/x$' -and $ca['MaxEntryBytes'] -eq 64MB -and $ca['MaxTotalBytes'] -eq 160MB -and (@($ca['GuestPath']) -join ',') -eq 'C:\PSADT\Out\*') { Ok '-ResultDestination and the three -Result* limits reach the copy-back' } else { Bad "copy args: $(if ($ca) { ($ca.Keys | ForEach-Object { "$_=$($ca[$_])" }) -join '; ' })" }
+$script:copyArgs = $null
+$null = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(@{ Label = 'Install'; Command = '0' }) -Output @('Sandbox\Logs\*') 3>$null 6>$null
+$ca = $script:copyArgs
+if ($ca -and $ca['Destination'] -eq 'C:\proj' -and -not $ca.ContainsKey('AllowedEntry') -and -not $ca.ContainsKey('MaxEntryBytes') -and -not $ca.ContainsKey('MaxTotalBytes')) { Ok 'without them: the project is the destination and no check is passed (nothing changes)' } else { Bad "plain copy args: $(if ($ca) { ($ca.Keys | ForEach-Object { "$_=$($ca[$_])" }) -join '; ' })" }
 Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential
 
 Write-Host '[11] the run reverts the configured HyperVCheckpoint (installer-identity PR 2, L18)' -ForegroundColor Cyan
@@ -824,6 +844,7 @@ ${function:New-Win32ToolkitHyperVSession} = {
     $script:log18.Add("open:lease=$([object]::ReferenceEquals($Lease, $lease18))")
     if ($script:open18 -eq 'w32t') { throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new('pinned VM gone'), 'W32T.HyperVTargetNotReady', [System.Management.Automation.ErrorCategory]::ResourceUnavailable, $VMName) }
     if ($script:open18 -eq 'plain') { throw 'PowerShell Direct is not ready' }
+    if ($script:open18 -eq 'hostile') { throw ('guest file a' + [char]0x1B + ']0;owned' + [char]7 + 'b.log ' + [char]0x202E + 'gol.exe') }
     'SESS'
 }
 ${function:Remove-Win32ToolkitHyperVSession} = {
@@ -887,6 +908,13 @@ if (-not $x18.Threw -and $x18.Out.Count -eq 1 -and $x18.Out[0] -eq $false -and $
     ($x18.Log -join ' > ') -like '*teardown:revert=True:lease=True > exit:same=True') {
     Ok 'any other error: one warning and exactly $false, as before; teardown and release'
 } else { Bad "plain: out=$($x18.Out -join ',') warnings=$($x18.Warnings -join ' | ') log=$($x18.Log -join ' > ')" }
+# An error whose message carries guest data (an ESC/OSC sequence, BEL, a right-to-left override): shown with '?'.
+$script:open18 = 'hostile'
+$x18 = & $run18
+$script:open18 = ''
+if (-not $x18.Threw -and $x18.Warnings.Count -eq 1 -and "$($x18.Warnings[0])" -notmatch '[^\x20-\x7E]' -and "$($x18.Warnings[0])" -ceq 'Hyper-V run failed: guest file a?]0;owned?b.log ?gol.exe') {
+    Ok 'a run error that carries control or bidi characters -> the "Hyper-V run failed" warning shows them as ?'
+} else { Bad "hostile message: $(@($x18.Warnings | ForEach-Object { "$_" -replace '[^\x20-\x7E]', '<!>' }) -join ' | ')" }
 # C-12: every call of the lease helpers in the provider, the pre-check and the VM commands is assigned.
 $c12L = & $c12Check $c12Files @('Enter-Win32ToolkitHyperVLease', 'Exit-Win32ToolkitHyperVLease')
 if ($c12L.Seen -ge 16 -and $c12L.Bad.Count -eq 0) { Ok "C-12: all $($c12L.Seen) lease calls (provider, pre-check, Reset, Set-...Resource, Remove, New, Repair) are assigned" } else { Bad "C-12 lease: seen=$($c12L.Seen) unassigned: $($c12L.Bad -join ', ')" }

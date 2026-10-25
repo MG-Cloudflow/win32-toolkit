@@ -11,8 +11,11 @@ function New-Win32ToolkitProjectZip {
         compressed).
 
         Sandbox\Logs\Runs\ is left out: it holds the host's copy of every earlier run's logs (test campaign
-        F2), which the guest never reads; carrying it in would also bring it back with every copy-out. Every
-        other file and folder (empty ones too) is in the zip, at its path relative to the project.
+        F2), which the guest never reads; carrying it in would also bring it back with every copy-out.
+        Sandbox\Siblings\ and Sandbox\SiblingRuns\ are left out too (installer-identity PR 3b, spec 2.14.5): the sibling
+        installers and the work folders of sibling captures never enter a test or capture guest of the project (each
+        capture copies in only its own work folder). Every other file and folder (empty ones too) is in the zip, at its
+        path relative to the project.
     .PARAMETER ProjectPath
         The project folder whose contents are zipped.
     .PARAMETER ZipPath
@@ -35,8 +38,15 @@ function New-Win32ToolkitProjectZip {
         $ZipPath = Join-Path ([System.IO.Path]::GetTempPath()) ('w32proj_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.zip')
     }
     $root = [System.IO.Path]::GetFullPath($ProjectPath).TrimEnd('\') + '\'
-    $skip = 'Sandbox\Logs\Runs'
-    $isSkipped = { param($Rel) $Rel.Equals($skip, [System.StringComparison]::OrdinalIgnoreCase) -or $Rel.StartsWith($skip + '\', [System.StringComparison]::OrdinalIgnoreCase) }
+    # Self-contained on purpose: the copy-in job rebuilds this function from its text.
+    $skipList = @('Sandbox\Logs\Runs', 'Sandbox\Siblings', 'Sandbox\SiblingRuns')
+    $isSkipped = {
+        param($Rel)
+        foreach ($skip in $skipList) {
+            if ($Rel.Equals($skip, [System.StringComparison]::OrdinalIgnoreCase) -or $Rel.StartsWith($skip + '\', [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+        }
+        return $false
+    }
     # Entries are relative to the project root ('/' separators), so the CONTENTS land directly under the guest path.
     $archive = [System.IO.Compression.ZipFile]::Open($ZipPath, [System.IO.Compression.ZipArchiveMode]::Create)
     $built = $false

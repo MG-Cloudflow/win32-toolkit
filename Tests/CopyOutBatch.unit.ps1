@@ -17,6 +17,15 @@
       exact UTC write time, run after run; the copy-in's Times map wins over the zip's stamp. The guest's
       C:\Windows\Temp is redirected to a temp folder.
 
+      (i) installer-identity PR 3b (C-6): a name or message the guest chose is shown in a warning as printable ASCII
+      only - an entry named with an ESC/CSI sequence and a right-to-left override, and a guest read failure that carries
+      them, never put those characters on the console; the plain mode extracts exactly what it did before. The same
+      holds at every other site that shows a guest name (an entry off the allow-list, one over -MaxEntryBytes, one
+      under Sandbox/Logs/Runs/: names with ESC and U+202E, every warning printable ASCII). A non-traversal entry named
+      with ESC and BEL (NTFS refuses it, the I/O message holds the raw name) gives no throw, one safe warning, and the
+      legitimate entry is still extracted. A source guard: guest names and messages reach Write-Warning /
+      Write-Verbose only through $show.
+
     Run:  pwsh -File Tests\CopyOutBatch.unit.ps1
 #>
 [CmdletBinding()]
@@ -258,6 +267,91 @@ try {
     if ($gi -eq $exactIn -and $go.Year -eq 1999 -and -not (Test-Path -LiteralPath $pzip)) { Ok 'the Times map wins over a wrong zip stamp; an entry with no host file keeps the zip stamp; the prebuilt zip is consumed' } else { Bad "icon=$($gi.ToString('o')) orphan=$($go.ToString('o')) zip left=$(Test-Path -LiteralPath $pzip)" }
     $script:guestTemp = $null
     if (@(Get-ChildItem -LiteralPath $gTemp -Force -ErrorAction SilentlyContinue).Count -eq 0) { Ok "no copy-in zip is left in the guest's temp folder" } else { Bad 'a copy-in zip was left in the guest temp folder' }
+
+    # ── (i) guest-chosen names and messages reach a warning as printable ASCII only ─────────────────────────
+    Write-Host '[i] a hostile entry name or guest message never puts control or bidi characters into a warning' -ForegroundColor Cyan
+    $dest    = New-TempDir
+    $evilZip = Join-Path ([System.IO.Path]::GetTempPath()) ('cob_esc_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.zip')
+    $script:tmp.Add($evilZip)
+    $esc = [string][char]0x1B; $rlo = [string][char]0x202E
+    $za = [System.IO.Compression.ZipFile]::Open($evilZip, 'Create')
+    try {
+        foreach ($name in ('../' + $esc + '[2J' + $rlo + 'gol.exe'), 'Sandbox/Logs/fine.log') {
+            $entry = $za.CreateEntry($name)
+            $sw = New-Object System.IO.StreamWriter($entry.Open()); $sw.Write('x'); $sw.Dispose()
+        }
+    }
+    finally { $za.Dispose() }
+    $script:fakeGuestResult = @{ Zip = $evilZip; Count = 2; Failed = @("Sandbox\Logs\a${esc}]0;owned${esc}\.log (denied$rlo)"); Times = @{} }
+    $warnings = @()
+    Copy-Win32ToolkitResultsFromGuest -Session 'fake' -GuestPath @('C:\PSADT\Sandbox\Logs\*') -Destination $dest -GuestRoot 'C:\PSADT' -WarningVariable warnings 3>$null
+    $script:fakeGuestResult = $null
+    $ws = @($warnings | ForEach-Object { "$_" })
+    # Only the warnings that carry guest data (a constant warning text may hold a typographic dash).
+    $dirty = @($ws | Where-Object { $_ -match '[^\x20-\x7E]' })
+    if ($ws.Count -ge 2 -and $dirty.Count -eq 0 -and @($ws | Where-Object { $_ -match 'outside the project' -and $_ -match '\?\[2J\?gol\.exe' }).Count -eq 1 -and @($ws | Where-Object { $_ -match 'NOT copied back from the guest' -and $_ -match 'owned' }).Count -eq 1) { Ok 'the traversal warning and the guest read-failure warning show the names with ? for every control or bidi character' } else { Bad "warnings: $(($ws | ForEach-Object { $_ -replace '[^\x20-\x7E]', '<!>' }) -join ' | ')" }
+    if ((Test-Path -LiteralPath (Join-Path $dest 'Sandbox\Logs\fine.log')) -and @(Get-ChildItem -LiteralPath $dest -Recurse -File).Count -eq 1) { Ok 'the plain mode still extracts exactly the legitimate entry' } else { Bad 'plain-mode extraction changed' }
+    Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
+
+    # Every other warning site that shows a guest name: a crafted zip per site, each name with ESC and a right-to-left
+    # override (U+202E is not a C0 character: a C0-only filter lets it through). Every warning is printable ASCII.
+    $newHostileZip = {
+        param([string[]]$Names, [int]$FirstBytes = 1)
+        $zp = Join-Path ([System.IO.Path]::GetTempPath()) ('cob_h_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.zip')
+        $script:tmp.Add($zp)
+        $zz = [System.IO.Compression.ZipFile]::Open($zp, 'Create')
+        # The first entry holds FirstBytes bytes, every other one 1 byte.
+        try { $k = $FirstBytes; foreach ($n in $Names) { $ee = $zz.CreateEntry($n); $ss = $ee.Open(); try { $ss.Write([byte[]]::new($k), 0, $k) } finally { $ss.Dispose() }; $k = 1 } }
+        finally { $zz.Dispose() }
+        $zp
+    }
+    $hostile = 'x' + $esc + '[2J' + $rlo + 'gol'
+    foreach ($c in @(
+            @{ L = 'an entry off the allow-list'; Names = @("Sandbox/Logs/$hostile.exe", 'Sandbox/Logs/fine.log'); FirstBytes = 1; Args = @{ AllowedEntry = '^Sandbox/Logs/fine\.log$' }; Pattern = 'not on the allow-list' }
+            @{ L = 'an entry over -MaxEntryBytes (no allow-list)'; Names = @("Sandbox/Logs/$hostile.log", 'Sandbox/Logs/fine.log'); FirstBytes = 64; Args = @{ MaxEntryBytes = 32 }; Pattern = 'larger than 32 bytes' }
+            @{ L = 'an entry under Sandbox/Logs/Runs/'; Names = @("Sandbox/Logs/Runs/$hostile.log", 'Sandbox/Logs/fine.log'); FirstBytes = 1; Args = @{}; Pattern = 'inside Sandbox\\Logs\\Runs' }
+        )) {
+        $dest = New-TempDir
+        $zp = & $newHostileZip $c.Names $c.FirstBytes
+        $script:fakeGuestResult = @{ Zip = $zp; Count = 2; Failed = @(); Times = @{}; ZipLength = (Get-Item -LiteralPath $zp).Length }
+        $warnings = @()
+        $cArgs = $c.Args
+        Copy-Win32ToolkitResultsFromGuest -Session 'fake' -GuestPath @('C:\PSADT\Sandbox\Logs\*') -Destination $dest -GuestRoot 'C:\PSADT' -WarningVariable warnings @cArgs 3>$null
+        $script:fakeGuestResult = $null
+        $ws = @($warnings | ForEach-Object { "$_" })
+        $site = @($ws | Where-Object { $_ -match $c.Pattern })
+        if ($ws.Count -ge 1 -and @($ws | Where-Object { $_ -match '[^\x20-\x7E]' }).Count -eq 0 -and $site.Count -eq 1 -and $site[0] -match 'x\?\[2J\?gol') { Ok "$($c.L): the warning shows the name with ? for ESC and U+202E (every warning printable ASCII)" } else { Bad "$($c.L): $(($ws | ForEach-Object { $_ -replace '[^\x20-\x7E]', '<!>' }) -join ' | ')" }
+        Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # A name NTFS refuses (ESC and BEL: 0x01-0x1F are invalid in a file name) that is not a traversal: extracting it
+    # throws an I/O error whose message holds the raw name. It loses only itself, with one safe warning.
+    $dest = New-TempDir
+    $bel = [string][char]7
+    $zp = & $newHostileZip @(('Sandbox/Logs/a' + $esc + ']0;owned' + $bel + 'b.log'), 'Sandbox/Logs/fine.log')
+    $script:fakeGuestResult = @{ Zip = $zp; Count = 2; Failed = @(); Times = @{} }
+    $warnings = @(); $threw = $null
+    try { Copy-Win32ToolkitResultsFromGuest -Session 'fake' -GuestPath @('C:\PSADT\Sandbox\Logs\*') -Destination $dest -GuestRoot 'C:\PSADT' -WarningVariable warnings 3>$null } catch { $threw = $_ }
+    $script:fakeGuestResult = $null
+    $ws = @($warnings | ForEach-Object { "$_" })
+    if (-not $threw -and $ws.Count -eq 1 -and $ws[0] -notmatch '[^\x20-\x7E]' -and $ws[0] -match "Could not extract a guest result \('Sandbox/Logs/a\?\]0;owned\?b\.log'\)") { Ok 'an entry named with ESC and BEL -> no throw, one warning with ? for both' } else { Bad "ESC/BEL entry: threw=$(if ($threw) { $threw.Exception.Message -replace '[^\x20-\x7E]', '<!>' }) warnings: $(($ws | ForEach-Object { $_ -replace '[^\x20-\x7E]', '<!>' }) -join ' | ')" }
+    if ((Test-Path -LiteralPath (Join-Path $dest 'Sandbox\Logs\fine.log')) -and @(Get-ChildItem -LiteralPath $dest -Recurse -File).Count -eq 1) { Ok 'the legitimate entry is still extracted (the rest of the copy-back is not lost)' } else { Bad 'ESC/BEL entry: the legitimate entry was lost' }
+    Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
+
+    # Source guard: a guest name or message reaches a warning or a verbose line only through $show.
+    $copySrc = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'Private\Copy-Win32ToolkitResultsFromGuest.ps1'), [ref]$null, [ref]$null)
+    $raw = @($copySrc.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -in 'Write-Warning', 'Write-Verbose' }, $true) | ForEach-Object {
+            $cmd = $_
+            $cmd.FindAll({ param($n) ($n -is [System.Management.Automation.Language.MemberExpressionAst] -and "$($n.Member)" -in 'Message', 'FullName') -or ($n -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.UserPath -eq 'miss') }, $true) | Where-Object {
+                $p = $_.Parent; $viaShow = $false
+                while ($p -and $p -ne $cmd) {
+                    if ($p -is [System.Management.Automation.Language.CommandAst] -and $p.InvocationOperator -eq 'Ampersand' -and "$($p.CommandElements[0])" -eq '$show') { $viaShow = $true; break }
+                    $p = $p.Parent
+                }
+                -not $viaShow
+            } | ForEach-Object { "line $($_.Extent.StartLineNumber): $($_.Extent.Text)" }
+        })
+    if ($raw.Count -eq 0) { Ok 'every guest name or message in a Write-Warning / Write-Verbose goes through $show' } else { Bad "raw guest text in a warning or verbose line: $($raw -join '; ')" }
 }
 finally { foreach ($tp in $script:tmp) { Remove-Item -LiteralPath $tp -Recurse -Force -ErrorAction SilentlyContinue } }
 

@@ -28,7 +28,8 @@ function Invoke-Win32ToolkitHyperVRun {
         Ordered phases to run, each an object with: Label, Command (a 5.1-safe guest command string),
         and optional IgnoreExit ([bool], default $false) and SuccessExitCodes ([int[]], default @(0): a
         warning is printed only for an exit code outside them). A DepPhase that fails skips every later
-        phase except those with Always = $true (log collection). An Intune-parity phase may name the
+        phase except those with Always = $true (log collection); so does a phase with StopRunOnFailure = $true that
+        exits outside its success codes (installer-identity PR 3b: the phases of a sibling capture). An Intune-parity phase may name the
         likely cause of exit code 1460 (the guest runner stopped the package at its limit: 25 minutes, or
         the phase's optional RunnerTimeoutMinutes, an int 1-235 the caller also passes to the runner as
         -TimeoutMinutes; the phase's own backstop is then RunnerTimeoutMinutes + 5) with the optional key
@@ -44,6 +45,12 @@ function Invoke-Win32ToolkitHyperVRun {
     .PARAMETER Output
         Project-relative globs to copy back from the guest after the phases (default the capture JSON +
         Sandbox\Logs).
+    .PARAMETER ResultDestination
+        Where the Output globs are copied back to (default ProjectPath). A sibling capture points it at its quarantine
+        folder (installer-identity PR 3b, spec 2.14.5), never at the project.
+    .PARAMETER ResultAllowedEntry / ResultMaxEntryBytes / ResultMaxTotalBytes
+        Passed to Copy-Win32ToolkitResultsFromGuest as -AllowedEntry / -MaxEntryBytes / -MaxTotalBytes (only when
+        given): the copy-back allow-list (a regex on the entry names) and size caps of a quarantine.
     .PARAMETER BaselineProjectPath
         Update baseline-project mode: a second project copied read-only-in-effect to C:\PSADTOld.
     .PARAMETER VMName / Credential / CheckpointName
@@ -78,6 +85,11 @@ function Invoke-Win32ToolkitHyperVRun {
         [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string]$ProjectPath,
         [Parameter(Mandatory)] [object[]]$Phase,
         [string[]]$Output = @('Documentation\InstallationChanges_*.json', 'Documentation\Targeted_Documentation_Log_*.txt', 'Sandbox\Logs\*'),
+        # Installer-identity PR 3b (a sibling capture's quarantine): where the outputs land, and the copy-back checks.
+        [string]$ResultDestination,
+        [string]$ResultAllowedEntry,
+        [long]$ResultMaxEntryBytes = 0,
+        [long]$ResultMaxTotalBytes = 0,
         [string]$BaselineProjectPath,
         [string]$VMName,
         [pscredential]$Credential,
@@ -332,9 +344,15 @@ function Invoke-Win32ToolkitHyperVRun {
         # A failed dependency phase skips every later phase except those marked Always (log collection): the
         # app is not installed when a dependency failed, as on a device (test campaign 2026-10-21, S11-F1).
         $depFailed = $false
+        # A failed StopRunOnFailure phase skips the rest the same way (installer-identity PR 3b, spec 2.14.5).
+        $stopFailed = $false
         foreach ($ph in $Phase) {
             if ($depFailed -and -not $ph.Always) {
                 Write-Verbose "  Skipping '$($ph.Label)' — a declared dependency failed to install."
+                continue
+            }
+            if ($stopFailed -and -not $ph.Always) {
+                Write-Verbose "  Skipping '$($ph.Label)' — an earlier phase of this run failed."
                 continue
             }
             if ($ph.Pause) {
@@ -426,6 +444,10 @@ function Invoke-Win32ToolkitHyperVRun {
                     Write-Warning 'A declared dependency failed to install: the app phases are skipped (Intune would not install the app either).'
                     $depFailed = $true
                 }
+                elseif ($ph.StopRunOnFailure) {
+                    Write-Warning "Guest phase '$($ph.Label)' failed: the later phases of this run are skipped (only log collection runs)."
+                    $stopFailed = $true
+                }
             }
             # A SUCCESSFUL dep install is the moment to freeze the deps checkpoint (opt-in feature): the
             # image now equals clean-base + this exact dependency set. Only one clean-base+deps-* is kept.
@@ -455,7 +477,11 @@ function Invoke-Win32ToolkitHyperVRun {
         $copyOut = if ($incomplete) { @($Output | Where-Object { $_ -notlike '*InstallationChanges_*' }) } else { @($Output) }
         if ($copyOut.Count -gt 0) {
             $guestGlobs = $copyOut | ForEach-Object { Join-Path 'C:\PSADT' $_ }
-            Copy-Win32ToolkitResultsFromGuest -Session $session -GuestPath $guestGlobs -Destination $ProjectPath -GuestRoot 'C:\PSADT'
+            $copyArgs = @{ Session = $session; GuestPath = $guestGlobs; Destination = $(if ($ResultDestination) { $ResultDestination } else { $ProjectPath }); GuestRoot = 'C:\PSADT' }
+            if ($ResultAllowedEntry) { $copyArgs['AllowedEntry'] = $ResultAllowedEntry }
+            if ($ResultMaxEntryBytes -gt 0) { $copyArgs['MaxEntryBytes'] = $ResultMaxEntryBytes }
+            if ($ResultMaxTotalBytes -gt 0) { $copyArgs['MaxTotalBytes'] = $ResultMaxTotalBytes }
+            Copy-Win32ToolkitResultsFromGuest @copyArgs
         }
 
         return (-not $incomplete)
@@ -463,7 +489,8 @@ function Invoke-Win32ToolkitHyperVRun {
     catch {
         # Fail closed (C-2, speed-up PR 3): a lease timeout or another W32T error is the caller's, never a quiet $false.
         if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
-        Write-Warning "Hyper-V run failed: $($_.Exception.Message)"
+        # The message can carry guest data (a file name, a remote error): no control or bidi character reaches the console.
+        Write-Warning ('Hyper-V run failed: ' + ($_.Exception.Message -replace '[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]', '?'))
         return $false
     }
     finally {
