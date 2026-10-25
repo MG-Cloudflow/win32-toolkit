@@ -149,13 +149,19 @@ below name the kinds of warning in these docs, and the warning text does not pri
 | `ID-TECH-SWITCH` | An Update test saw the vendor's other installer technology (for example its NSIS EXE) stay registered after this package installed. | **Do not publish this package to devices that have the other technology:** they would get two registrations over one folder. Package the technology your devices already have (see [Installer technology](packaging.md#installer-technology)). |
 | `ID-SIBLING-UNTESTED` | winget also ships another installer technology for this app, and the latest Update test from it did not pass (or none ran). | Run `Test-Win32ToolkitProject -Scenario Update -BaselineInstallerType Both`. Once the latest test from that technology passes, the warning goes away. |
 | `UNSAFE-CLEANUP` (publish only) | The project's uninstall cleanup paths fail the check that packaging enforces, so a package exported before this check deletes folders outside the app's own install folder. | Re-run the install capture, re-export, then publish. |
+| `PRIOR-BLOCK-FLEET` | A **Block** prior-install rule: devices with that other installer technology fail this install (69101) until the rule is Enforce. | Assign the app to a pilot group first. |
+| `PRIOR-NO-WELCOME` | An Enforce rule, but the org template turns the welcome dialog off: nothing closes the prior app before its removal, so devices where it runs retry (1618). | Turn the welcome dialog on in the org template, or accept the retries. |
+| `PRIOR-PREDECESSOR-PUBLISHED` | An Enforce rule, and an earlier version of the app is published from this template. | Unassign the earlier app before you assign this one. |
+| `PRIOR-ENFORCE-PILOT` | The package removes another install of the app as SYSTEM. | Pilot first; the warning names the kill switch (see [Packages that remove a prior install](#packages-that-remove-a-prior-install)). |
+| `ID-PRIOR-OWN`, `PRIOR-CLASS-E` | A rule of the previous version was dropped because it names this package's own uninstall key; or the app belongs to a family whose versions install side by side (Python, .NET, ...). | Check that the right install is removed. |
 | Other `ID-...` codes | The identity checks from packaging time (another technology, an earlier version of another technology, a changed detection key, a user-scope installer, ...), shown again. | See [Installer technology](packaging.md#installer-technology). |
 
 They are shown **once per action**: `Export-Win32ToolkitIntuneWin -PublishIntune -PublishUpdate` prints
 them once, not once per app, and a dry run (`-WhatIf`) prints them too. In the TUI, **Publish to
 Intune** shows them in a panel before you pick which app to publish: red when an install/uninstall test
-failed or gave no verdict, an Update test failed, a technology switch was seen or the cleanup paths are
-unsafe, yellow for the other warnings.
+failed or gave no verdict, an Update test failed, a technology switch was seen, the cleanup paths are
+unsafe or a prior-install rule fails, retries or reinstalls on devices (`PRIOR-BLOCK-FLEET`, `PRIOR-NO-WELCOME`,
+`PRIOR-PREDECESSOR-PUBLISHED`), yellow for the other warnings.
 When the cleanup paths are unsafe, the menu stops before asking which app to publish: packaging refuses
 such a project until Finalize / refresh re-runs the capture (or, when `SupportFiles\AppConfig.json` cannot be
 read, until you fix the file or re-create the project).
@@ -167,6 +173,96 @@ project whose uninstall cleanup paths reach outside the app's own install folder
 the check, or cannot be checked because `SupportFiles\AppConfig.json` cannot be read (Windows
 PowerShell 5.1 on the device may still read it). It reads the project, not the package: a package
 exported before the project was re-captured is not detected, so re-export it anyway.
+
+## Packages that remove a prior install
+
+A package with **prior-install rules** ([Set-Win32ToolkitPriorInstall](reference/Set-Win32ToolkitPriorInstall.md),
+see [Prior installs](packaging.md#prior-installs-remove-another-installer-technology-before-installing)) refuses
+(**Block**) or removes (**Enforce**) another installer technology of the app on the device before it installs.
+Publishing such a package adds a few steps.
+
+**The package must carry the rules that were checked.** Packaging refuses an Enforce rule that no Hyper-V Unattended
+Update test proved, and every invalid rule. If you change a rule after packaging (a mode, a window, a re-run install
+capture), publishing refuses the old `.intunewin` with `W32T.PackageNotReady` ("the prior-install rules changed after
+Export"): package it again, then publish. A dry run (`-WhatIf`) checks this too, without signing in.
+
+**Pilot first.** win32-toolkit never assigns an app. Assign a package with Enforce rules to a **pilot group** first,
+watch the results, then widen it. Publishing reminds you of this and names the kill switch. Keep the app's maximum run
+time at **60 minutes or more** (the default): one prior uninstaller may run up to 30 minutes before the install starts.
+
+**Apps that would fight the removal.** After the sign-in, for a package with Enforce rules, publishing reads the
+tenant's Win32 apps once and warns (it never stops) about:
+
+- an app assigned **Required** whose detection rule looks for the prior install's uninstall key: that app reinstalls
+  what this package removes, and devices end in exit code 69110. Unassign or retire it first;
+- an earlier version of this app (recorded in the project folder of that version) that is still assigned
+  **Required**: unassign it before you assign this one, or the old app reinstalls.
+
+Only detection rules count: an app whose *requirement* rule looks for that key does not reinstall anything. If the
+tenant cannot be read, you get one "could not check" warning, and if the list of apps comes back without the detection
+rules of some Required apps, one "could not read the detection rules of N Required Win32 app(s)" warning that names
+them (display name and app id, the first 10, then "and N more"): check those apps by hand. The publish goes on either
+way.
+
+**Vendor updaters.** Some apps update themselves with their own updater (Notepad++ ships one, `GUP.exe` in its
+`updater` folder). If that updater installs the vendor's other installer technology again on a device where an Enforce
+package removed it, every later install there ends in 69110 (or 69102 when it installed a newer version). For an
+Enforce package, switch the app's own updater off on the devices that get it (the vendor documents how), keep the app
+updated by publishing new packages, and clear the `Removed` marker on the affected devices (see the
+[incident runbook](#incident-runbook)).
+
+### Exit codes
+
+The app is published with these return codes. All of them are **failed**, except 1618, which Intune retries:
+
+| Code | Meaning | What to do |
+|---|---|---|
+| 69101 | The prior install is present and its rule is **Block**. | Decide: prove it and set the rule to Enforce, or keep blocking. |
+| 69102 | A **newer** version of the prior install is present than the rule covers. | Package the next version (the rules are carried forward with a raised window). If the vendor's own updater keeps installing the prior technology, disable that updater for devices that get this package. |
+| 69105 | A rule cannot be applied safely on this device: invalid data, the prior installed in another folder than the rule names, an uninstaller or folder that accounts other than SYSTEM, Administrators or TrustedInstaller can change, a device marker that cannot be written, or a 32-bit host. | Fix the data and package again, fix the folder's permissions, or set the rule to Block. |
+| 69106 | This package's own product is already registered next to the prior install. | Clean the device up by hand. |
+| 69107 | A restart is pending, or the removal needs one. | Nothing: the install runs after the restart. |
+| 69108 | The prior's uninstaller failed, or ran longer than 30 minutes. | Check that uninstaller in the PSAppDeployToolkit log. |
+| 69109 | The prior's uninstall key or main program file is still there after its uninstaller. | As 69108. |
+| 69110 | The prior came back after this package removed it on this device. | Find what reinstalls it (a Required app, see above, or the vendor's updater), then clear the `Removed` marker (below). |
+| 69111 | Removal is switched off on this device (`RemovePriorDisabled`). | Intended during an incident. |
+| 69112 | The package's installer is missing or cannot be opened. | Package it again. |
+| 1618 | The prior app is still running after the close-apps dialog, Windows Installer is busy, or the prior install changed while the dialog was open. | Nothing: Intune retries. |
+
+A device whose prior install is not exactly the one a rule declares (another publisher, name or version) is left as it
+is: the install goes on and the device gets a `LastSeen` marker.
+
+### Device markers
+
+Each device records what happened under `HKLM\SOFTWARE\<ScriptAuthor>\win32-toolkit` (`<ScriptAuthor>` is your org
+template's script author):
+
+| Value | Meaning |
+|---|---|
+| `LastRefusal` | `yyyy-MM-dd <code> <package version>` of the last refusal. |
+| `PriorInstalls\<View>\<Key>\LastSeen` | The prior install was seen but not removed (not the declared one, a Report rule, or a planned removal). |
+| `PriorInstalls\<View>\<Key>\Removed` (and `Version`) | This package removed that prior install on this date. |
+| `RemovePriorDisabled` | The kill switch (you set it, below). |
+
+Read them with an inventory or Remediations script for fleet visibility. **Run every such script as 64-bit**
+("Run script in 64-bit PowerShell" = Yes, or `reg.exe ... /reg:64`): a 32-bit script reads
+`HKLM\SOFTWARE\WOW6432Node\...` and does not see these values.
+
+### Incident runbook
+
+If removals go wrong on devices:
+
+1. **Unassign the app, or exclude the affected group.** This is the fastest stop.
+2. **Switch removal off** where the app stays assigned: a Remediations script that sets the DWORD
+   `RemovePriorDisabled = 1` under `HKLM\SOFTWARE\<ScriptAuthor>\win32-toolkit`. Devices then refuse with 69111 instead
+   of removing anything. The switch is read from both registry views, so a 32-bit script also works for this one value,
+   but prefer 64-bit.
+3. **Read** `LastRefusal`, the Intune Management Extension log and the PSAppDeployToolkit log of an affected device.
+4. **Fix** the rule, package again, run the Hyper-V proof again, then publish the new package (pilot first).
+
+To clear a `Removed` marker once the cause of a 69110 is fixed, delete the value
+`HKLM\SOFTWARE\<ScriptAuthor>\win32-toolkit\PriorInstalls\<View>\<Key>\Removed` with a **64-bit** remediation
+(`<View>` is `Native` or `Wow6432`, `<Key>` the prior's uninstall key name).
 
 ## Apps published before this version
 
@@ -232,3 +328,5 @@ failed one lists its failed assertions.
 | **`W32T.PackageNotReady`** while packaging | The deploy script failed the packaging check (every problem and its fix is listed in the message). See [Packaging](packaging.md#the-package-check). |
 | **`W32T.ProjectNotConfigured`** while packaging or publishing | The project's build stopped after its folder was created (a refused configuration, a failed download, no installer found), so it has no org template or installer configuration. There is no override: package the app again (`Invoke-Win32Toolkit` or `New-Win32ToolkitManualApp`, or the menu's Package an app), which replaces the folder. See [Packaging](packaging.md#the-package-check). |
 | **`UNSAFE-CLEANUP` warning** while publishing | The package was exported before the cleanup-path check. See [Warnings before you publish](#warnings-before-you-publish). |
+| **`W32T.PackageNotReady` "Prior install: the prior-install rules changed after Export"** while publishing | A prior-install rule (or the install capture) changed after the package was built. Package it again, then publish. See [Packages that remove a prior install](#packages-that-remove-a-prior-install). |
+| **Exit codes 69101-69112** on devices | See [Exit codes](#exit-codes). |

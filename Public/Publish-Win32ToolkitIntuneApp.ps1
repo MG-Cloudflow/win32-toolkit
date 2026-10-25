@@ -40,6 +40,15 @@ function Publish-Win32ToolkitIntuneApp {
     30 minutes or less: the uninstall stops an EXE uninstaller at 30 minutes (exit code 69113), and a
     lower Intune limit stops the deployment first.
 
+    Prior installs (Set-Win32ToolkitPriorInstall): a project with prior-install rules is published only when the
+    package carries exactly the rules Export checked - its Staging copy must exist and hold the same rules, own
+    identity and version (else W32T.PackageNotReady: re-export), checked before the -WhatIf gate. The app's return
+    codes add 69101, 69102 and 69105-69112 as failed (1618 stays retry; 69103 is only logged); a -WhatIf dry run of
+    a project with Block or Enforce rules lists them. For Enforce rules,
+    Publish warns before the -WhatIf gate to assign the app to a pilot group first and names the kill switch
+    (RemovePriorDisabled), and after the sign-in it warns about Required apps of the tenant that detect the prior
+    install, and about an earlier version of the app that is still assigned Required.
+
     Command lines (from Get-Win32ToolkitIntuneCommandLine, the single source; the app runs as SYSTEM):
 
         Install   : Invoke-AppDeployToolkit.exe -DeploymentType Install
@@ -155,6 +164,17 @@ function Publish-Win32ToolkitIntuneApp {
         $appCfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
         $app    = if ($appCfg.PSObject.Properties.Name -contains 'App') { $appCfg.App } else { $null }
 
+        # ── Prior-install rules (installer-identity PR 3, L40) ────────────────────
+        # First, before the update requirement and the -WhatIf gate (no sign-in needed): a package whose rules are not
+        # the ones Export checked (changed after Export, or no Staging copy to compare) is refused: W32T.PackageNotReady.
+        $null = Assert-Win32ToolkitPriorInstallPackaged -ProjectPath $ProjectPath -IntuneWinPath $IntuneWinPath
+        $priorRules = @(@(if ($appCfg.PSObject.Properties.Name -contains 'PriorInstalls' -and $appCfg.PriorInstalls -and $appCfg.PriorInstalls.PSObject.Properties['Entries']) { $appCfg.PriorInstalls.Entries }) |
+            Where-Object { $null -ne $_ })
+        $priorEnforce = @($priorRules | Where-Object { [string]$_.Mode -ceq 'Enforce' })
+        # The prior-install refusals and failures the app registers as 'failed' (L17): 69103 is only logged (the install
+        # goes on) and 1618 (busy, the prior app still running) stays 'retry'.
+        $priorFailCodes = [int[]]@(69101, 69102, 69105, 69106, 69107, 69108, 69109, 69110, 69111, 69112)
+
         # Every manifest field comes from Get-YAMLInstallerInfo, which reads the RIGHT file per field (the
         # description/URL live in the *.locale* manifest, not the installer manifest). This block used to grab
         # the alphabetically-first *.yaml — always the installer manifest — so the Intune app's description and
@@ -249,8 +269,10 @@ function Publish-Win32ToolkitIntuneApp {
 
         # ── Update app: name suffix + requirement rule (applicable only where already installed) ──
         $requirementRules = @()
+        $reqRule = $null
         if ($AsUpdate) {
-            $reqRule = Get-Win32ToolkitRequirementRule -ProjectPath $ProjectPath
+            # -NoSave: built before the -WhatIf gate, so its plaintext copy is written only past the gate (below).
+            $reqRule = Get-Win32ToolkitRequirementRule -ProjectPath $ProjectPath -NoSave
             if (-not $reqRule) {
                 throw 'Update app requested, but no requirement rule could be built (AppConfig has no tattoo key, product code, or app name). Refusing to publish an update app that would apply to every device.'
             }
@@ -315,12 +337,22 @@ function Publish-Win32ToolkitIntuneApp {
         # switch, identity findings, and UNSAFE-CLEANUP for a package exported before the cleanup-path
         # check (Export refuses such a project; a standalone publish of an old .intunewin only warns).
         # Fail-open: nothing it calls raises W32T.*, so it can never stop a publish.
+        $shownAdvisory = $null
         try {
-            $null = Write-Win32ToolkitPackageAdvisory -ProjectPath $ProjectPath -Context Publish -AppLabel $displayName -ProbeIfMissing
+            $shownAdvisory = Write-Win32ToolkitPackageAdvisory -ProjectPath $ProjectPath -Context Publish -AppLabel $displayName -ProbeIfMissing
         }
         catch {
             if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
             Write-Warning "Could not check the Update test and identity warnings: $($_.Exception.Message)"
+        }
+
+        # Enforce rules remove another install as SYSTEM (installer-identity PR 3, spec 7.11): pilot first; the kill switch.
+        # Once per call (live rows OP-EXPORT, GOAL-EXPORT): not again when the advisory just printed its PRIOR-ENFORCE-PILOT row.
+        $pilotShown = $null -ne $shownAdvisory -and @(@($shownAdvisory.Findings) | Where-Object { $_ -and [string]$_.Code -eq 'PRIOR-ENFORCE-PILOT' -and [string]$_.Severity -eq 'Warning' }).Count -gt 0
+        if ($priorEnforce.Count -gt 0 -and -not $pilotShown) {
+            $markerAuthor = if ($app -and $app.ScriptAuthor) { [string]$app.ScriptAuthor } else { '<ScriptAuthor>' }
+            Write-Warning ("'$displayName' removes another install of the app as SYSTEM before it installs ($($priorEnforce.Count) Enforce prior-install rule(s)): assign it to a pilot group first. " +
+                "Kill switch: the DWORD RemovePriorDisabled = 1 under HKLM\SOFTWARE\$markerAuthor\win32-toolkit (set it with a 64-bit remediation script) makes devices refuse instead of removing (exit code 69111).")
         }
 
         # ── -WhatIf / -Confirm gate for the ENTIRE publish ────────────────────────
@@ -330,7 +362,22 @@ function Publish-Win32ToolkitIntuneApp {
         # the whole sequence once, so -WhatIf is a true dry run — no auth, no Graph writes.
         if (-not $PSCmdlet.ShouldProcess($displayName, "Publish Win32 app to Intune (version $displayVersion)")) {
             Write-Host "WhatIf: would connect to Microsoft Graph and publish '$displayName' v$displayVersion to Intune (create app shell, upload content, commit)." -ForegroundColor Yellow
+            if (@($priorRules | Where-Object { [string]$_.Mode -cne 'Report' }).Count -gt 0) {
+                Write-Host "WhatIf: the app would report the prior-install exit codes $($priorFailCodes -join ', ') as failed (1618 stays retry)." -ForegroundColor Yellow
+            }
             return
+        }
+
+        # The update requirement's plaintext copy (SupportFiles\UpdateRequirement.ps1, for transparency), only now that the
+        # publish goes ahead: a -WhatIf dry run (or a declined -Confirm) changes nothing in the project, whose SupportFiles
+        # folder a prior-install proof is bound to (live rows OP-EXPORT, GOAL-EXPORT). The same bytes the rule carries.
+        if ($AsUpdate -and $reqRule) {
+            try {
+                $reqDir = Join-Path $ProjectPath 'SupportFiles'
+                if (-not (Test-Path -LiteralPath $reqDir)) { $null = New-Item -ItemType Directory -Path $reqDir -Force }
+                [System.IO.File]::WriteAllBytes((Join-Path $reqDir 'UpdateRequirement.ps1'), [System.Convert]::FromBase64String([string]$reqRule['scriptContent']))
+            }
+            catch { Write-Verbose "Could not write UpdateRequirement.ps1: $($_.Exception.Message)" }
         }
 
         # ── Graph authentication ──────────────────────────────────────────────────
@@ -348,6 +395,12 @@ function Publish-Win32ToolkitIntuneApp {
         $tenantCheck = Assert-Win32ToolkitTenant -ProjectPath $ProjectPath -Operation 'publish'
         $tenantLabel = if ($tenantCheck.DisplayName) { "$($tenantCheck.DisplayName) ($($tenantCheck.TenantId))" } else { $tenantCheck.TenantId }
         Write-Host "  Tenant       : $tenantLabel" -ForegroundColor Gray
+
+        # Apps of this tenant that would fight the removal (installer-identity PR 3, D23, D29, L29): Enforce rules only,
+        # after the sign-in and the tenant check, before anything is created. Warnings only; fail-open.
+        if ($priorEnforce.Count -gt 0) {
+            foreach ($conflict in @(Get-Win32ToolkitPriorConflict -ProjectPath $ProjectPath -BaseUri $baseUri)) { Write-Warning ([string]$conflict.Message) }
+        }
 
         # ── Extract .intunewin metadata ───────────────────────────────────────────
         Write-Verbose 'Extracting .intunewin metadata...'
@@ -391,6 +444,9 @@ function Publish-Win32ToolkitIntuneApp {
                 @{ 'returnCode' = 3010; 'type' = 'softReboot' }
                 @{ 'returnCode' = 1641; 'type' = 'hardReboot' }
                 @{ 'returnCode' = 1618; 'type' = 'retry'      }
+            ) + @(
+                # The prior-install refusals and failures (installer-identity PR 3, L17): Intune reports them as failed.
+                foreach ($priorCode in $priorFailCodes) { @{ 'returnCode' = $priorCode; 'type' = 'failed' } }
             )
             'detectionRules'   = @($detectionRules)
             'requirementRules' = @($requirementRules)

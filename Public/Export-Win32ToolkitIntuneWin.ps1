@@ -414,7 +414,7 @@ function Export-Win32ToolkitIntuneWin {
                 # Pre-check: if no reliable "already installed" signal exists (e.g. an MSI with no
                 # UpgradeCode), skip the update gracefully with a warning instead of throwing — which
                 # matters most in "both" mode, where the install app has already uploaded.
-                if (Get-Win32ToolkitRequirementRule -ProjectPath $ProjectPath) {
+                if (Get-Win32ToolkitRequirementRule -ProjectPath $ProjectPath -NoSave) {
                     $pub = Publish-Win32ToolkitIntuneApp -IntuneWinPath $intuneWinFile.FullName -ProjectPath $ProjectPath -AsUpdate @publishArgs
                     foreach ($p in @($pub)) { if ($null -ne $p) { $published.Add($p) } }
                 }

@@ -42,7 +42,8 @@ function Get-Win32ToolkitRequirementRule {
         Untrusted values (app name, product codes) are escaped (ConvertTo-PSSingleQuoted /
         Test-Win32ToolkitProductCode) before being spliced into the generated script, so they are data
         and never a code position — same discipline as New-IntuneRequirementScript. The plaintext script
-        is also written to SupportFiles\UpdateRequirement.ps1 for transparency.
+        is also written to SupportFiles\UpdateRequirement.ps1 for transparency (and for the Update test),
+        unless -NoSave.
 
         See knowledge-base/06-intune-packaging-and-publishing.md.
     .PARAMETER ProjectPath
@@ -54,6 +55,10 @@ function Get-Win32ToolkitRequirementRule {
         tattoo views: the native 64-bit one written by a package launched through Invoke-AppDeployToolkit.exe,
         and the explicit WOW6432Node path of the legacy 32-bit installs. A 32-bit process is redirected to
         WOW6432Node for HKLM:\SOFTWARE and would miss the native 64-bit tattoo, so leave this off.
+    .PARAMETER NoSave
+        Build the rule without writing SupportFiles\UpdateRequirement.ps1: a dry run (Publish -WhatIf) or a probe changes
+        nothing in the project (installer-identity PR 3 live rows OP-EXPORT, GOAL-EXPORT: SupportFiles is part of a
+        prior-install proof's binding, so a dry run that rewrote the file could revoke a proof).
     .OUTPUTS
         [hashtable] the requirement rule, or $null if no reliable presence signal is available.
     #>
@@ -67,7 +72,9 @@ function Get-Win32ToolkitRequirementRule {
         [ValidateSet('system', 'user')]
         [string]$RunAsAccount = 'system',
 
-        [switch]$RunAs32Bit
+        [switch]$RunAs32Bit,
+
+        [switch]$NoSave
     )
 
     $cfg       = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
@@ -232,12 +239,14 @@ function Get-Win32ToolkitRequirementRule {
 
     # Save a plaintext copy for transparency and for the sandbox Update test (which runs it under
     # Windows PowerShell 5.1 — write UTF-8 WITH BOM so non-ASCII names don't mojibake; PS7's
-    # Set-Content -Encoding UTF8 writes no BOM).
-    try {
-        $supportFiles = Join-Path $ProjectPath 'SupportFiles'
-        if (-not (Test-Path -LiteralPath $supportFiles)) { New-Item -ItemType Directory -Path $supportFiles -Force | Out-Null }
-        [System.IO.File]::WriteAllText((Join-Path $supportFiles 'UpdateRequirement.ps1'), $scriptText, (New-Object System.Text.UTF8Encoding($true)))
-    } catch { Write-Verbose "Could not write UpdateRequirement.ps1: $($_.Exception.Message)" }
+    # Set-Content -Encoding UTF8 writes no BOM). Not with -NoSave (a dry run or a probe).
+    if (-not $NoSave) {
+        try {
+            $supportFiles = Join-Path $ProjectPath 'SupportFiles'
+            if (-not (Test-Path -LiteralPath $supportFiles)) { New-Item -ItemType Directory -Path $supportFiles -Force | Out-Null }
+            [System.IO.File]::WriteAllText((Join-Path $supportFiles 'UpdateRequirement.ps1'), $scriptText, (New-Object System.Text.UTF8Encoding($true)))
+        } catch { Write-Verbose "Could not write UpdateRequirement.ps1: $($_.Exception.Message)" }
+    }
 
     # UTF-8 with BOM (Intune-recommended for Win32 requirement/detection scripts), then base64.
     $enc   = New-Object System.Text.UTF8Encoding($true)

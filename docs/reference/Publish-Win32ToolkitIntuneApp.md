@@ -62,6 +62,17 @@ warns when the app's maximum run time (IntuneDefaults.MaxRuntimeMinutes from the
 30 minutes or less: the uninstall stops an EXE uninstaller at 30 minutes (exit code 69113), and a
 lower Intune limit stops the deployment first.
 
+Prior installs (Set-Win32ToolkitPriorInstall): a project with prior-install rules is published only when the
+package carries exactly the rules Export checked - its Staging copy must exist and hold the same rules, own
+identity and version (else W32T.PackageNotReady: re-export), checked before the -WhatIf gate.
+The app's return
+codes add 69101, 69102 and 69105-69112 as failed (1618 stays retry; 69103 is only logged); a -WhatIf dry run of
+a project with Block or Enforce rules lists them.
+For Enforce rules,
+Publish warns before the -WhatIf gate to assign the app to a pilot group first and names the kill switch
+(RemovePriorDisabled), and after the sign-in it warns about Required apps of the tenant that detect the prior
+install, and about an earlier version of the app that is still assigned Required.
+
 Command lines (from Get-Win32ToolkitIntuneCommandLine, the single source; the app runs as SYSTEM):
 
     Install   : Invoke-AppDeployToolkit.exe -DeploymentType Install

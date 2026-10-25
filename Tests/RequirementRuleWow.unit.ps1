@@ -311,6 +311,15 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $po 'Invoke-AppDeployToolkit.ps1'), $blocks, (New-Object System.Text.UTF8Encoding($true)))
     $ro = Get-Win32ToolkitRequirementRule -ProjectPath $po 3>$null
     if ($ro -and (Get-ReqScript $ro).Contains('$w32tPrData') -and $ro['displayName'] -ceq 'App is installed') { Ok 'Enforce entries alone are a signal (the early return accepts them); displayName stays generic' } else { Bad 'only-fifth rule' }
+
+    # Live rows OP-EXPORT / GOAL-EXPORT: Publish -WhatIf rewrote SupportFiles\UpdateRequirement.ps1, a file a prior-install
+    # proof is bound to. -NoSave builds the same rule and writes nothing; the default still writes the copy (the Update test).
+    $copy = Join-Path $po 'SupportFiles\UpdateRequirement.ps1'
+    Remove-Item -LiteralPath $copy -Force -ErrorAction SilentlyContinue
+    $rn = Get-Win32ToolkitRequirementRule -ProjectPath $po -NoSave 3>$null
+    if ($rn -and $rn['scriptContent'] -ceq $ro['scriptContent'] -and -not (Test-Path -LiteralPath $copy)) { Ok '-NoSave: the same rule, no SupportFiles\UpdateRequirement.ps1 written' } else { Bad "-NoSave wrote the copy or changed the rule (exists=$(Test-Path -LiteralPath $copy))" }
+    $null = Get-Win32ToolkitRequirementRule -ProjectPath $po 3>$null
+    if ((Test-Path -LiteralPath $copy) -and [Convert]::ToBase64String([IO.File]::ReadAllBytes($copy)) -ceq $ro['scriptContent']) { Ok 'without -NoSave the copy is written (UTF-8 with BOM, the bytes the rule carries)' } else { Bad 'default: no copy, or other bytes' }
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

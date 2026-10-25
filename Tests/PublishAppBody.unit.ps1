@@ -213,9 +213,9 @@ try {
     if ($be.setupFilePath -ceq 'Invoke-AppDeployToolkit.ps1' -and $be.fileName -ceq 'Invoke-AppDeployToolkit.ps1') { Ok 'setupFilePath / fileName stay Invoke-AppDeployToolkit.ps1' } else { Bad "setupFilePath='$($be.setupFilePath)' fileName='$($be.fileName)'" }
     if ($be.installExperience.runAsAccount -eq 'system') { Ok 'still runs as SYSTEM' } else { Bad "runAsAccount = '$($be.installExperience.runAsAccount)'" }
 
-    Write-Host '[7] returnCodes are exactly 0/1707 success, 3010 soft, 1641 hard, 1618 retry (1602 stays unmapped, D13)' -ForegroundColor Cyan
+    Write-Host '[7] returnCodes are exactly 0/1707 success, 3010 soft, 1641 hard, 1618 retry (1602 stays unmapped, D13), and the 10 prior-install codes failed (installer-identity PR 3, L17)' -ForegroundColor Cyan
     $rc = @($be.returnCodes | ForEach-Object { "$($_.returnCode)=$($_.type)" } | Sort-Object)
-    $expected = @('0=success', '1618=retry', '1641=hardReboot', '1707=success', '3010=softReboot') | Sort-Object
+    $expected = @('0=success', '1618=retry', '1641=hardReboot', '1707=success', '3010=softReboot') + @(69101, 69102, 69105, 69106, 69107, 69108, 69109, 69110, 69111, 69112 | ForEach-Object { "$_=failed" }) | Sort-Object
     if (($rc -join ',') -ceq ($expected -join ',')) { Ok "returnCodes: $($rc -join ', ')" } else { Bad "returnCodes: $($rc -join ', ')" }
 
     Write-Host '[8] the tattoo fixture publishes WITH its detection rule (the gate below is not a false positive)' -ForegroundColor Cyan
