@@ -165,8 +165,8 @@ if (ExpectThrow @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProject = "
 
 # ══ [3b] Update-only params with a non-Update scenario throw instead of silently no-op'ing ═════════
 Write-Host '[3b] baseline/version params with -Scenario InstallUninstall are rejected (not silently ignored)' -ForegroundColor Cyan
-if (ExpectThrow @{ ProjectPath = $proj; Scenario = 'InstallUninstall'; BaselineProject = "$TEMPLATE\$NAME" } 'apply only to -Scenario Update') { Ok '-BaselineProject + InstallUninstall -> clear "Update only" error' } else { Bad '-BaselineProject silently ignored under InstallUninstall' }
-if (ExpectThrow @{ ProjectPath = $proj; Scenario = 'InstallUninstall'; VersionsBack = 1 } 'apply only to -Scenario Update') { Ok '-VersionsBack + InstallUninstall -> rejected too (fixes the pre-existing silent no-op)' } else { Bad '-VersionsBack silently ignored under InstallUninstall' }
+if (ExpectThrow @{ ProjectPath = $proj; Scenario = 'InstallUninstall'; BaselineProject = "$TEMPLATE\$NAME" } 'applies only to -Scenario Update') { Ok '-BaselineProject + InstallUninstall -> clear "Update only" error' } else { Bad '-BaselineProject silently ignored under InstallUninstall' }
+if (ExpectThrow @{ ProjectPath = $proj; Scenario = 'InstallUninstall'; VersionsBack = 1 } 'applies only to -Scenario Update') { Ok '-VersionsBack + InstallUninstall -> rejected too (fixes the pre-existing silent no-op)' } else { Bad '-VersionsBack silently ignored under InstallUninstall' }
 
 # ══ [3b2] -BaselineInstallerType applies to a winget baseline only ════════════════════════════════════
 Write-Host '[3b2] -BaselineInstallerType with a baseline project: only Auto (the default) is accepted' -ForegroundColor Cyan
@@ -176,7 +176,7 @@ if (ExpectThrow @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProjectPath
 $script:hvCalled = 0
 Test-Win32ToolkitProject -ProjectPath $proj -Scenario Update -BaselineProject "$TEMPLATE\$NAME" -BaselineInstallerType Auto *>$null
 if ($script:hvCalled -eq 1) { Ok 'an explicit -BaselineInstallerType Auto (the default) is accepted with a baseline project' } else { Bad 'explicit Auto rejected with a baseline project' }
-if (ExpectThrow @{ ProjectPath = $proj; Scenario = 'InstallUninstall'; BaselineInstallerType = 'Auto' } 'apply only to -Scenario Update') { Ok '-BaselineInstallerType + InstallUninstall -> the Update-only error' } else { Bad '-BaselineInstallerType silently ignored under InstallUninstall' }
+if (ExpectThrow @{ ProjectPath = $proj; Scenario = 'InstallUninstall'; BaselineInstallerType = 'Auto' } 'applies only to -Scenario Update') { Ok '-BaselineInstallerType + InstallUninstall -> the Update-only error' } else { Bad '-BaselineInstallerType silently ignored under InstallUninstall' }
 
 # ══ [3c] an unconfigured BasePath fails clearly instead of prompting ═══════════════════════════════
 Write-Host '[3c] -BaselineProject with no configured BasePath -> clear error (never a Read-Host hang)' -ForegroundColor Cyan

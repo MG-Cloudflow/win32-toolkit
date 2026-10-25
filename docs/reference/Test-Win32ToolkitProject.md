@@ -10,7 +10,8 @@ Test-Win32ToolkitProject [[-ProjectPath] <String>] [[-BasePath] <String>] [[-Sce
  [[-VersionsBack] <Int32>] [[-SpecificVersion] <String>] [-SkipRequirementCheck]
  [[-BaselineProjectPath] <String>] [[-BaselineProject] <String>] [[-BaselineInstallerType] <String>]
  [[-Backend] <String>] [-Unattended] [[-TestMode] <String>] [[-ProofEntryId] <String[]>]
- [-ProgressAction <ActionPreference>] [<CommonParameters>]
+ [[-SiblingInstallerType] <String[]>] [[-SiblingVersion] <String[]>] [[-SiblingCaptureVersionsBack] <Int32>]
+ [-IncludeReportOnly] [-ProgressAction <ActionPreference>] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -124,6 +125,12 @@ Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x
 Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario InstallUninstall -Backend HyperV -TestMode Interactive
 ```
 
+### EXAMPLE 12
+```
+# Capture the other installer technologies of a WiX package (the vendor's NSIS setup) on the Hyper-V test VM
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario SiblingCapture -Backend HyperV
+```
+
 ## PARAMETERS
 
 ### -ProjectPath
@@ -170,6 +177,19 @@ If omitted, an interactive menu is shown.
 Assertion results
                      stream back to the host (Sandbox\Logs\UpdateAssertions.log) and the command
                      reports a real PASS/FAIL verdict.
+- SiblingCapture   : Install each OTHER installer technology winget ships for the app (for example the
+                     vendor's NSIS setup next to a WiX package) in the Hyper-V test VM, one isolated run per
+                     capture, and record what it registered (Documentation\SiblingCapture\\\<id\>.json) for
+                     prior-install rules.
+Nothing of the project enters the guest but the sibling
+                     installer and the capture script; its output comes back into a quarantine through an
+                     allow-list.
+It never writes a rule: approve the proposals with Set-Win32ToolkitPriorInstall.
+                     Returns $true (at least one record), $false (every capture failed) or $null (nothing to
+                     capture).
+Refused (W32T.SiblingCaptureUnsupported / W32T.PriorInstallSlotsMissing) for a
+                     manual app, a project without its own identity (run the install capture first), an ARM64
+                     package, a project created before this version, or without a ready Hyper-V test VM.
 
 ```yaml
 Type: String
@@ -433,6 +453,73 @@ Aliases:
 Required: False
 Position: 11
 Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -SiblingInstallerType
+SiblingCapture scenario only: capture only these installer types (nullsoft, inno, exe, burn, msi, wix, msix).
+By
+default every type that can be captured is (NSIS, Inno Setup and generic EXE; MSI, WiX, Burn and MSIX only with
+-IncludeReportOnly; portable, zip-wrapped and ARM64 installers never).
+
+```yaml
+Type: String[]
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: 12
+Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -SiblingVersion
+SiblingCapture scenario only: capture exactly these versions (one version is captured twice: an identity needs two
+captures).
+By default the newest version that offers the type, and the oldest one released in the last 12 months
+(or the 5th one before the newest when release dates are missing).
+
+```yaml
+Type: String[]
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: 13
+Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -SiblingCaptureVersionsBack
+SiblingCapture scenario only: the second capture is the n-th version before the newest one that offers the type (1-20).
+
+```yaml
+Type: Int32
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: 14
+Default value: 0
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -IncludeReportOnly
+SiblingCapture scenario only: also capture the types whose removal is not supported yet (MSI, WiX, Burn, MSIX); their
+records are listed, never proposed.
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
 Accept pipeline input: False
 Accept wildcard characters: False
 ```

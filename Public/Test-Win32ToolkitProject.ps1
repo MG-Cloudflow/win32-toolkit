@@ -56,6 +56,16 @@ function Test-Win32ToolkitProject {
                          still met and the install tattoo holds the new version. Assertion results
                          stream back to the host (Sandbox\Logs\UpdateAssertions.log) and the command
                          reports a real PASS/FAIL verdict.
+    - SiblingCapture   : Install each OTHER installer technology winget ships for the app (for example the
+                         vendor's NSIS setup next to a WiX package) in the Hyper-V test VM, one isolated run per
+                         capture, and record what it registered (Documentation\SiblingCapture\<id>.json) for
+                         prior-install rules. Nothing of the project enters the guest but the sibling
+                         installer and the capture script; its output comes back into a quarantine through an
+                         allow-list. It never writes a rule: approve the proposals with Set-Win32ToolkitPriorInstall.
+                         Returns $true (at least one record), $false (every capture failed) or $null (nothing to
+                         capture). Refused (W32T.SiblingCaptureUnsupported / W32T.PriorInstallSlotsMissing) for a
+                         manual app, a project without its own identity (run the install capture first), an ARM64
+                         package, a project created before this version, or without a ready Hyper-V test VM.
 .PARAMETER VersionsBack
     Update scenario only. Automatically selects the version that is X positions older
     than the currently packaged version (e.g. 1 = the immediately previous release).
@@ -154,6 +164,19 @@ function Test-Win32ToolkitProject {
     installer and the catalog version). Only a Hyper-V Unattended pass with the requirement checked proves an Enforce rule.
     A project with prior-install rules (or sibling-capture records) is never tested in a watched Windows Sandbox
     (W32T.PriorInstallRefused), and a run that changed a project file outside Sandbox\ stops with W32T.GuestTamper.
+.PARAMETER SiblingInstallerType
+    SiblingCapture scenario only: capture only these installer types (nullsoft, inno, exe, burn, msi, wix, msix). By
+    default every type that can be captured is (NSIS, Inno Setup and generic EXE; MSI, WiX, Burn and MSIX only with
+    -IncludeReportOnly; portable, zip-wrapped and ARM64 installers never).
+.PARAMETER SiblingVersion
+    SiblingCapture scenario only: capture exactly these versions (one version is captured twice: an identity needs two
+    captures). By default the newest version that offers the type, and the oldest one released in the last 12 months
+    (or the 5th one before the newest when release dates are missing).
+.PARAMETER SiblingCaptureVersionsBack
+    SiblingCapture scenario only: the second capture is the n-th version before the newest one that offers the type (1-20).
+.PARAMETER IncludeReportOnly
+    SiblingCapture scenario only: also capture the types whose removal is not supported yet (MSI, WiX, Burn, MSIX); their
+    records are listed, never proposed.
 .EXAMPLE
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario Update -VersionsBack 1 -SkipRequirementCheck
 .EXAMPLE
@@ -182,6 +205,9 @@ function Test-Win32ToolkitProject {
 .EXAMPLE
     # Run one test watched although HyperVTestMode is Unattended (for example after the Intune-parity pre-check did not start it)
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario InstallUninstall -Backend HyperV -TestMode Interactive
+.EXAMPLE
+    # Capture the other installer technologies of a WiX package (the vendor's NSIS setup) on the Hyper-V test VM
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario SiblingCapture -Backend HyperV
 #>
     [CmdletBinding()]
     param(
@@ -192,7 +218,7 @@ function Test-Win32ToolkitProject {
         [string]$BasePath,
 
         [Parameter(Mandatory = $false)]
-        [ValidateSet('InstallUninstall', 'Update')]
+        [ValidateSet('InstallUninstall', 'Update', 'SiblingCapture')]
         [string]$Scenario,
 
         [Parameter(Mandatory = $false)]
@@ -255,7 +281,22 @@ function Test-Win32ToolkitProject {
         # uninstaller technology and registry view (or the same floor capture) - this run checks. Without it a project with
         # Enforce entries checks its first proof group, and the baseline is pinned to that group's technology.
         [Parameter(Mandatory = $false)]
-        [string[]]$ProofEntryId
+        [string[]]$ProofEntryId,
+
+        # SiblingCapture scenario only (installer-identity PR 3b, spec 2.16): which types and versions to capture.
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('nullsoft', 'inno', 'exe', 'burn', 'msi', 'wix', 'msix')]
+        [string[]]$SiblingInstallerType,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$SiblingVersion,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 20)]
+        [int]$SiblingCaptureVersionsBack,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeReportOnly
     )
 
     # The optional per-project lease (speed-up PR 3, TestProjectLease): $null unless taken below; released in the finally.
@@ -317,8 +358,34 @@ function Test-Win32ToolkitProject {
             $updateOnly = @('BaselineProject', 'BaselineProjectPath', 'VersionsBack', 'SpecificVersion', 'BaselineInstallerType', 'ProofEntryId') |
                 Where-Object { $PSBoundParameters.ContainsKey($_) }
             if ($updateOnly) {
-                throw "$(@($updateOnly | ForEach-Object { "-$_" }) -join ', ') apply only to -Scenario Update (got '$Scenario')."
+                throw "$(@($updateOnly | ForEach-Object { "-$_" }) -join ', ') $(if (@($updateOnly).Count -eq 1) { 'applies' } else { 'apply' }) only to -Scenario Update (got '$Scenario')."
             }
+        }
+        if ($Scenario -ne 'SiblingCapture') {
+            $siblingOnly = @('SiblingInstallerType', 'SiblingVersion', 'SiblingCaptureVersionsBack', 'IncludeReportOnly') | Where-Object { $PSBoundParameters.ContainsKey($_) }
+            if ($siblingOnly) {
+                # Live row ASSISTED: "-Assisted apply only" for a single parameter.
+                throw "$(@($siblingOnly | ForEach-Object { "-$_" }) -join ', ') $(if (@($siblingOnly).Count -eq 1) { 'applies' } else { 'apply' }) only to -Scenario SiblingCapture (got '$Scenario')."
+            }
+        }
+
+        # Sibling capture (installer-identity PR 3b, spec 2.14): its own isolated runs on the Hyper-V test VM (no PSADT
+        # dialog, so no Intune-parity pre-check, and no requirement step), under the per-project lease taken above.
+        if ($Scenario -eq 'SiblingCapture') {
+            $pre = Test-Win32ToolkitSiblingCapturePreflight -ProjectPath $ProjectPath -Backend $(if ($Backend) { $Backend } else { '' })
+            if (-not $pre.Ok) {
+                throw [System.Management.Automation.ErrorRecord]::new(
+                    [System.InvalidOperationException]::new("The other installer technologies of '$projectName' cannot be captured: $($pre.Reasons -join '; '). Nothing was downloaded or run."),
+                    $pre.Code, [System.Management.Automation.ErrorCategory]::InvalidOperation, $ProjectPath)
+            }
+            $planArgs = @{ ProjectPath = $ProjectPath }
+            if ($SiblingInstallerType) { $planArgs['SiblingInstallerType'] = $SiblingInstallerType }
+            if ($SiblingVersion) { $planArgs['SiblingVersion'] = $SiblingVersion }
+            if ($SiblingCaptureVersionsBack) { $planArgs['VersionsBack'] = $SiblingCaptureVersionsBack }
+            if ($IncludeReportOnly) { $planArgs['IncludeReportOnly'] = $true }
+            $plan = Get-Win32ToolkitSiblingCapturePlan @planArgs
+            $plan.Backend = 'HyperV'
+            return (Invoke-Win32ToolkitSiblingCapture -ProjectPath $ProjectPath -Plan $plan -Backend HyperV)
         }
 
         # -BaselineProject: resolve a friendly '<Template>\<Name>' (or 'project:<Template>\<Name>') reference

@@ -1053,7 +1053,7 @@ Remove-Item -LiteralPath $f -Force
     $script:testBackend = 'HyperV'; $script:testModeCfg = 'Unattended'
 
     # (h) parameter rules
-    if (Test-BaselineErr @{ ProjectPath = $put; Scenario = 'InstallUninstall'; BaselineInstallerType = 'Both' } 'BaselineInstallerType apply only to -Scenario Update') { Ok '-BaselineInstallerType with -Scenario InstallUninstall -> the Update-only error' } else { Bad 'InstallUninstall accepted -BaselineInstallerType' }
+    if (Test-BaselineErr @{ ProjectPath = $put; Scenario = 'InstallUninstall'; BaselineInstallerType = 'Both' } 'BaselineInstallerType applies only to -Scenario Update') { Ok '-BaselineInstallerType with -Scenario InstallUninstall -> the Update-only error' } else { Bad 'InstallUninstall accepted -BaselineInstallerType' }
     $bp = Join-Path $base 'bp'; New-Item -ItemType Directory -Path $bp -Force | Out-Null; Set-Content (Join-Path $bp 'Invoke-AppDeployToolkit.ps1') '# stub'
     if (Test-BaselineErr @{ ProjectPath = $put; Scenario = 'Update'; BaselineProjectPath = $bp; BaselineInstallerType = 'nullsoft' } 'applies to a winget baseline; the baseline project has its own technology') { Ok '-BaselineInstallerType with -BaselineProjectPath -> the new error' } else { Bad 'baseline project accepted a technology' }
 
