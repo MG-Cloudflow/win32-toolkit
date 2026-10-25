@@ -26,6 +26,11 @@ function Assert-Win32ToolkitPackageReady {
             the uninstall is the hardened one (uninstall revision 2)    Export   warning only
             uninstall cleanup paths stay inside the app's own install   Export   error (no override)
             folders (AppConfig)
+            prior-install rules (installer-identity PR 3): the remove-   Export   error (only the waiver or
+            prior blocks of this catalog, valid rules, a known own               acknowledgement a row of
+            identity, a proven Enforce rule and its window, data loss,           Get-Win32ToolkitPriorInstall-
+            the approval of a captured rule, no dropped rule of the              Finding allows)
+            version before, no guest tampering
 
         A missing loader with no SupportFiles\AppConfig.json either is reported as a project whose download
         or configuration never finished (re-run Invoke-Win32Toolkit / New-Win32ToolkitManualApp), not as a
@@ -48,6 +53,13 @@ function Assert-Win32ToolkitPackageReady {
         not downgrade it. Finalize does not check it: Finalize is the step that re-captures and repairs the
         paths. An AppConfig.json that cannot be read is an error too: Windows PowerShell 5.1 accepts JSON that
         PowerShell 7 rejects (e.g. +1), so the device could delete paths nobody checked.
+
+        The prior-install rules (SupportFiles\AppConfig.json PriorInstalls) remove another install of the app as SYSTEM
+        before the package installs. At Export, every Error row of Get-Win32ToolkitPriorInstallFinding is an error line
+        that starts with 'Prior install: ' (GUEST-TAMPER, ID-PRIOR-DROPPED, PRIOR-NO-SLOTS, PRIOR-REVISION,
+        PRIOR-NO-OWNIDENTITY, PRIOR-INVALID, PRIOR-CAPTURE-RECORD, PRIOR-PROOF, PRIOR-VERSIONMIN, PRIOR-DATA-LOSS,
+        PRIOR-APPROVAL); -AllowLegacyScript does not downgrade them. A project without rules gets none of them
+        (only GUEST-TAMPER and ID-PRIOR-DROPPED can apply to it).
     .PARAMETER ProjectPath
         Path to the PSADT project folder (the folder that contains Invoke-AppDeployToolkit.ps1). A relative,
         '~' or PSDrive path is resolved against the current PowerShell location; messages show the full path.
@@ -231,6 +243,15 @@ function Assert-Win32ToolkitPackageReady {
     if ($Stage -eq 'Export') {
         foreach ($finding in @(Get-Win32ToolkitCleanupPathFinding -ProjectPath $ProjectPath)) {
             $errors.Add([string]$finding.Message)
+        }
+    }
+
+    # -- prior-install rules (installer-identity PR 3, spec 2.11) ----------------------------------------------------
+    # Enforce rules remove another vendor's install as SYSTEM: every Error row is an error line; only the waivers and
+    # acknowledgements the row names override it (never -AllowLegacyScript). Export only, like the cleanup paths.
+    if ($Stage -eq 'Export') {
+        foreach ($finding in @(Get-Win32ToolkitPriorInstallFinding -ProjectPath $ProjectPath -Stage Export)) {
+            $errors.Add("Prior install: $([string]$finding.Message)")
         }
     }
 

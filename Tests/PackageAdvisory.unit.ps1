@@ -38,6 +38,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 
 # Every Private helper is real (each file defines only its function), then the shadows below win.
 Get-ChildItem (Join-Path $repo 'Private') -Filter *.ps1 | ForEach-Object { . $_.FullName }
+# The deploy-script shape (read for the remove-prior slots of a candidate's advice) checks the PSADT range the module sets.
+$script:PsadtSupportedRange = [pscustomobject]@{ Min = [version]'4.1.0'; MaxExclusive = [version]'4.3.0'; Display = '4.1.x and 4.2.x' }
 $realCleanup = ${function:Get-Win32ToolkitCleanupPathFinding}
 $realDeltaFile = Join-Path $repo 'Private\Get-Win32ToolkitIdentityDelta.ps1'
 
@@ -158,7 +160,10 @@ try {
     } else { Bad "Update = $($a.Update | ConvertTo-Json -Compress -Depth 4)" }
     if ($a.SchemaVersion -eq '1.0' -and $a.PackageType -eq 'wix' -and $a.PackageFamily -eq 'msi') { Ok 'SchemaVersion 1.0, PackageType wix, PackageFamily msi' } else { Bad "header: $($a.SchemaVersion) $($a.PackageType) $($a.PackageFamily)" }
     $su = Find $a 'ID-SIBLING-UNTESTED'
-    $wantSu = "winget also ships nullsoft (vendor EXE, NSIS), but no Update test has passed from an exe install. Run: Test-Win32ToolkitProject -ProjectPath '$npp' -Scenario Update -BaselineInstallerType Both"
+    # Live check KILL-NATIVE (2026-10-26): with a run of that family on record, the line names the latest one ("no Update test has
+    # passed" was false when an older run had passed).
+    # Live row MSIBUSY (round 2): the run is named by its own baseline type ("ships nullsoft ..., but ... from an exe install").
+    $wantSu = "winget also ships nullsoft (vendor EXE, NSIS), but the latest Update test from a nullsoft install failed (on 2026-10-19). Run: Test-Win32ToolkitProject -ProjectPath '$npp' -Scenario Update -BaselineInstallerType Both"
     if ($su.Severity -eq 'Warning' -and $su.Message -ceq $wantSu) { Ok 'ID-SIBLING-UNTESTED (Warning) names the technology and the -BaselineInstallerType Both command' } else { Bad "ID-SIBLING-UNTESTED = $($su.Message)" }
     if ((Find $a 'ID-SIBLING-FAMILY').Severity -eq 'Warning' -and (Find $a 'ID-SIBLING-FAMILY').Source -eq 'IdentityDelta') { Ok 'ID-SIBLING-FAMILY stays a Warning (no passed exe record), Source IdentityDelta' } else { Bad 'ID-SIBLING-FAMILY severity/source' }
     if ($script:switchArgs.PackageType -eq 'wix' -and $script:switchArgs.PackageFamily -eq 'msi' -and $script:switchArgs.ProjectPath -eq $npp) { Ok 'Get-Win32ToolkitTechnologySwitch gets the project and the packaged type/family' } else { Bad "switch args $($script:switchArgs | ConvertTo-Json -Compress)" }
@@ -167,6 +172,100 @@ try {
     # Worded so it also holds for Export -WhatIf, which packages nothing (re-verification 2026-10-21, A2 sb#1).
     $aeMsg = (Find $ae 'UPDATE-FAILED').Message
     if ($aeMsg -match 'This only warns: it does not stop packaging\.' -and $aeMsg -notmatch 'is still packaged') { Ok "-Context Export words it 'it does not stop packaging' (no claim that a package was built)" } else { Bad "Export wording: $aeMsg" }
+
+    Write-Host '[1b] the failed run''s own cause decides the advice (installer-identity PR 3 live checks)' -ForegroundColor Cyan
+    $withRules = {
+        param([object[]]$Rules, [object]$Record)
+        $pr = New-AdvProject -Results @($Record) -Manifest 'Notepad++.Notepad++\8.9.8.1.installer.yaml'
+        $cf = Join-Path $pr 'SupportFiles\AppConfig.json'
+        $c = Get-Content -LiteralPath $cf -Raw | ConvertFrom-Json
+        $c | Add-Member -NotePropertyName PriorInstalls -NotePropertyValue ([pscustomobject]@{ SchemaVersion = '1.0'; Entries = @($Rules) }) -Force
+        [System.IO.File]::WriteAllText($cf, ($c | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
+        $pr
+    }
+    $rule = { param([string]$Mode) [pscustomobject]@{ Id = 'nsis-x64'; Kind = 'ArpKey'; Mode = $Mode; Key = 'Notepad++'; View = 'Native'; Publisher = 'Notepad++ Team'; UninstallerType = 'nullsoft' } }
+    $recWith = {
+        param([int]$Code, [string]$Meaning)
+        $r = New-Record -Fail @('Requirement-PreUpdate', 'OldArpGone-PostUpdate', 'UpdateExitCode-PostUpdate')
+        $r.Notes = "Intune-parity phase 'Update (Intune parity)' exited with code ${Code}$(if ($Meaning) { ": $Meaning" })."
+        $r
+    }
+    # Live rows OP-BLOCK, RC2-BLOCK: a deliberate Block refusal gave UPDATE-FAILED and ID-SIBLING-UNTESTED warnings, the latter
+    # asking for a run that refuses again while the rule is Block.
+    $a = Get-Advisory (& $withRules @((& $rule 'Block')) (& $recWith 69101 'a Block prior-install rule refused the install: the prior install it declares is present'))
+    $uf = Find $a 'UPDATE-FAILED'; $su = Find $a 'ID-SIBLING-UNTESTED'
+    if ($uf.Severity -eq 'Info' -and $uf.Message -match 'ended as intended: the Block prior-install rule\(s\) nsis-x64 refused the update \(exit code 69101\)' -and
+        $su.Severity -eq 'Info' -and $su.Message -match 'ended with the refusal of the Block rule\(s\) nsis-x64 \(69101\) \(on 2026-10-19\), as intended: while the rule is Block that test cannot pass' -and $su.Message -match '-Id nsis-x64 -Mode Enforce' -and $su.Message -notmatch 'BaselineInstallerType Both' -and
+        @($a.Findings | Where-Object { $_.Severity -eq 'Warning' -and $_.Code -in 'UPDATE-FAILED', 'ID-SIBLING-UNTESTED' }).Count -eq 0) {
+        Ok 'a Block rule''s 69101 refusal: UPDATE-FAILED and ID-SIBLING-UNTESTED are Info, as intended, naming the rule and the step to Enforce (no re-run advice)'
+    } else { Bad "block refusal: $($uf.Severity) $($uf.Message) // $($su.Severity) $($su.Message)" }
+    # Live rows OP-BLOCK, RC2-BLOCK (round 2): "Its failed assertions follow from that refusal: Requirement-PreUpdate, ..." - but
+    # Requirement-PreUpdate is judged before the update and fails because the update requirement holds Enforce rules only (D28).
+    if ($uf.Message -match 'The failed assertions after it follow from that refusal: OldArpGone-PostUpdate, UpdateExitCode-PostUpdate\. Requirement-PreUpdate was judged before the update and fails by design: the update requirement detects only installs an Enforce rule names' -and
+        $uf.Message -notmatch 'follow from that refusal: Requirement-PreUpdate') { Ok 'the 69101 Info separates Requirement-PreUpdate (judged before the update, by design) from the assertions the refusal explains' } else { Bad "block pre-update: $($uf.Message)" }
+    # Live rows DEMOTE, MSIBUSY: a retry code of the test VM asked for a technology-switch test.
+    $a = Get-Advisory (& $withRules @() (& $recWith 69107 'a restart is pending, or the removal of the prior install needs one: nothing was removed, the install runs after the restart'))
+    $uf = Find $a 'UPDATE-FAILED'; $su = Find $a 'ID-SIBLING-UNTESTED'
+    if ($uf.Severity -eq 'Warning' -and $uf.Message -match 'judged nothing: the update exited with the retry code 69107 \(on the test VM: a restart was pending' -and $uf.Message -match 'Run it again' -and
+        $su.Message -match 'judged nothing: it ended with the retry code 69107 \(on the test VM: a restart was pending' -and $su.Message -match 'Run it again: Test-Win32ToolkitProject') { Ok 'a retry code (69107): both say the run judged nothing, why (a pending restart) and to run it again' } else { Bad "retry: $($uf.Message) // $($su.Message)" }
+    # Live rows APP-RUNNING, MSIBUSY (round 2): one cause list for both retry codes named "a restart pending" for 1618 (only
+    # 69107 means that) and repeated it after the code's own meaning.
+    $a = Get-Advisory (& $withRules @() (& $recWith 1618 'Intune retries it later: the prior app was still running after the close-apps dialog, Windows Installer was busy, or the prior install changed while the dialog was open'))
+    $uf = Find $a 'UPDATE-FAILED'; $su = Find $a 'ID-SIBLING-UNTESTED'
+    $c1618 = 'on the test VM: the prior app was still running after the close-apps dialog, Windows Installer was busy, or the prior install changed while the dialog was open'
+    if ($uf.Message.Contains("the update exited with the retry code 1618 ($c1618)") -and $su.Message.Contains("the retry code 1618 ($c1618)") -and
+        @($uf, $su | Where-Object { $_.Message -match 'restart' }).Count -eq 0 -and ([regex]::Matches($uf.Message, 'Windows Installer')).Count -eq 1) { Ok '1618: the causes of 1618 only, once (no "restart pending")' } else { Bad "1618: $($uf.Message) // $($su.Message)" }
+    # Live row OP-NEWER: after a 69102 the advice was the same run (round 1), then "the same run fails again" followed by that run
+    # with no widen command (round 2). The widen command keeps the rule's mode and floor and covers the observed version.
+    $r102 = & $rule 'Enforce'; $r102 | Add-Member -NotePropertyName VersionMin -NotePropertyValue '8.9.0'; $r102 | Add-Member -NotePropertyName VersionMax -NotePropertyValue '8.9.7'
+    $p102 = & $withRules @($r102) (& $recWith 69102 'a newer version of the prior install is present than its rule covers (VersionMax)')
+    [System.IO.File]::WriteAllText((Join-Path $p102 'Documentation\PriorInstallCandidates.json'), (ConvertTo-Json -InputObject ([ordered]@{ SchemaVersion = '1.0'; Baseline = [ordered]@{ Version = '8.9.8'; InstallerType = 'nullsoft'; Family = 'exe' }
+                Candidates = @([ordered]@{ ProposedId = 'nsis-x64'; Confidence = 'High'; Key = 'Notepad++'; View = 'Native'; ObservedVersion = '8.9.8'; WindowsInstaller = $false }) }) -Depth 5), [System.Text.UTF8Encoding]::new($false))
+    $a = Get-Advisory $p102
+    $uf = Find $a 'UPDATE-FAILED'; $su = Find $a 'ID-SIBLING-UNTESTED'; $sf = Find $a 'ID-SIBLING-FAMILY'
+    if ($uf.Message -match 'FAILED \(the update exited with code 69102: a newer version of the prior install is present than its rule covers \(VersionMax\)\)' -and
+        $su.Message.Contains("ended with 69102: the install on the test VM (8.9.8) was newer than the VersionMax of the rule(s) nsis-x64, so the same run fails again. Widen the window: Set-Win32ToolkitPriorInstall -ProjectPath '$p102' -FromUpdateTest -Id nsis-x64 -Mode Enforce -VersionMin '8.9.0' -VersionMax '8.9.8'; or run from a baseline inside it: Test-Win32ToolkitProject -ProjectPath '$p102' -Scenario Update -BaselineInstallerType nullsoft -SpecificVersion <version>.")) {
+        Ok '69102: UPDATE-FAILED names the code and meaning; ID-SIBLING-UNTESTED gives the widen command (mode and floor kept, the observed version covered) and a baseline inside the window'
+    } else { Bad "69102: $($uf.Message) // $($su.Message)" }
+    # Live row OP-NEWER (round 2): ID-SIBLING-FAMILY stayed Info and said the Enforce rule removes that install.
+    if ($sf.Severity -eq 'Warning' -and $sf.Message -match 'The prior-install rule\(s\) nsis-x64 name that install, but the latest Update test found a newer one on the test VM than their VersionMax \(69102\): devices with it FAIL this package until the window is widened\.$' -and
+        $sf.Message -notmatch 'do not get two registrations|an Enforce rule removes it') { Ok '69102: ID-SIBLING-FAMILY is a Warning saying devices with the newer install FAIL (the coverage sentence replaced)' } else { Bad "69102 family: $($sf.Severity) $($sf.Message)" }
+    # Live row KILL-NATIVE (round 2): after a kill-switch refusal the advice was the same run (or a proof).
+    $a = Get-Advisory (& $withRules @((& $rule 'Enforce')) (& $recWith 69111 'removal of prior installs is switched off on this device (RemovePriorDisabled)'))
+    $su = Find $a 'ID-SIBLING-UNTESTED'
+    if ($su.Message -match 'ended with 69111: removal of prior installs was switched off on the test VM \(RemovePriorDisabled = 1 under HKLM\\SOFTWARE\\Contoso IT\\win32-toolkit, set by the package itself - an org hook - or by the test VM''s checkpoint\), so the same run refuses again\. Remove what sets it, then run it again: Test-Win32ToolkitProject .* -Backend HyperV -TestMode Unattended$' -and
+        $su.Message -notmatch 'BaselineInstallerType Both') { Ok '69111: ID-SIBLING-UNTESTED names the kill switch on the test VM (its key with the ScriptAuthor) and what to remove before the run' } else { Bad "69111: $($su.Message)" }
+    # Live row OP-REPORT: a Report rule's side-by-side install fails OldArpGone by design every time.
+    $a = Get-Advisory (& $withRules @((& $rule 'Report')) (New-Record))
+    $su = Find $a 'ID-SIBLING-UNTESTED'
+    if ($su.Severity -eq 'Warning' -and $su.Message -match 'the Report rule\(s\) nsis-x64 leave that install next to this package by design \(OldArpGone fails while it is Report\)' -and $su.Message -match '-Id nsis-x64 -Mode Enforce' -and $su.Message -notmatch 'BaselineInstallerType Both') { Ok 'a Report rule of that family: the side-by-side install is by design; the step is Enforce (no re-run advice)' } else { Bad "report: $($su.Message)" }
+    # Live rows OP-CONTROL, RC2-BUILD: the Update test's candidate was named only in that run's own output.
+    $pc = & $withRules @() (New-Record)
+    [System.IO.File]::WriteAllText((Join-Path $pc 'Documentation\PriorInstallCandidates.json'), (ConvertTo-Json -InputObject ([ordered]@{ SchemaVersion = '1.0'; Baseline = [ordered]@{ Version = '8.8.9'; InstallerType = 'nullsoft'; Family = 'exe' }
+                Candidates = @([ordered]@{ ProposedId = 'nsis-x64'; Confidence = 'High'; Key = 'Notepad++'; View = 'Native'; WindowsInstaller = $false }) }) -Depth 5), [System.Text.UTF8Encoding]::new($false))
+    $su = Find (Get-Advisory $pc) 'ID-SIBLING-UNTESTED'
+    if ($su.Message -match "left a prior-install candidate \(Notepad\+\+ \[Native\]\): declare it \(Block first\): Set-Win32ToolkitPriorInstall -ProjectPath '.*' -FromUpdateTest -Mode Block;" -and $su.Message -notmatch 'CandidateKey') { Ok 'a declarable candidate from that run: ID-SIBLING-UNTESTED names it and the -FromUpdateTest -Mode Block command' } else { Bad "candidate: $($su.Message)" }
+    # Live row OP-CONTROL (round 2): the same advice for a project whose remove-prior blocks are another catalog revision; the
+    # command was refused (W32T.PriorInstallSlotsMissing), and re-creating the project drops the candidates.
+    $oldRev = [int](Get-Win32ToolkitDeployScriptBlock -Name RemovePriorRevision) - 1
+    [System.IO.File]::WriteAllText((Join-Path $pc 'Invoke-AppDeployToolkit.ps1'), "## win32-toolkit:Pre-Install:prior-check (begin)`n## remove-prior catalog revision $oldRev (win32-toolkit)`n## win32-toolkit:Pre-Install:prior-check (end)`n## win32-toolkit:Pre-Install:remove-prior (begin)`n## win32-toolkit:Pre-Install:remove-prior (end)`n", [System.Text.UTF8Encoding]::new($true))
+    $su = Find (Get-Advisory $pc) 'ID-SIBLING-UNTESTED'
+    if ($su.Message -match "left a prior-install candidate \(Notepad\+\+ \[Native\]\), and this project cannot take a rule: its remove-prior blocks are catalog revision $oldRev, this version writes revision $($oldRev + 1)\. " -and $su.Message -match 'Re-create it with this win32-toolkit version .*run this Update test again \(Test-Win32ToolkitProject .*; re-creating drops the candidates\), then declare it \(Block first\)' -and
+        $su.Message -notmatch 'make it Enforce and prove it') { Ok 'a candidate in a project that cannot take a rule: re-create it, run the Update test again, then declare (not the refused command alone)' } else { Bad "candidate, old slots: $($su.Message)" }
+    # Live row OP-UNPROVEN: an Enforce rule whose identity did not match on the test VM still made ID-SIBLING-FAMILY say
+    # "devices that have it do not get two registrations" (round 1), then kept that sentence and appended "But ..." (round 2);
+    # ID-SIBLING-UNTESTED advised the same run (round 2), which fails the same way.
+    $script:switches = @([pscustomobject]@{ Code = 'ID-TECH-SWITCH'; Message = 'Technology switch: test.'; BaselineFamily = 'exe'; UnmatchedRules = @('nsis-x64') })
+    $pu = & $withRules @((& $rule 'Enforce')) (New-Record -Fail @('OldArpGone-PostUpdate', 'PriorPresent-PreUpdate.nsis-x64'))
+    [System.IO.File]::WriteAllText((Join-Path $pu 'Documentation\PriorInstallCandidates.json'), (ConvertTo-Json -InputObject ([ordered]@{ SchemaVersion = '1.0'; Baseline = [ordered]@{ Version = '8.8.9'; InstallerType = 'nullsoft'; Family = 'exe' }
+                Candidates = @([ordered]@{ ProposedId = 'nsis-x64'; Confidence = 'High'; Key = 'Notepad++'; View = 'Native'; ObservedVersion = '8.8.9'; WindowsInstaller = $false }) }) -Depth 5), [System.Text.UTF8Encoding]::new($false))
+    $a = Get-Advisory $pu
+    $script:switches = @()
+    $sf = Find $a 'ID-SIBLING-FAMILY'; $su = Find $a 'ID-SIBLING-UNTESTED'
+    if ($sf.Severity -eq 'Warning' -and $sf.Message -match '^winget also ships nullsoft .*\. The prior-install rule\(s\) nsis-x64 name that install, but the latest Update test found it on the test VM and they did not match it \(see ID-TECH-SWITCH\): devices like it keep that install next to this package until the rule is replaced\.$' -and
+        $sf.Message -notmatch 'do not get two registrations|an Enforce rule removes it') { Ok 'rules the technology switch names as unmatched: ID-SIBLING-FAMILY is a Warning whose coverage sentence is replaced, not contradicted' } else { Bad "unmatched: $($sf.Severity) $($sf.Message)" }
+    if ($su.Severity -eq 'Warning' -and $su.Message.Contains("found that install on the test VM, but the rule(s) nsis-x64 did not match it (see ID-TECH-SWITCH), so devices like it keep that install next to this package, and running the test again or proving the rule fails the same way. Replace the rule from that test's candidate: Set-Win32ToolkitPriorInstall -ProjectPath '$pu' -FromUpdateTest -Id nsis-x64 -Mode Enforce -VersionMin '' -VersionMax '8.8.9'.") -and
+        $su.Message -notmatch 'BaselineInstallerType Both') { Ok 'unmatched: ID-SIBLING-UNTESTED names the replacement from the candidate (mode kept), not the same run' } else { Bad "unmatched untested: $($su.Message)" }
 
     Write-Host '[2] Passed / Inconclusive / two families (Both) / Unavailable records' -ForegroundColor Cyan
     Set-TestResultFile $npp @(New-Record -Verdict Passed -Fail @())
@@ -218,6 +317,7 @@ try {
     Set-TestResultFile $npp @((New-Record -Unavailable))
     $a = Get-Advisory $npp
     if (@($a.Update).Count -eq 0 -and -not (Find $a 'UPDATE-FAILED') -and -not (Find $a 'UPDATE-INCONCLUSIVE') -and (Find $a 'ID-SIBLING-UNTESTED')) { Ok 'an Unavailable record alone is never judged (no Update entry, no UPDATE-* finding)' } else { Bad "Unavailable only -> $(Codes $a)" }
+    if ((Find $a 'ID-SIBLING-UNTESTED').Message -match 'but no Update test has passed from an exe install\. Run:') { Ok 'no judged run of that family -> ID-SIBLING-UNTESTED says no Update test has passed from it' } else { Bad "untested wording: $((Find $a 'ID-SIBLING-UNTESTED').Message)" }
     # Installer-identity PR 2: a test the Intune-parity pre-check did not start (NotRun: Inconclusive, no assertions, no
     # Baseline) is listed but never judged - it would otherwise read as the newest (legacy) record and hide the FAIL.
     $notRun = [pscustomobject][ordered]@{ Scenario = 'Update'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-22T09:00:00Z'; Verdict = 'Inconclusive'

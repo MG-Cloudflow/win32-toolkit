@@ -9,6 +9,14 @@ function Get-Win32ToolkitTechnologySwitch {
         the package's family: the vendor install of the old version (e.g. an NSIS EXE) survived the package of
         another technology (e.g. a WiX MSI), so devices that have it get two registrations over one folder.
 
+        Installer-identity PR 3: no finding for a record whose update exited outside the success codes (the host assertion
+        UpdateExitCode-PostUpdate = FAIL: the package installed nothing, e.g. a remove-prior refusal), nor when every
+        survivor is named (View and Key) by a Block or Enforce rule of SupportFiles\AppConfig.json PriorInstalls (that rule
+        refuses or removes it on devices); a survivor a Report rule names keeps the finding, which names the rule. A rule
+        the record checked and whose identity did not match the survivor (PriorPresent-PreUpdate.<id> FAIL) handled nothing:
+        the finding stays and names that rule (UnmatchedRules; live row OP-UNPROVEN). The message names the date of the
+        Update test that saw the survivor.
+
         Records marked Baseline.Unavailable (the baseline technology could not be downloaded, L21), and
         records with NotRun (the Intune-parity pre-check did not start the test), are never judged and never
         hide an older record of their family.
@@ -32,7 +40,7 @@ function Get-Win32ToolkitTechnologySwitch {
         The packaged installer family (default: from the source, else from the type).
     .OUTPUTS
         [pscustomobject[]] Code ('ID-TECH-SWITCH'), PackageType, PackageFamily, BaselineType, BaselineFamily,
-        BaselineVersion, Survivors, TimestampUtc, Legacy, Message. Nothing when there is no switch.
+        BaselineVersion, Survivors, TimestampUtc, Legacy, UnmatchedRules (ids), Message. Nothing when there is no switch.
     .EXAMPLE
         foreach ($s in @(Get-Win32ToolkitTechnologySwitch -ProjectPath $p)) { Write-Warning $s.Message }
     #>
@@ -159,19 +167,74 @@ function Get-Win32ToolkitTechnologySwitch {
         if ($legacy) { $latest[$legacy.BaselineFamily] = $legacy }
     }
 
+    # Installer-identity PR 3 (live checks OP-BLOCK, OP-NEWER, KILL-*, APP-RUNNING, MSIBUSY, RC2-BLOCK, SB-BLOCK, DEMOTE): a
+    # survivor the project's Block or Enforce prior-install rule names is that rule's case (refused, or removed once
+    # proven), and an update that exited outside the success codes (UpdateExitCode-PostUpdate = FAIL) installed nothing:
+    # neither is "two registrations over one folder". A Report rule accepts the side-by-side install: it is named.
+    $ruleList = @()
+    try {
+        $cfgNow = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
+        $ruleList = @(@(& $prop (& $prop $cfgNow 'PriorInstalls') 'Entries') | Where-Object { $_ -is [System.Management.Automation.PSCustomObject] })
+    }
+    catch {
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+        Write-Verbose "Get-Win32ToolkitTechnologySwitch: the prior-install rules could not be read: $($_.Exception.Message)"
+    }
+    $ruleFor = {
+        param($Survivor)
+        @($ruleList | Where-Object { [string](& $prop $_ 'View') -ceq [string](& $prop $Survivor 'View') -and
+                [string]::Equals([string](& $prop $_ 'Key'), [string](& $prop $Survivor 'KeyLeaf'), [System.StringComparison]::OrdinalIgnoreCase) }) | Select-Object -First 1
+    }
+    $notInstalled = {
+        param($Record)
+        @(@(& $prop $Record 'Assertions') | Where-Object { $_ -and [string](& $prop $_ 'Name') -eq 'UpdateExitCode-PostUpdate' -and [string](& $prop $_ 'Result') -eq 'FAIL' }).Count -gt 0
+    }
+    # A rule the run checked whose identity did not match the install on the test VM (PriorPresent-PreUpdate.<id> FAIL: the
+    # device left it as it is, D14) handled nothing in that run (live row OP-UNPROVEN: a publisher typo hid the switch).
+    $unmatched = {
+        param($Record, $Rule)
+        $rid = [string](& $prop $Rule 'Id')
+        $rid -and @(@(& $prop $Record 'Assertions') | Where-Object { $_ -and [string](& $prop $_ 'Name') -ceq "PriorPresent-PreUpdate.$rid" -and [string](& $prop $_ 'Result') -eq 'FAIL' }).Count -gt 0
+    }
+
     foreach ($c in $latest.Values) {
         if (-not (& $failed $c.Record)) { continue }
         if (-not $c.BaselineFamily -or $c.BaselineFamily -eq 'other' -or $c.BaselineFamily -eq $PackageFamily) { continue }
+        if (& $notInstalled $c.Record) {
+            Write-Verbose 'Get-Win32ToolkitTechnologySwitch: the latest Update record of this family did not install the package (its update exited outside the success codes); not a technology switch.'
+            continue
+        }
+        $survivorRules = @(@($c.Survivors) | ForEach-Object { & $ruleFor $_ })
+        $allSurvivorsRuled = @($c.Survivors).Count -gt 0 -and $survivorRules.Count -eq @($c.Survivors).Count
+        $unmatchedRules = @($survivorRules | Where-Object { [string](& $prop $_ 'Mode') -cin @('Block', 'Enforce') -and (& $unmatched $c.Record $_) })
+        if ($allSurvivorsRuled -and $unmatchedRules.Count -eq 0 -and @($survivorRules | Where-Object { [string](& $prop $_ 'Mode') -cin @('Block', 'Enforce') }).Count -eq $survivorRules.Count) {
+            Write-Verbose 'Get-Win32ToolkitTechnologySwitch: every surviving old install is named by a Block or Enforce prior-install rule; not reported here.'
+            continue
+        }
+        $reportRule = @($survivorRules | Where-Object { [string](& $prop $_ 'Mode') -ceq 'Report' }) | Select-Object -First 1
 
         $first = @($c.Survivors) | Select-Object -First 1
         $who = if ($first) {
             " ({0}, ARP key '{1}')" -f (& $safe (& $prop $first 'DisplayName') 256), (& $safe (& $prop $first 'KeyLeaf') 256)
         } else { '' }
         $famLabel = if ($familyLabels.ContainsKey($c.BaselineFamily)) { $familyLabels[$c.BaselineFamily] } else { & $safe $c.BaselineFamily 32 }
-        $msg = ('Technology switch: the vendor {0} install of v{1}{2} was still registered after the {3} package installed. ' +
+        # Which run saw it (live row SB-REGRESSION: a later run from another baseline read as if it had installed this one; round
+        # 2: the date alone could not tell it from a later run of the same day, the usual order of an Auto and a Packaged run):
+        # its baseline technology and its UTC time.
+        $when = & $iso (& $prop $c.Record 'TimestampUtc')
+        $whenText = if ($when -match '^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})') { "$($Matches[1]) $($Matches[2]) UTC" } elseif ($when.Length -ge 10) { $when.Substring(0, 10) } else { '' }
+        $runText = if ($whenText) { " in the Update test from the $(& $safe $c.BaselineType 32) baseline of $whenText" } else { '' }
+        $msg = ('Technology switch: the vendor {0} install of v{1}{2} was still registered after the {3} package installed{5}. ' +
                 'Devices that have the {4} install get two registrations over one folder. Do not publish this package to them; ' +
                 'see docs/packaging.md, Installer technology.') -f (& $safe $c.BaselineType 32), (& $safe $c.BaselineVersion), $who,
-               (& $safe $PackageType 32), $famLabel
+               (& $safe $PackageType 32), $famLabel, $runText
+        if ($reportRule) {
+            $msg += " The prior-install rule '$(& $safe (& $prop $reportRule 'Id') 40)' reports it (Report: the install goes on next to it and devices get a LastSeen marker)."
+        }
+        foreach ($u in $unmatchedRules) {
+            $uid = & $safe (& $prop $u 'Id') 40
+            $msg += " The $(& $safe (& $prop $u 'Mode') 16) rule '$uid' names that install, but its identity did not match it on the test VM (PriorPresent-PreUpdate.$uid FAIL): devices like it keep that install next to this package (left as it is, 69103). Check the rule's publisher, name and version window."
+        }
 
         [pscustomobject]@{
             Code            = 'ID-TECH-SWITCH'
@@ -183,6 +246,7 @@ function Get-Win32ToolkitTechnologySwitch {
             Survivors       = @($c.Survivors)
             TimestampUtc    = & $iso (& $prop $c.Record 'TimestampUtc')
             Legacy          = [bool]$c.Legacy
+            UnmatchedRules  = [string[]]@($unmatchedRules | ForEach-Object { & $safe (& $prop $_ 'Id') 40 })
             Message         = $msg
         }
     }

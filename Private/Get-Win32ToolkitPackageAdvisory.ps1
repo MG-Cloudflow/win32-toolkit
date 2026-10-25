@@ -16,7 +16,12 @@ function Get-Win32ToolkitPackageAdvisory {
         Update record; its family comes from Sandbox\OldVersion when that manifest is the version the
         generated Sandbox\UpdateAssertions.ps1 expected and the run used a winget baseline (else unknown).
           UPDATE-FAILED        Warning  the latest record of a family failed (names the failed assertions and the
-                                        run's own log folder, Sandbox\Logs\Runs\<run>, when the record has one)
+                                        run's own log folder, Sandbox\Logs\Runs\<run>, when the record has one, and the
+                                        update's exit code with its meaning when the Notes give it); Info when the update
+                                        exited 69101 and the project has a Block rule (the refusal was the intended
+                                        outcome; Requirement-PreUpdate, judged before it, is said to fail by design, D28);
+                                        a retry code (1618, 69107) says the run judged nothing, with that code's causes
+                                        (run it again)
           UPDATE-INCONCLUSIVE  Info     the latest record of a family has no verdict
           ID-TECH-SWITCH       Warning  every Get-Win32ToolkitTechnologySwitch result
 
@@ -33,7 +38,21 @@ function Get-Win32ToolkitPackageAdvisory {
         -ProbeIfMissing. On top of them:
           ID-SIBLING-UNTESTED  Warning  winget ships another testable technology and the latest judged
                                         Update test from it did not pass (or there is none); when the latest
-                                        one of every such family passed, ID-SIBLING-FAMILY becomes Info.
+                                        one of every such family passed, ID-SIBLING-FAMILY becomes Info. The advice
+                                        follows the failed run's cause (installer-identity PR 3 live checks): a Block
+                                        rule's 69101 -> Info (as intended; Enforce and prove it to remove the install);
+                                        a retry code (1618, 69107) -> its own causes, run it again; 69102 -> widen the
+                                        rule's window (-FromUpdateTest -Id keeping its mode and floor, or a capture) or a
+                                        baseline inside it; 69111 -> the kill switch on the test VM; a rule whose
+                                        identity did not match (ID-TECH-SWITCH UnmatchedRules) -> replace it from the
+                                        candidate; a Report rule of that family -> it stays side by side by design
+                                        (Enforce it); a declarable candidate in PriorInstallCandidates.json -> declare it
+                                        (Block first), or, when the project's remove-prior blocks are not this catalog's,
+                                        re-create it and run the test again first; else run the test again
+                                        (-BaselineInstallerType Both). The run is named by its baseline type. When
+                                        ID-TECH-SWITCH names rules whose identity did not match on the test VM, or a
+                                        69102 run found the install newer than a rule's VersionMax, ID-SIBLING-FAMILY is a
+                                        Warning whose coverage sentence is replaced by what the run found.
 
         Cleanup (-Context Publish and Tui only; at Export the package check already refuses them):
           UNSAFE-CLEANUP       Warning  Get-Win32ToolkitCleanupPathFinding reports an unsafe cleanup path
@@ -42,9 +61,15 @@ function Get-Win32ToolkitPackageAdvisory {
                                         paths could not be checked (Windows PowerShell 5.1 on the device
                                         may still read it).
 
+        Prior installs (installer-identity PR 3; every context): the Warning and Info rows of
+        Get-Win32ToolkitPriorInstallFinding -Stage Advisory (Source PriorInstalls, message prefix 'Prior install: '):
+        PRIOR-BLOCK-FLEET, PRIOR-NO-WELCOME, PRIOR-PREDECESSOR-PUBLISHED, PRIOR-ENFORCE-PILOT, ID-PRIOR-OWN,
+        PRIOR-CLASS-E (warnings) and PRIOR-UNCOVERED (Info). Export refuses the Error rows itself.
+
         Order: UNSAFE-CLEANUP, INSTALL-FAILED, UPDATE-FAILED, ID-TECH-SWITCH, INSTALL-INCONCLUSIVE, ID-FAMILY,
         ID-SIBLING-UNTESTED, ID-SIBLING-FAMILY, ID-NO-ANCHOR, ID-TATTOO, ID-SCOPE, ID-PROBE-UNAVAILABLE,
-        ID-PREDECESSOR-AMBIGUOUS, other warnings, then every Info finding. Every untrusted value passes
+        ID-PREDECESSOR-AMBIGUOUS, PRIOR-BLOCK-FLEET, PRIOR-NO-WELCOME, PRIOR-PREDECESSOR-PUBLISHED, PRIOR-ENFORCE-PILOT,
+        ID-PRIOR-OWN, PRIOR-CLASS-E, other warnings, then every Info finding. Every untrusted value passes
         ConvertTo-Win32ToolkitSafeText.
     .PARAMETER ProjectPath
         The PSADT project folder (Projects\<Template>\<App>).
@@ -57,7 +82,7 @@ function Get-Win32ToolkitPackageAdvisory {
         [pscustomobject] SchemaVersion, PackageType, PackageFamily, Update (BaselineFamily, BaselineType,
         BaselineVersion, Verdict, FailedAssertions, TimestampUtc, Backend, Mode, Legacy, LogFolder), Install ($null,
         or the latest judged install/uninstall record: Verdict, FailedAssertions, TimestampUtc, Backend, Mode,
-        LogFolder), Findings (Code, Severity, Source = UpdateTest|InstallTest|IdentityDelta|AppConfig, Message).
+        LogFolder), Findings (Code, Severity, Source = UpdateTest|InstallTest|IdentityDelta|AppConfig|PriorInstalls, Message).
     .EXAMPLE
         (Get-Win32ToolkitPackageAdvisory -ProjectPath $proj -Context Publish -ProbeIfMissing).Findings
     #>
@@ -192,6 +217,13 @@ function Get-Win32ToolkitPackageAdvisory {
                 continue
             }
             $when = & $instant (& $prop $r 'TimestampUtc')
+            # The update's own exit code and what it means, from the record's Notes (installer-identity PR 3 live rows OP-BLOCK,
+            # RC2-BLOCK, OP-NEWER, DEMOTE: a Block refusal, a 69102 and a retry code all read as the same failed assertions).
+            $exitCode = $null; $exitMeaning = ''
+            foreach ($em in [regex]::Matches([string](& $prop $r 'Notes'), '(?:The update|Intune-parity phase ''Update[^'']*'') exited with code (-?\d{1,10})(?:: ([^.]+))?\.')) {
+                $n = 0
+                if ([int]::TryParse($em.Groups[1].Value, [ref]$n)) { $exitCode = $n; if ($em.Groups[2].Success -and -not $exitMeaning) { $exitMeaning = & $safe $em.Groups[2].Value 300 } }
+            }
             $judged.Add([pscustomobject]@{
                     BaselineFamily   = (& $safe $base.Family 32).ToLowerInvariant()
                     BaselineType     = (& $safe $base.Type 32).ToLowerInvariant()
@@ -205,6 +237,8 @@ function Get-Win32ToolkitPackageAdvisory {
                     Legacy           = $legacy
                     LogFolder        = & $logFolder $r
                     Date             = if ($when) { $when.ToString('yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture) } else { '' }
+                    ExitCode         = $exitCode
+                    ExitMeaning      = $exitMeaning
                 })
         }
 
@@ -253,11 +287,55 @@ function Get-Win32ToolkitPackageAdvisory {
     # Export: worded so it holds for a real build and for Export -WhatIf, which builds nothing (re-verification
     # 2026-10-21, A2 sb#1: 'the package is still packaged' printed right after 'nothing was staged or packaged').
     $continues = if ($Context -eq 'Export') { 'it does not stop packaging' } else { 'publishing continues' }
+    # The project's prior-install rules (installer-identity PR 3; fail-open): a failure their own policy explains is said as
+    # such (live rows OP-BLOCK, RC2-BLOCK: a deliberate Block refusal gave three warnings, one asking for a run that cannot
+    # pass while the rule is Block).
+    $priorRules = @()
+    $scriptAuthor = ''
+    try {
+        $cfgRules = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
+        $priorRules = @(@(& $prop (& $prop $cfgRules 'PriorInstalls') 'Entries') | Where-Object { $_ -is [System.Management.Automation.PSCustomObject] })
+        $scriptAuthor = & $safe (& $prop (& $prop $cfgRules 'App') 'ScriptAuthor') 128
+    } catch {
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+        Write-Verbose ('Package advisory: the prior-install rules could not be read: {0}' -f (& $safe $_.Exception.Message 512))
+    }
+    $ruleIds = { param([object[]]$Rules) @($Rules | ForEach-Object { & $safe (& $prop $_ 'Id') 40 } | Where-Object { $_ } | Select-Object -Unique) }
+    $rulesOf = {
+        param([string]$Mode, [string]$Family)
+        @($priorRules | Where-Object { [string](& $prop $_ 'Mode') -ceq $Mode -and (-not $Family -or (Get-Win32ToolkitInstallerFamily -Type ([string](& $prop $_ 'UninstallerType'))).Family -eq $Family) })
+    }
+    $isRetry = { param($Code) $null -ne $Code -and @(1618, 69107) -contains [int]$Code }
+    # What a retry code means on the test VM, per code (live rows APP-RUNNING, MSIBUSY: one list for both codes named "a
+    # restart pending" for 1618, which only 69107 means, and left out 1618's "changed while the dialog was open").
+    $retryCause = {
+        param($Code)
+        switch ([int]$Code) {
+            1618 { 'on the test VM: the prior app was still running after the close-apps dialog, Windows Installer was busy, or the prior install changed while the dialog was open' }
+            69107 { 'on the test VM: a restart was pending, from Windows servicing or from the removal of the prior install' }
+            default { 'a retry code' }
+        }
+    }
     foreach ($entry in $latest.Values) {
         if ($entry.Verdict -eq 'Failed') {
             $names = if ($entry.FailedAssertions.Count) { $entry.FailedAssertions -join ', ' } else { 'no failed assertion was recorded' }
             $review = if ($entry.LogFolder) { '{0}\UpdateAssertions.log' -f $entry.LogFolder } else { 'Sandbox\Logs\UpdateAssertions.log' }
-            & $add 'UPDATE-FAILED' 'Warning' 'UpdateTest' ('{0} FAILED: {1}. This only warns: {2}. Review {3} before you assign it.' -f (& $runText $entry), $names, $continues, $review)
+            $blockIds = @(& $ruleIds (& $rulesOf 'Block' ''))
+            if ($entry.ExitCode -eq 69101 -and $blockIds.Count -gt 0) {
+                # Live rows OP-BLOCK, RC2-BLOCK: Requirement-PreUpdate is judged BEFORE the update and fails because the update
+                # requirement includes Enforce rules only (D28), not because of the refusal.
+                $after = @($entry.FailedAssertions | Where-Object { $_ -ne 'Requirement-PreUpdate' })
+                $afterText = if ($after.Count) { " The failed assertions after it follow from that refusal: $($after -join ', ')." } else { '' }
+                $preText = if (@($entry.FailedAssertions) -contains 'Requirement-PreUpdate') { ' Requirement-PreUpdate was judged before the update and fails by design: the update requirement detects only installs an Enforce rule names, so devices with only that install do not get this package as an update while the rule is Block.' } else { '' }
+                & $add 'UPDATE-FAILED' 'Info' 'UpdateTest' (('{0} ended as intended: the Block prior-install rule(s) {1} refused the update (exit code 69101), so devices with that install FAIL this package until a rule is Enforce.' -f (& $runText $entry), ($blockIds -join ', ')) + $afterText + $preText)
+            }
+            elseif (& $isRetry $entry.ExitCode) {
+                & $add 'UPDATE-FAILED' 'Warning' 'UpdateTest' ('{0} judged nothing: the update exited with the retry code {1} ({2}). This only warns: {3}. Run it again before you assign it.' -f (& $runText $entry), $entry.ExitCode, (& $retryCause $entry.ExitCode), $continues)
+            }
+            else {
+                $codeText = if ($null -ne $entry.ExitCode) { ' (the update exited with code {0}{1})' -f $entry.ExitCode, $(if ($entry.ExitMeaning) { ": $($entry.ExitMeaning)" } else { '' }) } else { '' }
+                & $add 'UPDATE-FAILED' 'Warning' 'UpdateTest' ('{0} FAILED{4}: {1}. This only warns: {2}. Review {3} before you assign it.' -f (& $runText $entry), $names, $continues, $review, $codeText)
+            }
         } elseif ($entry.Verdict -eq 'Inconclusive') {
             & $add 'UPDATE-INCONCLUSIVE' 'Info' 'UpdateTest' ('{0} gave no verdict (Inconclusive). Run it again to confirm that devices with the earlier version update cleanly.' -f (& $runText $entry))
         }
@@ -281,6 +359,9 @@ function Get-Win32ToolkitPackageAdvisory {
     }
 
     # ---- Technology switches seen by the Update tests ----
+    $unmatchedIds = [System.Collections.Generic.List[string]]::new()
+    # The unmatched rules per baseline family of the switch that names them ('' when the switch does not say).
+    $unmatchedFam = @{}
     try {
         $switchArgs = @{ ProjectPath = $ProjectPath }
         if ($packageType) { $switchArgs.PackageType = $packageType }
@@ -288,6 +369,14 @@ function Get-Win32ToolkitPackageAdvisory {
         foreach ($s in @(Get-Win32ToolkitTechnologySwitch @switchArgs)) {
             if (-not $s) { continue }
             & $add 'ID-TECH-SWITCH' 'Warning' 'UpdateTest' (& $safe (& $prop $s 'Message') 2048)
+            $sFam = ([string](& $prop $s 'BaselineFamily')).ToLowerInvariant()
+            foreach ($u in @(& $prop $s 'UnmatchedRules')) {
+                if (-not $u) { continue }
+                $uId = & $safe $u 40
+                if (-not $unmatchedIds.Contains($uId)) { $unmatchedIds.Add($uId) }
+                if (-not $unmatchedFam.ContainsKey($sFam)) { $unmatchedFam[$sFam] = [System.Collections.Generic.List[string]]::new() }
+                if (-not $unmatchedFam[$sFam].Contains($uId)) { $unmatchedFam[$sFam].Add($uId) }
+            }
         }
     } catch {
         if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
@@ -306,19 +395,70 @@ function Get-Win32ToolkitPackageAdvisory {
     }
     if ($delta) {
         $siblingFinding = $null
+        $siblingLead = ''
         foreach ($f in @(& $prop $delta 'Findings')) {
             if (-not $f) { continue }
             $code = & $safe (& $prop $f 'Code') 64
             $severity = if ([string](& $prop $f 'Severity') -eq 'Warning') { 'Warning' } else { 'Info' }
             $item = [pscustomobject]@{ Code = $code; Severity = $severity; Source = 'IdentityDelta'; Message = & $safe (& $prop $f 'Message') 2048 }
             $findings.Add($item)
-            if ($code -eq 'ID-SIBLING-FAMILY') { $siblingFinding = $item }
+            if ($code -eq 'ID-SIBLING-FAMILY') { $siblingFinding = $item; $siblingLead = & $safe (& $prop (& $prop $f 'Data') 'Lead') 1024 }
         }
+        $project = (& $safe $ProjectPath 1024).Replace("'", "''")
+        # This project's remove-prior blocks (fail-open: unknown -> assumed current): a project of another catalog revision cannot
+        # take a rule (live row OP-CONTROL: the advised -FromUpdateTest command was refused with W32T.PriorInstallSlotsMissing).
+        $slotProblem = ''
+        try {
+            $advScript = Join-Path $ProjectPath 'Invoke-AppDeployToolkit.ps1'
+            $advShape = if (Test-Path -LiteralPath $advScript -PathType Leaf) { Get-Win32ToolkitDeployScriptShape -Path $advScript } else { $null }
+            $advRevision = [int](Get-Win32ToolkitDeployScriptBlock -Name RemovePriorRevision)
+            if ($null -eq $advShape) { $slotProblem = '' }
+            elseif ([int]$advShape.RemovePriorRevision -lt 1) { $slotProblem = 'its deploy script has no remove-prior blocks (it was created before this win32-toolkit version)' }
+            elseif ([int]$advShape.RemovePriorRevision -ne $advRevision) { $slotProblem = "its remove-prior blocks are catalog revision $([int]$advShape.RemovePriorRevision), this version writes revision $advRevision" }
+            elseif (-not $advShape.PriorCheckFirst) { $slotProblem = 'a dialog of its deploy script runs before the prior-check block' }
+        } catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Verbose ('Package advisory: the deploy script shape could not be read: {0}' -f (& $safe $_.Exception.Message 512))
+        }
+        # A rule's replacement from the Update test's candidate, keeping its mode and widening its window just enough to cover
+        # the observed version (live rows OP-NEWER, OP-UNPROVEN: the advice dropped the mode and the floor, or named no command).
+        # A rule from a sibling capture changes only through its capture.
+        $replaceCmd = {
+            param($Rule, [string]$Observed)
+            $rid = & $safe (& $prop $Rule 'Id') 40
+            if ([string](& $prop $Rule 'Source') -ceq 'SiblingCapture' -or [string](& $prop $Rule 'CaptureId')) {
+                return "capture the other installer technologies again (Test-Win32ToolkitProject -ProjectPath '$project' -Scenario SiblingCapture$(if ($Observed) { " -SiblingVersion '$((& $safe $Observed 64).Replace("'", "''"))'" })) and apply its proposal again"
+            }
+            $minText = [string](& $prop $Rule 'VersionMin'); $maxText = [string](& $prop $Rule 'VersionMax')
+            $obsV = if ($Observed) { ConvertTo-Win32ToolkitPriorVersion -Text $Observed } else { $null }
+            $minV = if ($minText) { ConvertTo-Win32ToolkitPriorVersion -Text $minText } else { $null }
+            $maxV = ConvertTo-Win32ToolkitPriorVersion -Text $maxText
+            $newMin = if ($minText -and $obsV -and $minV -and $obsV -lt $minV) { $Observed } else { $minText }
+            $newMax = if ($obsV -and (-not $maxV -or $obsV -gt $maxV)) { $Observed } elseif ($maxText) { $maxText } else { '<version>' }
+            "Set-Win32ToolkitPriorInstall -ProjectPath '$project' -FromUpdateTest -Id $rid -Mode $(& $safe (& $prop $Rule 'Mode') 16) -VersionMin '$((& $safe $newMin 64).Replace("'", "''"))' -VersionMax '$((& $safe $newMax 64).Replace("'", "''"))'"
+        }
+        # The candidate PriorInstallCandidates.json holds for a rule's key (its observed version), or $null.
+        $candidateFor = {
+            param($Rule)
+            try {
+                $cf = Join-Path $ProjectPath 'Documentation\PriorInstallCandidates.json'
+                if (-not (Test-Path -LiteralPath $cf -PathType Leaf) -or (Get-Item -LiteralPath $cf).Length -gt 1MB) { return $null }
+                $cdoc = Get-Content -LiteralPath $cf -Raw -Encoding UTF8 | ConvertFrom-Json
+                return (@(@(& $prop $cdoc 'Candidates') | Where-Object { $_ -is [System.Management.Automation.PSCustomObject] -and [string](& $prop $_ 'View') -ceq [string](& $prop $Rule 'View') -and
+                            [string]::Equals([string](& $prop $_ 'Key'), [string](& $prop $Rule 'Key'), [System.StringComparison]::OrdinalIgnoreCase) }) | Select-Object -First 1)
+            } catch {
+                if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                Write-Verbose ('Package advisory: the prior-install candidates could not be read: {0}' -f (& $safe $_.Exception.Message 512))
+                return $null
+            }
+        }
+        $ruleById = { param([string]$Id) @($priorRules | Where-Object { [string](& $prop $_ 'Id') -ceq $Id }) | Select-Object -First 1 }
+        # The rules of a family below the version a 69102 run observed (live row OP-NEWER).
+        $newerOf = [ordered]@{}
         if ($siblingFinding) {
             $testable = @(@(& $prop $delta 'Siblings') | Where-Object { $_ -and (& $prop $_ 'Testable') -and (& $prop $_ 'Registers') })
             $families = @($testable | ForEach-Object { ([string](& $prop $_ 'Family')).ToLowerInvariant() } | Where-Object { $_ } | Select-Object -Unique)
             $tested = [System.Collections.Generic.List[string]]::new()
-            $project = (& $safe $ProjectPath 1024).Replace("'", "''")
             foreach ($family in $families) {
                 # Tested = the LATEST judged record of the family passed (as for UPDATE-FAILED): an older
                 # pass never outweighs a newer failure.
@@ -330,14 +470,128 @@ function Get-Win32ToolkitPackageAdvisory {
                 $labels = @($testable | Where-Object { ([string](& $prop $_ 'Family')).ToLowerInvariant() -eq $family } |
                         ForEach-Object { & $safe (& $prop $_ 'Label') 128 } | Where-Object { $_ } | Select-Object -Unique)
                 $label = if ($labels.Count) { $labels -join ' and ' } else { $family }
-                $article = if ($family -match '^[aeiou]') { 'an' } else { 'a' }
-                & $add 'ID-SIBLING-UNTESTED' 'Warning' 'IdentityDelta' (("winget also ships {0}, but no Update test has passed from {1} {2} install. Run: Test-Win32ToolkitProject -ProjectPath '{3}' " +
-                        '-Scenario Update -BaselineInstallerType Both') -f $label, $article, (& $safe $family 32), $project)
+                $failed = $latestRun -and $latestRun.Verdict -eq 'Failed'
+                $on = if ($failed -and $latestRun.Date) { " (on $($latestRun.Date))" } else { '' }
+                # The run's own technology when it has one (live row MSIBUSY: "ships nullsoft ..., but the latest Update test
+                # from an exe install").
+                $fromType = if ($latestRun -and $latestRun.BaselineType) { & $safe $latestRun.BaselineType 32 } else { & $safe $family 32 }
+                $fromText = '{0} {1} install' -f $(if ($fromType -match '^[aeiou]') { 'an' } else { 'a' }), $fromType
+                $runCmd = "Test-Win32ToolkitProject -ProjectPath '$project' -Scenario Update -BaselineInstallerType Both"
+                $proveCmd = "Test-Win32ToolkitProject -ProjectPath '$project' -Scenario Update -Backend HyperV -TestMode Unattended"
+                # The Block or Enforce rules of this family the latest run did not match (ID-TECH-SWITCH names them).
+                $famUnmatched = @(@(if ($unmatchedFam.ContainsKey($family)) { $unmatchedFam[$family] }) + @(if ($unmatchedFam.ContainsKey('')) { $unmatchedFam[''] }) | Where-Object { $_ } | Select-Object -Unique)
+                # The Block or Enforce rules of this family whose VersionMax is below what a 69102 run observed.
+                $famNewer = @()
+                if ($failed -and $latestRun.ExitCode -eq 69102) {
+                    $famNewer = @($priorRules | Where-Object { [string](& $prop $_ 'Mode') -cin @('Block', 'Enforce') -and (Get-Win32ToolkitInstallerFamily -Type ([string](& $prop $_ 'UninstallerType'))).Family -eq $family })
+                    if ($famNewer.Count -eq 0) { $famNewer = @($priorRules | Where-Object { [string](& $prop $_ 'Mode') -cin @('Block', 'Enforce') }) }
+                    if ($famNewer.Count) { $newerOf[$family] = $famNewer }
+                }
+                # What the failed run's own cause says to do (installer-identity PR 3 live rows OP-BLOCK, RC2-BLOCK, DEMOTE,
+                # OP-NEWER, OP-REPORT, OP-CONTROL): the same run is advised only when it can tell something new.
+                $famBlock = @(& $ruleIds (& $rulesOf 'Block' $family)); if ($famBlock.Count -eq 0) { $famBlock = @(& $ruleIds (& $rulesOf 'Block' '')) }
+                $famReport = @(& $ruleIds (& $rulesOf 'Report' $family))
+                $candidate = $null
+                if ($failed) {
+                    try {
+                        $candFile = Join-Path $ProjectPath 'Documentation\PriorInstallCandidates.json'
+                        if ((Test-Path -LiteralPath $candFile -PathType Leaf) -and (Get-Item -LiteralPath $candFile).Length -le 1MB) {
+                            $candDoc = Get-Content -LiteralPath $candFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                            if (([string](& $prop (& $prop $candDoc 'Baseline') 'Family')).ToLowerInvariant() -eq $family) {
+                                $cands = @(@(& $prop $candDoc 'Candidates') | Where-Object { $_ -is [System.Management.Automation.PSCustomObject] -and (& $prop $_ 'WindowsInstaller') -ne $true })
+                                $cands = @($cands | Where-Object { $cd = $_; @($priorRules | Where-Object { [string](& $prop $_ 'View') -ceq [string](& $prop $cd 'View') -and [string]::Equals([string](& $prop $_ 'Key'), [string](& $prop $cd 'Key'), [System.StringComparison]::OrdinalIgnoreCase) }).Count -eq 0 })
+                                $candidate = $cands | Select-Object -First 1
+                                if ($candidate) { $candHigh = @($cands | Where-Object { [string](& $prop $_ 'Confidence') -eq 'High' }).Count -eq 1 -and [string](& $prop $candidate 'Confidence') -eq 'High' }
+                            }
+                        }
+                    } catch {
+                        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                        Write-Verbose ('Package advisory: the prior-install candidates could not be read: {0}' -f (& $safe $_.Exception.Message 512))
+                        $candidate = $null
+                    }
+                }
+                if ($failed -and $latestRun.ExitCode -eq 69101 -and $famBlock.Count -gt 0) {
+                    & $add 'ID-SIBLING-UNTESTED' 'Info' 'IdentityDelta' (("winget also ships {0}; the latest Update test from {1} ended with the refusal of the Block rule(s) {2} (69101){3}, as intended: " +
+                            "while the rule is Block that test cannot pass. To remove that install before installing instead, make it Enforce (Set-Win32ToolkitPriorInstall -ProjectPath '{4}' -Id {5} -Mode Enforce) " +
+                            'and prove it (Test-Win32ToolkitProject -ProjectPath ''{4}'' -Scenario Update -Backend HyperV -TestMode Unattended).') -f $label, $fromText, ($famBlock -join ', '), $on, $project, $famBlock[0])
+                }
+                elseif ($failed -and (& $isRetry $latestRun.ExitCode)) {
+                    & $add 'ID-SIBLING-UNTESTED' 'Warning' 'IdentityDelta' ('winget also ships {0}, but the latest Update test from {1}{2} judged nothing: it ended with the retry code {3} ({4}). Run it again: {5}' -f
+                        $label, $fromText, $on, $latestRun.ExitCode, (& $retryCause $latestRun.ExitCode), $runCmd)
+                }
+                elseif ($failed -and $latestRun.ExitCode -eq 69102) {
+                    # Live row OP-NEWER: "so the same run fails again" was followed by that same run. The steps that can help: widen
+                    # the window (keeping the rule's mode and floor), or a baseline inside the window.
+                    $newRule = @($famNewer | Where-Object { [string](& $prop $_ 'Mode') -ceq 'Enforce' }) + @($famNewer | Where-Object { [string](& $prop $_ 'Mode') -cne 'Enforce' }) | Select-Object -First 1
+                    $obs = ''
+                    if ($newRule) { $nc = & $candidateFor $newRule; if ($nc) { $obs = [string](& $prop $nc 'ObservedVersion') } }
+                    if (-not $obs -and $latestRun.BaselineVersion) { $obs = [string]$latestRun.BaselineVersion }
+                    $widenText = if ($newRule) { & $replaceCmd $newRule $obs } else { 'declare the rule again with a higher VersionMax' }
+                    $baseType = if ($latestRun.BaselineType) { & $safe $latestRun.BaselineType 32 } else { 'Both' }
+                    & $add 'ID-SIBLING-UNTESTED' 'Warning' 'IdentityDelta' (("winget also ships {0}, but the latest Update test from {1}{2} ended with 69102: the install on the test VM{3} was newer than the VersionMax of the rule(s) {4}, " +
+                            'so the same run fails again. Widen the window: {5}; or run from a baseline inside it: Test-Win32ToolkitProject -ProjectPath ''{6}'' -Scenario Update -BaselineInstallerType {7} -SpecificVersion <version>.') -f
+                        $label, $fromText, $on, $(if ($obs) { " ($(& $safe $obs 64))" } else { '' }), ((@($famNewer | ForEach-Object { & $safe (& $prop $_ 'Id') 40 })) -join ', '), $widenText, $project, $baseType)
+                }
+                elseif ($failed -and $latestRun.ExitCode -eq 69111) {
+                    # Live row KILL-NATIVE: after a kill-switch refusal the advice was the same run (or a proof), which refuses
+                    # again while whatever set the switch on the test VM is still there.
+                    & $add 'ID-SIBLING-UNTESTED' 'Warning' 'IdentityDelta' (("winget also ships {0}, but the latest Update test from {1}{2} ended with 69111: removal of prior installs was switched off on the test VM " +
+                            '(RemovePriorDisabled = 1 under HKLM\SOFTWARE\{4}\win32-toolkit, set by the package itself - an org hook - or by the test VM''s checkpoint), so the same run refuses again. ' +
+                            'Remove what sets it, then run it again: {3}') -f $label, $fromText, $on, $proveCmd, $(if ($scriptAuthor) { $scriptAuthor } else { '<ScriptAuthor>' }))
+                }
+                elseif ($failed -and $famUnmatched.Count -gt 0) {
+                    # Live row OP-UNPROVEN: a rule whose identity did not match the install on the test VM got "run the test
+                    # again", which fails the same way: the rule itself has to change.
+                    $um = & $ruleById ([string]$famUnmatched[0])
+                    $umCand = if ($um) { & $candidateFor $um } else { $null }
+                    $umObs = if ($umCand) { [string](& $prop $umCand 'ObservedVersion') } else { '' }
+                    $umFix = if ($um) { & $replaceCmd $um $umObs } else { "correct the rule's publisher, name and version window" }
+                    & $add 'ID-SIBLING-UNTESTED' 'Warning' 'IdentityDelta' (("winget also ships {0}; the latest Update test from {1}{2} found that install on the test VM, but the rule(s) {3} did not match it (see ID-TECH-SWITCH), " +
+                            'so devices like it keep that install next to this package, and running the test again or proving the rule fails the same way. Replace the rule from that test''s candidate: {4}.') -f
+                        $label, $fromText, $on, ($famUnmatched -join ', '), $umFix)
+                }
+                elseif ($failed -and $famReport.Count -gt 0) {
+                    & $add 'ID-SIBLING-UNTESTED' 'Warning' 'IdentityDelta' (("winget also ships {0}, but the latest Update test from {1} failed{2}: the Report rule(s) {3} leave that install next to this package by design " +
+                            "(OldArpGone fails while it is Report). To remove it before installing, make it Enforce (Set-Win32ToolkitPriorInstall -ProjectPath '{4}' -Id {5} -Mode Enforce) and prove it.") -f $label, $fromText, $on, ($famReport -join ', '), $project, $famReport[0])
+                }
+                elseif ($candidate -and $slotProblem) {
+                    # Live row OP-CONTROL: the advised -FromUpdateTest command is refused in a project that cannot take a rule, and
+                    # re-creating the project drops PriorInstallCandidates.json: re-create, run the Update test again, then declare.
+                    & $add 'ID-SIBLING-UNTESTED' 'Warning' 'IdentityDelta' (("winget also ships {0}, but the latest Update test from {1} failed{2} and left a prior-install candidate ({3} [{4}]), and this project cannot take a rule: {5}. " +
+                            "Re-create it with this win32-toolkit version (Invoke-Win32Toolkit -Force or New-Win32ToolkitManualApp; copy hand-written Install code out first), run this Update test again ({6}; re-creating drops the candidates), " +
+                            'then declare it (Block first): Set-Win32ToolkitPriorInstall -ProjectPath ''{7}'' -FromUpdateTest -Mode Block.') -f
+                        $label, $fromText, $on, (& $safe (& $prop $candidate 'Key')), (& $safe (& $prop $candidate 'View') 16), $slotProblem, $runCmd, $project)
+                }
+                elseif ($candidate) {
+                    $pick = if ($candHigh) { '' } else { " -CandidateKey '$((& $safe (& $prop $candidate 'Key')).Replace("'", "''"))'" }
+                    & $add 'ID-SIBLING-UNTESTED' 'Warning' 'IdentityDelta' (("winget also ships {0}, but the latest Update test from {1} failed{2} and left a prior-install candidate ({3} [{4}]): " +
+                            "declare it (Block first): Set-Win32ToolkitPriorInstall -ProjectPath '{5}' -FromUpdateTest -Mode Block{6}; make it Enforce and prove it to remove that install before installing.") -f
+                        $label, $fromText, $on, (& $safe (& $prop $candidate 'Key')), (& $safe (& $prop $candidate 'View') 16), $project, $pick)
+                }
+                else {
+                    # Live check KILL-NATIVE (2026-10-26): "no Update test has passed" was false when an older run had passed
+                    # and only the latest one failed: that case names the latest run.
+                    $whatRan = if ($failed) { 'the latest Update test from {0} failed{1}' -f $fromText, $on }
+                               else { 'no Update test has passed from {0}' -f $fromText }
+                    & $add 'ID-SIBLING-UNTESTED' 'Warning' 'IdentityDelta' (('winget also ships {0}, but {1}. Run: {2}') -f $label, $whatRan, $runCmd)
+                }
             }
             if ($families.Count -gt 0 -and $tested.Count -eq $families.Count) {
                 $siblingFinding.Severity = 'Info'
                 $siblingFinding.Message  = '{0} (tested: {1})' -f $siblingFinding.Message, ($tested -join '; ')
             }
+        }
+        # Live rows OP-UNPROVEN, OP-NEWER: the rules ID-SIBLING-FAMILY counts as covering did not match the install on the test VM
+        # (ID-TECH-SWITCH names them), or a 69102 run found it newer than their VersionMax: the "no two registrations" sentence
+        # is false for such devices, so it is REPLACED (after the finding's first sentence, Data.Lead), not contradicted.
+        $newerIds = @($newerOf.Values | ForEach-Object { $_ } | ForEach-Object { & $safe (& $prop $_ 'Id') 40 } | Where-Object { $_ } | Select-Object -Unique)
+        if ($siblingFinding -and ($unmatchedIds.Count -gt 0 -or $newerIds.Count -gt 0)) {
+            $sentences = [System.Collections.Generic.List[string]]::new()
+            if ($unmatchedIds.Count -gt 0) { $sentences.Add(('The prior-install rule(s) {0} name that install, but the latest Update test found it on the test VM and they did not match it (see ID-TECH-SWITCH): devices like it keep that install next to this package until the rule is replaced.' -f ($unmatchedIds -join ', '))) }
+            if ($newerIds.Count -gt 0) { $sentences.Add(('The prior-install rule(s) {0} name that install, but the latest Update test found a newer one on the test VM than their VersionMax (69102): devices with it FAIL this package until the window is widened.' -f ($newerIds -join ', '))) }
+            $covered = $siblingFinding.Message -like '* name that install, so devices that have it do not get two registrations*'
+            $siblingFinding.Severity = 'Warning'
+            $siblingFinding.Message = if ($covered -and $siblingLead -and $siblingFinding.Message.StartsWith($siblingLead, [System.StringComparison]::Ordinal)) { $siblingLead + ' ' + ($sentences -join ' ') } else { $siblingFinding.Message + ' ' + ($sentences -join ' ') }
         }
     }
 
@@ -374,10 +628,22 @@ function Get-Win32ToolkitPackageAdvisory {
         }
     }
 
+    # ---- Prior-install rules (installer-identity PR 3, spec 2.11): the warnings and notes; Export refuses the errors ----
+    try {
+        foreach ($pf in @(Get-Win32ToolkitPriorInstallFinding -ProjectPath $ProjectPath -Stage Advisory)) {
+            & $add ([string]$pf.Code) ([string]$pf.Severity) 'PriorInstalls' ('Prior install: ' + [string]$pf.Message)
+        }
+    } catch {
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+        & $failOpen 'PriorInstalls' $_
+    }
+
     $rank = @{
         'UNSAFE-CLEANUP' = 0; 'INSTALL-FAILED' = 1; 'UPDATE-FAILED' = 2; 'ID-TECH-SWITCH' = 3; 'INSTALL-INCONCLUSIVE' = 4
         'ID-FAMILY' = 5; 'ID-SIBLING-UNTESTED' = 6; 'ID-SIBLING-FAMILY' = 7; 'ID-NO-ANCHOR' = 8; 'ID-TATTOO' = 9; 'ID-SCOPE' = 10
         'ID-PROBE-UNAVAILABLE' = 11; 'ID-PREDECESSOR-AMBIGUOUS' = 12
+        'PRIOR-BLOCK-FLEET' = 13; 'PRIOR-NO-WELCOME' = 14; 'PRIOR-PREDECESSOR-PUBLISHED' = 15; 'PRIOR-ENFORCE-PILOT' = 16; 'ID-PRIOR-OWN' = 17
+        'PRIOR-CLASS-E' = 18
     }
     $ordered = @($findings | Sort-Object -Stable -Property @{
             Expression = { if ($_.Severity -ne 'Warning') { 1000 } elseif ($rank.ContainsKey($_.Code)) { $rank[$_.Code] } else { 500 } }

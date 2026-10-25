@@ -135,6 +135,26 @@ if ($script:threw -and $script:threw -match 'Intune' -and $script:threw -match '
 else { Bad "did not fail correctly on a locked Intune\ folder (msg: $($script:threw))" }
 [System.IO.Directory]::Delete($proj2, $true)
 
+# c3: a 'Documentation' folder that cannot be stripped is FATAL too (installer-identity PR 3, L16: the operator's
+# prior-install decisions and the guest-derived capture records never ship).
+Write-Host '[c3] a locked Documentation\ folder is fatal (decisions and capture records must never ship)' -ForegroundColor Cyan
+$proj3 = New-TempDir
+New-Item -ItemType Directory -Path (Join-Path $proj3 'Documentation') -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $proj3 'Documentation\PriorInstallDecisions.json') '{"SchemaVersion":"1.0","Records":[]}'
+Set-Content -LiteralPath (Join-Path $proj3 'Invoke-AppDeployToolkit.ps1') '# stub'
+$script:threw = $null
+& {
+    function Remove-Win32ToolkitPathWithRetry {
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'a test shadow that removes nothing')]
+        param([string]$Path, [int]$Retries, [int]$InitialDelayMs)
+        $null = $Retries, $InitialDelayMs; return ($Path -notmatch '[\\/]Documentation$')
+    }
+    try { Optimize-Win32ToolkitProject -ProjectPath $proj3 6>$null 3>$null } catch { $script:threw = $_.Exception.Message }
+}
+if ($script:threw -and $script:threw -match "'Documentation'" -and $script:threw -match 'prior-install decisions') { Ok 'throws, refusing to package with an un-strippable Documentation\ folder' }
+else { Bad "did not fail correctly on a locked Documentation\ folder (msg: $($script:threw))" }
+[System.IO.Directory]::Delete($proj3, $true)
+
 # -- (d) Staging end to end: Export's copy filter, then Optimize on the copy (DOC-05) ----------------
 Write-Host '[d] the launcher, the bundled PSADT module and an org extension module survive Staging' -ForegroundColor Cyan
 $src = New-TempDir

@@ -374,7 +374,9 @@ function Show-Win32ToolkitProjectActions {
                                 $advisory = Get-Win32ToolkitPackageAdvisory -ProjectPath $project.Path -Context Tui -ProbeIfMissing
                                 $advWarnings = @($advisory.Findings | Where-Object { $_ -and $_.Severity -eq 'Warning' })
                                 if ($advWarnings.Count -gt 0) {
-                                    $severe = @($advWarnings | Where-Object { $_.Code -in @('UNSAFE-CLEANUP', 'INSTALL-FAILED', 'UPDATE-FAILED', 'ID-TECH-SWITCH', 'INSTALL-INCONCLUSIVE') }).Count -gt 0
+                                    # Prior installs (installer-identity PR 3): a Block rule fails the install on every device that has the
+                                    # prior, an Enforce rule without the welcome dialog retries there, a published predecessor reinstalls.
+                                    $severe = @($advWarnings | Where-Object { $_.Code -in @('UNSAFE-CLEANUP', 'INSTALL-FAILED', 'UPDATE-FAILED', 'ID-TECH-SWITCH', 'INSTALL-INCONCLUSIVE', 'PRIOR-BLOCK-FLEET', 'PRIOR-NO-WELCOME', 'PRIOR-PREDECESSOR-PUBLISHED') }).Count -gt 0
                                     $advText = @($advWarnings | ForEach-Object { [string]$_.Message }) -join "`n`n"
                                     $advHeader = if ($severe) { 'Review before you publish' } else { 'Check before you publish' }
                                     $advColor  = if ($severe) { 'Red' } else { 'Yellow' }

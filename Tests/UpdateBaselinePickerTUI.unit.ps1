@@ -535,7 +535,8 @@ DriveUpdate @('publish', 'install', 'back')
 $ap = @($script:panels | Where-Object { $_.Header -in 'Review before you publish', 'Check before you publish' })
 if ($ap.Count -eq 1 -and $ap[0].Color -eq 'Yellow' -and $ap[0].Header -eq 'Check before you publish') { Ok 'other warnings only -> a YELLOW panel' } else { Bad "yellow: $($ap | ConvertTo-Json -Compress)" }
 # TUI audit G1: a failed install/uninstall test, or one without a verdict, is red too (decision: red in the panel).
-foreach ($code in 'UPDATE-FAILED', 'ID-TECH-SWITCH', 'INSTALL-FAILED', 'INSTALL-INCONCLUSIVE') {
+# Installer-identity PR 3: the prior-install warnings that fail, loop or reinstall on devices are red as well.
+foreach ($code in 'UPDATE-FAILED', 'ID-TECH-SWITCH', 'INSTALL-FAILED', 'INSTALL-INCONCLUSIVE', 'PRIOR-BLOCK-FLEET', 'PRIOR-NO-WELCOME', 'PRIOR-PREDECESSOR-PUBLISHED') {
     $script:advisory = [pscustomobject]@{ Findings = @((F $code 'Warning' "$code text")) }
     $script:panels.Clear()
     DriveUpdate @('publish', 'install', 'back')

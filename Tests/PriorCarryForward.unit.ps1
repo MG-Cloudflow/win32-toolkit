@@ -16,6 +16,17 @@
       [6] after the install capture (L34): an EXE package whose capture shows the carried key as its own -> ID-PRIOR-OWN,
           the rule removed and the rest valid with the full rules; a carry followed by a re-capture
           (Update-PSADTProcessesToClose) keeps notepad++ in ProcessesToClose.
+      [8] per entry (C-7): a hand-edited rule without a VersionMax property, an invalid Id, a duplicate Id and the entries
+          that are not objects (a string, [] and [null]) never cost the valid rules next to them; each bad one is dropped
+          with a warning.
+      [9] GUEST-TAMPER: the same-version rebuild of a project a test guest changed (here the first version: nothing to
+          carry from) keeps no rule, decision or capture record, but records which rules there were
+          (Documentation\PriorInstallDropped.json): Export lists one ID-PRIOR-DROPPED row per lost rule until it is
+          declared again or acknowledged; a second rebuild keeps the record; the next version gets the open ones; an
+          unreadable record refuses the Export. A carry source a test guest changed gives an empty list, and Export lists
+          its rules as ID-PRIOR-DROPPED, also after the source is re-created.
+      [10] after the install capture: a key of Uninstall.PrimaryKeys ({ Name; View }) is the package's own (ID-PRIOR-OWN);
+          a rule with an invalid Id is dropped.
 
     Run:  pwsh -File Tests\PriorCarryForward.unit.ps1
 #>
@@ -170,6 +181,112 @@ try {
     $null = Update-PSADTProcessesToClose -ProjectPath $ex -JsonFilePath $capJson 3>$null 6>$null
     $ptc = @((Get-Cfg $ex).ProcessesToClose)
     if ($ptc -contains 'notepad++' -and $ptc -contains 'npp-inno' -and $ptc -contains 'otherapp') { Ok 'carry + a re-capture (Update-PSADTProcessesToClose): ProcessesToClose keeps notepad++ next to the captured app' } else { Bad "ptc after capture: $($ptc -join ',')" }
+
+    # == [8] per entry (C-7) ===================================================================================
+    Write-Host '[8] one bad rule never costs the others (C-7: fail-open per entry)' -ForegroundColor Cyan
+    $noMax = New-Entry @{ Id = 'inno-x64'; Key = 'NppInno_is1'; UninstallerType = 'inno'; ProcessNames = @('npp-inno') }; $noMax.Remove('VersionMax')
+    # 'junk' (a string), [] and [null]: entries that are not objects. A JSON round trip turns [] and [null] into $null.
+    $pSrc = New-CfProject -Template 'T9' -Version '8.9.8.1' -Entries @((New-Entry), $noMax, (New-Entry @{ Id = 'BAD ID'; Key = 'Other' }), (New-Entry @{ Key = 'Dup' }), 'junk', @(), (, $null))
+    $srcText = [IO.File]::ReadAllText((Join-Path $pSrc 'SupportFiles\AppConfig.json'))
+    if (@((Get-Cfg $pSrc).PriorInstalls.Entries).Count -eq 7 -and $srcText -match '\[\s*\]' -and $srcText -match '\[\s*null\s*\]') { Ok 'the source holds 7 entries, among them [] and [null]' } else { Bad "fixture: $srcText" }
+    $pe = New-CfProject -Template 'T9' -Version '8.9.9' -NoPrior
+    $s = Invoke-Copy $pe $null
+    $cfg = Get-Cfg $pe
+    $ids = (@($cfg.PriorInstalls.Entries) | ForEach-Object { "$($_.Id)=$($_.VersionMax)" }) -join ','
+    if ($ids -ceq 'inno-x64=8.9.9,nsis-x64=8.9.9') { Ok 'a hand-edited rule without a VersionMax property is carried with the new VersionMax; the valid rule next to it too (an empty-array entry beside them costs neither)' } else { Bad "per entry: $ids $($s | ConvertTo-Json -Compress -Depth 4) warn=$($script:warnLines -join ' | ')" }
+    $why = @($s.Dropped | ForEach-Object { "$($_.Id): $($_.Reason)" })
+    if ($s.Dropped.Count -eq 5 -and @($why | Where-Object { $_ -match 'Id must match' }).Count -eq 1 -and @($why | Where-Object { $_ -match 'Id is used by another entry' }).Count -eq 1 -and @($why | Where-Object { $_ -match 'not an object' }).Count -eq 3 -and @($why | Where-Object { $_ -match 'could not be checked' }).Count -eq 0 -and $script:warnLines.Count -eq 5) {
+        Ok 'an invalid Id, a duplicate Id and the three entries that are not objects ("junk", [], [null]) are dropped alone, each with a warning naming the problem'
+    } else { Bad "dropped: $($why -join ' | ') warn=$($script:warnLines -join ' | ')" }
+
+    # == [9] a project a test guest changed (GUEST-TAMPER) ===================================================
+    Write-Host '[9] nothing is kept or carried from a project a test guest changed' -ForegroundColor Cyan
+    # The first WiX version of the app (no version before it in T10) whose Update proof run tripped the tripwire.
+    $tp = New-CfProject -Template 'T10' -Version '8.9.9' -Entries @((New-Entry @{ VersionMax = '8.9.9' }), (New-Entry @{ Id = 'inno-x64'; Key = 'NppInno_is1'; UninstallerType = 'inno'; VersionMax = '8.9.9'; ProcessNames = @('npp-inno') }), (New-Entry @{ Id = 'BAD ID'; Key = 'Other' }), 'junk')
+    [IO.File]::WriteAllText((Join-Path $tp 'Documentation\PriorInstallDecisions.json'), '{"SchemaVersion":"1.0","Records":[{"Kind":"Waiver","Code":"PROOF","Target":"nsis-x64","Reason":"forged","On":"2026-10-25"}]}', $utf8)
+    $null = New-Item -ItemType Directory -Path (Join-Path $tp 'Documentation\SiblingCapture') -Force
+    [IO.File]::WriteAllText((Join-Path $tp 'Documentation\SiblingCapture\3f9c0a7d51e2b846.json'), '{"SchemaVersion":"1.0"}', $utf8)
+    [IO.File]::WriteAllText((Join-Path $tp 'Documentation\GuestTamper.json'), '{"Scenario":"Update","Files":["SupportFiles\\AppConfig.json"]}', $utf8)
+    $snap = Get-Win32ToolkitPriorInstallSnapshot -ProjectPath $tp -WarningVariable tw 3>$null
+    $snapProps = (@($snap.PSObject.Properties | ForEach-Object Name) | Sort-Object) -join ','
+    if ($snap -and $snap.Tampered -and $snapProps -ceq 'Lost,ProjectPath,Tampered' -and (@($snap.Lost | ForEach-Object { "$($_.Id)|$($_.Kind)|$($_.Key)|$($_.View)" }) -join ',') -ceq 'nsis-x64|ArpKey|Notepad++|Native,inno-x64|ArpKey|NppInno_is1|Native,BAD ID|ArpKey|Other|Native' -and
+        @($tw | Where-Object { "$_" -like '*GuestTamper.json*NOT kept*ID-PRIOR-DROPPED*' }).Count -eq 1) {
+        Ok 'the snapshot of a tampered project is only a marker: the Id, Kind, Key and View of its rules (no bytes, decisions or capture files), one warning'
+    } else { Bad "tamper snapshot: $($snap | ConvertTo-Json -Compress -Depth 3) warn=$($tw -join ' | ')" }
+    Remove-Item -LiteralPath $tp -Recurse -Force
+    $tp = New-CfProject -Template 'T10' -Version '8.9.9' -NoPrior
+    $s = Invoke-Copy $tp $snap
+    $cfg = Get-Cfg $tp
+    $lostFile = Join-Path $tp 'Documentation\PriorInstallDropped.json'
+    $lostDoc = if (Test-Path -LiteralPath $lostFile) { Get-Content -LiteralPath $lostFile -Raw | ConvertFrom-Json } else { $null }
+    if ($s.Action -eq 'None' -and (@($s.Lost) -join ',') -ceq 'nsis-x64,inno-x64' -and @($cfg.PriorInstalls.Entries).Count -eq 0 -and $null -ne $cfg.PSObject.Properties['PriorInstalls'] -and
+        -not (Test-Path -LiteralPath (Join-Path $tp 'Documentation\PriorInstallDecisions.json')) -and -not (Test-Path -LiteralPath (Join-Path $tp 'Documentation\SiblingCapture')) -and
+        (@($lostDoc.Entries | ForEach-Object { "$($_.Id)|$($_.Key)|$($_.From)" }) -join ',') -ceq 'inno-x64|NppInno_is1|Notepad++_x64_8.9.9,nsis-x64|Notepad++|Notepad++_x64_8.9.9' -and -not [IO.File]::ReadAllBytes($lostFile)[0].Equals([byte]0xEF)) {
+        Ok 'the tampered rebuild with no version before it: no rule, decision or capture record restored; the two valid identities recorded in Documentation\PriorInstallDropped.json (BOM-less); an empty rule set written'
+    } else { Bad "tamper rebuild: $($s | ConvertTo-Json -Compress -Depth 3) lost=$($lostDoc | ConvertTo-Json -Compress -Depth 4)" }
+    $lostRows = { @(Get-Win32ToolkitPriorInstallFinding -ProjectPath $args[0] -Stage Export | Where-Object Code -eq 'ID-PRIOR-DROPPED') }
+    $r = & $lostRows $tp
+    if ((@($r | ForEach-Object Target) -join ',') -ceq 'inno-x64,nsis-x64' -and @($r | Where-Object { $_.Message -match 'not kept because a test guest changed' -and $_.Message -match "-Acknowledge ID-PRIOR-DROPPED -Target $($_.Target) " }).Count -eq 2) {
+        Ok 'Export lists one ID-PRIOR-DROPPED row per lost rule, each with the acknowledgement command (fail-closed, as a carry source a guest changed)'
+    } else { Bad "lost rows: $($r | ForEach-Object { "$($_.Target): $($_.Message)" })" }
+    # A second rebuild of the same version (not tampered) keeps the record.
+    $snap2 = Get-Win32ToolkitPriorInstallSnapshot -ProjectPath $tp
+    Remove-Item -LiteralPath $tp -Recurse -Force
+    $tp = New-CfProject -Template 'T10' -Version '8.9.9' -NoPrior
+    $null = Invoke-Copy $tp $snap2
+    $r = & $lostRows $tp
+    if ((@($r | ForEach-Object Target) -join ',') -ceq 'inno-x64,nsis-x64') { Ok 'rebuilding it again (not tampered) keeps the lost rules: the rows stay' } else { Bad "second rebuild: $(@($r | ForEach-Object Target) -join ',')" }
+    $null = Set-Win32ToolkitPriorInstallDecision -ProjectPath $tp -Record @{ Kind = 'Acknowledgement'; Code = 'ID-PRIOR-DROPPED'; Target = 'inno-x64'; Reason = 'the Inno build is gone from the fleet'; On = '2026-10-26' } -Confirm:$false
+    $r = & $lostRows $tp
+    if ((@($r | ForEach-Object Target) -join ',') -ceq 'nsis-x64') { Ok 'an ID-PRIOR-DROPPED acknowledgement removes its row' } else { Bad "ack: $(@($r | ForEach-Object Target) -join ',')" }
+    # The next version carries the lost rule that is still open (not the acknowledged one).
+    $tNext = New-CfProject -Template 'T10' -Version '9.0' -NoPrior
+    $s = Invoke-Copy $tNext $null
+    $r = & $lostRows $tNext
+    if ($s.Action -eq 'Carried' -and (@($s.Lost) -join ',') -ceq 'nsis-x64' -and (@($r | ForEach-Object Target) -join ',') -ceq 'nsis-x64' -and $r[0].Message -match 'of Notepad\+\+_x64_8\.9\.9 was not kept') {
+        Ok 'the next version gets the lost rule that is still open (the acknowledged one stays behind) and lists it at Export'
+    } else { Bad "next: $($s | ConvertTo-Json -Compress -Depth 3) rows=$(@($r | ForEach-Object Target) -join ',')" }
+    # Declaring the rule again (same Kind, Key and View) ends it.
+    $c = Get-Cfg $tp
+    $c.PriorInstalls.Entries = @([pscustomobject](New-Entry @{ VersionMax = '8.9.9' }))
+    [IO.File]::WriteAllText((Join-Path $tp 'SupportFiles\AppConfig.json'), ($c | ConvertTo-Json -Depth 8), $utf8)
+    if ((& $lostRows $tp).Count -eq 0) { Ok 'the rule declared again (same Kind, Key and View) -> no row' } else { Bad 'declared again' }
+    [IO.File]::WriteAllText((Join-Path $tNext 'Documentation\PriorInstallDropped.json'), 'not json', $utf8)
+    $r = @(Get-Win32ToolkitPriorInstallFinding -ProjectPath $tNext -Stage Export)
+    if (@($r | Where-Object { $_.Code -eq 'PRIOR-INVALID' -and $_.Message -match 'PriorInstallDropped\.json cannot be read' }).Count -eq 1) { Ok 'a lost-rules file that cannot be read refuses the Export (fail-closed)' } else { Bad "unreadable: $($r | ForEach-Object { "$($_.Code): $($_.Message)" })" }
+
+    $tOld = New-CfProject -Template 'T11' -Version '8.9.8.1' -Entries @((New-Entry))
+    $null = New-Item -ItemType Directory -Path (Join-Path $tOld 'Documentation\SiblingCapture') -Force
+    [IO.File]::WriteAllText((Join-Path $tOld 'Documentation\SiblingCapture\3f9c0a7d51e2b846.json'), '{"SchemaVersion":"1.0"}', $utf8)
+    [IO.File]::WriteAllText((Join-Path $tOld 'Documentation\GuestTamper.json'), '{"Scenario":"Update"}', $utf8)
+    $tNew = New-CfProject -Template 'T11' -Version '8.9.9' -NoPrior
+    $s = Invoke-Copy $tNew $null
+    $cfg = Get-Cfg $tNew
+    $dropRows = @(Get-Win32ToolkitPriorInstallFinding -ProjectPath $tNew -Stage Export | Where-Object Code -eq 'ID-PRIOR-DROPPED')
+    if ($s.Action -eq 'Refused' -and $null -ne $cfg.PSObject.Properties['PriorInstalls'] -and @($cfg.PriorInstalls.Entries).Count -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $tNew 'Documentation\SiblingCapture')) -and
+        @($script:warnLines | Where-Object { $_ -like '*changed by a test guest*NOT carried*' }).Count -eq 1 -and $dropRows.Count -eq 1 -and $dropRows[0].Target -eq 'nsis-x64') {
+        Ok 'a carry source a test guest changed gives nothing (an empty list, no records), and Export lists its rule as ID-PRIOR-DROPPED (fail-closed)'
+    } else { Bad "tamper carry: $($s | ConvertTo-Json -Compress -Depth 3) rows=$($dropRows.Count)" }
+    # The source is re-created later (marker gone, its rules not kept): the new version still lists the rule it never got.
+    Remove-Item -LiteralPath (Join-Path $tOld 'Documentation\GuestTamper.json')
+    $c = Get-Cfg $tOld; $c.PriorInstalls.Entries = @()
+    [IO.File]::WriteAllText((Join-Path $tOld 'SupportFiles\AppConfig.json'), ($c | ConvertTo-Json -Depth 8), $utf8)
+    $dropRows = @(Get-Win32ToolkitPriorInstallFinding -ProjectPath $tNew -Stage Export | Where-Object Code -eq 'ID-PRIOR-DROPPED')
+    if ((@($s.Lost) -join ',') -ceq 'nsis-x64' -and $dropRows.Count -eq 1 -and $dropRows[0].Target -eq 'nsis-x64') { Ok '...recorded in the new project, so the row stays after the source itself is re-created' } else { Bad "after source re-created: lost=$(@($s.Lost) -join ',') rows=$($dropRows.Count)" }
+
+    # == [10] after the install capture: Uninstall.PrimaryKeys, invalid ids =================================
+    Write-Host '[10] the own keys from Uninstall.PrimaryKeys; invalid ids after the install capture' -ForegroundColor Cyan
+    $pk = New-CfProject -Template 'T12' -Version '8.9.9' -Type 'exe' -Entries @((New-Entry @{ VersionMax = '8.9.7' }), (New-Entry @{ Id = 'inno-x64'; Key = 'NppInno_is1'; UninstallerType = 'inno'; VersionMax = '8.9.7'; ProcessNames = @('npp-inno') }), (New-Entry @{ Id = 'BAD ID'; Key = 'Other'; VersionMax = '8.9.7' }))
+    $cfg = Get-Cfg $pk
+    $cfg | Add-Member -NotePropertyName OwnIdentity -NotePropertyValue ([pscustomobject]@{ SchemaVersion = '1.0'; ProductCode = ''; UpgradeCode = ''; ArpKeys = @([pscustomobject]@{ Key = 'NppHelper'; View = 'Native' }); CapturedOn = '2026-10-25' }) -Force
+    $cfg | Add-Member -NotePropertyName Uninstall -NotePropertyValue ([pscustomobject]@{ AppName = 'Notepad++'; ProductCodes = @(); Uninstallers = @(); CleanupPaths = @(); InstallRoots = @(); PrimaryKeys = @([pscustomobject]@{ Name = 'Notepad++'; View = 'Registry64' }) }) -Force
+    [IO.File]::WriteAllText((Join-Path $pk 'SupportFiles\AppConfig.json'), ($cfg | ConvertTo-Json -Depth 8), $utf8)
+    $sync = Sync-Win32ToolkitPriorInstallOwnIdentity -ProjectPath $pk -WarningVariable pw 3>$null
+    $left = (@((Get-Cfg $pk).PriorInstalls.Entries) | ForEach-Object Id) -join ','
+    if ($left -ceq 'inno-x64' -and @($sync.Own) -contains 'nsis-x64' -and @($sync.Dropped | Where-Object { $_.Reason -match "own uninstall key" }).Count -eq 0 -and @($pw | Where-Object { "$_" -like 'ID-PRIOR-OWN:*nsis-x64*' }).Count -eq 1) {
+        Ok "a key the capture recorded in Uninstall.PrimaryKeys ({ Name; View }) is the package's own -> ID-PRIOR-OWN, not 'invalid'"
+    } else { Bad "primary keys: left=$left own=$(@($sync.Own) -join ',') dropped=$(@($sync.Dropped | ForEach-Object { "$($_.Id): $($_.Reason)" }) -join ' | ')" }
+    if (@($sync.Dropped | Where-Object { $_.Reason -match 'Id must match' }).Count -eq 1) { Ok 'a rule with an invalid Id is dropped after the install capture too' } else { Bad "sync invalid id: $(@($sync.Dropped | ForEach-Object { "$($_.Id): $($_.Reason)" }) -join ' | ')" }
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

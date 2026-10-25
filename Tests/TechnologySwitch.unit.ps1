@@ -39,6 +39,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Add-Win32ToolkitTestResult.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitTestResult.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitTechnologySwitch.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitAppConfig.ps1')   # C-9 (installer-identity PR 3): the project's prior-install rules
 . (Join-Path $repo 'Private\Write-Win32ToolkitTestOutcome.ps1')
 
 # The package's technology (WP-3 contract, shadowed): a WiX MSI, like Notepad++ 8.9.8.1 x64 from winget.
@@ -69,7 +70,16 @@ function Add-Rec($Proj, $Verdict, $Assertions, $Baseline, $Survivors) {
     if ($Survivors) { $a['OldArpSurvivors'] = $Survivors }
     $null = Add-Win32ToolkitTestResult @a
 }
-$expectedMsg = "Technology switch: the vendor nullsoft install of v8.8.9 (Notepad++ (64-bit x64), ARP key 'Notepad++') was still registered after the wix package installed. Devices that have the vendor EXE install get two registrations over one folder. Do not publish this package to them; see docs/packaging.md, Installer technology."
+# The run that saw it: its baseline technology and UTC time (live row SB-REGRESSION; round 2: the date alone could not tell it
+# from a later run of the same day). The records below are written now: Norm replaces that time with '<when>' after
+# checking it is today's UTC date.
+function Norm([string]$Message) {
+    $today = [DateTime]::UtcNow.ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+    $m = [regex]::Match($Message, ' baseline of (\d{4}-\d{2}-\d{2}) \d{2}:\d{2} UTC\.')
+    if (-not $m.Success -or ($m.Groups[1].Value -ne $today -and $m.Groups[1].Value -ne [DateTime]::UtcNow.AddMinutes(-5).ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture))) { return $Message }
+    $Message.Remove($m.Index, $m.Length).Insert($m.Index, ' baseline of <when>.')
+}
+$expectedMsg = "Technology switch: the vendor nullsoft install of v8.8.9 (Notepad++ (64-bit x64), ARP key 'Notepad++') was still registered after the wix package installed in the Update test from the nullsoft baseline of <when>. Devices that have the vendor EXE install get two registrations over one folder. Do not publish this package to them; see docs/packaging.md, Installer technology."
 
 try {
     # -- [1] the survivor parser ------------------------------------------------------------------------
@@ -112,12 +122,42 @@ try {
     $p = New-Proj
     Add-Rec $p 'Failed' $failA (New-Baseline nullsoft exe) @($nppSurvivor)
     $f = @(Get-Win32ToolkitTechnologySwitch -ProjectPath $p)
-    if ($f.Count -eq 1 -and $f[0].Code -eq 'ID-TECH-SWITCH' -and $f[0].Message -eq $expectedMsg) { Ok 'FAIL with a vendor EXE (exe) baseline under a WiX package (msi) -> one ID-TECH-SWITCH with the spec text' }
+    if ($f.Count -eq 1 -and $f[0].Code -eq 'ID-TECH-SWITCH' -and (Norm $f[0].Message) -eq $expectedMsg) { Ok 'FAIL with a vendor EXE (exe) baseline under a WiX package (msi) -> one ID-TECH-SWITCH with the spec text' }
     else { Bad "finding: $($f | ConvertTo-Json -Compress -Depth 5)" }
     if ($f.Count -eq 1 -and $f[0].PackageType -eq 'wix' -and $f[0].PackageFamily -eq 'msi' -and $f[0].BaselineType -eq 'nullsoft' -and $f[0].BaselineFamily -eq 'exe' -and
         $f[0].BaselineVersion -eq '8.8.9' -and -not $f[0].Legacy -and @($f[0].Survivors).Count -eq 1 -and $f[0].TimestampUtc -match '^\d{4}-\d{2}-\d{2}T') { Ok 'finding fields: package/baseline type and family, version, survivors, ISO timestamp, Legacy false' }
     else { Bad "fields: $($f | ConvertTo-Json -Compress -Depth 5)" }
     if (@($f[0].Message.ToCharArray() | Where-Object { [int]$_ -gt 126 -or [int]$_ -lt 32 }).Count -eq 0) { Ok 'the message is printable ASCII' } else { Bad 'non-ASCII message' }
+    # Installer-identity PR 3 live checks (OP-BLOCK, OP-NEWER, KILL-*, APP-RUNNING, MSIBUSY, RC2-BLOCK, SB-BLOCK, DEMOTE): the
+    # warning said the wix package "installed" after a refusal that installed nothing, and "Do not publish" for a survivor
+    # the project's own Block / Enforce rule handles.
+    $pRef = New-Proj
+    Add-Rec $pRef 'Failed' ($failA + @(@{ Name = 'UpdateExitCode-PostUpdate'; Result = 'FAIL' })) (New-Baseline nullsoft exe) @($nppSurvivor)
+    if (@(Get-Win32ToolkitTechnologySwitch -ProjectPath $pRef).Count -eq 0) { Ok 'an update that exited outside the success codes (UpdateExitCode-PostUpdate FAIL) installed nothing -> no ID-TECH-SWITCH' } else { Bad 'refused update still reported as a technology switch' }
+    $withRules = {
+        param([string]$Mode)
+        $pr = New-Proj
+        $null = New-Item -ItemType Directory -Path (Join-Path $pr 'SupportFiles') -Force
+        $rule = [ordered]@{ Id = 'nsis-x64'; Kind = 'ArpKey'; Mode = $Mode; Key = 'notepad++'; View = 'Native'; Publisher = 'Notepad++ Team' }
+        [System.IO.File]::WriteAllText((Join-Path $pr 'SupportFiles\AppConfig.json'), (ConvertTo-Json -InputObject ([ordered]@{ SchemaVersion = '1.0'; PriorInstalls = [ordered]@{ SchemaVersion = '1.0'; Entries = @($rule) } }) -Depth 5), $utf8)
+        Add-Rec $pr 'Failed' $failA (New-Baseline nullsoft exe) @($nppSurvivor)
+        $pr
+    }
+    $okRuled = $true
+    foreach ($mode in 'Block', 'Enforce') { if (@(Get-Win32ToolkitTechnologySwitch -ProjectPath (& $withRules $mode)).Count -ne 0) { $okRuled = $false } }
+    if ($okRuled) { Ok 'a survivor named (key case-insensitive, same view) by a Block or an Enforce rule -> no ID-TECH-SWITCH (the rule decides)' } else { Bad 'a ruled survivor is still a technology switch' }
+    # Live row OP-UNPROVEN: an Enforce rule whose publisher did not match the install on the test VM (PriorPresent-PreUpdate
+    # FAIL, left as it is) hid the switch; the run's own record shows the rule handled nothing.
+    $pUn = New-Proj
+    $null = New-Item -ItemType Directory -Path (Join-Path $pUn 'SupportFiles') -Force
+    [System.IO.File]::WriteAllText((Join-Path $pUn 'SupportFiles\AppConfig.json'), (ConvertTo-Json -InputObject ([ordered]@{ SchemaVersion = '1.0'; PriorInstalls = [ordered]@{ SchemaVersion = '1.0'; Entries = @([ordered]@{ Id = 'nsis-x64'; Kind = 'ArpKey'; Mode = 'Enforce'; Key = 'Notepad++'; View = 'Native'; Publisher = 'Other Team' }) } }) -Depth 5), $utf8)
+    Add-Rec $pUn 'Failed' ($failA + @(@{ Name = 'PriorPresent-PreUpdate.nsis-x64'; Result = 'FAIL' })) (New-Baseline nullsoft exe) @($nppSurvivor)
+    $fUn = @(Get-Win32ToolkitTechnologySwitch -ProjectPath $pUn)
+    if ($fUn.Count -eq 1 -and (Norm $fUn[0].Message).StartsWith($expectedMsg) -and $fUn[0].Message -match "The Enforce rule 'nsis-x64' names that install, but its identity did not match it on the test VM \(PriorPresent-PreUpdate\.nsis-x64 FAIL\)" -and (@($fUn[0].UnmatchedRules) -join ',') -eq 'nsis-x64') {
+        Ok 'an Enforce rule the run checked whose identity did not match (PriorPresent FAIL) -> the switch is reported and names the rule (UnmatchedRules)'
+    } else { Bad "unmatched: $($fUn | ConvertTo-Json -Compress -Depth 5)" }
+    $fRep = @(Get-Win32ToolkitTechnologySwitch -ProjectPath (& $withRules 'Report'))
+    if ($fRep.Count -eq 1 -and (Norm $fRep[0].Message).StartsWith($expectedMsg) -and $fRep[0].Message.EndsWith(" The prior-install rule 'nsis-x64' reports it (Report: the install goes on next to it and devices get a LastSeen marker).")) { Ok 'a Report rule -> the finding stays and names the rule' } else { Bad "report: $($fRep.Message)" }
 
     $p = New-Proj
     Add-Rec $p 'Failed' $failA (New-Baseline wix msi) @($nppSurvivor)
@@ -147,7 +187,7 @@ try {
     $p = New-Proj
     Add-Rec $p 'Failed' $failA (New-Baseline nullsoft exe)
     $fn = @(Get-Win32ToolkitTechnologySwitch -ProjectPath $p)
-    if ($fn.Count -eq 1 -and $fn[0].Message -like 'Technology switch: the vendor nullsoft install of v8.8.9 was still registered after the wix package installed.*') { Ok 'no survivors recorded -> the message drops the name/key part' } else { Bad "nosurv: $($fn.Message)" }
+    if ($fn.Count -eq 1 -and $fn[0].Message -like 'Technology switch: the vendor nullsoft install of v8.8.9 was still registered after the wix package installed in the Update test from the nullsoft baseline of *') { Ok 'no survivors recorded -> the message drops the name/key part' } else { Bad "nosurv: $($fn.Message)" }
 
     $script:sourceCalls = 0
     $fp = @(Get-Win32ToolkitTechnologySwitch -ProjectPath $p -PackageType 'nullsoft' -PackageFamily 'exe')
@@ -170,7 +210,7 @@ try {
         $rec.OldArpSurvivors[0].DisplayName -eq 'Notepad++ (64-bit x64)' -and @($rec.Assertions | Where-Object { $_.Name -eq 'OldArpGone-PostUpdate' -and $_.Result -eq 'FAIL' }).Count -eq 1) { Ok 'the FAIL line of the log becomes OldArpSurvivors; -Baseline is recorded' }
     else { Bad "recorded: $($rec | ConvertTo-Json -Compress -Depth 5)" }
     $fe = @(Get-Win32ToolkitTechnologySwitch -ProjectPath $p)
-    if ($fe.Count -eq 1 -and $fe[0].Message -eq $expectedMsg) { Ok 'recorder + finder: the Notepad++ evidence gives the spec message' } else { Bad "e2e: $($fe | ConvertTo-Json -Compress -Depth 5)" }
+    if ($fe.Count -eq 1 -and (Norm $fe[0].Message) -eq $expectedMsg) { Ok 'recorder + finder: the Notepad++ evidence gives the spec message' } else { Bad "e2e: $($fe | ConvertTo-Json -Compress -Depth 5)" }
     Write-Win32ToolkitTestOutcome -ProjectPath $p -Scenario InstallUninstall -Backend HyperV -Verdict $false
     $rec2 = (Get-Win32ToolkitTestResult -ProjectPath $p)[-1]
     if (-not $rec2.PSObject.Properties['OldArpSurvivors'] -and -not $rec2.PSObject.Properties['Baseline']) { Ok 'InstallUninstall: no survivors, no Baseline (the old record shape)' } else { Bad 'IU record got Update fields' }
@@ -198,7 +238,7 @@ try {
     Add-Rec $p 'Failed' $failA $null $null
     $fl = @(Get-Win32ToolkitTechnologySwitch -ProjectPath $p)
     if ($fl.Count -eq 1 -and $fl[0].Legacy -and $fl[0].BaselineVersion -eq '8.8.9' -and $fl[0].BaselineType -eq 'nullsoft' -and $fl[0].BaselineFamily -eq 'exe' -and
-        @($fl[0].Survivors).Count -eq 1 -and $fl[0].Message -eq $expectedMsg) { Ok 'legacy FAIL + OldVersion nullsoft 8.8.9 + $expectedOldVersion 8.8.9 + log -> finding (Legacy, v8.8.9, survivor from the log)' }
+        @($fl[0].Survivors).Count -eq 1 -and (Norm $fl[0].Message) -eq $expectedMsg) { Ok 'legacy FAIL + OldVersion nullsoft 8.8.9 + $expectedOldVersion 8.8.9 + log -> finding (Legacy, v8.8.9, survivor from the log)' }
     else { Bad "legacy: $($fl | ConvertTo-Json -Compress -Depth 5)" }
 
     $p = New-LegacyProj -NoLog
@@ -246,7 +286,7 @@ try {
     Add-Rec $p 'Failed' $failA (New-Baseline nullsoft exe) @($nppSurvivor)
     & $addNotRun $p
     $fnr2 = @(Get-Win32ToolkitTechnologySwitch -ProjectPath $p)
-    if ($fnr2.Count -eq 1 -and -not $fnr2[0].Legacy -and $fnr2[0].Message -eq $expectedMsg -and $script:manifestReads -eq 0) { Ok 'a newest NotRun record is skipped: no legacy-path read of the stale log; the older Baseline FAIL is still judged' }
+    if ($fnr2.Count -eq 1 -and -not $fnr2[0].Legacy -and (Norm $fnr2[0].Message) -eq $expectedMsg -and $script:manifestReads -eq 0) { Ok 'a newest NotRun record is skipped: no legacy-path read of the stale log; the older Baseline FAIL is still judged' }
     else { Bad "NotRun newest: reads=$script:manifestReads findings=$($fnr2 | ConvertTo-Json -Compress -Depth 5)" }
     ${function:Get-WingetManifestFile} = $realManifest
 
@@ -268,7 +308,7 @@ try {
     $fa = @(Get-Win32ToolkitTechnologySwitch -ProjectPath $p)
     if ($err -and $err.FullyQualifiedErrorId -eq 'W32T.InstallerVariantUnavailable' -and $script:wingetCalls -eq 8 -and ($ovAfter -join ',') -eq ($ovBefore -join ',') -and $ovAfter -contains 'Notepad++_8.8.9_Machine_X64_nullsoft_en-US.yaml') { Ok 'an Unavailable -FamilyPin download (8 attempts) leaves Sandbox\OldVersion as it was' }
     else { Bad "unavailable download: fqid=$($err.FullyQualifiedErrorId) calls=$script:wingetCalls before=$($ovBefore -join ',') after=$($ovAfter -join ',')" }
-    if ($fa.Count -eq 1 -and $fa[0].Legacy -and $fa[0].BaselineVersion -eq '8.8.9' -and $fa[0].BaselineType -eq 'nullsoft' -and $fa[0].Message -eq $expectedMsg) { Ok 'the legacy FAIL is still judged after the Unavailable run (ID-TECH-SWITCH, Legacy, v8.8.9)' }
+    if ($fa.Count -eq 1 -and $fa[0].Legacy -and $fa[0].BaselineVersion -eq '8.8.9' -and $fa[0].BaselineType -eq 'nullsoft' -and (Norm $fa[0].Message) -eq $expectedMsg) { Ok 'the legacy FAIL is still judged after the Unavailable run (ID-TECH-SWITCH, Legacy, v8.8.9)' }
     else { Bad "legacy after unavailable: $($fa | ConvertTo-Json -Compress -Depth 5)" }
 
     $p = New-Proj
