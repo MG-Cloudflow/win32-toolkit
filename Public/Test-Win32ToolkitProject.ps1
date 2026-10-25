@@ -925,6 +925,15 @@ function Test-Win32ToolkitProject {
                     }
                 }
 
+                # The old installs the update left behind, as prior-install candidates (installer-identity PR 3, spec 2.10):
+                # read from the guest's PriorCandidates.json (untrusted, validated) into Documentation\PriorInstallCandidates.json.
+                $oldInstaller = $null
+                $writeCandidates = {
+                    if (-not (Test-Path -LiteralPath (Join-Path $ProjectPath 'Sandbox\Logs\PriorCandidates.json') -PathType Leaf)) { return }
+                    $manifestPc = if ($oldInstaller) { [string]$oldInstaller.ManifestProductCode } else { '' }
+                    $null = Get-Win32ToolkitPriorInstallCandidate -ProjectPath $ProjectPath -Baseline $baselineInfo -Architecture ([string]$architecture) -ManifestProductCode $manifestPc -ManifestPath (Join-Path $ProjectPath 'Sandbox\OldVersion')
+                }
+
                 # An unattended Hyper-V Update got here only past the Intune-parity pre-check, asked before anything was
                 # written and before any baseline is downloaded or copied ($parityDialogHint is its 1460 hint).
 
@@ -1543,7 +1552,7 @@ function Test-Win32ToolkitProject {
                     $updVerdict = $updExit.Verdict
                     Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict -Baseline $baselineInfo -LogFolder $runFolder `
                         -Notes (@(@($parityExitNotes) + @($updExit.Notes)) -join ' ') -ExtraAssertion $updExit.Assertions -Timing (& $withPrecheck $runInfo.Timing) -Lane $runInfo.Lane @proofArg
-                    if ($updVerdict -eq $false) { & $warnTechSwitch }
+                    if ($updVerdict -eq $false) { & $warnTechSwitch; & $writeCandidates }
                     return $updVerdict
                 }
 
@@ -1640,7 +1649,7 @@ function Test-Win32ToolkitProject {
                 Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'Sandbox' `
                     -Mode $(if ($sbInteractive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict -Baseline $baselineInfo -LogFolder $runFolder `
                     -Notes (@($updExit.Notes) -join ' ') -ExtraAssertion $updExit.Assertions @proofArg
-                if ($updVerdict -eq $false) { & $warnTechSwitch }
+                if ($updVerdict -eq $false) { & $warnTechSwitch; & $writeCandidates }
                 # The unattended sandbox's leftover window, as after the install/uninstall test (F10): only after a
                 # completed run, closed by the start-up wait's rule. Never changes the verdict.
                 if ($launched -and -not $sbInteractive -and $null -ne $updVerdict -and -not $priorGuard) { $null = Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90 -OwnRun }

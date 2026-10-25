@@ -172,13 +172,26 @@ $arpPaths = @(
     'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
     'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
 )
+# The uninstaller of an Add/Remove Programs entry, read with the deploy script's rule (a quoted path, or an unquoted
+# path ending in .exe); only a plain, canonical path counts. Never the command line itself.
+function Get-UninstallerParts([string]$Command) {
+    $exe = ''
+    if ($Command -match '^\s*"([^"]+)"') { $exe = $Matches[1] }
+    elseif ($Command -match '^\s*([A-Za-z]:\\[^"]*?\.exe)(\s|$)') { $exe = $Matches[1] }
+    if (-not $exe -or $exe -notmatch '^[A-Za-z]:\\[^/:*?"<>|~]+\.exe$') { return @{ Leaf = ''; Folder = '' } }
+    try { if ([IO.Path]::GetFullPath($exe) -cne $exe) { return @{ Leaf = ''; Folder = '' } } } catch { return @{ Leaf = ''; Folder = '' } }
+    return @{ Leaf = [IO.Path]::GetFileName($exe); Folder = [IO.Path]::GetDirectoryName($exe) }
+}
 function Get-ArpEntries {
     $out = @()
     foreach ($p in $arpPaths) {
         if (-not (Test-Path -LiteralPath $p)) { continue }
         foreach ($k in @(Get-ChildItem -LiteralPath $p -ErrorAction SilentlyContinue)) {
             $props = Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction SilentlyContinue
-            $out += [pscustomobject]@{ KeyPath = "$($k.PSPath)"; DisplayName = "$($props.DisplayName)"; DisplayVersion = "$($props.DisplayVersion)" }
+            $parts = Get-UninstallerParts "$($props.UninstallString)"
+            $out += [pscustomobject]@{ KeyPath = "$($k.PSPath)"; DisplayName = "$($props.DisplayName)"; DisplayVersion = "$($props.DisplayVersion)"
+                Publisher = "$($props.Publisher)"; WindowsInstaller = ("$($props.WindowsInstaller)" -eq '1'); InstallLocation = "$($props.InstallLocation)"
+                DisplayIcon = "$($props.DisplayIcon)"; UninstallerLeaf = $parts.Leaf; UninstallerFolder = $parts.Folder }
         }
     }
     $out
@@ -267,15 +280,35 @@ if ($Phase -eq 'PostUpdate') {
         Write-AssertLine "ASSERT OldArpGone-PostUpdate = SKIP (no old-app ARP entry identified after the baseline install - MSIX baseline or unrecognizable DisplayName/DisplayVersion)"
     } else {
         $stillOld = @()
+        $survivors = @()
         foreach ($e in $identified) {
             $p = $null
             try { $p = Get-ItemProperty -LiteralPath $e.KeyPath -ErrorAction Stop } catch { }
             if (-not $p) { continue }                                                                 # key gone -> updated in place or removed
             if ($expectedOldVersion -and -not (Test-VersionUnchanged "$($p.DisplayVersion)" $expectedOldVersion)) { continue }   # version bumped -> upgraded (strict, not prefix-loose)
             $stillOld += "$($e.DisplayName) [$($e.KeyPath)]"
+            $survivors += [pscustomobject]@{ KeyPath = [string]$e.KeyPath; Props = $p }
         }
         if ($stillOld.Count -gt 0) {
             Write-AssertLine "ASSERT OldArpGone-PostUpdate = FAIL (old version still registered: $($stillOld -join '; '))"
+            # Prior-install candidates (installer-identity PR 3, spec 2.10): the surviving machine-wide entries, as DATA for
+            # the host (PriorCandidates.json; validated there, never spliced into code).
+            $candidates = @()
+            foreach ($s in $survivors) {
+                if ($s.KeyPath -notmatch 'HKEY_LOCAL_MACHINE') { continue }
+                $pp = $s.Props
+                $parts = Get-UninstallerParts "$($pp.UninstallString)"
+                $exes = @()
+                if ($parts.Folder) { try { $exes = @(Get-ChildItem -LiteralPath $parts.Folder -Filter '*.exe' -File -ErrorAction Stop | Select-Object -First 20 | ForEach-Object { $_.Name }) } catch { $exes = @() } }
+                $iconLeaf = ''
+                $icon = ("$($pp.DisplayIcon)" -replace ',\s*-?\d+\s*$', '').Trim().Trim('"')
+                if ($icon) { try { $iconLeaf = [IO.Path]::GetFileName($icon) } catch { $iconLeaf = '' } }
+                $candidates += [pscustomobject]@{ Key = ($s.KeyPath -split '\\')[-1]; View = $(if ($s.KeyPath -match '\\WOW6432Node\\') { 'Wow6432' } else { 'Native' })
+                    DisplayName = "$($pp.DisplayName)"; Publisher = "$($pp.Publisher)"; DisplayVersion = "$($pp.DisplayVersion)"; WindowsInstaller = ("$($pp.WindowsInstaller)" -eq '1')
+                    InstallLocation = "$($pp.InstallLocation)"; UninstallerLeaf = $parts.Leaf; UninstallerFolder = $parts.Folder; DisplayIconLeaf = $iconLeaf
+                    InnoAppPath = [bool]$pp.PSObject.Properties['Inno Setup: App Path']; Exes = @($exes) }
+            }
+            ConvertTo-Json -InputObject @($candidates) -Depth 3 | Set-Content -LiteralPath (Join-Path $logDir 'PriorCandidates.json') -Encoding UTF8
         } else {
             Write-AssertLine "ASSERT OldArpGone-PostUpdate = PASS"
         }
