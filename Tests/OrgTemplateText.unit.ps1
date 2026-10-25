@@ -647,6 +647,21 @@ try {
     Use-ScriptedAnswer @{ 'Select template (' = '2' }
     $g6 = Invoke-Get { Get-OrgTemplate -BasePath $multiBase }
     if (-not $g6.Error -and $g6.Value.TemplateName -eq 'Good') { Ok 'picker path loads a valid template' } else { Bad "picker valid: $($g6.Error)" }
+    # Live row LIVE-PREP (2026-10-26): on a host that cannot prompt, the picker's Read-Host threw a non-W32T error
+    # ('PowerShell is in NonInteractive mode'); the picker and the wizard paths now fail closed naming -TemplateName.
+    foreach ($nc in @(@{ L = 'a non-interactive host'; H = $true; S = $false }, @{ L = 'a console started with -NonInteractive'; H = $false; S = $true })) {
+        $script:nonInteractiveHost = $nc.H; $script:nonInteractiveSwitch = $nc.S
+        Use-ScriptedAnswer @{ 'Select template (' = '2' }
+        $g8 = Invoke-Get { Get-OrgTemplate -BasePath $multiBase }
+        $g8m = if ($g8.Error) { $g8.Error.Exception.Message } else { '' }
+        if ($g8.Error.FullyQualifiedErrorId -eq 'W32T.OrgTemplateChoiceNeeded' -and $g8m -match 'Several org templates exist under .*\(Bad, Good\)\. This run cannot prompt: pass -TemplateName' -and (Get-PromptCount 'Select template') -eq 0) { Ok "several templates on $($nc.L) -> W32T.OrgTemplateChoiceNeeded naming them and -TemplateName, no prompt" } else { Bad "picker $($nc.L): $($g8.Error.FullyQualifiedErrorId) $g8m prompts=$(Get-PromptCount 'Select template')" }
+        $g9 = Invoke-Get { Get-OrgTemplate -BasePath (Join-Path $root 'none-yet') }
+        $g10 = Invoke-Get { Get-OrgTemplate -TemplateName 'Missing' -BasePath $multiBase }
+        if ($g9.Error.FullyQualifiedErrorId -eq 'W32T.OrgTemplateChoiceNeeded' -and "$($g9.Error.Exception.Message)" -match 'No org template exists' -and $g10.Error.FullyQualifiedErrorId -eq 'W32T.OrgTemplateChoiceNeeded' -and "$($g10.Error.Exception.Message)" -match "The org template 'Missing' does not exist") { Ok "no template / an unknown -TemplateName on $($nc.L) -> W32T.OrgTemplateChoiceNeeded (no wizard)" } else { Bad "wizard paths $($nc.L): $($g9.Error) | $($g10.Error)" }
+        $g11 = Invoke-Get { Get-OrgTemplate -TemplateName 'Good' -BasePath $multiBase }
+        if (-not $g11.Error -and $g11.Value.TemplateName -eq 'Good') { Ok "-TemplateName on $($nc.L) still loads the template" } else { Bad "named $($nc.L): $($g11.Error)" }
+    }
+    $script:nonInteractiveHost = $false; $script:nonInteractiveSwitch = $false
 
     # older schema with no dialog sections loads fine (missing fields are not violations)
     $oldBase = Join-Path $root 'old'

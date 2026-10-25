@@ -692,7 +692,8 @@ try {
     if ($d1.Count -eq 0) { Ok 'no UpdateTestFailed / AllowFailedUpdateTest in Public\ or Private\' } else { Bad "found: $(($d1 | ForEach-Object { "$($_.Filename):$($_.LineNumber)" }) -join ', ')" }
     $nonAscii = @($allMessages | Where-Object { $_ -match '[^\x20-\x7E]' })
     if ($allMessages.Count -ge 15 -and $nonAscii.Count -eq 0) { Ok "every advisory message is printable ASCII ($($allMessages.Count) checked)" } else { Bad "non-ASCII messages: $($nonAscii -join ' | ')" }
-    if (@($allMessages | Where-Object { $_ -match 'CaptureSiblingTechnologies' }).Count -eq 0) { Ok 'no message names -CaptureSiblingTechnologies (L12)' } else { Bad 'L12 violated' }
+    $named = @($allMessages | Where-Object { $_ -match 'CaptureSiblingTechnologies' })
+    if ($named.Count -ge 1 -and @($named | Where-Object { ([regex]::Matches($_, 'CaptureSiblingTechnologies')).Count -ne 1 -or $_ -notmatch 'winget also ships ' }).Count -eq 0) { Ok '-CaptureSiblingTechnologies is named once, only by the ID-SIBLING-FAMILY text (SV31)' } else { Bad "SV31: $($named -join ' | ')" }
 }
 finally {
     $script:W32TAdvisoryRun = $null

@@ -10,8 +10,8 @@ Invoke-Win32Toolkit [[-SearchTerm] <String>] [[-Id] <String>] [[-TemplateName] <
  [[-Architecture] <String>] [-Force] [[-BasePath] <String>] [-Reconfigure] [[-RunTest] <String[]>]
  [[-UpdateVersionsBack] <Int32>] [[-UpdateSpecificVersion] <String>] [-PackageIntune] [-PublishIntune]
  [-PublishUpdate] [[-DependsOn] <String[]>] [[-DependencyType] <String>] [[-InstallerType] <String>]
- [[-UpdateBaselineInstallerType] <String>] [-NoPublishPrompt] [-ProgressAction <ActionPreference>]
- [<CommonParameters>]
+ [[-UpdateBaselineInstallerType] <String>] [-CaptureSiblingTechnologies] [[-ApplySiblingCapture] <String>]
+ [-NoPublishPrompt] [-ProgressAction <ActionPreference>] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -79,6 +79,12 @@ Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -RunTest 
 ```
 
 ### EXAMPLE 8
+```
+# Package the WiX MSI and capture the vendor NSIS setup too: Block it now, review it later
+Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -InstallerType wix -CaptureSiblingTechnologies -ApplySiblingCapture Block
+```
+
+### EXAMPLE 9
 ```
 # Check what happened without reading the console
 $r = Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -PackageIntune
@@ -410,6 +416,50 @@ Aliases:
 
 Required: False
 Position: 12
+Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -CaptureSiblingTechnologies
+After the install capture, install each OTHER installer technology winget ships for this app (for example
+the vendor NSIS setup of an app packaged as MSI) on the Hyper-V test VM, record what it registered and
+turn it into prior-install proposals: rules that make this package refuse (Block) or remove (Enforce)
+that other install before it installs.
+About 3-5 minutes per capture; a host whose Hyper-V test VM is not
+ready is told before the download and captures nothing.
+A refused or failed capture is reported and the
+pipeline goes on.
+Review and approve the proposals with Set-Win32ToolkitPriorInstall (or the menu).
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -ApplySiblingCapture
+With -CaptureSiblingTechnologies: None (default: the proposals are listed with the command that applies
+each one) or Block (every High-confidence proposal without flags whose identity is not a rule yet becomes
+a Block rule: devices with that install FAIL this one until the rule is Enforce).
+There is no Enforce
+value: removing another vendor's install as SYSTEM needs one approval per proposal and a Hyper-V proof
+(Set-Win32ToolkitPriorInstall -FromSiblingCapture -Mode Enforce -ProposalId \<id\>; -RunTest Update proves
+it, and demotes a captured rule that cannot be proven).
+
+```yaml
+Type: String
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: 13
 Default value: None
 Accept pipeline input: False
 Accept wildcard characters: False

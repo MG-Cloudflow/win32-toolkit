@@ -257,7 +257,7 @@ function Get-Win32ToolkitIdentityDelta {
         $pcText = if ($pcs.Count) { " (ProductCode/ARP key '{0}')" -f ($pcs -join "', '") } else { '' }
         $msg = ("winget also ships {0} for {1} of {2} {3}{4}. Devices that already have that install would get two registrations over one folder. " +
                 'Keep one technology across your devices: to package that one instead, use -InstallerType {5}; ' +
-                'to test the switch, run Test-Win32ToolkitProject -Scenario Update -BaselineInstallerType Both.') -f
+                'to test the switch, run Test-Win32ToolkitProject -Scenario Update -BaselineInstallerType Both; or re-run with -CaptureSiblingTechnologies to capture it (the package can then remove that install before installing).') -f
                ($labels -join ' and '), $arch, $id, $ver, $pcText, ($pins -join ' or -InstallerType ')
         & $add 'ID-SIBLING-FAMILY' 'Warning' $msg @{
             Families     = @(& $distinct @($testable | ForEach-Object { [string]$_.Family }))

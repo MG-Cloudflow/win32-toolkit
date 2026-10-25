@@ -163,6 +163,9 @@ reproduces the whole tutorial (build, sandbox capture, package) without any menu
 Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -TemplateName 'YourTemplate' -Force -PackageIntune
 ```
 
+A run that cannot prompt (a scheduled task, a CI job, `pwsh -NonInteractive`) must pass `-TemplateName` when there
+is more than one template, or none yet: it stops with `W32T.OrgTemplateChoiceNeeded` instead of showing the menu.
+
 Add `-RunTest InstallUninstall` to also test the package, or `-PublishIntune` to upload it. See
 [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md) for the full parameter reference.
 The command returns a result object whose `Status` (Succeeded, CompletedWithProblems or Failed) and

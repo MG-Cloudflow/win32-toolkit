@@ -46,6 +46,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Set-Win32ToolkitAppConfig.ps1')
 . (Join-Path $repo 'Private\Add-Win32ToolkitInstallerFiles.ps1')
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitFinalize.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitTestResult.ps1')   # C-9: a test with no verdict reads its record (a NotRun pre-check, live row GOAL-CAPTURE)
+function Get-Win32ToolkitPriorProofState { param($ProjectPath) $null = $ProjectPath; @() }   # C-9 (installer-identity PR 3b, P1): Finalize reads the prior-install proof state
 . (Join-Path $repo 'Private\Configure-PSADTForInstaller.ps1')
 # C-9: the -DependsOn pre-flight of Invoke-Win32Toolkit / New-Win32ToolkitManualApp (B3 r2.1; real, pure).
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitDependencyRef.ps1')
@@ -204,6 +206,10 @@ function Wait-Win32ToolkitCollectedLog { param($ProjectPath, $TimeoutSeconds) $t
 function Test-Win32ToolkitProject {
     param($ProjectPath, $Scenario, $SpecificVersion, $VersionsBack, $BasePath)
     $script:Calls.Add('test')
+    if ($script:Mode.ContainsKey('NotRunRecord')) {
+        $null = New-Item -ItemType Directory -Path (Join-Path $ProjectPath 'Documentation') -Force
+        [IO.File]::WriteAllText((Join-Path $ProjectPath 'Documentation\TestResults.json'), (ConvertTo-Json -InputObject @($script:Mode.NotRunRecord) -Depth 6), [Text.UTF8Encoding]::new($false))
+    }
     if ($script:Mode.ContainsKey('TestVerdict')) { return $script:Mode.TestVerdict }
     $true
 }
@@ -574,6 +580,17 @@ Reset-Case @{ TestVerdict = $null }
 $c = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -ErrorAction SilentlyContinue -ErrorVariable ev }
 $rr = $c.Results | Select-Object -First 1
 if ($rr -and $rr.Tests[0].Verdict -eq 'Inconclusive' -and @($rr.Problems) -ccontains 'The InstallUninstall test gave no verdict (Inconclusive): the package was not shown to install and uninstall.') { Ok 'no verdict -> Tests[0] Inconclusive and its problem text' } else { Bad "tests=$(if ($rr) { $rr.Tests | ConvertTo-Json -Compress }) problems=[$(if ($rr) { $rr.Problems -join ' | ' })]" }
+# Live row GOAL-CAPTURE: a test the Intune-parity pre-check did not start (its record has NotRun) is named as not run,
+# with the record's reason, never "it may never have run (see the errors above)".
+$nrNotes = 'Not run (Intune-parity pre-check): a PSADT 4.1 package with no processes to close and a deferrable welcome dialog waits for an answer.'
+Reset-Case @{ TestVerdict = $null; NotRunRecord = [ordered]@{ Scenario = 'InstallUninstall'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = [datetime]::UtcNow.AddSeconds(5).ToString('o'); Verdict = 'Inconclusive'; Assertions = @(); Notes = $nrNotes; NotRun = [ordered]@{ Code = 'PARITY-DIALOG-WAIT'; Shape = 'Psadt41' } } }
+$script:wv = $null
+$c = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -ErrorAction SilentlyContinue -ErrorVariable ev -WarningVariable script:wv }
+$rr = $c.Results | Select-Object -First 1
+$wantProblem = "The InstallUninstall test was not run (PARITY-DIALOG-WAIT, Inconclusive): the package was not shown to install and uninstall. $nrNotes"
+if ($rr -and $rr.Tests[0].Verdict -eq 'Inconclusive' -and @($rr.Problems) -ccontains $wantProblem -and @($rr.Problems | Where-Object { $_ -match 'gave no verdict' }).Count -eq 0) { Ok 'a NotRun record (parity pre-check) -> Inconclusive, the problem says "was not run (PARITY-DIALOG-WAIT)" with the record''s reason' } else { Bad "notrun: problems=[$(if ($rr) { $rr.Problems -join ' | ' })]" }
+if (@($script:wv | Where-Object { "$_" -match '^The InstallUninstall test was NOT run \(PARITY-DIALOG-WAIT\): the toolkit did not start it' }).Count -eq 1 -and @($script:wv | Where-Object { "$_" -match 'may never have run' }).Count -eq 0) { Ok 'the warning says the test was NOT run (no "may never have run, see the errors above")' } else { Bad "notrun warnings: $($script:wv -join ' | ')" }
+Remove-Item -LiteralPath (Join-Path $newProj 'Documentation\TestResults.json') -ErrorAction SilentlyContinue
 
 Reset-Case @{ TestVerdict = $true; ExportSummary = [pscustomobject]@{ IntuneWinPath = 'C:\out\Git_x64_2.45.0.intunewin'; Published = @([pscustomobject]@{ AppId = 'app-1'; DisplayName = 'Git'; IsUpdateApp = $false; PortalUri = 'https://x' }); Problems = @('The update app was not published: test.') } }
 $c = Invoke-Collect { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -PackageIntune -ErrorAction SilentlyContinue -ErrorVariable ev }

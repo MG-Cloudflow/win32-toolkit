@@ -129,7 +129,7 @@ function Invoke-Win32ToolkitPriorDemotion {
     $summary.Unproven = [string[]]@($final | Where-Object { $_.Mode -ceq 'Enforce' -and $_.State -eq 'NotProven' -and $_.Lineage -ne 'Capture' } | ForEach-Object { $_.Id })
     foreach ($id in $summary.Unproven) {
         $st = @($final | Where-Object { $_.Id -ceq $id })[0]
-        Write-Warning "The Enforce rule '$(& $safe $id 40)' ($($st.Lineage)) is not proven ($(& $safe $st.Reason 200)): it is never demoted automatically; Export refuses it until it is proven or carries a PROOF waiver."
+        Write-Warning "The Enforce rule '$(& $safe $id 40)' ($($st.Lineage)) is not proven ($(& $safe $st.Reason 200)): it is never demoted automatically; Export refuses it until it is proven or waived (Set-Win32ToolkitPriorInstall -Waive PROOF)."
     }
     $summary.Demoted = @($demoted.ToArray())
     return $summary

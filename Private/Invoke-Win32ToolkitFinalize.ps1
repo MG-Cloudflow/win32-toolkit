@@ -45,6 +45,20 @@ function Invoke-Win32ToolkitFinalize {
     .PARAMETER NoPublishPrompt
         Passed on to the export: no 'Upload to Microsoft Intune now? (Y/N)' question after packaging (TUI
         audit G5; the menu asks about publishing itself).
+    .PARAMETER CaptureSiblingTechnologies
+        Installer-identity PR 3b (spec 2.17): after the install capture, capture the other installer technologies
+        winget ships for the app (Test-Win32ToolkitSiblingCapturePreflight, Get-Win32ToolkitSiblingCapturePlan,
+        Invoke-Win32ToolkitSiblingCapture on the Hyper-V test VM), then raise the windows of the captured rules
+        (Update-Win32ToolkitPriorInstallWindow). A refused pre-flight or a failed capture is one problem sentence; the
+        pipeline goes on. W32T.GuestTamper stays fatal.
+    .PARAMETER ApplySiblingCapture
+        With -CaptureSiblingTechnologies: None (default; the proposals are listed with their commands) or Block (every
+        High-confidence proposal without flags whose identity is not a rule yet becomes a Block rule; never Enforce).
+
+        Whatever the switches: when Enforce prior-install rules are unproven and -RunTest has Update, the proof and
+        demotion loop (Invoke-Win32ToolkitPriorDemotion -Prove) runs instead of the generic Update test; without Update
+        in -RunTest the unproven captured Enforce rules are demoted (one round, no proof). The capture, the raise, the
+        proof and the demotion run under the optional per-project lease (TestProjectLease).
     #>
     [CmdletBinding()]
     param(
@@ -91,7 +105,13 @@ function Invoke-Win32ToolkitFinalize {
         [pscustomobject]$Result,
 
         # No 'Upload to Microsoft Intune now?' question after packaging (TUI audit G5); declared last.
-        [switch]$NoPublishPrompt
+        [switch]$NoPublishPrompt,
+
+        # Installer-identity PR 3b: capture the other installer technologies (passed by the callers only when set).
+        [switch]$CaptureSiblingTechnologies,
+
+        [ValidateSet('None', 'Block')]
+        [string]$ApplySiblingCapture = 'None'
     )
 
     # Pre-flight (D15): never document, test, package or publish a deploy script win32-toolkit cannot
@@ -256,10 +276,110 @@ function Invoke-Win32ToolkitFinalize {
         }
     }
 
+    # 2b. Prior installs (installer-identity PR 3b, spec 2.17): capture the other installer technologies, raise the
+    #     windows of the captured rules, apply the Block proposals, then prove and demote - after the install capture's
+    #     logs are kept and before the test loop, under the optional per-project lease (TestProjectLease).
+    $skipGenericUpdate = $false
+    # An unreadable rule state never stops the run (C-7): the prior-install step is skipped with one warning.
+    $priorStates = @()
+    try { $priorStates = @(Get-Win32ToolkitPriorProofState -ProjectPath $ProjectPath) }
+    catch {
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+        $readText = "The prior-install rules could not be read ($(ConvertTo-Win32ToolkitSafeText -Text $_.Exception.Message -MaxLength 200)): no capture, proof or demotion ran."
+        Write-Warning $readText
+        if ($Result) { $Result.Problems.Add($readText) }
+        $CaptureSiblingTechnologies = $false
+    }
+    $unprovenEnforce = @($priorStates | Where-Object { $_.Mode -ceq 'Enforce' -and $_.State -eq 'NotProven' })
+    if ($CaptureSiblingTechnologies -or $unprovenEnforce.Count -gt 0) {
+        $priorLease = $null
+        try {
+            if (([string](Get-Win32ToolkitConfigValue -Name 'TestProjectLease' -Default 'Off')).Trim() -eq 'On' -and (Test-Win32ToolkitElevated)) {
+                $priorLease = Enter-Win32ToolkitHyperVLease -ProjectPath $ProjectPath -Purpose 'test'
+            }
+            $problem = { param([string]$Text) Write-Warning $Text; if ($Result) { $Result.Problems.Add($Text) } }
+            if ($CaptureSiblingTechnologies) {
+                if (-not $jsonProcessed) {
+                    & $problem "The other installer technologies were not captured: the install capture did not complete, and a sibling capture needs the package's own identity it records."
+                }
+                else {
+                    $pre = Test-Win32ToolkitSiblingCapturePreflight -ProjectPath $ProjectPath -Backend HyperV
+                    if (-not $pre.Ok) {
+                        & $problem ("The other installer technologies were not captured: " + ($pre.Reasons -join '; ') + '.')
+                    }
+                    else {
+                        try {
+                            $plan = Get-Win32ToolkitSiblingCapturePlan -ProjectPath $ProjectPath
+                            $plan.Backend = 'HyperV'
+                            $captured = Invoke-Win32ToolkitSiblingCapture -ProjectPath $ProjectPath -Plan $plan -Backend HyperV
+                            if ($captured -eq $false) { & $problem 'Every capture of the other installer technologies failed (Documentation\SiblingCapture.json lists why): no new proposal.' }
+                        }
+                        catch {
+                            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                            & $problem "The capture of the other installer technologies failed: $(ConvertTo-Win32ToolkitSafeText -Text $_.Exception.Message -MaxLength 200)"
+                        }
+                        # The D61 raise, whatever -ApplySiblingCapture says (it never adds, removes or re-modes a rule).
+                        $null = Update-Win32ToolkitPriorInstallWindow -ProjectPath $ProjectPath
+                        $proposals = @((ConvertTo-Win32ToolkitSiblingProposal -ProjectPath $ProjectPath).Proposals)
+                        if ($ApplySiblingCapture -eq 'Block' -and $proposals.Count -gt 0) {
+                            # The switch is the operator's consent for the bulk Block (spec 2.12 rule 7): High, flag-free,
+                            # an identity that is not a rule yet; an existing rule is never changed here.
+                            $null = Set-Win32ToolkitPriorInstall -ProjectPath $ProjectPath -FromSiblingCapture -Mode Block -Confirm:$false
+                        }
+                        foreach ($row in @(Get-Win32ToolkitPriorInstallFinding -ProjectPath $ProjectPath -Stage Advisory | Where-Object { $_.Code -eq 'ID-SIBLING-UNAPPLIED' })) {
+                            Write-Host "Sibling capture: $($row.Message)" -ForegroundColor Yellow
+                        }
+                    }
+                }
+                # Read again after the capture (the bulk Block may have added rules). Unreadable now: the capture ran, the
+                # proof and the demotion are skipped with one warning, and the run goes on (C-7).
+                $priorStates = @()
+                try { $priorStates = @(Get-Win32ToolkitPriorProofState -ProjectPath $ProjectPath) }
+                catch {
+                    if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                    $readText = "The prior-install rules could not be read after the capture ($(ConvertTo-Win32ToolkitSafeText -Text $_.Exception.Message -MaxLength 200)): no proof or demotion ran."
+                    Write-Warning $readText
+                    if ($Result) { $Result.Problems.Add($readText) }
+                }
+                $unprovenEnforce = @($priorStates | Where-Object { $_.Mode -ceq 'Enforce' -and $_.State -eq 'NotProven' })
+            }
+            if ($unprovenEnforce.Count -gt 0) {
+                if ($RunTest -contains 'Update') {
+                    $notReady = @(Test-Win32ToolkitHyperVReady)
+                    if ($notReady.Count -eq 0) {
+                        # The proof loop IS the Update test of this run (L37): one run per group, each from its own baseline.
+                        $skipGenericUpdate = $true
+                        if ($UpdateSpecificVersion -or $UpdateVersionsBack -or $UpdateBaselineInstallerType) {
+                            Write-Host 'Note: -UpdateVersionsBack, -UpdateSpecificVersion and -UpdateBaselineInstallerType apply only to the generic Update test; the proof runs of the prior-install rules start from each group''s own baseline.' -ForegroundColor Gray
+                        }
+                    }
+                    $demotion = Invoke-Win32ToolkitPriorDemotion -ProjectPath $ProjectPath -Prove:($notReady.Count -eq 0)
+                    if ($skipGenericUpdate) {
+                        $verdict = if (@($demotion.Demoted).Count -gt 0 -or @($demotion.Unproven).Count -gt 0) { 'Failed' } else { 'Passed' }
+                        if ($Result) { $Result.Tests.Add([pscustomobject]@{ Scenario = 'Update'; Verdict = $verdict }) }
+                    }
+                    else { & $problem ("The Enforce prior-install rules could not be proven: Hyper-V is not ready (" + ($notReady -join '; ') + ').') }
+                }
+                else {
+                    $demotion = Invoke-Win32ToolkitPriorDemotion -ProjectPath $ProjectPath
+                    if (@($demotion.Demoted).Count -gt 0) {
+                        Write-Warning "Captured Enforce prior-install rules are proven by an Update test on the Hyper-V test VM: run again with -RunTest Update. Demoted to proposals: $(@($demotion.Demoted | ForEach-Object { $_.Id }) -join ', ')."
+                    }
+                }
+                foreach ($d in @($demotion.Demoted)) { if ($Result) { $Result.Problems.Add("The captured prior-install rule '$($d.Id)' was not proven ($($d.Reason)) and was demoted to a proposal.") } }
+                foreach ($u in @($demotion.Unproven)) { if ($Result) { $Result.Problems.Add("The Enforce prior-install rule '$u' is not proven: Export refuses it until it is proven or waived (-Waive PROOF).") } }
+            }
+        }
+        finally {
+            if ($null -ne $priorLease) { $null = Exit-Win32ToolkitHyperVLease -Lease $priorLease }
+        }
+    }
+
     # 3. Optional test scenarios. The Update scenario returns a verdict ($true/$false/$null) —
     #    surface a failure loudly before any packaging/publishing continues.
     if ($RunTest) {
         foreach ($scenario in $RunTest) {
+            if ($scenario -eq 'Update' -and $skipGenericUpdate) { continue }   # the proof loop above was this run's Update test
             $testArgs = @{ ProjectPath = $ProjectPath; Scenario = $scenario }
             if ($BasePath) { $testArgs['BasePath'] = $BasePath }
             if ($scenario -eq 'Update') {
@@ -287,11 +407,39 @@ function Invoke-Win32ToolkitFinalize {
                 # freed), timed out, or produced no assertions. Packaging continues (matching the
                 # $false policy of warn-don't-block), but a run that never happened must never read
                 # as a pass.
-                Write-Warning "The $scenario test produced NO verdict — it may never have run (see the errors above). The package is about to be processed UNTESTED for this scenario."
+                # A run the toolkit decided not to start (the Intune-parity pre-check records it as NotRun) is named as
+                # such, not as a run that "may never have run" after errors (live row GOAL-CAPTURE).
+                $notRunCode = ''
+                $notRunNotes = ''
+                try {
+                    # Assigned first: the reader returns its array as ONE pipeline object (unary comma).
+                    $testRecords = Get-Win32ToolkitTestResult -ProjectPath $ProjectPath
+                    $notRunRecord = @($testRecords | Where-Object {
+                            if (-not $_ -or [string]$_.Scenario -ne $scenario -or -not $_.PSObject.Properties['NotRun'] -or $null -eq $_.NotRun) { return $false }
+                            $ts = $_.TimestampUtc
+                            $at = if ($ts -is [datetime]) { $ts.ToUniversalTime() } else { [datetime]::Parse([string]$ts, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal) }
+                            $at -ge $testStartUtc.AddSeconds(-1)
+                        }) | Select-Object -Last 1
+                    if ($notRunRecord) {
+                        $notRunCode = ConvertTo-Win32ToolkitSafeText -Text ([string]$notRunRecord.NotRun.Code) -MaxLength 64
+                        $notRunNotes = ConvertTo-Win32ToolkitSafeText -Text ([string]$notRunRecord.Notes) -MaxLength 400
+                    }
+                }
+                catch {
+                    if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                    Write-Verbose "Could not read the test record of the $scenario test: $($_.Exception.Message)"
+                }
+                $what = if ($scenario -eq 'Update') { 'update an earlier version' } else { 'install and uninstall' }
+                if ($notRunCode) {
+                    Write-Warning "The $scenario test was NOT run ($notRunCode): the toolkit did not start it, for the reason the warning above gives. The package is about to be processed UNTESTED for this scenario."
+                }
+                else {
+                    Write-Warning "The $scenario test produced NO verdict — it may never have run (see the errors above). The package is about to be processed UNTESTED for this scenario."
+                }
                 if ($Result) {
-                    $what = if ($scenario -eq 'Update') { 'update an earlier version' } else { 'install and uninstall' }
                     $Result.Tests.Add([pscustomobject]@{ Scenario = $scenario; Verdict = 'Inconclusive' })
-                    $Result.Problems.Add("The $scenario test gave no verdict (Inconclusive): the package was not shown to $what.")
+                    if ($notRunCode) { $Result.Problems.Add("The $scenario test was not run ($notRunCode, Inconclusive): the package was not shown to $what. $notRunNotes".TrimEnd()) }
+                    else { $Result.Problems.Add("The $scenario test gave no verdict (Inconclusive): the package was not shown to $what.") }
                 }
             }
             elseif ($Result) {

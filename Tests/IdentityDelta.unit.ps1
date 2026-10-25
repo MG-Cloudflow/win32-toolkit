@@ -216,7 +216,7 @@ $d = Get-Win32ToolkitIdentityDelta -Source (New-Source @{ PinnedBy = 'parameter'
 if (-not (Find $d 'ID-PREDECESSOR-AMBIGUOUS')) { Ok 'one id -> not ambiguous' } else { Bad 'one id flagged' }
 
 # --- [7] shape, hostile values, L12 --------------------------------------------------------------------
-Write-Host '[7] No Path in the delta; hostile values sanitised; no -CaptureSiblingTechnologies anywhere (L12)' -ForegroundColor Cyan
+Write-Host '[7] No Path in the delta; hostile values sanitised; -CaptureSiblingTechnologies named once, in ID-SIBLING-FAMILY only (SV31)' -ForegroundColor Cyan
 $d = Get-Win32ToolkitIdentityDelta -Source (New-Source @{ PinnedBy = 'continuity' }) -Predecessor (New-Lookup (New-Match) (New-Match @{ Anchored = $false; Version = '8.9.7' })) -Probe $probeNpp -TattooKey $tattooNew
 if (-not $d.Predecessor.PSObject.Properties['Path'] -and -not $d.HighestUnanchored.PSObject.Properties['Path'] -and $d.Predecessor.Name) { Ok 'Predecessor and HighestUnanchored carry no Path' } else { Bad 'Path leaked into the delta' }
 if ($d.Source.PSObject.Properties['Rebuilt'] -and $d.Source.Rebuilt -eq $false) { Ok 'Source carries Rebuilt' } else { Bad 'Source.Rebuilt missing' }
@@ -228,7 +228,8 @@ $d = Get-Win32ToolkitIdentityDelta -Source (New-Source @{ PinnedBy = 'parameter'
 $m = (Find $d 'ID-SIBLING-FAMILY').Message
 if ($m -and $m -notmatch '[\x00-\x1F\u202E]' -and $m -match "ProductCode/ARP key 'Evil\?\[2J'") { Ok 'control / bidi characters in probe values never reach a message' } else { Bad "hostile message: $m" }
 $null = Codes $d
-if (@($allMessages | Where-Object { $_ -match 'CaptureSiblingTechnologies' }).Count -eq 0 -and $allMessages.Count -ge 12) { Ok "no message names -CaptureSiblingTechnologies ($($allMessages.Count) messages checked)" } else { Bad "L12: $($allMessages.Count) messages, offending: $(@($allMessages | Where-Object { $_ -match 'CaptureSiblingTechnologies' }))" }
+$named = @($allMessages | Where-Object { $_ -match 'CaptureSiblingTechnologies' })
+if ($allMessages.Count -ge 12 -and $named.Count -ge 1 -and @($named | Where-Object { ([regex]::Matches($_, 'CaptureSiblingTechnologies')).Count -ne 1 -or $_ -notmatch '^winget also ships ' }).Count -eq 0) { Ok "-CaptureSiblingTechnologies is named once, and only by ID-SIBLING-FAMILY (SV31; $($allMessages.Count) messages checked)" } else { Bad "SV31: $($allMessages.Count) messages, naming it: $($named -join ' | ')" }
 if (@($allMessages | Where-Object { $_ -match '[^\x20-\x7E]' }).Count -eq 0) { Ok 'every message is printable ASCII' } else { Bad 'a message has non-ASCII characters' }
 
 # ======================== Project set (shadows) ========================

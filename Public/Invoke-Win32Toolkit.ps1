@@ -100,6 +100,20 @@ function Invoke-Win32Toolkit {
 .PARAMETER NoPublishPrompt
     With -PackageIntune and neither -PublishIntune nor -PublishUpdate, do not ask 'Upload to Microsoft
     Intune now? (Y/N)' after packaging. The menu always passes it: it asks about publishing itself.
+.PARAMETER CaptureSiblingTechnologies
+    After the install capture, install each OTHER installer technology winget ships for this app (for example
+    the vendor NSIS setup of an app packaged as MSI) on the Hyper-V test VM, record what it registered and
+    turn it into prior-install proposals: rules that make this package refuse (Block) or remove (Enforce)
+    that other install before it installs. About 3-5 minutes per capture; a host whose Hyper-V test VM is not
+    ready is told before the download and captures nothing. A refused or failed capture is reported and the
+    pipeline goes on. Review and approve the proposals with Set-Win32ToolkitPriorInstall (or the menu).
+.PARAMETER ApplySiblingCapture
+    With -CaptureSiblingTechnologies: None (default: the proposals are listed with the command that applies
+    each one) or Block (every High-confidence proposal without flags whose identity is not a rule yet becomes
+    a Block rule: devices with that install FAIL this one until the rule is Enforce). There is no Enforce
+    value: removing another vendor's install as SYSTEM needs one approval per proposal and a Hyper-V proof
+    (Set-Win32ToolkitPriorInstall -FromSiblingCapture -Mode Enforce -ProposalId <id>; -RunTest Update proves
+    it, and demotes a captured rule that cannot be proven).
 .EXAMPLE
     Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force
 .EXAMPLE
@@ -117,6 +131,9 @@ function Invoke-Win32Toolkit {
 .EXAMPLE
     # Update test from each installer technology winget ships (one run and one test record per technology)
     Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -RunTest Update -UpdateVersionsBack 1 -UpdateBaselineInstallerType Both
+.EXAMPLE
+    # Package the WiX MSI and capture the vendor NSIS setup too: Block it now, review it later
+    Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -InstallerType wix -CaptureSiblingTechnologies -ApplySiblingCapture Block
 .EXAMPLE
     # Check what happened without reading the console
     $r = Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -PackageIntune
@@ -200,6 +217,15 @@ function Invoke-Win32Toolkit {
         [ValidateSet('Auto', 'Both', 'Packaged', 'msi', 'wix', 'burn', 'nullsoft', 'inno', 'exe', 'msix')]
         [string]$UpdateBaselineInstallerType,
 
+        # Installer-identity PR 3b (spec 2.17): capture the other installer technologies after the install capture.
+        [Parameter(Mandatory = $false)]
+        [switch]$CaptureSiblingTechnologies,
+
+        # What to do with the capture's proposals: None or Block (there is no Enforce value, D58).
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('None', 'Block')]
+        [string]$ApplySiblingCapture = 'None',
+
         # No 'Upload to Microsoft Intune now?' question after packaging (TUI audit G5: the menu asks about
         # publishing itself). Declared last.
         [Parameter(Mandatory = $false)]
@@ -248,6 +274,20 @@ function Invoke-Win32Toolkit {
 
         # Load (or create) org template once for this run
         $script:OrgTemplate = Get-OrgTemplate -TemplateName $TemplateName -BasePath $BasePath
+
+        # Installer-identity PR 3b (spec 2.17, SV28): what the sibling capture will do, said before anything is downloaded.
+        if ($CaptureSiblingTechnologies) {
+            $siblingNotReady = @(Test-Win32ToolkitHyperVReady)
+            if ($siblingNotReady.Count -eq 0) {
+                Write-Host 'Sibling capture: after the install capture, each other installer technology of this app is installed on the Hyper-V test VM (about 3-5 minutes each) and proposed as a prior-install rule.' -ForegroundColor Cyan
+            }
+            else {
+                Write-Warning ('Sibling capture: Hyper-V is not ready (' + ($siblingNotReady -join '; ') + '): the other installer technologies cannot be captured in this run (this version captures on the Hyper-V test VM only).')
+            }
+        }
+        elseif ($ApplySiblingCapture -ne 'None') {
+            Write-Warning "-ApplySiblingCapture $ApplySiblingCapture has no effect without -CaptureSiblingTechnologies: ignored."
+        }
 
         # -Id fast path: skip search entirely. Resolution is locale-independent (existence by exit code,
         # Name/Version from the column-parsed search table) so it works on non-English winget (issue #60).
@@ -473,6 +513,8 @@ function Invoke-Win32Toolkit {
                     if ($UpdateSpecificVersion) { $finalize['UpdateSpecificVersion'] = $UpdateSpecificVersion }
                     if ($PSBoundParameters.ContainsKey('UpdateBaselineInstallerType')) { $finalize['UpdateBaselineInstallerType'] = $UpdateBaselineInstallerType }
                     if ($NoPublishPrompt) { $finalize['NoPublishPrompt'] = $true }   # only when set (TUI audit G5)
+                    # Only when set (spec 2.17): the fixed-parameter Finalize shadows of the suites keep binding.
+                    if ($CaptureSiblingTechnologies) { $finalize['CaptureSiblingTechnologies'] = $true; $finalize['ApplySiblingCapture'] = $ApplySiblingCapture }
                     Invoke-Win32ToolkitFinalize @finalize -PackageIntune:$PackageIntune -PublishIntune:$PublishIntune -PublishUpdate:$PublishUpdate
                     return (Complete-Win32ToolkitRunResult -Result $runResult)
 
@@ -500,6 +542,9 @@ function Invoke-Win32Toolkit {
                     }
                     if ($PSBoundParameters.ContainsKey('DependsOn') -and $DependsOn) {
                         $skipped.Add("-DependsOn ($($DependsOn -join ', ')): no dependencies were declared on the project.")
+                    }
+                    if ($CaptureSiblingTechnologies) {
+                        $skipped.Add('-CaptureSiblingTechnologies: the other installer technologies were NOT captured.')
                     }
 
                     if ($skipped.Count -gt 0) {
