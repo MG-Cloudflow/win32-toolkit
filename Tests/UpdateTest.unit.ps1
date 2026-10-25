@@ -32,6 +32,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Resolve-Win32ToolkitBaselineSilentArgs.ps1')
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitWingetDownload.ps1')  # C-9: every winget download runs through it
 . (Join-Path $repo 'Private\Download-OldVersionInstaller.ps1')
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+. (Join-Path $repo 'Private\ConvertFrom-Win32ToolkitWingetManifest.ps1')   # C-9: Download-OldVersionInstaller reads the downloaded switches with it
 . (Join-Path $repo 'Private\Get-Win32ToolkitTestMode.ps1')  # mode resolver (Interactive/Unattended)
 . (Join-Path $repo 'Private\Wait-Win32ToolkitSandboxFree.ps1')
 function Get-Win32ToolkitSandboxEnvironment { $null }   # C-9: no wsb answer -> the process check decides (test campaign F1)

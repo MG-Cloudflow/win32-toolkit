@@ -23,6 +23,10 @@ function Get-YAMLInstallerInfo {
     UpgradeBehavior), so a quoted GUID passes Test-Win32ToolkitProductCode. PackageName, Publisher,
     Description, the URLs and SilentArgs are returned exactly as written: they feed App.Vendor /
     App.DisplayName, i.e. the install tattoo key, which must not change for existing packages.
+
+    The switches an old, sibling or dependency installer is RUN with do not come from here: Download-OldVersionInstaller
+    reads Silent and Custom with ConvertFrom-Win32ToolkitWingetManifest (YAML scalars decoded, root switches merged as
+    winget merges them), so there is one reader of a command line (installer-identity PR 3b).
 .OUTPUTS
     Hashtable of the parsed fields, or $null when the folder holds no manifest / cannot be parsed.
 #>

@@ -293,6 +293,19 @@ function Get-Win32ToolkitIdentityDelta {
         $reason = [string](& $prop $Probe 'Reason')
         $why = switch ($reason) {
             'NotFound'  { 'NotFound: winget-pkgs has no installer manifest for it' }
+            'RateLimited' {
+                # The probe's own time (a stored probe has none); 'o' ISO text or a [datetime] from ConvertFrom-Json. Rounded
+                # up to the minute: "until 10:01" for 10:01:40 would be too early.
+                $at = & $iso (& $prop $Probe 'RetryAfterUtc')
+                $d = [datetime]::MinValue
+                if ($at -and [datetime]::TryParse($at, [Globalization.CultureInfo]::InvariantCulture,
+                        [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$d)) {
+                    $atMinute = [datetime]::new($d.Ticks - ($d.Ticks % [timespan]::TicksPerMinute), [DateTimeKind]::Utc)
+                    if ($atMinute -lt $d) { $atMinute = $atMinute.AddMinutes(1) }
+                    "RateLimited: GitHub limits requests from this computer until $($atMinute.ToString('HH:mm', [Globalization.CultureInfo]::InvariantCulture)) UTC"
+                }
+                else { 'RateLimited: GitHub limits requests from this computer for a while' }
+            }
             'Network'   { 'Network: the request failed' }
             'Timeout'   { 'Timeout: no answer in time' }
             'TooLarge'  { 'TooLarge: the manifest is too large' }

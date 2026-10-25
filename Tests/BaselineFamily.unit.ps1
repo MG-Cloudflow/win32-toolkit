@@ -267,6 +267,8 @@ try {
     . (Join-Path $repo 'Private\Test-Win32ToolkitCachedInstaller.ps1')
     . (Join-Path $repo 'Private\Invoke-Win32ToolkitWingetDownload.ps1')   # every winget download runs through it (C-9)
     . (Join-Path $repo 'Private\Download-OldVersionInstaller.ps1')
+    . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+    . (Join-Path $repo 'Private\ConvertFrom-Win32ToolkitWingetManifest.ps1')   # C-9: Download-OldVersionInstaller reads the downloaded switches with it
 
     $script:cacheRoot = $null
     function Get-Win32ToolkitPipelineCacheRoot { $script:cacheRoot }

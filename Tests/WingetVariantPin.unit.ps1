@@ -172,7 +172,13 @@ try {
         Ok 'the message names the family, the tried types, the pin reason and both options'
     } else { Bad "message: $m" }
     if (@(Get-ChildItem -LiteralPath $dl -File -Recurse).Count -eq 0) { Ok 'nothing left in Files\ after the failed attempts' } else { Bad "left: $((Get-ChildItem -LiteralPath $dl -Name) -join ', ')" }
-    $err2 = $null
+    # Live row COPRODUCT (2026-10-27): an operator's -InstallerType for a technology the app never shipped got the continuity
+    # advice ("skip this version", "devices that already have the MSI install"); it gets its own options.
+    Reset-Winget -Exits @($NOAPP, $NOAPP)
+    $errP = $null
+    try { $null = Download-WingetApp -AppId 'Mozilla.Firefox' -DownloadPath (New-Dl) -Architecture 'x64' -InstallerType 'msi' -PinnedBy 'parameter' -PinReason 'requested' 6>$null } catch { $errP = $_ }
+    $mp = if ($errP) { $errP.Exception.Message } else { '' }
+    if ($errP.FullyQualifiedErrorId -eq 'W32T.InstallerVariantUnavailable' -and $mp -match '-InstallerType asked for that technology \(requested\)' -and $mp -match 'run again without -InstallerType' -and $mp -notmatch 'skip this version' -and $mp -notmatch 'devices that already have') { Ok 'a -InstallerType request winget cannot serve -> the options for a request (another technology, another version), not the continuity advice' } else { Bad "requested message: $mp" }    $err2 = $null
     Reset-Winget -Exits @($NOAPP, $NOAPP)
     try { $null = Download-WingetApp -AppId 'Some.App' -DownloadPath (New-Dl) -Architecture 'x64' -InstallerType 'msi' 6>$null } catch { $err2 = $_ }
     if ($err2 -and $err2.Exception.Message -match 'winget offers no MSI installer for Some\.App \(x64\); tried: msi, wix\.') { Ok 'pin msi -> tried: msi, wix (MSI family label)' } else { Bad "msg=$($err2.Exception.Message)" }

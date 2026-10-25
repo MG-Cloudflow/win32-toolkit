@@ -169,10 +169,21 @@ function Download-WingetApp {
             $familyLabel = switch ($family) { 'msi' { 'MSI' } 'exe' { 'vendor EXE' } 'msix' { 'MSIX' } default { $family } }
             $archText = if ($Architecture -and $Architecture -ne 'all') { $Architecture } else { 'any architecture' }
             $why = if ($PinReason) { $PinReason } elseif ($PinnedBy) { $PinnedBy } else { 'requested' }
-            $msg = "winget offers no $familyLabel installer for $AppId ($archText); tried: $($types -join ', '). " +
-                   "The installer technology was pinned ($why). Nothing was downloaded. Options: " +
-                   '(1) skip this version and package the next one that ships it (recommended when a vendor drops a technology for one release); ' +
-                   "(2) switch technology on purpose with -InstallerType <other type> - devices that already have the $familyLabel install then get a second registration (see docs/packaging.md, Installer technology)."
+            # An operator's own -InstallerType (no published or pinned predecessor) is advised differently from a continuity
+            # pin (live row COPRODUCT: "skip this version and package the next one" and "devices that already have the MSI
+            # install" were wrong for an app that never shipped that technology).
+            $msg = if ($PinnedBy -eq 'parameter') {
+                "winget offers no $familyLabel installer for $AppId ($archText); tried: $($types -join ', '). " +
+                "-InstallerType asked for that technology ($why). Nothing was downloaded. Options: " +
+                '(1) package a technology winget ships for this app: run again without -InstallerType (winget chooses) or name another type; ' +
+                '(2) package a version that ships it, when one does (see docs/packaging.md, Installer technology).'
+            }
+            else {
+                "winget offers no $familyLabel installer for $AppId ($archText); tried: $($types -join ', '). " +
+                "The installer technology was pinned ($why). Nothing was downloaded. Options: " +
+                '(1) skip this version and package the next one that ships it (recommended when a vendor drops a technology for one release); ' +
+                "(2) switch technology on purpose with -InstallerType <other type> - devices that already have the $familyLabel install then get a second registration (see docs/packaging.md, Installer technology)."
+            }
             throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new($msg),
                 'W32T.InstallerVariantUnavailable', [System.Management.Automation.ErrorCategory]::ObjectNotFound, $AppId)
         }

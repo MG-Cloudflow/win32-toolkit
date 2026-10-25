@@ -44,6 +44,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Resolve-Win32ToolkitBaselineSilentArgs.ps1')
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitWingetDownload.ps1')  # every winget download runs through it (C-9)
 . (Join-Path $repo 'Private\Download-OldVersionInstaller.ps1')
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+. (Join-Path $repo 'Private\ConvertFrom-Win32ToolkitWingetManifest.ps1')   # C-9: Download-OldVersionInstaller reads the downloaded switches with it
 
 # ── fixtures ─────────────────────────────────────────────────────────────────────────────────────
 $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('w32yaml_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -169,6 +171,9 @@ foreach ($d in @($dirA, $dirB)) {
     if ($info.Scope         -eq 'machine')                 { Ok "$label : Scope         = machine"     } else { Bad "$label : Scope = '$($info.Scope)'" }
     if ($info.InstallerLocale -eq 'en-US')                 { Ok "$label : InstallerLocale = en-US"     } else { Bad "$label : InstallerLocale = '$($info.InstallerLocale)'" }
     if ($info.SilentArgs    -eq '/VERYSILENT /NORESTART /SP-') { Ok "$label : SilentArgs = the installer manifest's" } else { Bad "$label : SilentArgs = '$($info.SilentArgs)'" }
+    # Installer-identity PR 3b (L21): the switches that are RUN have one reader (ConvertFrom-Win32ToolkitWingetManifest,
+    # through Download-OldVersionInstaller, [5]); this reader has no second, different reading of Custom.
+    if (-not $info.ContainsKey('CustomArgs')) { Ok "$label : no CustomArgs here (the Custom switches that are run are read in [5])" } else { Bad "$label : CustomArgs = '$($info.CustomArgs)'" }
     if ($info.ProductCode -match '11111111-2222-3333-4444-555555555555') { Ok "$label : ProductCode from the installer manifest" } else { Bad "$label : ProductCode = '$($info.ProductCode)'" }
 
     # …and NONE of the decoys planted in the locale manifest leaked in.
@@ -223,12 +228,13 @@ function winget {
     $idx = [array]::IndexOf($a, '--download-directory')
     $dir = $a[$idx + 1]
     Write-Manifest (Join-Path $dir 'Contoso.Editor.default.locale.en-US.yaml') $localeYaml
-    Write-Manifest (Join-Path $dir 'Contoso.Editor.installer.yaml')            $installerYaml
+    Write-Manifest (Join-Path $dir 'Contoso.Editor.installer.yaml')            $script:p1Installer
     Write-Manifest (Join-Path $dir 'Contoso.Editor.yaml')                      $versionYaml
     Set-Content -LiteralPath (Join-Path $dir 'CoentosoEditorSetup.exe') -Value 'MZ'
     $global:LASTEXITCODE = 0
 }
 
+$script:p1Installer = $installerYaml
 $proj = Join-Path $tmpRoot 'proj'
 $dest = Join-Path $proj 'Sandbox\Dependencies\Contoso.Editor'
 New-Item -ItemType Directory -Path $dest -Force | Out-Null
@@ -239,8 +245,50 @@ if ($baseline.InstallerName -eq 'CoentosoEditorSetup.exe') { Ok 'the downloaded 
 # The manifest InstallerType ('inno') and the manifest Silent switches both live in *.installer.yaml.
 # Old code took the locale manifest -> no InstallerType, no Silent -> it GUESSED '/S' for the baseline
 # install, which silently makes the whole Update test inconclusive (an Inno setup ignores /S).
-if ($baseline.SilentArgs -eq '/VERYSILENT /NORESTART /SP-') { Ok "SilentArgs = '/VERYSILENT /NORESTART /SP-' (from the installer manifest, not a '/S' guess)" }
-else { Bad "SilentArgs = '$($baseline.SilentArgs)'" }
+# Installer-identity PR 3b (L21): winget appends the manifest's Custom switches after the silent ones.
+if ($baseline.SilentArgs -eq '/VERYSILENT /NORESTART /SP- /LOG' -and $baseline.SilentArgsSource -eq 'manifest-silent+custom' -and $baseline.CustomArgs -eq '/LOG') { Ok "SilentArgs = '/VERYSILENT /NORESTART /SP- /LOG' (the installer manifest's Silent plus its Custom, as winget composes them; not a '/S' guess)" }
+else { Bad "SilentArgs = '$($baseline.SilentArgs)' source '$($baseline.SilentArgsSource)'" }
+if (@($baseline.ManifestPath).Count -eq 3 -and @($baseline.ManifestPath | Where-Object { $_ -like '*.installer.yaml' }).Count -eq 1) { Ok 'ManifestPath lists the downloaded manifests' } else { Bad "ManifestPath: $(@($baseline.ManifestPath) -join ', ')" }
+
+# Installer-identity PR 3b (L21): the switches that are RUN are read as YAML reads them (ConvertFrom-Win32ToolkitWingetManifest):
+# one pair of quotes removed, double-quoted escapes decoded, a trailing comment dropped. winget's own writer double-quotes
+# (with escapes) any value it cannot write plain, and the downloaded manifest is the one these switches come from.
+$switchManifest = {
+    param([string]$Silent, [string]$Custom)
+    "PackageIdentifier: Contoso.Editor`nPackageVersion: 2.1.0`nInstallers:`n- Architecture: x64`n  InstallerType: inno`n  Scope: machine`n" +
+    "  InstallerSha256: 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF`n  InstallerSwitches:`n    Silent: $Silent`n    Custom: $Custom`nManifestType: installer`nManifestVersion: 1.6.0`n"
+}
+$switchCases = @(
+    @{ L = 'a quoted Silent and a double-quoted Custom'; Silent = "'/VERYSILENT /NORESTART'"; Custom = '"/ALLUSERS"'; S = '/VERYSILENT /NORESTART /ALLUSERS'; C = '/ALLUSERS' }
+    @{ L = 'a double-quoted Custom with an escaped backslash'; Silent = '/VERYSILENT'; Custom = '"/D=C:\\x"'; S = '/VERYSILENT /D=C:\x'; C = '/D=C:\x' }
+    @{ L = 'a double-quoted Custom with escaped quotes'; Silent = '/VERYSILENT'; Custom = '"/DIR=\"C:\\X\""'; S = '/VERYSILENT /DIR="C:\X"'; C = '/DIR="C:\X"' }
+    @{ L = 'a double-quoted Custom with escaped quotes and a second switch'; Silent = '"/VERYSILENT"'; Custom = '"/DIR=\"C:\\Program Files\\X\" /LOG" # a comment'; S = '/VERYSILENT /DIR="C:\Program Files\X" /LOG'; C = '/DIR="C:\Program Files\X" /LOG' }
+    @{ L = "a single-quoted Custom ('' inside, a quote in its trailing comment)"; Silent = '/VERYSILENT'; Custom = "'INSTALLDIR=""C:\Program Files\X"" TAG=''a #b''' # the comment's quote ' is not part of it"; S = '/VERYSILENT INSTALLDIR="C:\Program Files\X" TAG=''a #b'''; C = 'INSTALLDIR="C:\Program Files\X" TAG=''a #b''' }
+    @{ L = 'a plain Custom with a trailing comment (a # inside a word stays)'; Silent = '/VERYSILENT'; Custom = '/ALLUSERS /TAG=a#b   # machine-wide'; S = '/VERYSILENT /ALLUSERS /TAG=a#b'; C = '/ALLUSERS /TAG=a#b' }
+)
+foreach ($sc in $switchCases) {
+    $script:p1Installer = & $switchManifest $sc.Silent $sc.Custom
+    $b = Download-OldVersionInstaller -AppId 'Contoso.Editor' -Version '2.1.0' -ProjectPath $proj -DestinationDir $dest 6>$null 3>$null
+    if ($b.SilentArgs -ceq $sc.S -and $b.CustomArgs -ceq $sc.C -and $b.SilentArgsSource -eq 'manifest-silent+custom') { Ok "$($sc.L) -> SilentArgs [$($b.SilentArgs)]" }
+    else { Bad "$($sc.L): SilentArgs [$($b.SilentArgs)] CustomArgs [$($b.CustomArgs)] source '$($b.SilentArgsSource)'" }
+}
+# The AppConfig contract (PR 1, L8) is unchanged: Get-YAMLInstallerInfo still returns the quoted Silent as written.
+$script:p1Installer = & $switchManifest "'/VERYSILENT /NORESTART'" '/LOG'
+$b = Download-OldVersionInstaller -AppId 'Contoso.Editor' -Version '2.1.0' -ProjectPath $proj -DestinationDir $dest 6>$null 3>$null
+$asWritten = (Get-YAMLInstallerInfo -FilesPath $dest).SilentArgs
+if ($asWritten -ceq "'/VERYSILENT /NORESTART'" -and $b.SilentArgs -ceq '/VERYSILENT /NORESTART /LOG') { Ok "Get-YAMLInstallerInfo.SilentArgs stays as written ('/VERYSILENT /NORESTART' in quotes, for AppConfig); the baseline runs it unquoted" } else { Bad "as written [$asWritten], run [$($b.SilentArgs)]" }
+
+# Several installers (a hand-made manifest; winget download writes only the one it chose): the downloaded architecture's.
+$script:p1Installer = "PackageIdentifier: Contoso.Editor`nPackageVersion: 2.1.0`nInstallers:`n- Architecture: x86`n  InstallerType: inno`n  InstallerSwitches:`n    Silent: /VERYSILENT /TAG=x86`n" +
+    "- Architecture: x64`n  InstallerType: inno`n  InstallerSwitches:`n    Silent: /VERYSILENT /TAG=x64`nManifestType: installer`n"
+$b = Download-OldVersionInstaller -AppId 'Contoso.Editor' -Version '2.1.0' -ProjectPath $proj -DestinationDir $dest -Architecture x64 6>$null 3>$null
+if ($b.SilentArgs -ceq '/VERYSILENT /TAG=x64') { Ok 'a manifest with several installers: the switches of the downloaded architecture' } else { Bad "several installers: [$($b.SilentArgs)]" }
+
+# Fallback: a manifest the reader cannot read (no 'Installers:' list) keeps the PR 1 behaviour - Silent as written, no Custom.
+$script:p1Installer = "PackageIdentifier: Contoso.Editor`nPackageVersion: 2.1.0`nInstallerType: inno`nInstallerSwitches:`n  Silent: /VERYSILENT /SP-`n  Custom: /LOG`n"
+$b = Download-OldVersionInstaller -AppId 'Contoso.Editor' -Version '2.1.0' -ProjectPath $proj -DestinationDir $dest 6>$null 3>$null
+if ($b.SilentArgs -ceq '/VERYSILENT /SP-' -and $b.SilentArgsSource -eq 'manifest-silent' -and $b.CustomArgs -eq '') { Ok "no 'Installers:' list: Get-YAMLInstallerInfo's Silent, no Custom (as before PR 3b)" } else { Bad "fallback: [$($b.SilentArgs)] '$($b.SilentArgsSource)' [$($b.CustomArgs)]" }
+$script:p1Installer = $installerYaml
 
 # ══ 6. Every manifest read pins the encoding ══════════════════════════════════════════════════════
 Write-Host '[6] Every Get-Content of a manifest specifies -Encoding UTF8 (AST-verified)' -ForegroundColor Cyan

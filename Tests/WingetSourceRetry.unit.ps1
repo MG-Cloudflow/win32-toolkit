@@ -45,6 +45,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Get-YAMLInstallerInfo.ps1')
 . (Join-Path $repo 'Private\Test-Win32ToolkitCachedInstaller.ps1')
 . (Join-Path $repo 'Private\Download-OldVersionInstaller.ps1')
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+. (Join-Path $repo 'Private\ConvertFrom-Win32ToolkitWingetManifest.ps1')   # C-9: Download-OldVersionInstaller reads the downloaded switches with it
 function Get-Win32ToolkitPipelineCacheRoot { $null }   # no pipeline cache in this suite
 
 $AUTH   = -1978335115   # 0x8A150075 APPINSTALLER_CLI_ERROR_AUTHENTICATION_FAILED

@@ -136,6 +136,17 @@ $pu = Find $d 'ID-PROBE-UNAVAILABLE'
 if ((Codes $d) -eq 'ID-PROBE-UNAVAILABLE' -and $pu.Severity -eq 'Warning' -and $pu.Message -match 'Notepad\+\+\.Notepad\+\+ 8\.9\.8\.1 \(NotFound' -and $pu.Message -match 'pin one with -InstallerType') {
     Ok 'ID-PROBE-UNAVAILABLE names the id, version, reason and the -InstallerType advice; no ID-NO-ANCHOR'
 } else { Bad "unavailable -> $(Codes $d) / $($pu.Message)" }
+# HTTP 429 (live rows RAISE, INNO): RateLimited names GitHub's limit and the probe's RetryAfterUtc ('' -> "for a while").
+$probeLimited = $probeDown.PSObject.Copy(); $probeLimited.Reason = 'RateLimited'
+$probeLimited | Add-Member -NotePropertyName RetryAfterUtc -NotePropertyValue '2026-10-29T14:04:30.0000000Z'   # rounded up: 14:05
+$pl = Find (Get-Win32ToolkitIdentityDelta -Source (New-Source) -Probe $probeLimited -TattooKey $tattooNew) 'ID-PROBE-UNAVAILABLE'
+$probeLimited.RetryAfterUtc = '2026-10-29T14:05:00.0000000Z'   # an exact minute stays: 14:05
+$plx = Find (Get-Win32ToolkitIdentityDelta -Source (New-Source) -Probe $probeLimited -TattooKey $tattooNew) 'ID-PROBE-UNAVAILABLE'
+$probeLimited.RetryAfterUtc = ''
+$pl2 = Find (Get-Win32ToolkitIdentityDelta -Source (New-Source) -Probe $probeLimited -TattooKey $tattooNew) 'ID-PROBE-UNAVAILABLE'
+if ($pl.Message -match '8\.9\.8\.1 \(RateLimited: GitHub limits requests from this computer until 14:05 UTC\)\.' -and $plx.Message -match 'until 14:05 UTC\)\.' -and $pl2.Message -match '\(RateLimited: GitHub limits requests from this computer for a while\)\.') {
+    Ok 'RateLimited -> "GitHub limits requests from this computer until HH:mm UTC" (the probe''s RetryAfterUtc rounded up: 14:04:30 -> 14:05), "for a while" without one'
+} else { Bad "rate limited -> $($pl.Message) / $($pl2.Message)" }
 $skipped = [pscustomobject]@{ Status = 'Skipped'; Reason = 'NoWingetId'; Siblings = @() }
 $d = Get-Win32ToolkitIdentityDelta -Source (New-Source @{ WingetId = ''; PinnedBy = 'parameter' }) -Probe $skipped
 if ((Codes $d) -eq '' -and $d.Probe.Status -eq 'Skipped') { Ok 'Skipped probe (manual project) -> no finding' } else { Bad "skipped -> $(Codes $d)" }

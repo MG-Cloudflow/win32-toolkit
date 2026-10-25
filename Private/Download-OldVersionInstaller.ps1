@@ -19,6 +19,20 @@ function Download-OldVersionInstaller {
     successful download or cache hit and is left untouched when the call fails, so Sandbox\OldVersion stays
     paired with the last generated Sandbox\UpdateAssertions.ps1 (spec 2.12 legacy rule, L21).
 
+    With -ExactType (a sibling capture, installer-identity PR 3b spec 2.14.4) only the given registration type is tried
+    (msi and wix count as one: both are tried, the given one first), the same way: the scope is only relaxed when
+    -Scope was given, there is never an unpinned retry, and when none is offered a W32T.InstallerVariantUnavailable
+    error names every attempt. The downloaded (or cached) manifest must name exactly that registration type: winget's
+    --installer-type also takes an archive that wraps it (a zip whose nested installer is nullsoft), and such a download
+    - or one without a readable manifest, or one whose installers are of several types - counts as not offered. The check
+    runs before the download is cached, so the pipeline cache only ever holds a download of the type its key names; a
+    cached entry that fails it (written by an earlier build) is discarded, removed from the cache and downloaded again.
+
+    The switches the installer runs with are the downloaded manifest's InstallerSwitches Silent and Custom as winget reads
+    them (ConvertFrom-Win32ToolkitWingetManifest: YAML quotes removed, double-quoted escapes decoded, the root's switches
+    merged key by key), composed by Resolve-Win32ToolkitBaselineSilentArgs. Only a manifest that reader cannot read (no
+    'Installers:' list: a hand-made one) falls back to Get-YAMLInstallerInfo's SilentArgs as written, without Custom.
+
     Every winget call runs through Invoke-Win32ToolkitWingetDownload: winget's console lines go to the host
     (never into the returned object), and when a configured source cannot authenticate (exit 0x8A150075 or 0x8A150076) the
     same download is retried once with '--source winget' (one warning); later attempts of this call then ask
@@ -28,16 +42,20 @@ function Download-OldVersionInstaller {
       InstallerPath          — full path to the downloaded installer file
       InstallerName          — file name only (used to build the sandbox path)
       InstallerType          — extension without dot (exe, msi, msix, appx)
-      SilentArgs             — silent install switches for this installer
+      SilentArgs             — silent install switches for this installer (the manifest's Silent, else winget's
+                               default for the type, plus the manifest's Custom switches), unquoted as YAML reads them
+      SilentArgsSource       — where they came from (Resolve-Win32ToolkitBaselineSilentArgs Source)
+      CustomArgs             — the manifest's Custom switches, unquoted ('' when none)
+      ManifestPath           — the downloaded manifest file(s) (*.yaml) next to the installer
       UsedFallback           — $true when the pinned download failed and the unpinned retry was used
                                (never with -FamilyPin)
       RequestedInstallerType — the -InstallerType pin ('' when none)
       ManifestInstallerType  — the downloaded manifest's InstallerType (lower case)
       ManifestProductCode    — the downloaded manifest's ProductCode
       Scope, Locale          — the downloaded manifest's Scope and InstallerLocale
-      Family                 — with -FamilyPin: the downloaded type's installer family; otherwise ''
-      TriedTypes             — with -FamilyPin: the installer types tried, in order; otherwise @()
-      ScopeRelaxed           — with -FamilyPin: $true when the scope pin was dropped; otherwise $false
+      Family                 — with -FamilyPin or -ExactType: the downloaded type's installer family; otherwise ''
+      TriedTypes             — with -FamilyPin or -ExactType: the installer types tried, in order; otherwise @()
+      ScopeRelaxed           — with -FamilyPin or -ExactType: $true when the scope pin was dropped; otherwise $false
 #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -78,12 +96,25 @@ function Download-OldVersionInstaller {
         # tried in order), the scope is a soft preference and there is never an unpinned retry. Requires
         # -InstallerType.
         [Parameter(Mandatory = $false)]
-        [switch]$FamilyPin
+        [switch]$FamilyPin,
+
+        # Sibling capture (installer-identity PR 3b): only this registration type (msi and wix count as one), never an
+        # unpinned retry, the scope relaxed only when -Scope was given. Requires -InstallerType; not with -FamilyPin.
+        [Parameter(Mandatory = $false)]
+        [switch]$ExactType
     )
 
     if ($FamilyPin -and [string]::IsNullOrWhiteSpace($InstallerType)) {
         throw '-FamilyPin requires -InstallerType (the installer type whose family the baseline is pinned to).'
     }
+    if ($ExactType -and [string]::IsNullOrWhiteSpace($InstallerType)) {
+        throw '-ExactType requires -InstallerType (the registration type to download).'
+    }
+    if ($ExactType -and $FamilyPin) {
+        throw '-ExactType and -FamilyPin cannot be combined (an exact type is never widened to its family).'
+    }
+    # Both pins share one download loop: tried types in order, a staged download, never an unpinned retry.
+    $strictPin = [bool]($FamilyPin -or $ExactType)
 
     # Fail fast (before any download) on a pinned type that has no silent installer — otherwise the
     # sandbox would launch the app itself and hang until the 30-minute assertion timeout.
@@ -100,7 +131,7 @@ function Download-OldVersionInstaller {
     # last generated Sandbox\UpdateAssertions.ps1: the legacy Update record judging rule (spec 2.12) needs
     # that pair, and an Unavailable run must never hide an older FAIL (L21). Without -FamilyPin the download
     # goes straight to $oldVersionDir, as before.
-    $downloadDir = if ($FamilyPin) { "$oldVersionDir.attempt" } else { $oldVersionDir }
+    $downloadDir = if ($strictPin) { "$oldVersionDir.attempt" } else { $oldVersionDir }
     # Download-failure text: the code in decimal (callers match that prefix) AND hex, plus, for winget's source-
     # authentication codes 0x8A150073-0x8A150078, that a re-run fails the same way (not a transient failure).
     $authHint = {
@@ -148,22 +179,41 @@ function Download-OldVersionInstaller {
     }
     if ($Version) {
         try { $cacheRoot = Get-Win32ToolkitPipelineCacheRoot } catch { $cacheRoot = $null }   # fail open: no cache
-        if (-not $FamilyPin) { $cacheDir = & $cacheKey $Scope $InstallerType }
+        if (-not $strictPin) { $cacheDir = & $cacheKey $Scope $InstallerType }
+    }
+
+    # The manifest of a download folder as winget reads it (every *.yaml, the installer manifest first): $null when it
+    # holds no readable 'Installers:' list. The -ExactType check and the switches below use it.
+    $readManifest = {
+        param([string]$Dir)
+        $text = (@(Get-WingetManifestFile -Path $Dir -Kind Installer -All) | ForEach-Object { [IO.File]::ReadAllText($_.FullName, [Text.Encoding]::UTF8) }) -join "`n---`n"
+        ConvertFrom-Win32ToolkitWingetManifest -Text $text
+    }
+    # -ExactType: '' when the staged download's manifest names exactly the registration type $Type (msi and wix count as
+    # one), else what it names instead. winget's --installer-type also takes an archive that WRAPS the type (a zip whose
+    # NestedInstallerType is nullsoft), and a cached folder is reused as it is (L22).
+    $typeProblem = {
+        param([string]$Type)
+        $want = if ($Type -in @('msi', 'wix')) { 'msi' } else { $Type }
+        $staged = & $readManifest $downloadDir
+        $got = @(if ($null -ne $staged) { @($staged.Installers | ForEach-Object { if ($_.InstallerType -in @('msi', 'wix')) { 'msi' } else { [string]$_.InstallerType } } | Sort-Object -Unique) })
+        if ($got.Count -eq 1 -and $got[0] -eq $want) { return '' }
+        if ($got.Count) { return "'$($got -join "', '")'" }
+        return 'no readable manifest'
     }
 
     # Copies a hash-validated cache entry into the download folder. FAIL OPEN: a cache-layer copy failure
     # must fall through to the real download, never abort it. $cacheState (a hashtable: the scriptblock runs in
     # a child scope) remembers a hit for the summary line, which then says 'From cache', not 'Downloaded' (H6-F6).
+    # -ExactType ($ExactCheck = the type): an entry whose manifest is another type is discarded and removed from the cache
+    # (an earlier build stored it; removing it lets a corrected winget manifest be downloaded) and never used.
     $cacheState = @{ Hit = $false }
     $useCache = {
-        param($Dir)
+        param($Dir, [string]$ExactCheck)
         if (-not $Dir -or -not (Test-Win32ToolkitCachedInstaller -Path $Dir)) { return $false }
         try {
             Get-ChildItem -LiteralPath $Dir -Force -ErrorAction Stop |
                 Copy-Item -Destination $downloadDir -Recurse -Force -ErrorAction Stop
-            Write-Host "✓ Using the cached download for '$AppId' $verLabel (SHA256-validated against its manifest)." -ForegroundColor Green
-            $cacheState.Hit = $true
-            return $true
         }
         catch {
             if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
@@ -171,6 +221,18 @@ function Download-OldVersionInstaller {
             Get-ChildItem -LiteralPath $downloadDir -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
             return $false
         }
+        if ($ExactCheck) {
+            $why = & $typeProblem $ExactCheck
+            if ($why) {
+                Write-Host "The cached '$ExactCheck' download for '$AppId' $verLabel is $why, not a '$ExactCheck' installer; it is discarded and downloaded again." -ForegroundColor DarkGray
+                & $clearDir $downloadDir
+                Remove-Item -LiteralPath $Dir -Recurse -Force -ErrorAction SilentlyContinue
+                return $false
+            }
+        }
+        Write-Host "✓ Using the cached download for '$AppId' $verLabel (SHA256-validated against its manifest)." -ForegroundColor Green
+        $cacheState.Hit = $true
+        return $true
     }
 
     # Caches a fresh download. The write is validated and rolled back on any inconsistency (fail open).
@@ -220,17 +282,22 @@ function Download-OldVersionInstaller {
     $scopeRelaxed = $false
     $triedTypes   = [System.Collections.Generic.List[string]]::new()
 
-    if ($FamilyPin) {
-        # ── Family pin (Update-test baseline): never an unpinned download ──────────────────────────────
+    if ($strictPin) {
+        # ── Family pin (Update-test baseline) or exact type (sibling capture): never an unpinned download ──
         # Every attempt lands in $downloadDir (the staging folder); $oldVersionDir changes only on success.
         try {
-            $types = @(Get-Win32ToolkitInstallerFamily -PinOrder $InstallerType)
+            $exact = $InstallerType.Trim().ToLowerInvariant()
+            # @(...) around the if: a single type must stay an array (a bare string would be indexed by character).
+            $types = @(if ($ExactType) { if ($exact -in @('msi', 'wix')) { @($exact) + @(@('msi', 'wix') | Where-Object { $_ -ne $exact }) } else { $exact } }
+                      else { Get-Win32ToolkitInstallerFamily -PinOrder $InstallerType })
             if ($types.Count -eq 0) {
                 throw "Cannot pin the baseline for '$AppId' $verLabel to installer type '$InstallerType': it is not a type win32-toolkit can download and install as a baseline."
             }
             $pinScope = if ($Scope -and $Scope -in @('machine', 'user')) { $Scope.ToLowerInvariant() } else { '' }
             $attempts = [System.Collections.Generic.List[string]]::new()
             $done = $false
+            # -ExactType: the downloads whose manifest named another registration type ($typeProblem), for the error text.
+            $wrongType = [System.Collections.Generic.List[string]]::new()
             # The scope is a soft preference (L19): the same type is retried without --scope before the next type.
             $tryScopes = if ($pinScope) { @($pinScope, '') } else { @('') }
             for ($ti = 0; $ti -lt $types.Count; $ti++) {
@@ -240,7 +307,8 @@ function Download-OldVersionInstaller {
                     $s = $tryScopes[$si]
                     if ($s) { $attempts.Add("$t/$s") } elseif (-not $pinScope) { $attempts.Add($t) }
                     $cacheDir = if ($Version) { & $cacheKey $s $t } else { $null }
-                    if (& $useCache $cacheDir) {
+                    # $useCache sets $cacheState.Hit only for an entry it uses (the type checked first under -ExactType).
+                    if (& $useCache $cacheDir $(if ($ExactType) { $t } else { '' })) {
                         $done = $true
                     }
                     else {
@@ -253,7 +321,15 @@ function Download-OldVersionInstaller {
                         # A source that could not authenticate was left out by the retry: later attempts ask 'winget' directly.
                         if ($attempt.SourceFallback) { $downloadArgs += @('--source', 'winget') }
                         $code = $attempt.ExitCode
-                        if ($code -eq 0) {
+                        $wrong = if ($code -eq 0 -and $ExactType) { & $typeProblem $t } else { '' }
+                        if ($code -eq 0 -and $wrong) {
+                            # Not the registration type the capture names (or no readable manifest): not offered, and never
+                            # cached under this type's key. The next scope or type is tried.
+                            $wrongType.Add("$t gave $wrong")
+                            Write-Host "winget's '$t' download for '$AppId' $verLabel is $wrong, not a '$t' installer; it is not used." -ForegroundColor DarkGray
+                            & $clearDir $downloadDir
+                        }
+                        elseif ($code -eq 0) {
                             $done = $true
                             & $storeCache $cacheDir
                         }
@@ -269,7 +345,8 @@ function Download-OldVersionInstaller {
                             }
                             elseif ($ti + 1 -lt $types.Count) {
                                 $nextScope = if ($tryScopes[0]) { ", $($tryScopes[0]) scope" } else { '' }
-                                "trying '$($types[$ti + 1])' (same technology family$nextScope)"
+                                if ($ExactType) { "trying '$($types[$ti + 1])' (the same registration type$nextScope)" }
+                                else { "trying '$($types[$ti + 1])' (same technology family$nextScope)" }
                             }
                             else { $null }
                             if ($nextText) {
@@ -297,8 +374,13 @@ function Download-OldVersionInstaller {
                 $familyLabel = switch ($familyName) { 'msi' { 'MSI' } 'exe' { 'vendor EXE' } 'msix' { 'MSIX package' } default { $familyName } }
                 $archText = if ($Architecture) { $Architecture } else { 'any architecture' }
                 $relaxedText = if ($pinScope) { ', each scope also relaxed' } else { '' }
-                $msg = "winget offers no $familyLabel installer for $AppId $verLabel ($archText); tried: $($attempts -join ', ')$relaxedText. " +
-                       'The Update baseline cannot use that technology at this version: pick a version that ships it (-SpecificVersion) or another technology (-BaselineInstallerType).'
+                $wrongText = if ($wrongType.Count) { " (winget's download: $($wrongType -join '; '))" } else { '' }
+                $msg = if ($ExactType) {
+                    "winget offers no '$exact' installer for $AppId $verLabel ($archText); tried: $($attempts -join ', ')$relaxedText$wrongText. That version does not ship this installer technology."
+                } else {
+                    "winget offers no $familyLabel installer for $AppId $verLabel ($archText); tried: $($attempts -join ', ')$relaxedText. " +
+                    'The Update baseline cannot use that technology at this version: pick a version that ships it (-SpecificVersion) or another technology (-BaselineInstallerType).'
+                }
                 throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new($msg),
                     'W32T.InstallerVariantUnavailable', [System.Management.Automation.ErrorCategory]::ObjectNotFound, $AppId)
             }
@@ -370,11 +452,29 @@ function Download-OldVersionInstaller {
     }
 
     $yamlInfo   = Get-YAMLInstallerInfo -FilesPath $oldVersionDir
+    # The switches winget runs: the downloaded installer's Silent and Custom (winget appends Custom, for example Inno
+    # Setup's /ALLUSERS, after the silent ones; L21), read as YAML reads them - a quoted value never reaches the command
+    # line with its quotes or its escapes. winget download writes a manifest that holds just the installer it chose; of a
+    # (hand-made) manifest with several, the first of the requested architecture is taken (else the first).
+    # Fallback for a manifest the reader cannot read (no 'Installers:' list): Get-YAMLInstallerInfo's Silent as written
+    # (its PR 1 contract, which AppConfig keeps), no Custom.
     $yamlSilent = if ($yamlInfo) { $yamlInfo.SilentArgs } else { $null }
+    $yamlCustom = ''
+    $downloaded = & $readManifest $oldVersionDir
+    if ($null -ne $downloaded -and @($downloaded.Installers).Count -gt 0) {
+        $pick = @($downloaded.Installers)
+        if ($Architecture -and $Architecture -ne 'all') {
+            $sameArch = @($pick | Where-Object { $_.Architecture -eq $Architecture.ToLowerInvariant() })
+            if ($sameArch.Count) { $pick = $sameArch }
+        }
+        $yamlSilent = [string]$pick[0].InstallerSwitches.Silent
+        $yamlCustom = [string]$pick[0].InstallerSwitches.Custom
+    }
     $resolved = Resolve-Win32ToolkitBaselineSilentArgs `
         -InstallerTypeName $installerTypeName `
         -Extension         $installer.Extension `
-        -YamlSilentArgs    $yamlSilent
+        -YamlSilentArgs    $yamlSilent `
+        -YamlCustomArgs    $yamlCustom
     $silentArgs = $resolved.SilentArgs
     if ($resolved.Guessed) {
         Write-Warning "No silent switches found in the winget manifest for '$($installer.Name)' — guessing '/S'. If the baseline install shows UI or hangs in the sandbox, the update run will be INCONCLUSIVE; use -SpecificVersion for a version whose manifest has silent switches, or watch the sandbox."
@@ -391,7 +491,7 @@ function Download-OldVersionInstaller {
                     elseif ($yamlInfo -and $yamlInfo.InstallerType) { [string]$yamlInfo.InstallerType }
                     else { '' }
     $family = ''
-    if ($FamilyPin) {
+    if ($strictPin) {
         $familyType = if ($manifestType) { $manifestType } else { $InstallerType }
         $family = [string](Get-Win32ToolkitInstallerFamily -Type $familyType).Family
     }
@@ -405,6 +505,9 @@ function Download-OldVersionInstaller {
         # Installer GUI) and Get-Win32ToolkitBaselineInstallCommand ValidateSets exe|msi|msix|appx.
         InstallerType          = Get-Win32ToolkitInstallerType -Extension $installer.Extension
         SilentArgs             = $silentArgs
+        SilentArgsSource       = [string]$resolved.Source
+        CustomArgs             = $yamlCustom
+        ManifestPath           = [string[]]@(Get-WingetManifestFile -Path $oldVersionDir -Kind Installer -All | ForEach-Object { $_.FullName })
         UsedFallback           = $usedFallback
         RequestedInstallerType = [string]$InstallerType
         ManifestInstallerType  = $manifestType
@@ -412,7 +515,7 @@ function Download-OldVersionInstaller {
         Scope                  = if ($yamlInfo -and $yamlInfo.Scope) { [string]$yamlInfo.Scope } else { '' }
         Locale                 = if ($yamlInfo -and $yamlInfo.InstallerLocale) { [string]$yamlInfo.InstallerLocale } else { '' }
         Family                 = $family
-        TriedTypes             = @(if ($FamilyPin) { $triedTypes.ToArray() })
+        TriedTypes             = @(if ($strictPin) { $triedTypes.ToArray() })
         ScopeRelaxed           = $scopeRelaxed
     }
 }

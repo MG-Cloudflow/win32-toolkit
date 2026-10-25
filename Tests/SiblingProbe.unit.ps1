@@ -113,6 +113,8 @@ if ($s.Count -eq 1 -and $s[0].EffectiveType -eq 'nullsoft' -and $s[0].Family -eq
 $nr = @($r.NotRegistering)
 if ($nr.Count -eq 1 -and $nr[0].EffectiveType -eq 'portable' -and $nr[0].InstallerType -eq 'zip') { Ok 'NotRegistering = zip/portable' } else { Bad "NotRegistering = $($nr | ConvertTo-Json -Compress)" }
 if (@($r.SameFamilyOther).Count -eq 0) { Ok 'SameFamilyOther = none' } else { Bad "SameFamilyOther = $($r.SameFamilyOther | ConvertTo-Json -Compress)" }
+# Installer-identity PR 3b (L32): the version's release date (the sibling-capture floor), root-level here.
+if ($r.ReleaseDate -eq '2026-09-24' -and @($r.Tuples | Where-Object { $_.ReleaseDate -ne '2026-09-24' }).Count -eq 0) { Ok 'ReleaseDate 2026-09-24 (root key, inherited by every tuple)' } else { Bad "ReleaseDate = '$($r.ReleaseDate)'" }
 $wixTuple = @($r.Tuples | Where-Object { $_.Architecture -eq 'x64' -and $_.InstallerType -eq 'wix' })
 if ($wixTuple.Count -eq 1 -and $wixTuple[0].ProductCode -ceq '{5C6F8543-7EA8-40B9-B78F-04C78300DE7F}' -and $wixTuple[0].RegisteredType -eq '') {
     Ok "the quoted wix ProductCode is unquoted; an AFE block without InstallerType sets no RegisteredType"
@@ -156,6 +158,16 @@ if ($s.Count -eq 1 -and $s[0].EffectiveType -eq 'wix' -and $s[0].ZipWrapped -and
     Ok "Siblings = wix (zip-wrapped), Family msi, not Testable, PinValue '', root Scope inherited"
 } else { Bad "Siblings = $($s | ConvertTo-Json -Compress)" }
 if (@($r.SameFamilyOther).Count -eq 0) { Ok 'no same-family other' } else { Bad 'unexpected SameFamilyOther' }
+$nsx = @($r.Tuples | Where-Object { $_.Architecture -eq 'x64' -and $_.InstallerType -eq 'nullsoft' })
+if ($nsx.Count -eq 1 -and $nsx[0].ReleaseDate -eq '2026-09-29') { Ok 'a per-installer ReleaseDate stays on its tuple (nullsoft 2026-09-29)' } else { Bad "TeamViewer dates: $($r.Tuples | Select-Object InstallerType, ReleaseDate | ConvertTo-Json -Compress)" }
+# L32: the version's ReleaseDate is the manifest's ROOT key; TeamViewer has only per-installer dates (2026-09-29, 2026-09-22).
+if ($r.ReleaseDate -ceq '') { Ok "no root ReleaseDate -> the version's ReleaseDate is '' (one installer's date is not the version's)" } else { Bad "TeamViewer version ReleaseDate = '$($r.ReleaseDate)'" }
+# A date that matches yyyy-MM-dd but is no calendar day (2025-02-30 at the root, 2025-13-01 on one installer) is no date:
+# '' on the version and on every tuple (the root one inherited, the installer's own), so no consumer parses it.
+Use-Body "PackageIdentifier: Acme.BadDate`nPackageVersion: 1.0`nReleaseDate: 2025-02-30`nInstallers:`n- Architecture: x64`n  InstallerType: nullsoft`n  Scope: machine`n- Architecture: x64`n  InstallerType: wix`n  ReleaseDate: 2025-13-01`n- Architecture: x86`n  InstallerType: nullsoft`n  ReleaseDate: 2024-02-29`n"
+$r = Probe @{ WingetId = 'Acme.BadDate'; Version = '1.0'; PackagedType = 'wix' }
+$bd = @($r.Tuples | ForEach-Object { "$($_.Architecture)/$($_.InstallerType)=$($_.ReleaseDate)" }) -join ','
+if ($r.Status -eq 'Ok' -and $r.ReleaseDate -ceq '' -and $bd -ceq 'x64/nullsoft=,x64/wix=,x86/nullsoft=2024-02-29') { Ok "ReleaseDate 2025-02-30 / 2025-13-01 (pattern-valid, no such day) -> ''; a real leap day (2024-02-29) is kept" } else { Bad "impossible dates: version '$($r.ReleaseDate)', tuples $bd" }
 
 # --- [7] Hand-made fixtures ---------------------------------------------------------------------
 Write-Host '[7] Quoted values, root keys, an indented list, comments; an appx sibling' -ForegroundColor Cyan
@@ -179,13 +191,13 @@ $s = @($r.Siblings)
 if ($s.Count -eq 1 -and $s[0].EffectiveType -eq 'appx' -and $s[0].Family -eq 'msix' -and $s[0].Testable -and $s[0].PinValue -eq 'msix') { Ok 'appx sibling -> Family msix, testable, PinValue msix' } else { Bad "appx siblings = $($s | ConvertTo-Json -Compress)" }
 
 # --- [8] Fail-open: every failure is a status, never a throw ------------------------------------
-Write-Host '[8] 404 / network / 429 / timeout / too large / parse -> Unavailable with a reason, never a throw' -ForegroundColor Cyan
+Write-Host '[8] 404 / network / 429 (RateLimited) / timeout / too large / parse -> Unavailable with a reason, never a throw' -ForegroundColor Cyan
 # The thrown HTTP errors below are what Invoke-WebRequest raised before -SkipHttpErrorCheck (kept: the catch still
 # classifies an HttpResponseException); [8b] covers the responses the real cmdlet returns now.
 $failures = @(
     @{ Label = '404 (thrown)';              Resp = { param($Uri) throw (New-HttpError 404) };                                                   Exp = 'NotFound' },
     @{ Label = 'HttpRequestException (DNS)'; Resp = { param($Uri) throw [System.Net.Http.HttpRequestException]::new('No such host is known.') }; Exp = 'Network' },
-    @{ Label = '429 Too Many Requests (thrown)'; Resp = { param($Uri) throw (New-HttpError 429) };                                              Exp = 'Network' },
+    @{ Label = '429 Too Many Requests (thrown)'; Resp = { param($Uri) throw (New-HttpError 429) };                                              Exp = 'RateLimited' },
     @{ Label = '500 (thrown)';              Resp = { param($Uri) throw (New-HttpError 500) };                                                   Exp = 'Network' },
     @{ Label = 'TaskCanceledException';     Resp = { param($Uri) throw [System.Threading.Tasks.TaskCanceledException]::new('The request was canceled due to the configured HttpClient.Timeout of 10 seconds elapsing.') }; Exp = 'Timeout' },
     @{ Label = 'TimeoutException (inner)';  Resp = { param($Uri) throw [System.Net.Http.HttpRequestException]::new('timed out', [System.TimeoutException]::new('t')) }; Exp = 'Timeout' },
@@ -212,7 +224,7 @@ if ($o.Status -eq 'Ok' -and @($o.Siblings).Count -eq 1) { Ok 'a byte[] body is d
 # WebCmdletWebResponseException in $Error (and 2 entries in Invoke-Win32Toolkit -ErrorVariable). With
 # -SkipHttpErrorCheck an HTTP error status is a response: classified, and no error record anywhere.
 Write-Host '[8b] 404 / 429 / 500 answered as responses (-SkipHttpErrorCheck) -> classified, no $Error record, -ErrorVariable empty' -ForegroundColor Cyan
-foreach ($c in @(@(404, 'NotFound'), @(429, 'Network'), @(500, 'Network'))) {
+foreach ($c in @(@(404, 'NotFound'), @(429, 'RateLimited'), @(500, 'Network'))) {
     $script:httpCode  = $c[0]
     $script:responder = { param($Uri) [pscustomobject]@{ StatusCode = $script:httpCode; Content = '' } }
     $errBefore = $Error.Count
@@ -309,6 +321,115 @@ if ($fm.Status -eq 'Ok' -and $script:W32TSiblingProbeMemo -is [hashtable] -and @
     Ok 'a first call without a memo variable writes no error record ($Error and -ErrorVariable stay empty)'
 } else { Bad "first call: status $($fm.Status), -ErrorVariable $(@($probeErr).Count), new `$Error records $($Error.Count - $errBefore): $(@($probeErr)[0])" }
 $script:W32TSiblingProbeMemo = $null
+
+# --- [10b] HTTP 429 (live rows RAISE, INNO) -----------------------------------------------------------
+Write-Host '[10b] HTTP 429: Retry-After, one retry of a short wait, the rate-limit gate, -RetryFailed' -ForegroundColor Cyan
+$script:slept = [System.Collections.Generic.List[int]]::new()
+function Start-Sleep { param([int]$Seconds) $script:slept.Add($Seconds) }
+# One scripted answer per request: 'ok' (the manifest), a scriptblock (run), 'none' (429 without Retry-After) or
+# a Retry-After value (429 with it).
+$script:answers = [System.Collections.Generic.Queue[object]]::new()
+$script:responder = {
+    param($Uri)
+    $a = if ($script:answers.Count) { $script:answers.Dequeue() } else { 'ok' }
+    if ($a -is [scriptblock]) { & $a }
+    elseif ($a -eq 'ok') { [pscustomobject]@{ StatusCode = 200; Content = $npp8981 } }
+    else { [pscustomobject]@{ StatusCode = 429; Content = ''; Headers = $(if ($a -eq 'none') { @{} } else { @{ 'Retry-After' = @([string]$a) } }) } }
+}
+function Answer([object[]]$A) { $script:answers.Clear(); foreach ($x in $A) { $script:answers.Enqueue($x) }; $script:slept.Clear() }
+function Secs([string]$Iso) { if ($Iso) { ([datetimeoffset]::Parse($Iso, [Globalization.CultureInfo]::InvariantCulture).UtcDateTime - [datetime]::UtcNow).TotalSeconds } else { -1 } }
+$thrown429 = {
+    $m = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]429)
+    $m.Headers.RetryAfter = [System.Net.Http.Headers.RetryConditionHeaderValue]::new([timespan]::FromSeconds(200))
+    throw [Microsoft.PowerShell.Commands.HttpResponseException]::new('Response status code does not indicate success: 429.', $m)
+}
+foreach ($c in @(
+        @{ L = "Retry-After '120' (seconds)"; A = @('120'); Lo = 110; Hi = 121 },
+        @{ L = 'Retry-After as an HTTP date 5 minutes ahead'; A = @([datetime]::UtcNow.AddMinutes(5).ToString('r')); Lo = 285; Hi = 301 },
+        @{ L = 'no Retry-After header (60 s)'; A = @('none'); Lo = 50; Hi = 61 },
+        @{ L = "an unreadable Retry-After 'soon' (60 s)"; A = @('soon'); Lo = 50; Hi = 61 },
+        @{ L = "Retry-After '99999' (clamped to 600 s)"; A = @('99999'); Lo = 590; Hi = 601 },
+        @{ L = "Retry-After '2000000000' (10 digits; .NET accepts it) clamped to 600 s"; A = @('2000000000'); Lo = 590; Hi = 601 },
+        @{ L = "Retry-After '9999999999' (beyond Int32) clamped to 600 s, no throw"; A = @('9999999999'); Lo = 590; Hi = 601 },
+        @{ L = "Retry-After '3, 4' (no HTTP date; not a past date) -> 60 s"; A = @('3, 4'); Lo = 50; Hi = 61 },
+        @{ L = "Retry-After '12.31' (no HTTP date) -> 60 s"; A = @('12.31'); Lo = 50; Hi = 61 },
+        @{ L = "Retry-After '11/1' (no HTTP date) -> 60 s"; A = @('11/1'); Lo = 50; Hi = 61 },
+        @{ L = 'Retry-After a date in 2100 (beyond Int32 seconds) clamped to 600 s, no throw'; A = @('Fri, 01 Jan 2100 00:00:00 GMT'); Lo = 590; Hi = 601 },
+        @{ L = "Retry-After '16' (over the 15 s limit) -> no wait"; A = @('16'); Lo = 14; Hi = 17 },
+        @{ L = 'a thrown 429 with Retry-After 200 s'; A = @($thrown429); Lo = 190; Hi = 201 })) {
+    Answer $c.A
+    $before = $script:calls
+    $o = Probe @{ PackagedType = 'wix' }
+    $s = Secs $o.RetryAfterUtc
+    if ($o.Status -eq 'Unavailable' -and $o.Reason -eq 'RateLimited' -and $script:calls - $before -eq 1 -and $script:slept.Count -eq 0 -and $s -ge $c.Lo -and $s -le $c.Hi) {
+        Ok "$($c.L) -> RateLimited after one request, no wait, RetryAfterUtc in $([int]$s) s"
+    } else { Bad "$($c.L) -> $($o.Status)/$($o.Reason), requests $($script:calls - $before), slept [$($script:slept -join ',')], RetryAfterUtc '$($o.RetryAfterUtc)' ($s s)" }
+}
+Answer @('5', 'ok'); $before = $script:calls
+$o = Probe @{ PackagedType = 'wix' }
+if ($o.Status -eq 'Ok' -and $script:calls - $before -eq 2 -and ($script:slept -join ',') -eq '5' -and $o.RetryAfterUtc -ceq '') { Ok "a 429 with Retry-After '5' -> waited 5 s once, asked again: Ok (RetryAfterUtc '')" } else { Bad "short wait: $($o.Status)/$($o.Reason) requests $($script:calls - $before) slept [$($script:slept -join ',')]" }
+Answer @('15', 'ok'); $before = $script:calls
+$o = Probe @{ PackagedType = 'wix' }
+if ($o.Status -eq 'Ok' -and $script:calls - $before -eq 2 -and ($script:slept -join ',') -eq '15' -and $o.RetryAfterUtc -ceq '') { Ok "Retry-After '15' (the limit) -> waited 15 s once, asked again: Ok" } else { Bad "limit 15: $($o.Status)/$($o.Reason) requests $($script:calls - $before) slept [$($script:slept -join ',')]" }
+Answer @('0', 'ok'); $before = $script:calls
+$o = Probe @{ PackagedType = 'wix' }
+if ($o.Status -eq 'Ok' -and $script:calls - $before -eq 2 -and ($script:slept -join ',') -eq '1') { Ok "Retry-After '0' -> waits the minimum 1 s, then Ok" } else { Bad "zero wait: $($o.Status) slept [$($script:slept -join ',')]" }
+Answer @('Mon, 01 Jan 1900 00:00:00 GMT', 'ok'); $before = $script:calls
+$o = Probe @{ PackagedType = 'wix' }
+if ($o.Status -eq 'Ok' -and $script:calls - $before -eq 2 -and ($script:slept -join ',') -eq '1') { Ok 'Retry-After a date in 1900 (far past, beyond Int32 seconds) -> waits the minimum 1 s, no throw, then Ok' } else { Bad "1900: $($o.Status)/$($o.Reason) slept [$($script:slept -join ',')]" }
+Answer @('5', '7'); $before = $script:calls
+$o = Probe @{ PackagedType = 'wix' }
+$s = Secs $o.RetryAfterUtc
+if ($o.Reason -eq 'RateLimited' -and $script:calls - $before -eq 2 -and ($script:slept -join ',') -eq '5' -and $s -ge 4 -and $s -le 8) { Ok 'a second 429 -> RateLimited, no third request, RetryAfterUtc from the second answer (7 s)' } else { Bad "twice: $($o.Reason) requests $($script:calls - $before) slept [$($script:slept -join ',')] in $s s" }
+if ($null -eq (Get-Variable -Name W32TSiblingProbeRateLimitUntil -Scope Script -ValueOnly -ErrorAction Ignore)) { Ok '-NoMemo never closes the rate-limit gate' } else { Bad '-NoMemo closed the gate' }
+
+# The gate (memo on): one 429 answers every probe of the process until its time, without a request.
+$script:W32TSiblingProbeMemo = $null
+Answer @('120'); $before = $script:calls
+$g1 = Get-Win32ToolkitSiblingInstaller -WingetId 'Notepad++.Notepad++' -Version '8.9.8.1' -Architecture x64 -PackagedType wix
+$gate = Get-Variable -Name W32TSiblingProbeRateLimitUntil -Scope Script -ValueOnly -ErrorAction Ignore
+$g2 = Get-Win32ToolkitSiblingInstaller -WingetId 'Notepad++.Notepad++' -Version '8.8.9' -Architecture x64
+$g3 = Get-Win32ToolkitSiblingInstaller -WingetId 'Notepad++.Notepad++' -Version '8.9.8.1' -Architecture x64 -PackagedType wix -RetryFailed
+if ($g1.Reason -eq 'RateLimited' -and $gate -is [datetime] -and $gate.Kind -eq 'Utc' -and $g2.Reason -eq 'RateLimited' -and $g3.Reason -eq 'RateLimited' -and $script:calls - $before -eq 1 -and
+    $g2.RetryAfterUtc -ceq $g1.RetryAfterUtc -and $g3.RetryAfterUtc -ceq $g1.RetryAfterUtc -and -not $g2.FromMemo) {
+    Ok 'a 429 closes the gate (UTC) until its time: another version, and -RetryFailed, are answered RateLimited without a request, with the same RetryAfterUtc'
+} else { Bad "gate: $($g1.Reason)/$($g2.Reason)/$($g3.Reason) requests $($script:calls - $before) gate [$gate] times $($g1.RetryAfterUtc) / $($g2.RetryAfterUtc) / $($g3.RetryAfterUtc)" }
+Answer @('ok'); $before = $script:calls
+$gn = Probe @{ PackagedType = 'wix' }   # Probe passes -NoMemo
+if ($gn.Status -eq 'Ok' -and $gn.RetryAfterUtc -ceq '' -and $script:calls - $before -eq 1 -and (Get-Variable -Name W32TSiblingProbeRateLimitUntil -Scope Script -ValueOnly) -eq $gate) { Ok '-NoMemo neither reads nor changes a closed gate: it asks (Ok, one request)' } else { Bad "-NoMemo under a closed gate: $($gn.Status)/$($gn.Reason) requests $($script:calls - $before)" }
+Remove-Variable -Name W32TSiblingProbeRateLimitUntil -Scope Script
+$before = $script:calls
+$g4 = Get-Win32ToolkitSiblingInstaller -WingetId 'Notepad++.Notepad++' -Version '8.9.8.1' -Architecture x64 -PackagedType wix
+if ($g4.Reason -eq 'RateLimited' -and $g4.FromMemo -and $script:calls -eq $before) { Ok 'a RateLimited memo entry is reused until its RetryAfterUtc (no request)' } else { Bad "memo until: $($g4.Reason) FromMemo $($g4.FromMemo) requests $($script:calls - $before)" }
+$k = @($script:W32TSiblingProbeMemo.Keys | Where-Object { $_ -like '*|8.9.8.1|x64' })[0]
+$script:W32TSiblingProbeMemo[$k].RetryAfter = [datetime]::UtcNow.AddSeconds(-1)
+Answer @('ok')
+$g5 = Get-Win32ToolkitSiblingInstaller -WingetId 'Notepad++.Notepad++' -Version '8.9.8.1' -Architecture x64 -PackagedType wix
+if ($g5.Status -eq 'Ok' -and -not $g5.FromMemo -and $script:calls - $before -eq 1 -and $g5.RetryAfterUtc -ceq '') { Ok 'past its time the version is asked again (Ok)' } else { Bad "after: $($g5.Status) requests $($script:calls - $before)" }
+$script:W32TSiblingProbeRateLimitUntil = [datetime]::UtcNow.AddSeconds(-1)
+Answer @('ok'); $before = $script:calls
+$g6 = Get-Win32ToolkitSiblingInstaller -WingetId 'Notepad++.Notepad++' -Version '8.8.8' -Architecture x64
+if ($g6.Status -eq 'Ok' -and $script:calls - $before -eq 1) { Ok 'an expired gate lets the next probe ask' } else { Bad "expired gate: $($g6.Status)/$($g6.Reason) requests $($script:calls - $before)" }
+
+# -RetryFailed: a memoised failure is asked again within its five minutes; Ok and NotFound are still reused.
+$script:W32TSiblingProbeMemo = $null; Remove-Variable -Name W32TSiblingProbeRateLimitUntil -Scope Script -ErrorAction Ignore
+$script:responder = { param($Uri) throw [System.Net.Http.HttpRequestException]::new('No such host is known.') }
+$before = $script:calls
+$null = Get-Win32ToolkitSiblingInstaller -WingetId 'Down.App' -Version '1.0' -Architecture x64
+$rf1 = Get-Win32ToolkitSiblingInstaller -WingetId 'Down.App' -Version '1.0' -Architecture x64 -RetryFailed
+$netTwice = $script:calls - $before
+Use-Body $npp8981
+$null = Get-Win32ToolkitSiblingInstaller -WingetId 'Notepad++.Notepad++' -Version '8.9.8.1' -Architecture x64
+$rf2 = Get-Win32ToolkitSiblingInstaller -WingetId 'Notepad++.Notepad++' -Version '8.9.8.1' -Architecture x64 -RetryFailed
+$script:responder = { param($Uri) [pscustomobject]@{ StatusCode = 404; Content = '' } }
+$null = Get-Win32ToolkitSiblingInstaller -WingetId 'Gone.App' -Version '1.0' -Architecture x64
+$rf3 = Get-Win32ToolkitSiblingInstaller -WingetId 'Gone.App' -Version '1.0' -Architecture x64 -RetryFailed
+if ($netTwice -eq 2 -and -not $rf1.FromMemo -and $rf2.FromMemo -and $rf2.Status -eq 'Ok' -and $rf3.FromMemo -and $rf3.Reason -eq 'NotFound' -and $script:calls - $before -eq 4) {
+    Ok '-RetryFailed asks a Network failure again within its 5 minutes; an Ok and a NotFound entry are still reused'
+} else { Bad "retry failed: network requests $netTwice FromMemo $($rf1.FromMemo)/$($rf2.FromMemo)/$($rf3.FromMemo) total $($script:calls - $before)" }
+Remove-Item -Path Function:\Start-Sleep
+$script:W32TSiblingProbeMemo = $null; Remove-Variable -Name W32TSiblingProbeRateLimitUntil -Scope Script -ErrorAction Ignore
+Use-Body $npp8981
 
 # --- [11] Source hygiene: no code execution, no YAML module, K1 -----------------------------------
 Write-Host '[11] Source checks: nothing executed, no YAML module, every catch starts with the C-2 line, ASCII-only' -ForegroundColor Cyan
