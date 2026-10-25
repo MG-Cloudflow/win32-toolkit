@@ -43,8 +43,11 @@ ${function:Update-PSADTUninstallLogic}     = { param($ProjectPath, $JsonFilePath
 ${function:Update-PSADTProcessesToClose}   = { param($ProjectPath, $JsonFilePath) Write-FakeConfig $ProjectPath 'processes' $JsonFilePath }
 ${function:Update-PSADTMsixUninstallLogic} = { param($ProjectPath) Write-FakeConfig $ProjectPath 'msix' '' }
 # Installer-identity PR 3 (C-9): the own-identity writer runs after the uninstall writers, for every installer type.
-${function:Write-Win32ToolkitOwnIdentity}  = { param($ProjectPath, $Capture) $script:ownCaptures += $Capture; Write-FakeConfig $ProjectPath 'ownidentity' '' }
-$script:ownCaptures = @()
+${function:Write-Win32ToolkitOwnIdentity}  = { param($ProjectPath, $Capture) $script:ownCaptures += $Capture; $null = Write-FakeConfig $ProjectPath 'ownidentity' ''; $script:ownResult }
+$script:ownCaptures = @(); $script:ownResult = $true
+# ...and, after a written own identity, the prior-install re-check (L34, C-9): a double that records its calls.
+${function:Sync-Win32ToolkitPriorInstallOwnIdentity} = { param($ProjectPath) $script:syncCalls += $ProjectPath; $null }
+$script:syncCalls = @()
 
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ('w32cx_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $root -Force | Out-Null
@@ -148,6 +151,15 @@ foreach ($t in 'msi', 'exe', 'msix') {
         Ok "$t capture -> Write-Win32ToolkitOwnIdentity called once with the parsed capture, before the processes-to-close step"
     } else { Bad "${t}: r=$r calls=$($script:calls -join ',')" }
 }
+$c = NewCase (Cap @{ PsadtExitCode = 0 })
+$script:syncCalls = @()
+$null = RunCase $c 'exe'
+if (@($script:syncCalls).Count -eq 1 -and $script:syncCalls[0] -eq $c.Path) { Ok 'a written own identity -> the prior-install rules are re-checked once against it (L34)' } else { Bad "sync calls: $(@($script:syncCalls) -join ',')" }
+$c = NewCase (Cap @{ PsadtExitCode = 0 })
+$script:syncCalls = @(); $script:ownResult = $false
+$null = RunCase $c 'exe'
+$script:ownResult = $true
+if (@($script:syncCalls).Count -eq 0) { Ok 'no own identity written -> no re-check (Export reports the rules)' } else { Bad "sync after a failed own-identity write: $(@($script:syncCalls).Count)" }
 $c = NewCase (Cap @{ PsadtExitCode = 60001 })
 $null = RunCase $c 'msi'
 if (-not ($script:calls -contains 'ownidentity')) { Ok 'a failed capture never reaches the own-identity writer' } else { Bad "calls: $($script:calls -join ',')" }

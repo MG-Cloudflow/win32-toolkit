@@ -81,6 +81,9 @@ function Create-PSADTProject {
 }
 function Set-PSADTDataDrivenScript { param($ScriptPath, [switch]$ManualInstall) $true }
 function Invoke-Win32ToolkitFinalize { param($ProjectPath, $ProjectName, $AppInfo, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate, $BasePath, $Result) $null = $BasePath, $Result }
+# Prior-install state (installer-identity PR 3, C-9): nothing to keep or carry in these runs.
+function Get-Win32ToolkitPriorInstallSnapshot { param($ProjectPath) $null = $ProjectPath; $null }
+function Copy-Win32ToolkitPriorInstallState { param($ProjectPath, $Snapshot, $SourceProjectPath) $null = $ProjectPath, $Snapshot, $SourceProjectPath; $null }
 
 function New-Src { param([string]$Name) $d = Join-Path $BASE ('src_' + [guid]::NewGuid().ToString('N').Substring(0, 6)); New-Item -ItemType Directory -Path $d -Force | Out-Null; $f = Join-Path $d $Name; Set-Content -LiteralPath $f 'binary'; $f }
 

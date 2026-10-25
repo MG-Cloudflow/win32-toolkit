@@ -374,6 +374,10 @@ function Invoke-Win32Toolkit {
             }
         }
 
+        # ...and its prior-install rules, decisions and capture records (installer-identity PR 3, L4): restored after the
+        # configure step below, so a rebuilt version keeps the rules it had (each one needs a new proof run).
+        $priorSnapshot = Get-Win32ToolkitPriorInstallSnapshot -ProjectPath $projectFullPath
+
         # Create the PSADT project scaffold inside Projects\<Template>\
         $projectCreated = Create-PSADTProject -ProjectName $projectName -ProjectPath $projectsDir -Force:$Force
 
@@ -431,6 +435,9 @@ function Invoke-Win32Toolkit {
                             [System.InvalidOperationException]::new('PSADT configuration failed - the project was NOT documented, tested, packaged or published (see the warnings above).'),
                             'W32T.PipelineAborted', [System.Management.Automation.ErrorCategory]::InvalidResult, $projectFullPath)
                     }
+                    # Prior-install rules (installer-identity PR 3, spec 2.13): the rebuilt version's own (L4), else those of
+                    # the highest earlier version of this app and architecture (L5), re-checked against this package.
+                    $null = Copy-Win32ToolkitPriorInstallState -ProjectPath $projectFullPath -Snapshot $priorSnapshot
                     # Configured: an error after this point (icon, identity checks, dependencies, Finalize) is not marked.
                     $markStage = 'Done'
 

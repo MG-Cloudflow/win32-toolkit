@@ -412,7 +412,10 @@ function Test-Win32ToolkitProject {
         # a 55-minute runner limit (30 for the removal, 25 for the install; the phase backstop 60), as the uninstall got its
         # 35 minutes (PR 2 follow-up F2), and their 1460 hint names the removal. A host int constant.
         $priorRemovalRunnerMinutes = if (@($priorEntries | Where-Object { $_.PSObject.Properties['Mode'] -and [string]$_.Mode -ceq 'Enforce' }).Count -gt 0) { 55 } else { 0 }
+        # Prior-install state: rules, decisions, the rules the project lost (PriorInstallDropped.json: deleting it would
+        # silence ID-PRIOR-DROPPED) or sibling-capture records. The tripwire guards each of them during a guest run.
         $priorState = $priorEntries.Count -gt 0 -or (Test-Path -LiteralPath (Join-Path $ProjectPath 'Documentation\PriorInstallDecisions.json')) -or
+            (Test-Path -LiteralPath (Join-Path $ProjectPath 'Documentation\PriorInstallDropped.json')) -or
             (Test-Path -LiteralPath (Join-Path $ProjectPath 'Documentation\SiblingCapture.json')) -or (Test-Path -LiteralPath (Join-Path $ProjectPath 'Documentation\SiblingCapture'))
         # The proof groups of an Update run (installer-identity PR 3, L27). -ProofEntryId must name Enforce entries of ONE
         # group of this project: checked here, before anything is checked in the guest, written, staged or downloaded (a

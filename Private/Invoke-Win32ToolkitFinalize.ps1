@@ -118,18 +118,83 @@ function Invoke-Win32ToolkitFinalize {
     # 2026-10-21, B3 #4: they staged 'project:' dependencies from the registry base folder).
     $docArgs = @{ ProjectPath = $ProjectPath; ProjectName = $ProjectName; AppInfo = $AppInfo; Backend = $backend }
     if ($BasePath) { $docArgs['BasePath'] = $BasePath }
-    $docSuccess = New-TargetedDocumentation @docArgs
 
-    $captureReady = [bool]$docSuccess
-    if ($docSuccess -and $backend -eq 'HyperV') {
-        Write-Host 'Running documentation capture inside the Hyper-V VM...' -ForegroundColor Cyan
-        $ran = Invoke-Win32ToolkitHyperVRun -ProjectPath $ProjectPath -Phase @(
-            @{ Label = 'Document install changes'; Command = "& 'C:\PSADT\SupportFiles\TargetedDocumentationScript.ps1'" }
-        ) -Output @('Documentation\InstallationChanges_*.json', 'Documentation\Targeted_Documentation_Log_*.txt', 'Sandbox\Logs\*')
-        if (-not $ran) {
-            $captureReady = $false
-            Write-Warning 'Hyper-V documentation capture did not complete — skipping processing. Review the VM and its logs.'
+    # Installer-identity PR 3 (live rows DEMOTE and RAISE, 2026-10-26): a rebuilt version keeps its prior-install rules and
+    # a next version carries them BEFORE this capture (Copy-Win32ToolkitPriorInstallState), but the capture runs the
+    # package's own deploy script, whose prior-check refuses every Enforce rule while the package's own identity is unknown
+    # (69105) - and this capture is what records that identity. So while the own identity is unknown, the Enforce rules
+    # are written as Block for the capture (the clean capture guest has no prior install, so a Block rule refuses
+    # nothing there) and as Enforce again right after it, also when the capture throws (an interrupted run leaves them
+    # Block: more restrictive, never less), then re-checked against the identity the capture recorded.
+    $heldEnforce = [string[]]@()
+    if (Test-Path -LiteralPath (Join-Path $ProjectPath 'SupportFiles\AppConfig.json') -PathType Leaf) {
+        try {
+            $holdCfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
+            $holdOwn = if ($holdCfg.PSObject.Properties['OwnIdentity']) { $holdCfg.OwnIdentity } else { $null }
+            $ownKnown = $null -ne $holdOwn -and ([string]$(if ($holdOwn.PSObject.Properties['ProductCode']) { $holdOwn.ProductCode }) -or
+                @(@($(if ($holdOwn.PSObject.Properties['ArpKeys']) { $holdOwn.ArpKeys })) | Where-Object { $_ }).Count -gt 0)
+            $holdSet = if ($holdCfg.PSObject.Properties['PriorInstalls'] -and $holdCfg.PriorInstalls -and $holdCfg.PriorInstalls.PSObject.Properties['Entries']) { @(@($holdCfg.PriorInstalls.Entries) | Where-Object { $null -ne $_ }) } else { @() }
+            $holdEntries = @($holdSet | Where-Object { $_ -is [System.Management.Automation.PSCustomObject] -and $_.PSObject.Properties['Mode'] -and [string]$_.Mode -ceq 'Enforce' -and $_.PSObject.Properties['Id'] })
+            if (-not $ownKnown -and $holdEntries.Count -gt 0) {
+                foreach ($he in $holdEntries) { $he.Mode = 'Block' }
+                $null = Set-Win32ToolkitAppConfig -ProjectPath $ProjectPath -Config $holdCfg -Confirm:$false
+                $heldEnforce = [string[]]@($holdEntries | ForEach-Object { [string]$_.Id })
+                Write-Host "Prior installs   : $($heldEnforce -join ', ') run as Block in the install capture (this package's own identity is recorded there); Enforce again right after it." -ForegroundColor Gray
+            }
         }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Warning "The Enforce prior-install rules could not be set aside for the install capture ($(ConvertTo-Win32ToolkitSafeText -Text $_.Exception.Message -MaxLength 200)): the capture may refuse them (69105)."
+        }
+    }
+    # Sets the held rules back to Enforce (only those still Block: the capture's re-check may have removed one) and re-checks
+    # them with the full Enforce rules against the identity the capture recorded. Once.
+    $heldBack = $false
+    $resumeHeld = {
+        if ($heldEnforce.Count -eq 0) { return }
+        try {
+            $backCfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
+            $backSet = if ($backCfg.PSObject.Properties['PriorInstalls'] -and $backCfg.PriorInstalls -and $backCfg.PriorInstalls.PSObject.Properties['Entries']) { @(@($backCfg.PriorInstalls.Entries) | Where-Object { $null -ne $_ }) } else { @() }
+            $back = @($backSet | Where-Object { $_ -is [System.Management.Automation.PSCustomObject] -and $_.PSObject.Properties['Id'] -and $heldEnforce -ccontains [string]$_.Id -and $_.PSObject.Properties['Mode'] -and [string]$_.Mode -ceq 'Block' })
+            foreach ($be in $back) { $be.Mode = 'Enforce' }
+            if ($back.Count -gt 0) { $null = Set-Win32ToolkitAppConfig -ProjectPath $ProjectPath -Config $backCfg -Confirm:$false }
+            if ($back.Count -lt $heldEnforce.Count) { Write-Warning "The install capture removed the prior-install rule(s) $(@($heldEnforce | Where-Object { @($back | ForEach-Object { [string]$_.Id }) -cnotcontains $_ }) -join ', ') (see the warnings above)." }
+            # Only once the capture recorded the own identity (a capture that failed or threw recorded none: the full rules
+            # would drop the rule for that alone; Export reports it instead).
+            $backOwn = if ($backCfg.PSObject.Properties['OwnIdentity']) { $backCfg.OwnIdentity } else { $null }
+            $backKnown = $null -ne $backOwn -and ([string]$(if ($backOwn.PSObject.Properties['ProductCode']) { $backOwn.ProductCode }) -or
+                @(@($(if ($backOwn.PSObject.Properties['ArpKeys']) { $backOwn.ArpKeys })) | Where-Object { $_ }).Count -gt 0)
+            if ($back.Count -gt 0 -and $backKnown) { $null = Sync-Win32ToolkitPriorInstallOwnIdentity -ProjectPath $ProjectPath }
+        }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            $holdText = "The prior-install rule(s) $($heldEnforce -join ', ') could not be set back to Enforce after the install capture ($(ConvertTo-Win32ToolkitSafeText -Text $_.Exception.Message -MaxLength 200)): they stay Block; set them with Set-Win32ToolkitPriorInstall -Id <id> -Mode Enforce."
+            Write-Warning $holdText
+            if ($Result) { $Result.Problems.Add($holdText) }
+        }
+    }
+
+    $docSuccess = $false
+    $captureReady = $false
+    $captureStarted = $false
+    try {
+        $docSuccess = New-TargetedDocumentation @docArgs
+
+        $captureReady = [bool]$docSuccess
+        if ($docSuccess -and $backend -eq 'HyperV') {
+            Write-Host 'Running documentation capture inside the Hyper-V VM...' -ForegroundColor Cyan
+            $ran = Invoke-Win32ToolkitHyperVRun -ProjectPath $ProjectPath -Phase @(
+                @{ Label = 'Document install changes'; Command = "& 'C:\PSADT\SupportFiles\TargetedDocumentationScript.ps1'" }
+            ) -Output @('Documentation\InstallationChanges_*.json', 'Documentation\Targeted_Documentation_Log_*.txt', 'Sandbox\Logs\*')
+            if (-not $ran) {
+                $captureReady = $false
+                Write-Warning 'Hyper-V documentation capture did not complete — skipping processing. Review the VM and its logs.'
+            }
+        }
+        $captureStarted = $true
+    }
+    finally {
+        if (-not $captureStarted -and -not $heldBack) { $heldBack = $true; & $resumeHeld }
     }
     # Hyper-V speed-up PR 4 (D14): a capture pre-warm (Invoke-Win32Toolkit, HyperVCapturePrewarm) is released here, right
     # after the capture's teardown (its open joined the pre-warm and skipped its restore); when the capture ran under
@@ -137,26 +202,31 @@ function Invoke-Win32ToolkitFinalize {
     $null = Wait-Win32ToolkitHyperVTeardown -Prewarm
 
     $jsonProcessed = $false
-    if ($captureReady) {
-        Write-Host '✓ Targeted documentation setup completed!' -ForegroundColor Green
-        Write-Host "`nWaiting for documentation completion..." -ForegroundColor Yellow
-        $fileInfo      = Get-InstallerFileInfo -FilesPath $filesPath
-        $jsonProcessed = Wait-ForDocumentationAndProcess -ProjectPath $ProjectPath -InstallerType $fileInfo.Type -ExpectedJsonPath $docSuccess
-        if ($jsonProcessed) {
-            Write-Host '✓ Documentation processing completed successfully!' -ForegroundColor Green
+    try {
+        if ($captureReady) {
+            Write-Host '✓ Targeted documentation setup completed!' -ForegroundColor Green
+            Write-Host "`nWaiting for documentation completion..." -ForegroundColor Yellow
+            $fileInfo      = Get-InstallerFileInfo -FilesPath $filesPath
+            $jsonProcessed = Wait-ForDocumentationAndProcess -ProjectPath $ProjectPath -InstallerType $fileInfo.Type -ExpectedJsonPath $docSuccess
+            if ($jsonProcessed) {
+                Write-Host '✓ Documentation processing completed successfully!' -ForegroundColor Green
+            }
+            else {
+                Write-Warning 'Documentation processing had issues - please review manually'
+            }
+
+            # Promote the icon extracted during the install run to Assets\AppIcon.png. A winget IconUrl or a
+            # manual -IconPath already applied takes precedence (winget-primary); otherwise this is how manual
+            # and iconless apps finally get a real Intune tile. Best-effort — never let it derail packaging.
+            try { $null = Import-Win32ToolkitCapturedIcon -ProjectPath $ProjectPath }
+            catch { Write-Warning "Captured-icon promotion skipped: $($_.Exception.Message)" }
         }
         else {
-            Write-Warning 'Documentation processing had issues - please review manually'
+            Write-Warning 'Documentation generation had issues - please review manually'
         }
-
-        # Promote the icon extracted during the install run to Assets\AppIcon.png. A winget IconUrl or a
-        # manual -IconPath already applied takes precedence (winget-primary); otherwise this is how manual
-        # and iconless apps finally get a real Intune tile. Best-effort — never let it derail packaging.
-        try { $null = Import-Win32ToolkitCapturedIcon -ProjectPath $ProjectPath }
-        catch { Write-Warning "Captured-icon promotion skipped: $($_.Exception.Message)" }
     }
-    else {
-        Write-Warning 'Documentation generation had issues - please review manually'
+    finally {
+        if (-not $heldBack) { $heldBack = $true; & $resumeHeld }
     }
     if ($Result) {
         # The capture state for the caller's result object (TUI audit G2): what the warnings above said.

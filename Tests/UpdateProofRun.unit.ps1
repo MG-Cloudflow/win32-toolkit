@@ -473,6 +473,15 @@ $l = Run 'PostUpdate'; "F3|" + ($l -join '|')
         $script:testModeCfg = 'Unattended'
         if ($thrown -eq 'W32T.PriorInstallRefused' -and $script:launches -eq 0 -and $script:dl.Count -eq 0) { Ok "a watched Sandbox $sc run of a project with rules -> W32T.PriorInstallRefused, nothing launched" } else { Bad "watched ${sc}: '$thrown' launches=$($script:launches)" }
     }
+    # The rules a re-created project lost (Documentation\PriorInstallDropped.json) are prior-install state too: a guest
+    # that deleted the file would silence ID-PRIOR-DROPPED, so the tripwire guards it and a watched run is refused.
+    $pl = New-ProofProject 'lostonly' $null
+    [IO.File]::WriteAllText((Join-Path $pl 'Documentation\PriorInstallDropped.json'), '{"SchemaVersion":"1.0","Entries":[{"Id":"nsis-x64","Kind":"ArpKey","Key":"Notepad++","View":"Native","From":"Notepad++_x64_8.9.8.1"}]}', $utf8)
+    Reset-Run
+    $script:testModeCfg = 'Interactive'
+    $thrown = try { $null = Test-Win32ToolkitProject -ProjectPath $pl -Scenario InstallUninstall -WarningAction SilentlyContinue 6>$null; '' } catch { $_.FullyQualifiedErrorId }
+    $script:testModeCfg = 'Unattended'
+    if ($thrown -eq 'W32T.PriorInstallRefused' -and $script:launches -eq 0) { Ok 'a watched Sandbox run of a project whose only prior-install state is its lost rules (PriorInstallDropped.json) -> W32T.PriorInstallRefused, nothing launched' } else { Bad "watched lost-only: '$thrown' launches=$($script:launches)" }
     $script:sbFree = { $true }
     function Wait-Win32ToolkitSandboxFree { param($TimeoutSeconds, [switch]$OwnRun) & $script:sbFree $TimeoutSeconds $OwnRun }
     Reset-Run

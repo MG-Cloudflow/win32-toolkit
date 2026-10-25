@@ -198,6 +198,9 @@ function New-Win32ToolkitManualApp {
         Write-Host "Template folder: $templateSeg" -ForegroundColor DarkGray
         Write-Host "Project name   : $projectName" -ForegroundColor Cyan
 
+        # A rebuilt version keeps its prior-install rules, decisions and capture records (installer-identity PR 3, L4):
+        # read before Create-PSADTProject deletes the folder, restored after the org template below.
+        $priorSnapshot = Get-Win32ToolkitPriorInstallSnapshot -ProjectPath (Join-Path $projectsDir $projectName)
         if (-not (Create-PSADTProject -ProjectName $projectName -ProjectPath $projectsDir -Force:$Force)) {
             throw [System.Management.Automation.ErrorRecord]::new(
                 [System.InvalidOperationException]::new("Failed to create the PSADT project '$projectName' (see the warnings above)."),
@@ -303,6 +306,10 @@ function New-Win32ToolkitManualApp {
                         'W32T.PipelineAborted', [System.Management.Automation.ErrorCategory]::InvalidResult, $projectFullPath)
                 }
             }
+
+            # Prior-install rules (installer-identity PR 3, spec 2.13): the rebuilt version's own (L4), else those of the
+            # highest earlier version of this app and architecture (L5), re-checked against this package.
+            $null = Copy-Win32ToolkitPriorInstallState -ProjectPath $projectFullPath -Snapshot $priorSnapshot
         }
         catch {
             # Every error between the scaffold and the end of the configure step leaves a half-built folder: mark it

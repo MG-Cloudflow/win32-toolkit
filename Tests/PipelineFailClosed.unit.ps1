@@ -154,6 +154,10 @@ function Get-AppIconFromWinget {
     $true
 }
 function Set-Win32ToolkitAppDependency { param($ProjectPath, $DependsOn, $DependencyType) $script:SetDepSeen = $PSBoundParameters }
+# Prior-install state (installer-identity PR 3, C-9): the snapshot before Create-PSADTProject, the carry after the configure step.
+$script:SnapSeen = $null; $script:SnapAt = $null; $script:CopySeen = $null; $script:CopyAt = $null
+function Get-Win32ToolkitPriorInstallSnapshot { param($ProjectPath) $script:SnapSeen = $ProjectPath; $script:SnapAt = @($script:Calls); [pscustomobject]@{ Marker = 'snap' } }
+function Copy-Win32ToolkitPriorInstallState { param($ProjectPath, $Snapshot, $SourceProjectPath) $script:CopySeen = $PSBoundParameters; $script:CopyAt = @($script:Calls); $null }
 function Get-YAMLInstallerInfo { param($FilesPath) $null }
 function New-Win32ToolkitIntuneDefaults { param($Template) $null }
 function Update-PSADTMsixUninstallLogic { param($ProjectPath) $true }
@@ -289,8 +293,9 @@ $r = Invoke-Case $runManual
 if ($r.Fqid -eq 'W32T.ProjectCreationFailed' -and (& $downstream $script:Calls).Count -eq 0) { Ok 'Create-PSADTProject $false -> W32T.ProjectCreationFailed' } else { Bad "fqid='$($r.Fqid)' calls=[$($script:Calls -join ',')]" }
 
 Reset-Case @{ ApplyFails = $true }
+$script:CopySeen = $null
 $r = Invoke-Case $runManual
-if ($r.Fqid -eq 'W32T.PipelineAborted' -and (& $downstream $script:Calls).Count -eq 0) { Ok 'Apply-OrgTemplate $false -> W32T.PipelineAborted; Finalize never called' } else { Bad "fqid='$($r.Fqid)' calls=[$($script:Calls -join ',')]" }
+if ($r.Fqid -eq 'W32T.PipelineAborted' -and (& $downstream $script:Calls).Count -eq 0 -and $null -eq $script:CopySeen) { Ok 'Apply-OrgTemplate $false -> W32T.PipelineAborted; Finalize never called, no prior-install rules carried' } else { Bad "fqid='$($r.Fqid)' calls=[$($script:Calls -join ',')]" }
 
 Reset-Case @{ GeneratorThrows = $true }
 $r = Invoke-Case $runManual
@@ -301,6 +306,10 @@ Reset-Case @{}
 $script:DocBase = $null
 $r = Invoke-Case $runManual
 if (-not $r.Fqid -and 'document' -in $script:Calls -and $script:DocBase -eq $BASE) { Ok 'New-Win32ToolkitManualApp -Continue passes its -BasePath through Finalize to the capture' } else { Bad "fqid='$($r.Fqid)' capture BasePath='$script:DocBase' calls=[$($script:Calls -join ',')]" }
+$manualProj = Join-Path $BASE 'Projects\Contoso\Tool_x64_1.0'
+if ($script:SnapSeen -eq $manualProj -and 'create' -notin @($script:SnapAt) -and $script:CopySeen -and $script:CopySeen['ProjectPath'] -eq $manualProj -and $script:CopySeen['Snapshot'].Marker -eq 'snap' -and @($script:CopyAt)[-1] -eq 'apply') {
+    Ok 'New-Win32ToolkitManualApp: the prior-install snapshot is read before Create-PSADTProject and handed to the carry after the org template (L4, L5)'
+} else { Bad "snapshot [$script:SnapSeen] at [$(@($script:SnapAt) -join ',')]; carry at [$(@($script:CopyAt) -join ',')]" }
 
 Reset-Case @{ GeneratorFalse = $true }
 $r = Invoke-Case $runManual
@@ -367,6 +376,7 @@ $newProj = Join-Path $projDir 'Git_x64_2.45.0'
 
 Reset-Case @{}
 $script:PinSeen = $null; $script:DlSeen = $null; $script:SourceSeen = $null; $script:IdentitySeen = $null; $script:IdentityAt = $null
+$script:SnapSeen = $null; $script:SnapAt = $null; $script:CopySeen = $null; $script:CopyAt = $null
 $r = Invoke-Case { Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -InstallerType nullsoft -ErrorAction SilentlyContinue -ErrorVariable ev }
 $ps = $script:PinSeen
 if (-not $r.Fqid -and $ps -and $ps['TemplateDirectory'] -eq $projDir -and $ps['WingetId'] -eq 'Git.Git' -and $ps['Version'] -eq '2.45.0' -and $ps['InstallerType'] -eq 'nullsoft' -and
@@ -382,6 +392,9 @@ if ($cfgSrc -and $cfgSrc.PinnedBy -eq 'parameter') { Ok 'AppConfig.json carries 
 $is = $script:IdentitySeen
 if ($is -and $is['ProjectPath'] -eq $newProj -and $is['TenantId'] -eq '' -and (@($script:IdentityAt) -join ',') -eq 'create,download,generate,apply,icon') { Ok 'the identity checks run once, after the icon step and before Finalize, for the new project' } else { Bad "identity args: $(if ($is) { ($is.Keys | ForEach-Object { "$_=$($is[$_])" }) -join '; ' }) calls before: [$(@($script:IdentityAt) -join ',')]" }
 if (($script:Calls -join ',') -match 'icon,assert:Finalize:False,document') { Ok 'Finalize still runs after the identity checks (warnings never block)' } else { Bad "calls=[$($script:Calls -join ',')]" }
+if ($script:SnapSeen -eq $newProj -and 'create' -notin @($script:SnapAt) -and $script:CopySeen -and $script:CopySeen['ProjectPath'] -eq $newProj -and $script:CopySeen['Snapshot'].Marker -eq 'snap' -and (@($script:CopyAt) -join ',') -eq 'create,download,generate,apply') {
+    Ok 'Invoke-Win32Toolkit: the prior-install snapshot is read before Create-PSADTProject and handed to the carry right after the configure step, before the icon (L4, L5)'
+} else { Bad "snapshot [$script:SnapSeen] at [$(@($script:SnapAt) -join ',')]; carry at [$(@($script:CopyAt) -join ',')]" }
 
 Reset-Case @{ TenantId = 'tenant-9' }
 $script:PinSeen = $null; $script:IdentitySeen = $null; $script:DlSeen = $null
@@ -686,6 +699,7 @@ $r = Invoke-Case $runInvoke
 if ($had -and -not $r.Fqid -and $null -eq (Get-Marker $gitProj)) { Ok 'Invoke: re-creating the project removes the marker (the folder is replaced)' } else { Bad "had=$had fqid='$($r.Fqid)' marker=$(& $markerText (Get-Marker $gitProj))" }
 
 Clear-Project $toolProj; Reset-Case @{ ApplyFails = $true }
+$script:CopySeen = $null
 $r = Invoke-Case $runManual
 $m = Get-Marker $toolProj
 if ($r.Fqid -eq 'W32T.PipelineAborted' -and $m -and $m.Stage -eq 'Configure' -and $m.ErrorId -eq 'W32T.PipelineAborted') { Ok 'New-: the org template not applied -> marker Stage Configure, W32T.PipelineAborted' } else { Bad "fqid='$($r.Fqid)' marker=$(& $markerText $m)" }

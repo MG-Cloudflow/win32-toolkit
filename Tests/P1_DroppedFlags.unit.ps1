@@ -82,6 +82,10 @@ function Create-PSADTProject { param($ProjectName, $ProjectPath, [switch]$Force)
 # Rebuild self-anchor (installer-identity PR 1, C-9): read before Create-PSADTProject removes an old folder.
 $script:selfSeen = $null
 function Get-Win32ToolkitSelfAnchor { param($ProjectPath, $TenantId) $script:order.Add('self'); $script:selfSeen = $PSBoundParameters; $null }
+# Prior-install state (installer-identity PR 3, C-9): read before Create-PSADTProject; never carried when the download fails.
+$script:snapAt = $null; $script:snapPath = $null
+function Get-Win32ToolkitPriorInstallSnapshot { param($ProjectPath) $script:snapAt = @($script:order); $script:snapPath = $ProjectPath; $null }
+function Copy-Win32ToolkitPriorInstallState { param($ProjectPath, $Snapshot, $SourceProjectPath) $null = $ProjectPath, $Snapshot, $SourceProjectPath; throw 'Copy-Win32ToolkitPriorInstallState ran even though the download failed' }
 
 # Installer technology (installer-identity PR 1, C-9): the pin is resolved before the download. The shadow
 # mirrors the real resolver for an explicit -InstallerType (parameter) and for none (winget-default).
@@ -220,6 +224,8 @@ $null = Invoke-Failing
 $wantSelf = Join-Path $script:tmpBase 'Projects\TestTpl\Git_x64_2.45.0'
 if (($script:order -join ',') -eq 'self,create,pin' -and $script:selfSeen -and $script:selfSeen['ProjectPath'] -eq $wantSelf) { Ok 'the rebuild self-anchor is read for the project path BEFORE Create-PSADTProject, the pin after it' }
 else { Bad "order=[$($script:order -join ',')] self path=[$(if ($script:selfSeen) { $script:selfSeen['ProjectPath'] })]" }
+if ($null -ne $script:snapAt -and (@($script:snapAt) -join ',') -eq 'self' -and $script:snapPath -eq $wantSelf) { Ok 'the prior-install snapshot is read for the project path BEFORE Create-PSADTProject; nothing is carried after a failed download' }
+else { Bad "snapshot at [$(@($script:snapAt) -join ',')] path [$script:snapPath]" }
 
 Remove-Item -LiteralPath $script:tmpBase -Recurse -Force -ErrorAction SilentlyContinue
 
