@@ -16,6 +16,8 @@
 - [Publish-Win32ToolkitIntuneApp](Publish-Win32ToolkitIntuneApp.md): Uploads a packaged Win32 app (.intunewin) to Microsoft Intune via the Graph API.
 - [Export-Win32ToolkitDocumentation](Export-Win32ToolkitDocumentation.md): Writes a clean, customer-facing one-page Documentation.md summarising a packaged project.
 - [Set-Win32ToolkitAppDependency](Set-Win32ToolkitAppDependency.md): Declares which apps must be installed BEFORE this one (Intune app dependencies).
+- [Set-Win32ToolkitPriorInstall](Set-Win32ToolkitPriorInstall.md): Lists or sets the prior-install rules of a project: another installer technology of the app that the package
+refuses (Block), removes before it installs (Enforce) or only reports (Report).
 - [Sync-Win32ToolkitAppDependency](Sync-Win32ToolkitAppDependency.md): Pushes a project's declared dependencies onto the app it ALREADY published in Intune, without
 re-publishing it.
 

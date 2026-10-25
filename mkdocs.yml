@@ -139,6 +139,7 @@ nav:
           - Disconnect-Win32ToolkitIntune: reference/Disconnect-Win32ToolkitIntune.md
           - Set-Win32ToolkitAppDependency: reference/Set-Win32ToolkitAppDependency.md
           - Sync-Win32ToolkitAppDependency: reference/Sync-Win32ToolkitAppDependency.md
+          - Set-Win32ToolkitPriorInstall: reference/Set-Win32ToolkitPriorInstall.md
           - New-Win32ToolkitTestVM: reference/New-Win32ToolkitTestVM.md
           - Set-Win32ToolkitTestVMResource: reference/Set-Win32ToolkitTestVMResource.md
           - Reset-Win32ToolkitTestVM: reference/Reset-Win32ToolkitTestVM.md

@@ -8,7 +8,7 @@ install/uninstall/update paths, packages the `.intunewin`, and publishes it to I
 dependencies, icon, and requirement rules included.
 
 Built for Intune admins and packagers. The primary experience is a guided, menu-driven console UI
-(`Show-Win32Toolkit`); every step is also scriptable through 16 PowerShell commands.
+(`Show-Win32Toolkit`); every step is also scriptable through 17 PowerShell commands.
 
 ```mermaid
 flowchart LR
@@ -120,6 +120,7 @@ packaged for multiple customers side by side. Details: [concepts](docs/concepts.
 | [Publish-Win32ToolkitIntuneApp](docs/reference/Publish-Win32ToolkitIntuneApp.md) | Upload to Intune via Graph ([guide](docs/publishing.md)) |
 | [Export-Win32ToolkitDocumentation](docs/reference/Export-Win32ToolkitDocumentation.md) | Customer-facing one-pager for a packaged app |
 | [Set-Win32ToolkitAppDependency](docs/reference/Set-Win32ToolkitAppDependency.md) | Declare app dependencies ([guide](docs/dependencies.md)) |
+| [Set-Win32ToolkitPriorInstall](docs/reference/Set-Win32ToolkitPriorInstall.md) | Declare another installer technology the package refuses or removes first ([guide](docs/packaging.md#prior-installs-remove-another-installer-technology-before-installing)) |
 | [Sync-Win32ToolkitAppDependency](docs/reference/Sync-Win32ToolkitAppDependency.md) | Re-attach dependencies on already-published apps |
 
 **Intune connection** ([guide](docs/intune-connection.md))
