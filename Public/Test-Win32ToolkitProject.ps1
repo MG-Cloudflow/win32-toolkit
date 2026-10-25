@@ -1075,6 +1075,39 @@ function Test-Win32ToolkitProject {
                 # choose only the version (how an operator reaches a version inside an entry's VersionMin..VersionMax window);
                 # a chosen technology (-BaselineInstallerType <type>, Packaged, Both) keeps the packaged installer's architecture.
                 $groupTechPinned = [bool]$proofGroup -and -not $useBaselineProject -and $baselineMode -eq 'Auto'
+                # The whole baseline (for a captured group: exactly its floor capture) only when no baseline option is given.
+                $groupPinned = $groupTechPinned -and -not $PSBoundParameters.ContainsKey('BaselineInstallerType') -and -not $SpecificVersion -and -not $VersionsBack
+                # A group of rules from a sibling capture (installer-identity PR 3b, C2, SV5): its baseline is its FLOOR capture -
+                # exactly the installer that capture recorded (type, version, architecture and SHA-256) - and the guest gets the
+                # floor record's facts (Sibling.<id>: the observed version, the services, shortcuts and tasks it created).
+                $floorRecord = $null
+                $siblingData = $null
+                if ($proofGroup -and [string]$proofGroup.Lineage -eq 'Capture' -and -not $useBaselineProject) {
+                    $floorRecord = @(Get-Win32ToolkitSiblingCaptureRecord -ProjectPath $ProjectPath -CaptureId ([string]$proofGroup.CaptureId)) | Select-Object -First 1
+                    if (-not $floorRecord) {
+                        Write-Warning "The floor capture record of $($proofEntryIds -join ', ') ('$([string]$proofGroup.CaptureId)') is missing or was changed: this run checks the rules but cannot prove them. Capture the other installer technologies again (Test-Win32ToolkitProject -Scenario SiblingCapture)."
+                    }
+                    else {
+                        $siblingData = @{}
+                        foreach ($sid in $proofEntryIds) {
+                            $se = @($priorEntries | Where-Object { [string]$_.Id -ceq $sid }) | Select-Object -First 1
+                            $sc = @($floorRecord.Observation.Candidates | Where-Object { $se -and [string]::Equals([string]$_.Key, [string]$se.Key, [StringComparison]::OrdinalIgnoreCase) -and [string]$_.View -ceq [string]$se.View }) | Select-Object -First 1
+                            $siblingData[$sid] = @{
+                                ObservedVersion = $(if ($sc) { [string]$sc.DisplayVersion } else { '' })
+                                Services        = [string[]]@($floorRecord.Observation.Services | ForEach-Object { [string]$_.Name })
+                                Shortcuts       = [string[]]@($floorRecord.Observation.Shortcuts)
+                                Tasks           = [string[]]@($floorRecord.Observation.Tasks | ForEach-Object { [string]$_.Path })
+                            }
+                        }
+                    }
+                }
+                $floorPinned = $groupPinned -and $null -ne $floorRecord
+                # Whether this run installs exactly the floor capture's installer: always when floor-pinned; with a baseline
+                # option it is known only after the download (its SHA-256). Only then does the guest compare the observed
+                # version with the floor record's (Sibling data); any other baseline checks the rules but cannot prove them,
+                # and a SiblingIdentityStable FAIL against the floor's version would revoke a valid proof (live run
+                # GOAL-UPDATE-NULLSOFT).
+                $floorBaseline = $floorPinned
                 # Everything the proof is bound to (L12), taken right before the guest starts; completed after the run.
                 $proofTaken = $null
                 $takeProof = {
@@ -1194,9 +1227,19 @@ function Test-Win32ToolkitProject {
                     # Resolved BEFORE the version is picked, so the operator knows which technology the old version
                     # must ship (Dv5). Every leg pins an installer type (never an unpinned download, never a locale);
                     # Auto prefers the other technology winget ships for this app (V22, D5).
-                    $legs = if ($groupTechPinned) { @(Resolve-Win32ToolkitBaselineFamily -ProjectPath $ProjectPath -Mode Auto -EntryId $proofEntryIds) }
-                            else { @(Resolve-Win32ToolkitBaselineFamily -ProjectPath $ProjectPath -Mode $baselineMode) }
-                    if ($groupTechPinned -and $proofGroup.Architecture -and $proofGroup.Architecture -ne $architecture) {
+                    $legs = if ($floorPinned) {
+                        $floorType = [string]$floorRecord.Sibling.InstallerType
+                        $floorRow = Get-Win32ToolkitInstallerFamily -Type $floorType
+                        @([pscustomobject]@{ Family = [string]$floorRow.Family; InstallerType = $floorType; Scope = [string]$floorRecord.Sibling.Scope; Origin = 'Entry'; FallbackInstallerType = ''; FallbackScope = ''
+                                Label = ('{0} (the floor capture {1} of {2})' -f $floorRow.Label, [string]$proofGroup.CaptureId, ($proofEntryIds -join ', ')); Note = '' })
+                    }
+                    elseif ($groupTechPinned) { @(Resolve-Win32ToolkitBaselineFamily -ProjectPath $ProjectPath -Mode Auto -EntryId $proofEntryIds) }
+                    else { @(Resolve-Win32ToolkitBaselineFamily -ProjectPath $ProjectPath -Mode $baselineMode) }
+                    if ($floorPinned -and [string]$floorRecord.Sibling.Architecture -and [string]$floorRecord.Sibling.Architecture -ne $architecture) {
+                        Write-Host "Baseline architecture : $([string]$floorRecord.Sibling.Architecture) (the floor capture)" -ForegroundColor Gray
+                        $architecture = [string]$floorRecord.Sibling.Architecture
+                    }
+                    elseif ($groupTechPinned -and $proofGroup.Architecture -and $proofGroup.Architecture -ne $architecture) {
                         Write-Host "Baseline architecture : $($proofGroup.Architecture) (the registry view of $($proofEntryIds -join ', '))" -ForegroundColor Gray
                         $architecture = $proofGroup.Architecture
                     }
@@ -1215,7 +1258,11 @@ function Test-Win32ToolkitProject {
                     }
 
                     # ── Step 2-3: Pick the target baseline version ────────────────────────────
-                    if ($SpecificVersion) {
+                    if ($floorPinned) {
+                        # The floor capture's own version (installer-identity PR 3b, C2): never picked, never asked.
+                        $targetVersion = [string]$floorRecord.Sibling.Version
+                    }
+                    elseif ($SpecificVersion) {
                         # Explicit baseline: usable even when winget lists no (or no older) versions —
                         # the older-version lookup is advisory only here.
                         $targetVersion = $SpecificVersion
@@ -1354,6 +1401,11 @@ function Test-Win32ToolkitProject {
                         InstallerType = [string]$leg.InstallerType
                         FamilyPin     = $true
                     }
+                    if ($floorPinned) {
+                        # Exactly the floor capture's registration type: never another type of its family (L22).
+                        [void]$dl.Remove('FamilyPin')
+                        $dl['ExactType'] = $true
+                    }
                     if ($leg.Scope) { $dl['Scope'] = [string]$leg.Scope }
                     if (-not $leg.InstallerType) {
                         $unavailable = "No Update baseline can be downloaded: the packaged installer technology of this project cannot be pinned. $($leg.Note)".Trim()
@@ -1422,6 +1474,25 @@ function Test-Win32ToolkitProject {
                         return $null
                     }
 
+                    # The floor capture's installer, byte for byte (SV5): another file cannot prove the captured rules.
+                    if ($floorPinned) {
+                        $gotSha = (Get-FileHash -LiteralPath $oldInstaller.InstallerPath -Algorithm SHA256).Hash
+                        if ($gotSha -cne [string]$floorRecord.Sibling.InstallerSha256) {
+                            throw "The $([string]$floorRecord.Sibling.InstallerType) installer winget delivers for version $targetVersion (SHA-256 $gotSha) is not the one the floor capture $([string]$proofGroup.CaptureId) recorded ($([string]$floorRecord.Sibling.InstallerSha256)): this run cannot prove the captured rules. Capture the other installer technologies again (Test-Win32ToolkitProject -Scenario SiblingCapture). Nothing was run."
+                        }
+                    }
+                    elseif ($floorRecord) {
+                        # A baseline option on a captured group: the resolved version and the delivered file decide (never the
+                        # options alone: -VersionsBack can resolve to the floor, -SpecificVersion can name another release).
+                        $gotSha = (Get-FileHash -LiteralPath $oldInstaller.InstallerPath -Algorithm SHA256).Hash
+                        if ($gotSha -ceq [string]$floorRecord.Sibling.InstallerSha256) {
+                            $floorBaseline = $true
+                            Write-Host "Sibling proof     : version $targetVersion is the floor capture's installer (SHA-256 equal): this run can prove $($proofEntryIds -join ', ')." -ForegroundColor Gray
+                        }
+                        else {
+                            Write-Warning "$($proofEntryIds -join ', ') $(if (@($proofEntryIds).Count -eq 1) { 'comes' } else { 'come' }) from a sibling capture whose floor is version $([string]$floorRecord.Sibling.Version); this run uses version $targetVersion ($(ConvertTo-Win32ToolkitSafeText -Text ([string]$oldInstaller.InstallerName) -MaxLength 80)), another installer, so it checks the rules but cannot prove them (a proof needs exactly the floor capture's installer). Run it without baseline options to prove them."
+                        }
+                    }
                     $baselineType = if ($oldInstaller.ManifestInstallerType) { [string]$oldInstaller.ManifestInstallerType } else { [string]$dl['InstallerType'] }
                     $baselineInfo = @{
                         Version                = [string]$targetVersion
@@ -1491,7 +1562,7 @@ function Test-Win32ToolkitProject {
                 }
                 $assertionPath = New-UpdateAssertionScript -ProjectPath $ProjectPath `
                     -SkipRequirement:$SkipRequirementCheck -OldVersion $targetVersion `
-                    -ExpectBaselineTattoo:$useBaselineProject -ProofEntryIds $proofEntryIds -OtherEntryIds $otherEntryIds
+                    -ExpectBaselineTattoo:$useBaselineProject -ProofEntryIds $proofEntryIds -OtherEntryIds $otherEntryIds -SiblingData $(if ($floorBaseline) { $siblingData } else { $null })
                 Write-Host "✓ Assertion script : $assertionPath" -ForegroundColor Green
                 # The assertions the guest always writes (PASS, FAIL or SKIP), one pair per checked prior-install entry: a
                 # complete log without one of them lost lines (live run SB-ENFORCE), so the waiter calls it inconclusive.

@@ -43,6 +43,7 @@ function Get-Win32ToolkitSandboxEnvironment { $null }   # C-9: no wsb answer -> 
 # the config reads return the test modes.
 function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose) [pscustomobject]@{ Kind = 'Project'; Epoch = 'inert'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
 function Exit-Win32ToolkitHyperVLease { param($Lease) }
+function Get-Win32ToolkitSiblingCaptureRecord { param($ProjectPath, $CaptureId) $null = $ProjectPath, $CaptureId; @() }   # C-9 (installer-identity PR 3b, C2): a capture-lineage group reads its floor record
 # C-9 (installer-identity PR 2 follow-up F7): every test first asks for the uninstall cleanup paths Export refuses. No
 # finding by default; [10] (e) sets some.
 $script:cleanupCalls = 0

@@ -263,10 +263,13 @@ $l = Run 'PostUpdate'; "F3|" + ($l -join '|')
     $baselineFile = Join-Path $root 'baseline-installer.exe'
     New-Item -ItemType Directory -Path $root -Force | Out-Null
     [IO.File]::WriteAllText($baselineFile, 'nsis baseline bytes', $utf8)
+    # Version 8.8.8 is another release: another file (another SHA-256 than every floor record below).
+    $otherBaselineFile = Join-Path $root 'baseline-installer-888.exe'
+    [IO.File]::WriteAllText($otherBaselineFile, 'nsis 8.8.8 bytes', $utf8)
     ${function:Download-OldVersionInstaller} = {
         param($AppId, $Version, $ProjectPath, $DestinationDir, $Architecture, $Scope, $InstallerType, $Locale, [switch]$FamilyPin, [switch]$ExactType)
         $h = @{}; foreach ($k in $PSBoundParameters.Keys) { $h[$k] = $PSBoundParameters[$k] }; $script:dl.Add($h)
-        [pscustomobject]@{ InstallerPath = $baselineFile; InstallerName = 'old.exe'; InstallerType = 'exe'; SilentArgs = '/S'; UsedFallback = $false; RequestedInstallerType = $InstallerType
+        [pscustomobject]@{ InstallerPath = $(if ($Version -eq '8.8.8') { $otherBaselineFile } else { $baselineFile }); InstallerName = 'old.exe'; InstallerType = 'exe'; SilentArgs = '/S'; UsedFallback = $false; RequestedInstallerType = $InstallerType
             ManifestInstallerType = $InstallerType; ManifestProductCode = 'App'; Scope = 'machine'; Locale = ''; Family = 'exe'; TriedTypes = @($InstallerType); ScopeRelaxed = $false }
     }
     $script:hvRuns = 0
@@ -502,6 +505,76 @@ $l = Run 'PostUpdate'; "F3|" + ($l -join '|')
     if ($v -eq $true -and $script:outcomes.Count -eq 1 -and $script:outcomes[0].Backend -eq 'Sandbox' -and $script:outcomes[0].HasProof) { Ok 'an untouched unattended Sandbox run: recorded (Backend Sandbox, with the Proof it checked - it never proves)' } else { Bad "sb ok: v=$v outcomes=$($script:outcomes.Count)" }
     # Live row INTERACTIVE: the operator is told before the run that it checks the Enforce rule but cannot prove it.
     if (@($w | Where-Object { "$_" -match '^This Windows Sandbox run checks the Enforce rule\(s\) nsis-x64 but cannot prove them, even when it passes: an Enforce rule is proven only by an Update test on Hyper-V, unattended' }).Count -eq 1) { Ok 'a Sandbox Update run of an Enforce rule: one warning that it checks but cannot prove the rule' } else { Bad "sb cannot-prove: $($w -join ' | ')" }
+    # == [5] rules from a sibling capture: the floor capture is the baseline (installer-identity PR 3b, C2) ===========
+    Write-Host '[5] a capture-lineage group: the floor capture is the baseline' -ForegroundColor Cyan
+    $script:testBackend = 'HyperV'; $script:testModeCfg = 'Unattended'
+    Remove-Item Function:\Wait-Win32ToolkitSandboxFree -ErrorAction SilentlyContinue
+    $writeFloor = {
+        param([string]$P, [string]$Sha)
+        $rec = ConvertTo-Win32ToolkitSiblingCaptureRecord -InputObject ([ordered]@{
+                SchemaVersion = '1.0'; CaptureKey = 'nullsoft-8.8.9'
+                Package = [ordered]@{ WingetId = 'Notepad++.Notepad++'; Version = '8.9.8.1'; Architecture = 'x64'; InstallerType = 'wix'; Family = 'msi' }
+                Sibling = [ordered]@{ InstallerType = 'nullsoft'; EffectiveType = 'nullsoft'; Version = '8.8.9'; Role = 'Floor'; ReleaseDate = '2025-12-09'; Scope = 'machine'; Locale = ''; Architecture = 'x64'
+                    InstallerFile = 'npp.8.8.9.Installer.x64.exe'; InstallerSha256 = $Sha; SilentArgs = '/S'; SilentArgsSource = 'catalog'; Manifest = [ordered]@{ ProductCodes = @('App') } }
+                Run = [ordered]@{ Backend = 'HyperV'; Mode = 'Unattended'; GuestScriptSha256 = ('C' * 64) }
+                Install = [ordered]@{ ExitCode = 0; Completed = $true }
+                Observation = [ordered]@{ Candidates = @([ordered]@{ Key = 'App'; View = 'Native'; DisplayName = 'App (64-bit)'; DisplayVersion = '8.8.9'; Publisher = 'Vendor Team' })
+                    Services = @([ordered]@{ Name = 'AppUpdater'; DisplayName = 'App updater'; ImageLeaf = 'upd.exe' }); Shortcuts = @('C:\ProgramData\Microsoft\Windows\Start Menu\Programs\App.lnk')
+                    Tasks = @([ordered]@{ Path = '\AppTask'; ActionLeaf = 'upd.exe' }); NoiseControl = 'Verified'; ProvisionalPrimary = 'App' }
+                Probe = [ordered]@{ Result = 'Clean'; ProbedKey = 'App'; ProbedView = 'Native' }
+                HostChecks = [ordered]@{ NsisMagic = $true } })
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json -InputObject $rec -Depth 12 -Compress -EscapeHandling EscapeNonAscii))
+        $hasher = [Security.Cryptography.SHA256]::Create(); $id = (-join ($hasher.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })).Substring(0, 16); $hasher.Dispose()
+        $null = New-Item -ItemType Directory -Path (Join-Path $P 'Documentation\SiblingCapture') -Force
+        [IO.File]::WriteAllBytes((Join-Path $P "Documentation\SiblingCapture\$id.json"), $bytes)
+        $id
+    }
+    $bsha = (Get-FileHash -LiteralPath $baselineFile -Algorithm SHA256).Hash
+    $pc = Join-Path $root 'capture'
+    $null = New-Item -ItemType Directory -Path $pc -Force
+    $cid = & $writeFloor $pc $bsha
+    $pc = New-ProofProject 'capture' @((Entry 'nsis-x64' 'Enforce' @{ Source = 'SiblingCapture'; CaptureId = $cid; VersionMin = '8.8.9' }))
+    Reset-Run
+    $w = $null
+    $v = Test-Win32ToolkitProject -ProjectPath $pc -Scenario Update -WarningVariable w -WarningAction SilentlyContinue 6>$null
+    $d0 = if ($script:dl.Count) { $script:dl[0] } else { @{} }
+    $data = Get-Content -LiteralPath (Join-Path $pc 'Sandbox\UpdateAssertionData.json') -Raw | ConvertFrom-Json
+    $o = $script:outcomes[0]
+    if ($v -eq $true -and $d0['ExactType'] -and -not $d0.ContainsKey('FamilyPin') -and $d0['InstallerType'] -eq 'nullsoft' -and $d0['Version'] -eq '8.8.9' -and $d0['Architecture'] -eq 'x64' -and $d0['Scope'] -eq 'machine') { Ok 'no baseline options: -ExactType nullsoft at the floor version 8.8.9, its architecture and scope (never the family, never the picker)' } else { Bad "floor download: $($d0 | ConvertTo-Json -Compress)" }
+    $sd = $data.Sibling.'nsis-x64'
+    if ($sd.ObservedVersion -eq '8.8.9' -and (@($sd.Services) -join ',') -eq 'AppUpdater' -and (@($sd.Tasks) -join ',') -eq '\AppTask' -and @($sd.Shortcuts).Count -eq 1) { Ok 'the data file carries Sibling.nsis-x64 from the floor record (observed version, services, shortcuts, tasks)' } else { Bad "sibling data: $($data.Sibling | ConvertTo-Json -Depth 4 -Compress)" }
+    if ($o.HasProof -and (@($o.Proof.CaptureIds) -join ',') -eq $cid -and $o.Proof.BaselineInstallerSha256 -ceq $bsha -and @($w | Where-Object { "$_" -match 'cannot prove' }).Count -eq 0) { Ok 'the Proof names the CaptureIds and the floor installer hash; no warning' } else { Bad "proof: $($o.Proof | ConvertTo-Json -Compress) warnings $($w -join ' | ')" }
+    Reset-Run
+    $pm = Join-Path $root 'mismatch'; $null = New-Item -ItemType Directory -Path $pm -Force
+    $cid2 = & $writeFloor $pm ('D' * 64)
+    $pm = New-ProofProject 'mismatch' @((Entry 'nsis-x64' 'Enforce' @{ Source = 'SiblingCapture'; CaptureId = $cid2; VersionMin = '8.8.9' }))
+    $msg = try { $null = Test-Win32ToolkitProject -ProjectPath $pm -Scenario Update -WarningAction SilentlyContinue -ErrorAction Stop 6>$null; '' } catch { $_.Exception.Message }
+    if ($msg -match 'is not the one the floor capture' -and $script:hvRuns -eq 0 -and $script:outcomes.Count -eq 0) { Ok "the downloaded installer's SHA-256 differs from the floor record's -> an error before the guest, nothing recorded" } else { Bad "mismatch: '$msg' runs=$($script:hvRuns)" }
+    Reset-Run
+    $w = $null
+    $null = Test-Win32ToolkitProject -ProjectPath $pc -Scenario Update -BaselineInstallerType nullsoft -SpecificVersion '8.8.9' -WarningVariable w -WarningAction SilentlyContinue 6>$null
+    $okEq = @($w | Where-Object { "$_" -match 'cannot prove' }).Count -eq 0 -and $script:dl[0]['FamilyPin']
+    Reset-Run
+    $w = $null
+    $null = Test-Win32ToolkitProject -ProjectPath $pc -Scenario Update -BaselineInstallerType nullsoft -SpecificVersion '8.8.8' -WarningVariable w -WarningAction SilentlyContinue 6>$null
+    $data = Get-Content -LiteralPath (Join-Path $pc 'Sandbox\UpdateAssertionData.json') -Raw | ConvertFrom-Json
+    if ($okEq -and @($w | Where-Object { "$_" -match '^nsis-x64 comes from a sibling capture whose floor is version 8\.8\.9; this run uses version 8\.8\.8' -and "$_" -match 'cannot prove' }).Count -eq 1 -and (@($data.ProofEntryIds) -join ',') -eq 'nsis-x64') { Ok 'an explicit version equal to the floor -> no warning; another version -> the "cannot prove" warning, the group still checked' } else { Bad "explicit: eq=$okEq warnings $($w -join ' | ')" }
+    # Live run GOAL-UPDATE-NULLSOFT (2026-10-27): the run from 8.9.8 got the FLOOR record's facts, so the guest compared the
+    # observed 8.9.8 with the captured 8.8.9, SiblingIdentityStable FAILED and the newest failed run revoked the proven rule.
+    # Another installer than the floor's gets no Sibling data (nothing to compare it with); the floor's file gets it.
+    if (@($data.Sibling.PSObject.Properties).Count -eq 0) { Ok 'another baseline than the floor capture''s installer -> no Sibling data in the data file (no SiblingIdentityStable / PriorResidue check against the floor record)' } else { Bad "non-floor sibling data: $($data.Sibling | ConvertTo-Json -Compress)" }
+    Reset-Run
+    $w = $null
+    $null = Test-Win32ToolkitProject -ProjectPath $pc -Scenario Update -BaselineInstallerType nullsoft -VersionsBack 1 -WarningVariable w -WarningAction SilentlyContinue 6>$null
+    $data = Get-Content -LiteralPath (Join-Path $pc 'Sandbox\UpdateAssertionData.json') -Raw | ConvertFrom-Json
+    if ($script:dl[0]['Version'] -eq '8.8.9' -and @($w | Where-Object { "$_" -match 'cannot prove' }).Count -eq 0 -and $data.Sibling.'nsis-x64'.ObservedVersion -eq '8.8.9') { Ok '-BaselineInstallerType nullsoft -VersionsBack 1 resolving to the floor''s installer (SHA-256 equal) -> no "cannot prove" warning, the floor record''s Sibling data' } else { Bad "versionsback floor: v=$($script:dl[0]['Version']) warnings $($w -join ' | ') sibling $($data.Sibling | ConvertTo-Json -Compress)" }
+    Reset-Run
+    $w = $null
+    $null = Test-Win32ToolkitProject -ProjectPath $pc -Scenario Update -SpecificVersion '8.8.8' -WarningVariable w -WarningAction SilentlyContinue 6>$null
+    $d0 = if ($script:dl.Count) { $script:dl[0] } else { @{} }
+    if (@($w | Where-Object { "$_" -match 'this run uses version 8\.8\.8' -and "$_" -match 'cannot prove' }).Count -eq 1 -and $d0['InstallerType'] -eq 'nullsoft' -and $d0['FamilyPin'] -and -not $d0['ExactType'] -and $d0['Architecture'] -eq 'x64' -and $d0['Version'] -eq '8.8.8') {
+        Ok 'only -SpecificVersion on a captured group -> the group''s technology and architecture at that version (never the floor pin), one "cannot prove" warning'
+    } else { Bad "captured + version: $($d0 | ConvertTo-Json -Compress) warnings $($w -join ' | ')" }
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
