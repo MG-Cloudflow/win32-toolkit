@@ -52,6 +52,8 @@ foreach ($f in 'Get-Win32ToolkitDeployScriptShape', 'Set-Win32ToolkitPhaseBlock'
     'Get-Win32ToolkitDeployScriptBlock', 'Write-Win32ToolkitDeployScript', 'Test-Win32ToolkitPS51Syntax', 'Set-PSADTDataDrivenScript',
     'Set-Win32ToolkitTextBlock', 'Get-Win32ToolkitAppConfig', 'Set-Win32ToolkitAppConfig', 'ConvertTo-PSSingleQuoted', 'ConvertTo-Win32ToolkitSafeText',
     'Get-Win32ToolkitParityDialogRisk', 'Get-Win32ToolkitGuestSignedInUser', 'Invoke-Win32ToolkitParityPrecheck',
+    # C-9 (installer-identity PR 3 live checks): a Zero-Config MSI's File-table programs count as processes to close.
+    'Get-Win32ToolkitMsiExecutableName',
     # C-9 (speed-up PR 3): the pre-check reads its VM / checkpoint through the real resolver (fed by the config shadow).
     'Get-Win32ToolkitHyperVTarget') {
     . (Join-Path $repo "Private\$f.ps1")
@@ -66,12 +68,12 @@ $bom = [System.Text.UTF8Encoding]::new($true)
 # script, optionally the Pre-Install org-ui block (the template default welcome removed, as Apply-OrgTemplate does),
 # then an optional text edit of the script.
 function New-RiskProject {
-    param([string]$Label, [string]$Fixture = 'psadt-4.1.8', [string[]]$Processes = @(), $Welcome = $null, [switch]$OrgUi, [switch]$NoGenerate, [scriptblock]$Edit)
+    param([string]$Label, [string]$Fixture = 'psadt-4.1.8', [string[]]$Processes = @(), $Welcome = $null, [switch]$OrgUi, [switch]$NoGenerate, [scriptblock]$Edit, [string]$AppName = 'Tool', [string[]]$MsiFileNames)
     $p = Join-Path $TMP $Label
     New-Item -ItemType Directory -Path (Join-Path $p 'SupportFiles') -Force | Out-Null
     $cfg = [ordered]@{
         SchemaVersion    = '1.0'
-        App              = [ordered]@{ Vendor = 'Contoso'; Name = 'Tool'; DisplayName = 'Tool'; Version = '1.0'; Arch = 'x64'; ScriptAuthor = 'Contoso IT' }
+        App              = [ordered]@{ Vendor = 'Contoso'; Name = $AppName; DisplayName = 'Tool'; Version = '1.0'; Arch = 'x64'; ScriptAuthor = 'Contoso IT' }
         ProcessesToClose = @($Processes)
     }
     if ($Welcome) { $cfg['OrgUi'] = [ordered]@{ SchemaVersion = '1.0'; Welcome = $Welcome } }
@@ -86,7 +88,30 @@ function New-RiskProject {
     }
     if ($Edit) { $text = & $Edit $text }
     [System.IO.File]::WriteAllText($script, $text, $bom)
+    if ($PSBoundParameters.ContainsKey('MsiFileNames')) { New-Item -ItemType Directory -Path (Join-Path $p 'Files') -Force | Out-Null; New-FileTableMsi -Path (Join-Path $p 'Files\app.msi') -FileNames $MsiFileNames }
     $p
+}
+# A real MSI database holding only a File table (WindowsInstaller COM, created in %TEMP%): what PSADT's Zero-Config reads.
+function New-FileTableMsi([string]$Path, [string[]]$FileNames) {
+    $wi = New-Object -ComObject WindowsInstaller.Installer
+    $db = $null
+    try {
+        $db = $wi.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $wi, @([string]$Path, 3))
+        $sqls = @('CREATE TABLE `File` (`File` CHAR(72) NOT NULL, `Component_` CHAR(72) NOT NULL, `FileName` CHAR(255) NOT NULL, `FileSize` LONG NOT NULL, `Sequence` SHORT NOT NULL PRIMARY KEY `File`)')
+        $n = 0
+        foreach ($fn in $FileNames) { $n++; $sqls += "INSERT INTO ``File`` (``File``, ``Component_``, ``FileName``, ``FileSize``, ``Sequence``) VALUES ('f$n', 'c1', '$fn', 1, $n)" }
+        foreach ($sql in $sqls) {
+            $v = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($sql))
+            $null = $v.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $v, $null)
+            $null = $v.GetType().InvokeMember('Close', 'InvokeMethod', $null, $v, $null)
+            [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($v)
+        }
+        $null = $db.GetType().InvokeMember('Commit', 'InvokeMethod', $null, $db, $null)
+    }
+    finally {
+        if ($db) { [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($db) }
+        [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($wi)
+    }
 }
 $welcomeOn = [ordered]@{ Enabled = $true; AllowDefer = $true; DeferTimes = 3; CheckDiskSpace = $false; PersistPrompt = $true; BlockExecution = $true; CloseProcessesCountdown = 180 }
 function Get-Welcome([hashtable]$Override) { $w = [ordered]@{}; foreach ($k in $welcomeOn.Keys) { $w[$k] = $welcomeOn[$k] }; foreach ($k in $Override.Keys) { $w[$k] = $Override[$k] }; $w }
@@ -120,6 +145,14 @@ try {
     $null = & $riskCase '... AllowDefer $false' (New-RiskProject 'orgui-nodefer' -OrgUi -Welcome (Get-Welcome @{ AllowDefer = $false })) $false 'Psadt41' 'OrgUi'
     $null = & $riskCase '... Enabled $false' (New-RiskProject 'orgui-disabled' -OrgUi -Welcome (Get-Welcome @{ Enabled = $false })) $false 'Psadt41' 'OrgUi'
     $null = & $riskCase '... no OrgUi in AppConfig' (New-RiskProject 'orgui-nodata' -OrgUi) $false 'Psadt41' 'OrgUi'
+    # Live checks OP-CONTROL, HOOK-BUILD, GOAL-CAPTURE (2026-10-26): the Notepad++ WiX package (App.Name '', ProcessesToClose
+    # []) was NOT RUN, yet PSADT 4.1.8 Zero-Config added the MSI's programs ('MSI Executable List [notepad++, GUP]') and ran
+    # silently. A Zero-Config MSI whose File table names a program is not at risk; without one, or with an App.Name, it is.
+    $r = & $riskCase '4.1 Zero-Config MSI (App.Name empty, File table: notepad++.exe, GUP.exe) + org-ui AllowDefer + no process' (New-RiskProject 'zc41-msi' -OrgUi -Welcome (Get-Welcome @{}) -AppName '' -MsiFileNames @('NOTEPA~1.EXE|notepad++.exe', 'GUP.exe', 'SciLexer.dll')) $false 'Psadt41'
+    if ($r.MsiProcessCount -eq 2 -and $r.ProcessCount -eq 0 -and $r.Reason -match 'Zero-Config MSI') { Ok 'MsiProcessCount 2 (the File table''s programs), ProcessCount 0, the Zero-Config reason' } else { Bad "zero-config fields: $($r | ConvertTo-Json -Compress)" }
+    $null = & $riskCase '... a Zero-Config MSI whose File table holds no program' (New-RiskProject 'zc41-noexe' -OrgUi -Welcome (Get-Welcome @{}) -AppName '' -MsiFileNames @('readme.txt', 'App.dll')) $true 'Psadt41' 'OrgUi'
+    $null = & $riskCase '... the same MSI with an App.Name (no Zero-Config: PSADT adds nothing)' (New-RiskProject 'zc41-named' -OrgUi -Welcome (Get-Welcome @{}) -MsiFileNames @('NOTEPA~1.EXE|notepad++.exe')) $true 'Psadt41' 'OrgUi'
+    $null = & $riskCase '... App.Name empty but no MSI in Files' (New-RiskProject 'zc41-nomsi' -OrgUi -Welcome (Get-Welcome @{}) -AppName '') $true 'Psadt41' 'OrgUi'
     $null = & $riskCase '4.1 without org-ui (template default @saiwParams, splatted) + no process' (New-RiskProject 'tpl-default') $true 'Psadt41' 'Script'
     $null = & $riskCase '... + ProcessesToClose [app]' (New-RiskProject 'tpl-default-listed' -Processes @('app')) $false 'Psadt41'
     $null = & $riskCase 'literal -CloseProcesses ... -CloseProcessesCountdown 60 (no deferral)' (New-RiskProject 'lit-plain' -Edit { param($t) Set-WelcomeCall $t $literalWelcome }) $false 'Psadt41' 'Script'

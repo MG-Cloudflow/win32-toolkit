@@ -15,7 +15,7 @@ function Write-Win32ToolkitTestOutcome {
         -LogFolder records where the run's own logs were kept (Sandbox\Logs\Runs\<run>, test campaign F2); the
         assertions are still read from the top-level log, which is this run's until the next run starts.
         -Timing and -Lane (a Hyper-V run's host measurements and VM identity, speed-up PR 1) are passed through
-        to Add-Win32ToolkitTestResult when given.
+        to Add-Win32ToolkitTestResult when given, and so is -Proof (an Update run that checked prior-install rules).
 
         Never throws — documenting a run must not fail the run. A recording failure is a warning.
     #>
@@ -54,7 +54,16 @@ function Write-Win32ToolkitTestOutcome {
         # A Hyper-V run's Timing and Lane (Invoke-Win32ToolkitHyperVRun -RunInfo); recorded when not $null.
         [hashtable]$Timing,
 
-        [hashtable]$Lane
+        [hashtable]$Lane,
+
+        # An Update run that checked prior-install rules (installer-identity PR 3): Add-Win32ToolkitTestResult -Proof.
+        # Callers pass it only when they built one, so runs without rules keep the old record shape.
+        [hashtable]$Proof,
+
+        # Host-side assertions recorded after the guest's (@{ Name; Result }), e.g. 'UpdateExitCode-PostUpdate = FAIL' when
+        # the update exited outside the success codes (live run OP-OWN). A name the guest log already holds is kept as
+        # the guest wrote it.
+        [object[]]$ExtraAssertion = @()
     )
 
     $v = if ($Verdict -eq $true) { 'Passed' } elseif ($Verdict -eq $false) { 'Failed' } else { 'Inconclusive' }
@@ -73,12 +82,16 @@ function Write-Win32ToolkitTestOutcome {
         }
         $assertions = @($seen.GetEnumerator() | ForEach-Object { @{ Name = $_.Key; Result = $_.Value } })
     }
+    foreach ($x in @($ExtraAssertion | Where-Object { $_ -is [System.Collections.IDictionary] -and $_['Name'] -and @('PASS', 'FAIL', 'SKIP') -ccontains [string]$_['Result'] })) {
+        if (@($assertions | Where-Object { [string]$_.Name -eq [string]$x['Name'] }).Count -eq 0) { $assertions += @{ Name = [string]$x['Name']; Result = [string]$x['Result'] } }
+    }
 
     $extra = @{}
     if ($PSBoundParameters.ContainsKey('Baseline') -and $null -ne $Baseline) { $extra['Baseline'] = $Baseline }
     if ($LogFolder) { $extra['LogFolder'] = $LogFolder }
     if ($PSBoundParameters.ContainsKey('Timing') -and $null -ne $Timing) { $extra['Timing'] = $Timing }
     if ($PSBoundParameters.ContainsKey('Lane') -and $null -ne $Lane) { $extra['Lane'] = $Lane }
+    if ($PSBoundParameters.ContainsKey('Proof') -and $null -ne $Proof) { $extra['Proof'] = $Proof }
     if ($Scenario -eq 'Update' -and $arpFailLine) {
         # The old version's ARP entries that survived the update (host-side parse of the guest line, L5).
         try {

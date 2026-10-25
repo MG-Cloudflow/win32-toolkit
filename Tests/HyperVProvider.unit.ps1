@@ -157,7 +157,8 @@ function Copy-Win32ToolkitProjectToGuest   { param($Session, $ProjectPath, $Gues
 function Copy-Win32ToolkitResultsFromGuest { param($Session, $GuestPath, $Destination, $GuestRoot) }
 function Remove-Win32ToolkitHyperVSession  { param($Session, $VMName, $CheckpointName, [switch]$Revert) }
 function Invoke-Win32ToolkitGuestPhase { param($Session, $Command, $Label) $script:log2 += "phase:$Label"; 0 }
-function Read-Host { param($Prompt) $script:log2 += 'pause' }
+# Read-Host returns what the operator typed: '' after Enter (live rows MSIBUSY and ASSISTED).
+function Read-Host { param($Prompt) $script:log2 += 'pause'; '' }
 $script:vmconnect = $false
 function Start-Process { param($FilePath, $ArgumentList, $ErrorAction) if ($FilePath -eq 'vmconnect.exe') { $script:vmconnect = $true } }
 
@@ -167,10 +168,20 @@ $iphases = @(
     @{ Label = 'Uninstall (GUI)'; Command = 'y'; Interactive = $true }
     @{ Label = 'CollectLogs';     Command = 'z'; IgnoreExit = $true }
 )
-Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase $iphases 6>$null | Out-Null
+$out6 = @(Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase $iphases 6>$null)
 if ($script:vmconnect) { Ok 'vmconnect opened for the interactive run' } else { Bad 'vmconnect not opened' }
 if ($script:ensureDesktop) { Ok 'interactive run requests -EnsureDesktop (login-screen safety net)' } else { Bad 'EnsureDesktop not requested for interactive run' }
 if (($script:log2 -join ' > ') -eq 'phase:Install (GUI) > pause > phase:Uninstall (GUI) > phase:CollectLogs') { Ok 'every phase runs via the SYSTEM Phase; pause blocks on the host' } else { Bad "log: $($script:log2 -join ' > ')" }
+# Live rows MSIBUSY and ASSISTED (2026-10-27): the pause's Read-Host value joined the output as ('', $true), so an incomplete
+# watched run ('', $false) read as truthy and lost its "did not complete" handling.
+if ($out6.Count -eq 1 -and $out6[0] -is [bool] -and $out6[0]) { Ok 'a run with a Pause phase returns ONE [bool] (the operator''s Enter never joins the output)' } else { Bad "output: $($out6.Count) item(s): $(@($out6 | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ')" }
+# Live row ASSISTED: every watched run opened one more console on the same VM; a console already attached is used.
+$script:vmconnect = $false
+${function:Test-Win32ToolkitVMConnectOpen} = { param($VMName, $VMId) $true }
+$script:log2 = @()
+$out6b = @(Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase $iphases 6>$null)
+if (-not $script:vmconnect -and $out6b.Count -eq 1 -and $out6b[0] -eq $true) { Ok 'a console already attached to the VM -> no second vmconnect, the run goes on' } else { Bad "second console: vmconnect=$($script:vmconnect) out=$($out6b -join ',')" }
+${function:Test-Win32ToolkitVMConnectOpen} = { param($VMName, $VMId) $false }
 Write-Host '[7] Invoke-Win32ToolkitHyperVRun warns only for an exit code outside a phase''s SuccessExitCodes' -ForegroundColor Cyan
 # Reuses the [6] doubles; only the phase runner changes: its Command carries the exit code to return.
 ${function:Invoke-Win32ToolkitGuestPhase} = { param($Session, $Command, $Label) $script:log2 += "phase:$Label@$Session"; [int]$Command }
@@ -202,6 +213,7 @@ $null = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -Phase @(
     @{ Label = 'p-unknown';     Command = '1460'; SuccessExitCodes = $ok7; ParityHint = 'Something' }
     @{ Label = 'p-exit0';       Command = '0';    SuccessExitCodes = $ok7; ParityHint = 'Dialog41' }
     @{ Label = 'p-exit5';       Command = '5';    SuccessExitCodes = $ok7; ParityHint = 'Uninstaller' }
+    @{ Label = 'p-prior';       Command = '1460'; SuccessExitCodes = $ok7; ParityHint = 'Dialog'; RunnerTimeoutMinutes = 55; PriorRemoval = $true }
 ) -WarningVariable warn7b 3>$null 6>$null
 $w7b = @($warn7b | ForEach-Object { "$_" })
 $for7 = { param($label) @($w7b | Where-Object { $_ -like "Guest phase '$label' *" }) }
@@ -228,6 +240,27 @@ foreach ($plain in 'p-nokey', 'p-unknown') {
 if (@(& $for7 'p-exit0').Count -eq 0) { Ok 'a ParityHint with exit code 0 -> no warning' } else { Bad "exit0: $((& $for7 'p-exit0') -join ' | ')" }
 $e5 = @(& $for7 'p-exit5')
 if ($e5.Count -eq 1 -and $e5[0] -eq "Guest phase 'p-exit5' exited with code 5.") { Ok 'a ParityHint with exit code 5 -> the plain line (the hint is for 1460 only)' } else { Bad "exit5: $($e5 -join ' | ')" }
+# Live row TIMEOUT (2026-10-27): a phase of a package with Enforce prior-install rules (55-minute limit) names the removal.
+$pri = @(& $for7 'p-prior')
+if ($pri.Count -eq 1 -and $pri[0] -match '55-minute limit' -and $pri[0] -match 'removes a prior install before it installs' -and $pri[0] -match '69108' -and $pri[0] -match 'watched') { Ok '1460 + PriorRemoval: the 55-minute limit, the prior''s uninstaller (up to 30 minutes, 69108) after the dialog text' } else { Bad "PriorRemoval: $($pri -join ' | ')" }
+# Live rows TIMEOUT, RC2-BLOCK: a remove-prior exit code was named only by number in the warning and the parity note.
+# ExitMeaning (host constants per code) names what it means; a code the map does not hold keeps the plain line.
+$warn7c = @()
+$notes7c = [System.Collections.Generic.List[string]]::new()
+$meaning7 = @{ 69101 = 'a Block prior-install rule refused the install'; 69108 = "the prior install's uninstaller failed, or ran longer than 30 minutes" }
+$null = Invoke-Win32ToolkitHyperVRun -ProjectPath 'C:\proj' -ParityExitNote $notes7c -Phase @(
+    @{ Label = 'm-parity'; Command = '69108'; SuccessExitCodes = $ok7; ParityHint = 'Dialog'; ExitMeaning = $meaning7 }
+    @{ Label = 'm-gui';    Command = '69101'; SuccessExitCodes = $ok7; Interactive = $true; ExitMeaning = $meaning7 }
+    @{ Label = 'm-other';  Command = '60001'; SuccessExitCodes = $ok7; ParityHint = 'Dialog'; ExitMeaning = $meaning7 }
+) -WarningVariable warn7c 3>$null 6>$null
+$w7c = @($warn7c | ForEach-Object { "$_" })
+if ($w7c -contains "Guest phase 'm-parity' exited with code 69108: the prior install's uninstaller failed, or ran longer than 30 minutes." -and
+    $w7c -contains "Guest phase 'm-gui' exited with code 69101: a Block prior-install rule refused the install." -and $w7c -contains "Guest phase 'm-other' exited with code 60001.") {
+    Ok 'ExitMeaning: the warning names what a mapped code means (parity and watched phases); another code keeps the plain line'
+} else { Bad "ExitMeaning warnings: $($w7c -join ' | ')" }
+if (@($notes7c) -contains "Intune-parity phase 'm-parity' exited with code 69108: the prior install's uninstaller failed, or ran longer than 30 minutes." -and @($notes7c) -contains "Intune-parity phase 'm-other' exited with code 60001." -and $notes7c.Count -eq 2) {
+    Ok 'ExitMeaning: the Intune-parity note carries the meaning too (a watched phase writes no note)'
+} else { Bad "ExitMeaning notes: $($notes7c -join ' | ')" }
 Remove-Item Function:\New-Win32ToolkitHyperVSession, Function:\Copy-Win32ToolkitProjectToGuest, Function:\Copy-Win32ToolkitResultsFromGuest, Function:\Remove-Win32ToolkitHyperVSession, Function:\Invoke-Win32ToolkitGuestPhase, Function:\Read-Host, Function:\Start-Process, Function:\Get-Win32ToolkitConfigValue, Function:\Get-Win32ToolkitGuestCredential
 
 Write-Host '[8] the scheduled-task primitive is SYSTEM-only (dead Interactive principal removed, GAP1-01)' -ForegroundColor Cyan

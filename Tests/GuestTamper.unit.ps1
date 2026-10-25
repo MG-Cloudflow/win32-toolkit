@@ -14,6 +14,8 @@
           never follows a link: Documentation\ replaced by a junction, Documentation\GuestTamper.json planted as a
           symbolic link to a host file or as a dangling link -> W32T.GuestTamper, the marker a real file in the project,
           nothing outside it written; a marker that cannot be written -> one warning, W32T.GuestTamper still thrown.
+      The scenario part (the Update and InstallUninstall runs on Hyper-V and Windows Sandbox, the watched-Sandbox refusal)
+      is in Tests\UpdateProofRun.unit.ps1 [4].
 
     Fixtures under %TEMP%. Run:  pwsh -File Tests\GuestTamper.unit.ps1
 #>

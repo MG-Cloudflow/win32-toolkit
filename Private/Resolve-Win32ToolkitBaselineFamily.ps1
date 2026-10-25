@@ -8,8 +8,9 @@ function Resolve-Win32ToolkitBaselineFamily {
 
           Packaged   the packaged installer type (its pin value), family and the packaged manifest's explicit
                      scope (a soft preference, L19). No fallback.
-          Auto       (1) the first AppConfig.PriorInstalls.Entries item with Mode Enforce and UninstallerType
-                         nullsoft or inno (Origin Entry; no project has such entries before PR 3);
+          Auto       (1) the first AppConfig.PriorInstalls.Entries item, in Id order (ordinal), with Mode Enforce and
+                         UninstallerType nullsoft or inno - with -EntryId, the first of THOSE entries (one proof group,
+                         installer-identity PR 3, L27) - (Origin Entry);
                      (2) else the highest-precedence testable sibling family from Documentation\IdentityDelta.json
                          (Origin Sibling, with the packaged type and scope as the pinned fallback, L2);
                      (3) else the packaged leg.
@@ -38,6 +39,9 @@ function Resolve-Win32ToolkitBaselineFamily {
         Auto, Both, Packaged or an installer type (msi, wix, burn, nullsoft, inno, exe, msix).
     .PARAMETER NoProbe
         Never write Documentation\IdentityDelta.json (no sibling probe request).
+    .PARAMETER EntryId
+        Auto only: the Enforce prior-install entries (one proof group) the Update run checks; step (1) uses the first of
+        them instead of the first Enforce entry of the project.
     .OUTPUTS
         [pscustomobject[]] the legs (at least one).
     .EXAMPLE
@@ -54,7 +58,9 @@ function Resolve-Win32ToolkitBaselineFamily {
         [ValidateSet('Auto', 'Both', 'Packaged', 'msi', 'wix', 'burn', 'nullsoft', 'inno', 'exe', 'msix')]
         [string]$Mode,
 
-        [switch]$NoProbe
+        [switch]$NoProbe,
+
+        [string[]]$EntryId
     )
 
     $prop = { param($Object, [string]$Name) if ($null -ne $Object -and $Object.PSObject.Properties[$Name]) { $Object.$Name } else { $null } }
@@ -188,7 +194,7 @@ function Resolve-Win32ToolkitBaselineFamily {
             return $legs.ToArray()
         }
         'Auto' {
-            # (1) A PriorInstalls Enforce entry of a vendor EXE technology (dormant until PR 3 writes entries).
+            # (1) A PriorInstalls Enforce entry of a vendor EXE technology (installer-identity PR 3).
             $cfg = $null
             try {
                 $cfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
@@ -196,7 +202,16 @@ function Resolve-Win32ToolkitBaselineFamily {
                 if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
                 Write-Verbose "Resolve-Win32ToolkitBaselineFamily: AppConfig.json is unreadable: $($_.Exception.Message)"
             }
-            foreach ($e in @(& $prop (& $prop $cfg 'PriorInstalls') 'Entries')) {
+            # In Id order (ordinal): the first proof group; with -EntryId, the group of those entries (L27).
+            $priorEntries = @(@(& $prop (& $prop $cfg 'PriorInstalls') 'Entries') | Where-Object { $null -ne $_ })
+            if ($PSBoundParameters.ContainsKey('EntryId')) { $priorEntries = @($priorEntries | Where-Object { @($EntryId) -ccontains [string](& $prop $_ 'Id') }) }
+            if ($priorEntries.Count -gt 1) {
+                $ids = [string[]]@($priorEntries | ForEach-Object { [string](& $prop $_ 'Id') })
+                $order = [int[]]@(0..($priorEntries.Count - 1))
+                [Array]::Sort($ids, $order, [System.StringComparer]::Ordinal)
+                $priorEntries = @($order | ForEach-Object { $priorEntries[$_] })
+            }
+            foreach ($e in $priorEntries) {
                 $uType = & $lower (& $prop $e 'UninstallerType')
                 if ([string](& $prop $e 'Mode') -eq 'Enforce' -and $uType -in @('nullsoft', 'inno')) {
                     return & $newLeg $uType '' 'Entry' '' '' $untestableNote

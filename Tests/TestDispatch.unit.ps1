@@ -241,7 +241,10 @@ $labels = @($script:hvPhase.Label)
 $cmds   = @($script:hvPhase.Command) -join ' | '
 if ($script:hvCalled -eq 1) { Ok 'Update routed to the Hyper-V provider' } else { Bad "hvCalled=$script:hvCalled" }
 if ($cmds -match 'PreBaseline' -and $cmds -match 'PreUpdate' -and $cmds -match 'PostUpdate') { Ok 'PreBaseline/PreUpdate/PostUpdate assertions present' } else { Bad "cmds=$cmds" }
-if ((Pauses) -eq 1) { Ok 'host Pause replaces the in-guest countdown' } else { Bad "pauses=$(Pauses)" }
+if ((Pauses) -eq 2) { Ok 'host Pause replaces the in-guest countdown, and one more after the update' } else { Bad "pauses=$(Pauses)" }
+# Live row GUP (2026-10-27): the watched Update had no pause after the update, so the updated app could not be checked before
+# the VM was restored. The second pause comes after the post-update assertions (what the operator does is not judged).
+if (($labels -join '|') -ceq 'Assert: PreBaseline|Install baseline v1.0|Assert: PreUpdate|Verify the OLD install in the VM window|Update (PSADT GUI)|Assert: PostUpdate|Check the updated app in the VM window|CollectLogs') { Ok 'watched Update: pause, update, post-update assertions, pause, logs' } else { Bad "watched labels: $($labels -join '|')" }
 if ($script:countdownMade -eq 0) { Ok 'Countdown.ps1 NOT generated for HyperV' } else { Bad 'Countdown.ps1 was generated' }
 if ($script:hvBaseline -eq $base) { Ok 'baseline project forwarded (-> C:\PSADTOld)' } else { Bad "baseline=$script:hvBaseline" }
 if ($labels -contains 'CollectLogs' -and $script:hvOutput -contains 'Sandbox\Logs\*') { Ok 'logs collected + copied back' } else { Bad "labels=$($labels -join ',')" }
@@ -283,7 +286,7 @@ $script:backend = 'HyperV'; $script:procs = @(); $script:depCount = 0
 $script:testMode = 'Unattended'; $script:preCalls = @(); $script:recorded = $null
 Run @{ ProjectPath = $proj; Scenario = 'Update'; BaselineProjectPath = $base; TestMode = 'Interactive' }
 $lbl7b = @($script:hvPhase.Label)
-if ($script:hvCalled -eq 1 -and (Pauses) -eq 1 -and $lbl7b -contains 'Update (PSADT GUI)' -and $lbl7b -notcontains 'Update (Intune parity)') { Ok 'HyperVTestMode=Unattended + -TestMode Interactive: the host pause and the GUI update, no parity update' } else { Bad "labels=$($lbl7b -join ',') pauses=$(Pauses) hv=$script:hvCalled" }
+if ($script:hvCalled -eq 1 -and (Pauses) -eq 2 -and $lbl7b -contains 'Update (PSADT GUI)' -and $lbl7b -notcontains 'Update (Intune parity)') { Ok 'HyperVTestMode=Unattended + -TestMode Interactive: the host pause and the GUI update, no parity update' } else { Bad "labels=$($lbl7b -join ',') pauses=$(Pauses) hv=$script:hvCalled" }
 if (@($script:preCalls).Count -eq 0) { Ok 'a watched Update asks no Intune-parity pre-check' } else { Bad "pre-check calls: $($script:preCalls -join ';')" }
 if ($script:recorded -and $script:recorded.Scenario -eq 'Update' -and $script:recorded.Mode -eq 'Interactive') { Ok 'the Update record says Mode Interactive' } else { Bad "recorded: $($script:recorded.Scenario)/$($script:recorded.Mode)" }
 $script:testMode = 'Interactive'; $script:preCalls = @(); $script:recorded = $null
@@ -844,7 +847,7 @@ ${function:Wait-Win32ToolkitUpdateAssertion_Real19} = ${function:Wait-Win32Toolk
 $script:wait19 = [System.Collections.Generic.List[bool]]::new()
 # ...behind a proxy that records whether -SinglePass was bound.
 function Wait-Win32ToolkitUpdateAssertion {
-    [CmdletBinding()] param([string]$ProjectPath, [string]$Backend, [double]$TimeoutMinutes, [int]$PollSeconds, [string]$LogFileName, [string]$Label, [switch]$SinglePass)
+    [CmdletBinding()] param([string]$ProjectPath, [string]$Backend, [double]$TimeoutMinutes, [int]$PollSeconds, [string]$LogFileName, [string]$Label, [switch]$SinglePass, [string[]]$RequiredAssertion, [scriptblock]$HostCheck)
     $script:wait19.Add([bool]$SinglePass)
     Wait-Win32ToolkitUpdateAssertion_Real19 @PSBoundParameters
 }
@@ -888,6 +891,57 @@ foreach ($case in @(
         Ok "$($case.Tag): verdict $(if ($null -eq $v19) { '$null (Inconclusive)' } else { "`$$v19" }), recorded the same$(if ($case.Downgrade) { ', one downgrade warning' })$(if ($case.Tech) { ', the technology-switch check ran' })"
     } else { Bad "$($case.Tag): verdict=$v19 recorded=$($script:recorded.Verdict) downgrade=$down19 tech=$($script:techSwitch19) hv=$($script:hvCalled)" }
     if (($script:wait19 -join ',') -eq 'True' -and $script:sleeps19 -eq 0 -and $sw19.Elapsed.TotalSeconds -lt 5) { Ok "$($case.Tag): the waiter read the log once (-SinglePass, 0 sleeps, $([int]$sw19.Elapsed.TotalMilliseconds) ms)" } else { Bad "$($case.Tag): waits=$($script:wait19 -join ',') sleeps=$($script:sleeps19) s=$($sw19.Elapsed.TotalSeconds)" }
+}
+# Live run OP-OWN (2026-10-27): the Intune-parity update refused with 69106 (installed nothing), but a same-version baseline
+# already satisfied every post-update assertion and the test PASSED. An update that exited outside the success codes is
+# Failed, with the code's meaning in the Notes and a host assertion UpdateExitCode-PostUpdate = FAIL in the record.
+$updAll19 = @('[2026-10-27 01:20:00Z] ASSERT Requirement-PreUpdate = PASS', '[2026-10-27 01:20:01Z] ASSERT TattooBaseline-PreUpdate = PASS', '[2026-10-27 01:20:02Z] ASSERT Requirement-PostUpdate = PASS',
+    '[2026-10-27 01:20:03Z] ASSERT OldArpGone-PostUpdate = PASS', '[2026-10-27 01:20:04Z] ASSERT Tattoo-PostUpdate = PASS', '[2026-10-27 01:20:05Z] ASSERT NewAppIntact-PostUpdate = PASS', '[2026-10-27 01:20:06Z] RESULT COMPLETE')
+$savedOutcome19 = ${function:Write-Win32ToolkitTestOutcome}
+function Write-Win32ToolkitTestOutcome { param($ProjectPath, $Scenario, $Backend, $Mode, $Verdict, $LogFileName, $Notes, $Baseline, $LogFolder, $Timing, $Lane, [object[]]$ExtraAssertion)
+    $script:recorded = @{ Scenario = $Scenario; Verdict = $Verdict; Notes = $Notes; Extra = @($ExtraAssertion) } }
+$savedHv19 = ${function:Invoke-Win32ToolkitHyperVRun}
+function Invoke-Win32ToolkitHyperVRun {
+    param($ProjectPath, $Phase, $Output, $BaselineProjectPath, [System.Collections.Generic.List[string]]$ParityExitNote, [hashtable]$RunInfo)
+    $script:hvCalled++
+    $ld = Join-Path $ProjectPath 'Sandbox\Logs'
+    New-Item -ItemType Directory -Path $ld -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $ld 'UpdateAssertions.log') -Value $updAll19
+    Add-Content -LiteralPath (Join-Path $ld 'PsadtExitCodes.log') -Value '[2026-10-27 01:19:00Z] baseline Install parent=x64-direct exit=0 result=Success', "[2026-10-27 01:19:30Z] update Install parent=x86-cmd exit=$($script:updExit19) result=Failed"
+    $true
+}
+try {
+    foreach ($case in @(
+            @{ Exit = 69106; Want = $false; Meaning = "The update exited with code 69106: this package's own product is already registered next to the prior install." }
+            @{ Exit = 1618; Want = $false; Meaning = 'The update exited with code 1618: Intune retries it later' }
+            @{ Exit = 60001; Want = $false; Meaning = 'The update exited with code 60001.' }
+            @{ Exit = 3010; Want = $true; Meaning = '' }
+            @{ Exit = 0; Want = $true; Meaning = '' })) {
+        $script:updExit19 = $case.Exit
+        $script:wait19.Clear(); $script:techSwitch19 = 0; $script:recorded = $null; $script:hvCalled = 0
+        $w19 = $null; $v19 = 'not-set'; $info19 = @()
+        try { $v19 = Test-Win32ToolkitProject -ProjectPath $proj -Scenario Update -BaselineProjectPath $base19 -Unattended -WarningVariable w19 -InformationVariable info19 3>$null 6>$null } catch { Bad "update exit $($case.Exit): threw $($_.Exception.Message)" }
+        $ex19 = @($script:recorded.Extra | Where-Object { $_ -and $_['Name'] -eq 'UpdateExitCode-PostUpdate' -and $_['Result'] -eq 'FAIL' })
+        # Live rows OP-BLOCK, OP-NEWER, OP-OWN, KILL-*, APP-RUNNING, RC2-BLOCK: the waiter counts the host assertion (listed
+        # first, its sentence under the headline). The Hyper-V provider warns for the phase itself (shadowed here), so the
+        # host adds no second warning; the sentence is in the Notes once.
+        $infoText = @($info19 | ForEach-Object { "$($_.MessageData)" })
+        $head19 = @($infoText | Where-Object { $_ -match '^✗ UPDATE TEST FAILED — 1 assertion\(s\) failed: UpdateExitCode-PostUpdate$' }).Count
+        $under19 = @($infoText | Where-Object { $_.Trim().StartsWith($case.Meaning, [StringComparison]::Ordinal) }).Count
+        $notes19 = [regex]::Matches("$($script:recorded.Notes)", 'The update exited with code').Count
+        if ($case.Want -eq $false -and $v19 -eq $false -and $script:recorded.Verdict -eq $false -and $ex19.Count -eq 1 -and "$($script:recorded.Notes)".Contains($case.Meaning) -and $notes19 -eq 1 -and
+            $head19 -eq 1 -and $under19 -eq 1 -and @($w19 | Where-Object { "$_" -match 'although its assertions' }).Count -eq 0 -and $script:techSwitch19 -eq 1) {
+            Ok "update exit $($case.Exit) with an all-PASS complete log -> Failed: the headline counts UpdateExitCode-PostUpdate with the meaning under it, the meaning once in the Notes, the FAIL recorded"
+        }
+        elseif ($case.Want -eq $true -and $v19 -eq $true -and $script:recorded.Verdict -eq $true -and $ex19.Count -eq 0 -and -not "$($script:recorded.Notes)".Contains('The update exited')) {
+            Ok "update exit $($case.Exit) (a success code) -> Passed, no extra assertion"
+        }
+        else { Bad "update exit $($case.Exit): verdict=$v19 recorded=$($script:recorded.Verdict) notes='$($script:recorded.Notes)' extra=$($ex19.Count) head=$head19 under=$under19 tech=$($script:techSwitch19) warnings=$(@($w19) -join ' | ') info=$($infoText -join ' | ')" }
+    }
+}
+finally {
+    ${function:Write-Win32ToolkitTestOutcome} = $savedOutcome19
+    ${function:Invoke-Win32ToolkitHyperVRun} = $savedHv19
 }
 # The D24 premise ("cleared before the run, so any log here is this run's") holds only when the clearing worked. A previous
 # run's InstallAssertions.log the delete could not remove (a log viewer holding it open) goes into the guest with the project

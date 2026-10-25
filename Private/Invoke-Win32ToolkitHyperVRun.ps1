@@ -37,7 +37,10 @@ function Invoke-Win32ToolkitHyperVRun {
         'Uninstaller' (the uninstaller or a child process it waits for; it also explains exit code 69113:
         the package stopped the app's EXE uninstaller at the device's 30-minute limit). The warning then
         adds that cause and what to do; without the key, or with another value, it names the exit code
-        only.
+        only. A phase with PriorRemoval = $true (installer-identity PR 3: a package with Enforce prior-install rules,
+        whose remove-prior step may run the prior's uninstaller for up to 30 minutes) adds that to the 1460 text. A phase
+        with ExitMeaning (a hashtable [int] code -> text, host constants: the remove-prior codes of a package with
+        prior-install rules) names what such a code means in its warning and in its ParityExitNote sentence.
     .PARAMETER Output
         Project-relative globs to copy back from the guest after the phases (default the capture JSON +
         Sandbox\Logs).
@@ -50,9 +53,10 @@ function Invoke-Win32ToolkitHyperVRun {
     .PARAMETER ParityExitNote
         Optional list the run adds one sentence to for each Intune-parity phase (a phase with a ParityHint) that
         exited with a code outside its SuccessExitCodes, for the Notes of the test's TestResults.json record:
-        the phase label, the exit code and, for 1460 (the test's own limit for the phase was reached) and for
+        the phase label, the exit code and, for 1460 (the test's own limit for the phase was reached), for
         69113 with ParityHint 'Uninstaller' (the app's own uninstaller was still running at the device's
-        30-minute limit and was stopped), what it means; any other code is named only. A phase that did not
+        30-minute limit and was stopped) and for a code the phase's ExitMeaning names, what it means; any other
+        code is named only. A phase that did not
         finish (267009 / 267011) did not exit and adds nothing. Host constants and the exit code only.
     .PARAMETER RunInfo
         Optional hashtable the run fills with Timing (seconds per step: open, copy-in, each phase that ran,
@@ -310,9 +314,16 @@ function Invoke-Win32ToolkitHyperVRun {
         }
 
         # If any phase is interactive, open the VM console so the operator can watch the PSADT GUI.
+        # A console already attached to this VM (an earlier watched run's, which survives the restore) is used as it is:
+        # every watched run used to open one more (live row ASSISTED: two consoles on the same VM at the end).
         if ($needsDesktop) {
-            Write-Verbose 'Opening the VM console (vmconnect) for interactive GUI testing...'
-            Start-Process -FilePath 'vmconnect.exe' -ArgumentList 'localhost', $VMName -ErrorAction SilentlyContinue
+            if (Test-Win32ToolkitVMConnectOpen -VMName $VMName -VMId $(if ($lane) { [string]$lane.VMId } else { '' })) {
+                Write-Host "A console of '$VMName' is already open: watch the run there." -ForegroundColor Gray
+            }
+            else {
+                Write-Verbose 'Opening the VM console (vmconnect) for interactive GUI testing...'
+                Start-Process -FilePath 'vmconnect.exe' -ArgumentList 'localhost', $VMName -ErrorAction SilentlyContinue
+            }
         }
 
         # A phase that did not finish (still running at its timeout, or never started) ends the run: the
@@ -327,7 +338,9 @@ function Invoke-Win32ToolkitHyperVRun {
                 continue
             }
             if ($ph.Pause) {
-                Read-Host "  $($ph.Label) — press Enter to continue"
+                # Assigned: Read-Host returns what the operator typed ('' for Enter), which must never join the [bool] output
+                # (live rows MSIBUSY and ASSISTED: ('', $true) made '-not $ok' false for an incomplete watched run).
+                $null = Read-Host "  $($ph.Label) — press Enter to continue"
                 continue
             }
             if ($ph.DepPhase -and $skipDepPhases) {
@@ -385,16 +398,27 @@ function Invoke-Win32ToolkitHyperVRun {
                         }
                     }
                 }
+                # A package with Enforce prior-install rules removes the prior first (installer-identity PR 3, live row TIMEOUT):
+                # its uninstaller may run for up to 30 minutes of the limit (on a device it is then stopped with 69108).
+                if ($exit -eq 1460 -and $ph.PriorRemoval) {
+                    $hint += " This package removes a prior install before it installs: that uninstaller may run for up to 30 minutes (a device then stops it with exit code 69108); the PSADT log under Sandbox\Logs names it."
+                }
+                # What another code means, when the caller's phase says so (ExitMeaning: host constants per code, e.g. the
+                # remove-prior codes 69101-69112 and 1618 of a package with prior-install rules; live rows TIMEOUT, RC2-BLOCK).
+                $codeText = ''
+                if ($ph.ExitMeaning -is [System.Collections.IDictionary] -and $ph.ExitMeaning.Contains([int]$exit)) { $codeText = [string]$ph.ExitMeaning[[int]$exit] }
                 if ($hint) { Write-Warning ("Guest phase '$($ph.Label)' exited with code 1460: the guest runner stopped the package at its $runnerLimit-minute limit." + $hint) }
                 elseif ($exit -eq 69113 -and [string]$ph.ParityHint -eq 'Uninstaller') {
                     Write-Warning "Guest phase '$($ph.Label)' exited with code 69113: the package stopped the app's EXE uninstaller at the device's 30-minute limit, as a device would. The detection tattoo stays, so Intune would keep reporting the app as installed. The PSADT log under Sandbox\Logs names the uninstaller."
                 }
+                elseif ($codeText) { Write-Warning "Guest phase '$($ph.Label)' exited with code ${exit}: $codeText." }
                 else { Write-Warning "Guest phase '$($ph.Label)' exited with code $exit." }
                 # The test record says how an Intune-parity phase ended (R6 #3): a 69113 (the device's limit, as on a device)
                 # and a 1460 (the test's own limit) otherwise look alike outside the PSADT logs. Constant texts.
                 if ($null -ne $ParityExitNote -and -not [string]::IsNullOrEmpty([string]$ph.ParityHint)) {
                     $meaning = if ($exit -eq 1460) { ": the test's own $runnerLimit-minute limit for this phase was reached and the package was stopped." }
                                elseif ($exit -eq 69113 -and [string]$ph.ParityHint -eq 'Uninstaller') { ": the app's own uninstaller was still running at the device's 30-minute limit and was stopped." }
+                               elseif ($codeText) { ": $codeText." }
                                else { '.' }
                     $ParityExitNote.Add("Intune-parity phase '$($ph.Label)' exited with code $exit$meaning")
                 }

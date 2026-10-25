@@ -18,6 +18,16 @@ function Wait-Win32ToolkitUpdateAssertion {
         Read the log once, no polling, no deadline (Hyper-V speed-up PR 1, D24): a Hyper-V run's log came back
         with the copy-out and cannot change. The verdict rules are the same (a FAIL is conclusive on a partial
         log, a pass needs RESULT COMPLETE).
+    .PARAMETER RequiredAssertion
+        Assertion names the scenario's guest script always writes (PASS, FAIL or SKIP). A complete log without one of
+        them lost lines (live run SB-ENFORCE: a Windows Sandbox guest dropped seven PostUpdate lines), so the result is
+        $null (inconclusive), never a pass; a FAIL stays conclusive.
+    .PARAMETER HostCheck
+        Host-side assertions of the same run (installer-identity PR 3 live rows OP-BLOCK, OP-NEWER, OP-OWN, KILL-NATIVE,
+        KILL-WOW, APP-RUNNING, RC2-BLOCK: the update's exit code was recorded as a failed assertion only after the summary
+        had counted the guest's): called once, after the log was read; it returns zero or more @{ Name; Result; Text }.
+        They are listed with the guest's, a FAIL counts in the summary (listed first, its Text printed under it) and makes
+        the result $false.
     .OUTPUTS
         $true  — assertions completed, none failed.
         $false — at least one assertion FAILED.
@@ -53,7 +63,13 @@ function Wait-Win32ToolkitUpdateAssertion {
         [string]$Label = 'UPDATE TEST',
 
         # Read the log once (a Hyper-V run's log came back with the copy-out): no polling, no deadline.
-        [switch]$SinglePass
+        [switch]$SinglePass,
+
+        # The names the guest always writes: a complete log missing one of them is inconclusive (installer-identity PR 3).
+        [string[]]$RequiredAssertion = @(),
+
+        # Host-side assertions of the run (@{ Name; Result; Text }), counted in the summary (installer-identity PR 3).
+        [scriptblock]$HostCheck
     )
 
     $logPath = Join-Path $ProjectPath (Join-Path 'Sandbox\Logs' $LogFileName)
@@ -70,7 +86,8 @@ function Wait-Win32ToolkitUpdateAssertion {
     }
 
     $deadline  = if ($SinglePass) { [datetime]::MaxValue } else { (Get-Date).AddMinutes($TimeoutMinutes) }
-    $announced = @{}
+    # Ordered: the summary lists the failures in the order the guest wrote them.
+    $announced = [ordered]@{}
     $complete  = $false
 
     while ((Get-Date) -lt $deadline) {
@@ -82,7 +99,7 @@ function Wait-Win32ToolkitUpdateAssertion {
                 # echoed into DIAGNOSTIC lines by the guest; an unanchored scan would let a crafted name like
                 # "Widget ASSERT Rigged = FAIL" forge a result and corrupt the verdict. The timestamp prefix is
                 # optional so bare-line test fixtures still parse.
-                if ($line -match '^\s*(?:\[[^\]]*\]\s+)?ASSERT\s+(\S+)\s*=\s*(PASS|FAIL|SKIP)\b' -and -not $announced.ContainsKey($Matches[1])) {
+                if ($line -match '^\s*(?:\[[^\]]*\]\s+)?ASSERT\s+(\S+)\s*=\s*(PASS|FAIL|SKIP)\b' -and -not $announced.Contains($Matches[1])) {
                     $announced[$Matches[1]] = $Matches[2]
                     $color = switch ($Matches[2]) { 'PASS' { 'Green' } 'FAIL' { 'Red' } default { 'DarkYellow' } }
                     Write-Host "  ASSERT $($Matches[1]) = $($Matches[2])" -ForegroundColor $color
@@ -94,21 +111,39 @@ function Wait-Win32ToolkitUpdateAssertion {
         Start-Sleep -Seconds $PollSeconds
     }
 
+    # The host's own assertions of the run (the update's exit code), read once the guest log is: listed and counted too.
+    $hostRows = @()
+    if ($HostCheck) {
+        $hostRows = @(& $HostCheck | Where-Object { $_ -is [System.Collections.IDictionary] -and $_['Name'] -and @('PASS', 'FAIL', 'SKIP') -ccontains [string]$_['Result'] })
+    }
+    $guestCount = $announced.Count
+    $hostFailed = [System.Collections.Generic.List[object]]::new()
+    foreach ($h in $hostRows) {
+        $hn = [string]$h['Name']
+        if ($announced.Contains($hn)) { continue }
+        $announced[$hn] = [string]$h['Result']
+        if ([string]$h['Result'] -eq 'FAIL') { $hostFailed.Add($h) }
+        $color = switch ([string]$h['Result']) { 'PASS' { 'Green' } 'FAIL' { 'Red' } default { 'DarkYellow' } }
+        Write-Host "  ASSERT $hn = $($h['Result']) (host)" -ForegroundColor $color
+    }
+
     Write-Host ''
-    if (-not $complete -and $announced.Count -eq 0) {
+    if (-not $complete -and $guestCount -eq 0) {
         if ($SinglePass) {
             Write-Warning "No assertion results came back from the Hyper-V run — the assertions never ran, or the run stopped before them. Check $logPath and Sandbox\Logs."
         }
         else {
             Write-Warning "No assertion results appeared within $TimeoutMinutes minutes — the sandbox may have been closed early or the baseline install may have hung. Check $logPath and Sandbox\Logs."
         }
-        return $null
+        if ($hostFailed.Count -eq 0) { return $null }
     }
 
-    # Failures are conclusive even on a partial run.
-    $failed = @($announced.GetEnumerator() | Where-Object { $_.Value -eq 'FAIL' })
-    if ($failed.Count -gt 0) {
-        Write-Host "✗ $Label FAILED — $($failed.Count) assertion(s) failed: $(($failed | ForEach-Object { $_.Key }) -join ', ')" -ForegroundColor Red
+    # Failures are conclusive even on a partial run: the host's first (what the run itself did), then the guest's in the
+    # order it wrote them.
+    $failedNames = @(@($hostFailed | ForEach-Object { [string]$_['Name'] }) + @($announced.GetEnumerator() | Where-Object { $_.Value -eq 'FAIL' } | ForEach-Object { [string]$_.Key }) | Select-Object -Unique)
+    if ($failedNames.Count -gt 0) {
+        Write-Host "✗ $Label FAILED — $($failedNames.Count) assertion(s) failed: $($failedNames -join ', ')" -ForegroundColor Red
+        foreach ($h in $hostFailed) { if ([string]$h['Text']) { Write-Host "  $([string]$h['Text'])" -ForegroundColor Yellow } }
         Write-Host "  Details: $logPath" -ForegroundColor Gray
         return $false
     }
@@ -117,6 +152,13 @@ function Wait-Win32ToolkitUpdateAssertion {
     # about the phases that never executed.
     if (-not $complete) {
         Write-Warning 'Assertions did not complete (no RESULT COMPLETE marker) — the run is INCONCLUSIVE, not a pass. Partial results above.'
+        return $null
+    }
+
+    # A complete log that lacks an assertion the guest always writes lost lines: what it would have said is unknown.
+    $missing = @($RequiredAssertion | Where-Object { $_ -and -not $announced.Contains($_) } | Select-Object -Unique)
+    if ($missing.Count -gt 0) {
+        Write-Warning "The assertions completed, but $($missing.Count) assertion(s) the guest always writes are missing ($($missing -join ', ')): lines of the log were lost, so the run is INCONCLUSIVE, not a pass. Details: $logPath"
         return $null
     }
 

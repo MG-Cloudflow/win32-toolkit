@@ -9,8 +9,8 @@ Tests a PSADT project in a disposable guest: Windows Sandbox or the Hyper-V test
 Test-Win32ToolkitProject [[-ProjectPath] <String>] [[-BasePath] <String>] [[-Scenario] <String>]
  [[-VersionsBack] <Int32>] [[-SpecificVersion] <String>] [-SkipRequirementCheck]
  [[-BaselineProjectPath] <String>] [[-BaselineProject] <String>] [[-BaselineInstallerType] <String>]
- [[-Backend] <String>] [-Unattended] [[-TestMode] <String>] [-ProgressAction <ActionPreference>]
- [<CommonParameters>]
+ [[-Backend] <String>] [-Unattended] [[-TestMode] <String>] [[-ProofEntryId] <String[]>]
+ [-ProgressAction <ActionPreference>] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -292,6 +292,8 @@ The resolved technology is printed as 'Baseline technology : ...' before the ver
 - Auto (default): the other installer technology winget ships for this app, when there is one (read
   from Documentation\IdentityDelta.json, written on first use), so an MSI package is tested over the
   vendor EXE install that devices may already have; otherwise the packaged one.
+A project with Enforce
+  prior-install rules uses the technology and registry view of the proof group the run checks (-ProofEntryId).
   When the chosen version does not ship that technology, the run falls back to the packaged one with a
   warning and records UsedFallback (such a run cannot show a technology switch).
 - Both: one Update run per technology (the packaged one, then each other one winget ships) at the same
@@ -396,6 +398,40 @@ Aliases:
 
 Required: False
 Position: 10
+Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -ProofEntryId
+Update scenario only: the Enforce prior-install entries (AppConfig PriorInstalls, see Set-Win32ToolkitPriorInstall) this
+run proves.
+They must form ONE proof group: the same UninstallerType and registry View (or, for entries from a sibling
+capture, the same floor capture); anything else, also on a project without prior-install rules, is refused before
+anything runs.
+Without it, a project with Enforce entries checks its first group (in Id order).
+Unless you choose the
+old version's technology (-BaselineInstallerType \<type\>, Packaged or Both) or a baseline project, the old version is
+pinned to the group's uninstaller technology and to an architecture that writes the group's registry view (x86 for a
+Wow6432 entry, a 64-bit installer for a Native one); -SpecificVersion and -VersionsBack choose only its version.
+With
+-BaselineInstallerType \<type\> or Packaged, the run checks the group of that technology whose registry view the old
+version writes (the packaged installer's architecture: x86 writes the 32-bit view, x64 the 64-bit one).
+The run asserts PriorPresent-PreUpdate.\<id\> (the deploy script plans
+the removal), PriorAbsent-PostUpdate.\<id\> and NewAppIntact-PostUpdate, and asserts the other entries absent; the record
+gets a Proof (what was tested: the hashes of the rules, the deploy script, Files\ and SupportFiles\, the baseline
+installer and the catalog version).
+Only a Hyper-V Unattended pass with the requirement checked proves an Enforce rule.
+A project with prior-install rules (or sibling-capture records) is never tested in a watched Windows Sandbox
+(W32T.PriorInstallRefused), and a run that changed a project file outside Sandbox\ stops with W32T.GuestTamper.
+
+```yaml
+Type: String[]
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: 11
 Default value: None
 Accept pipeline input: False
 Accept wildcard characters: False

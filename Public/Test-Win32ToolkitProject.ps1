@@ -88,7 +88,8 @@ function Test-Win32ToolkitProject {
     The resolved technology is printed as 'Baseline technology : ...' before the version is picked.
     - Auto (default): the other installer technology winget ships for this app, when there is one (read
       from Documentation\IdentityDelta.json, written on first use), so an MSI package is tested over the
-      vendor EXE install that devices may already have; otherwise the packaged one.
+      vendor EXE install that devices may already have; otherwise the packaged one. A project with Enforce
+      prior-install rules uses the technology and registry view of the proof group the run checks (-ProofEntryId).
       When the chosen version does not ship that technology, the run falls back to the packaged one with a
       warning and records UsedFallback (such a run cannot show a technology switch).
     - Both: one Update run per technology (the packaged one, then each other one winget ships) at the same
@@ -138,6 +139,21 @@ function Test-Win32ToolkitProject {
     start an unattended Hyper-V test). A host that cannot prompt (a service, redirected input, or a console started
     with pwsh -NonInteractive) still runs Unattended, with a warning. -Unattended together with -TestMode Interactive
     is refused before any prompt. Omit it to use -Unattended or the config value.
+.PARAMETER ProofEntryId
+    Update scenario only: the Enforce prior-install entries (AppConfig PriorInstalls, see Set-Win32ToolkitPriorInstall) this
+    run proves. They must form ONE proof group: the same UninstallerType and registry View (or, for entries from a sibling
+    capture, the same floor capture); anything else, also on a project without prior-install rules, is refused before
+    anything runs. Without it, a project with Enforce entries checks its first group (in Id order). Unless you choose the
+    old version's technology (-BaselineInstallerType <type>, Packaged or Both) or a baseline project, the old version is
+    pinned to the group's uninstaller technology and to an architecture that writes the group's registry view (x86 for a
+    Wow6432 entry, a 64-bit installer for a Native one); -SpecificVersion and -VersionsBack choose only its version. With
+    -BaselineInstallerType <type> or Packaged, the run checks the group of that technology whose registry view the old
+    version writes (the packaged installer's architecture: x86 writes the 32-bit view, x64 the 64-bit one). The run asserts PriorPresent-PreUpdate.<id> (the deploy script plans
+    the removal), PriorAbsent-PostUpdate.<id> and NewAppIntact-PostUpdate, and asserts the other entries absent; the record
+    gets a Proof (what was tested: the hashes of the rules, the deploy script, Files\ and SupportFiles\, the baseline
+    installer and the catalog version). Only a Hyper-V Unattended pass with the requirement checked proves an Enforce rule.
+    A project with prior-install rules (or sibling-capture records) is never tested in a watched Windows Sandbox
+    (W32T.PriorInstallRefused), and a run that changed a project file outside Sandbox\ stops with W32T.GuestTamper.
 .EXAMPLE
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario Update -VersionsBack 1 -SkipRequirementCheck
 .EXAMPLE
@@ -233,7 +249,13 @@ function Test-Win32ToolkitProject {
         # non-interactive host still forces Unattended (Get-Win32ToolkitTestMode).
         [Parameter(Mandatory = $false)]
         [ValidateSet('Interactive', 'Unattended')]
-        [string]$TestMode
+        [string]$TestMode,
+
+        # Update scenario only (installer-identity PR 3, L27): the Enforce prior-install entries - one proof group, the same
+        # uninstaller technology and registry view (or the same floor capture) - this run checks. Without it a project with
+        # Enforce entries checks its first proof group, and the baseline is pinned to that group's technology.
+        [Parameter(Mandatory = $false)]
+        [string[]]$ProofEntryId
     )
 
     # The optional per-project lease (speed-up PR 3, TestProjectLease): $null unless taken below; released in the finally.
@@ -292,7 +314,7 @@ function Test-Win32ToolkitProject {
         # ignore them under InstallUninstall (so the user thinks they configured an update-from-baseline test
         # but got a plain install/uninstall), reject the mismatch up front.
         if ($Scenario -ne 'Update') {
-            $updateOnly = @('BaselineProject', 'BaselineProjectPath', 'VersionsBack', 'SpecificVersion', 'BaselineInstallerType') |
+            $updateOnly = @('BaselineProject', 'BaselineProjectPath', 'VersionsBack', 'SpecificVersion', 'BaselineInstallerType', 'ProofEntryId') |
                 Where-Object { $PSBoundParameters.ContainsKey($_) }
             if ($updateOnly) {
                 throw "$(@($updateOnly | ForEach-Object { "-$_" }) -join ', ') apply only to -Scenario Update (got '$Scenario')."
@@ -370,6 +392,47 @@ function Test-Win32ToolkitProject {
         # Sandbox with a warning if the VM / guest credential aren't ready).
         $resolvedBackend = if ($Backend) { Get-Win32ToolkitTestBackend -Backend $Backend } else { Get-Win32ToolkitTestBackend }
         Write-Host "Backend          : $resolvedBackend" -ForegroundColor Cyan
+
+        # Prior-install state (installer-identity PR 3, L18): rules, decisions or sibling-capture records. The guest runs of
+        # such a project are checked by the tripwire (no project file outside Sandbox\ may change), and a WATCHED Windows
+        # Sandbox run is refused before anything is written: that sandbox stays open with the project mapped read-write, so
+        # its guest could still change the project after the test.
+        $priorCfg = $null
+        try { $priorCfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Verbose "AppConfig.json was not read for the prior-install state: $($_.Exception.Message)"
+        }
+        $priorEntries = @()
+        if ($priorCfg -and $priorCfg.PSObject.Properties['PriorInstalls'] -and $priorCfg.PriorInstalls -and $priorCfg.PriorInstalls.PSObject.Properties['Entries']) {
+            $priorEntries = @(@($priorCfg.PriorInstalls.Entries) | Where-Object { $null -ne $_ })
+        }
+        # An Enforce rule's remove-prior step runs the prior's uninstaller for up to 30 minutes (the device's limit, then 69108)
+        # before the install (live row TIMEOUT): the unattended Intune-parity install and update phases of such a project get
+        # a 55-minute runner limit (30 for the removal, 25 for the install; the phase backstop 60), as the uninstall got its
+        # 35 minutes (PR 2 follow-up F2), and their 1460 hint names the removal. A host int constant.
+        $priorRemovalRunnerMinutes = if (@($priorEntries | Where-Object { $_.PSObject.Properties['Mode'] -and [string]$_.Mode -ceq 'Enforce' }).Count -gt 0) { 55 } else { 0 }
+        $priorState = $priorEntries.Count -gt 0 -or (Test-Path -LiteralPath (Join-Path $ProjectPath 'Documentation\PriorInstallDecisions.json')) -or
+            (Test-Path -LiteralPath (Join-Path $ProjectPath 'Documentation\SiblingCapture.json')) -or (Test-Path -LiteralPath (Join-Path $ProjectPath 'Documentation\SiblingCapture'))
+        # The proof groups of an Update run (installer-identity PR 3, L27). -ProofEntryId must name Enforce entries of ONE
+        # group of this project: checked here, before anything is checked in the guest, written, staged or downloaded (a
+        # project without rules has no group, so the id is refused there too, never ignored).
+        $proofGroups = @()
+        $proofGroup = $null
+        if ($Scenario -eq 'Update' -and $priorEntries.Count -gt 0) { $proofGroups = @(Get-Win32ToolkitPriorProofGroup -ProjectPath $ProjectPath) }
+        if ($Scenario -eq 'Update' -and $ProofEntryId) {
+            $wanted = [string[]]@($ProofEntryId | Where-Object { $_ } | Select-Object -Unique)
+            $proofGroup = @($proofGroups | Where-Object { $g = $_; @($wanted | Where-Object { $g.EntryIds -ccontains $_ }).Count -eq $wanted.Count }) | Select-Object -First 1
+            if ($wanted.Count -eq 0 -or -not $proofGroup) {
+                $groupText = if ($proofGroups.Count) { (@($proofGroups | ForEach-Object { '[' + (@($_.EntryIds) -join ', ') + ']' })) -join ' ' } else { 'none (no Enforce entry)' }
+                throw "-ProofEntryId must name Enforce prior-install entries of ONE proof group (the same uninstaller technology and registry view, or the same floor capture). The proof groups of this project: $groupText."
+            }
+        }
+        if ($priorState -and $resolvedBackend -eq 'Sandbox' -and (Get-Win32ToolkitTestMode -Backend Sandbox @modeArgs -WarningAction SilentlyContinue) -eq 'Interactive') {
+            throw [System.Management.Automation.ErrorRecord]::new(
+                [System.InvalidOperationException]::new('This project has prior-install rules or sibling-capture records: a watched Windows Sandbox test is refused (the sandbox stays open with the project mapped read-write, so its guest could still change the project after the test). Use -Backend HyperV, or -TestMode Unattended. Nothing was started.'),
+                'W32T.PriorInstallRefused', [System.Management.Automation.ErrorCategory]::PermissionDenied, $ProjectPath)
+        }
 
         # Uninstall cleanup paths Export refuses (installer-identity PR 2 follow-up F7, D6): Export is the only hard stop,
         # so the test still runs, but says so first with Export's own findings. Once per outer call (not in the legs of an
@@ -479,6 +542,80 @@ function Test-Win32ToolkitProject {
                 }
             }
         }
+        # The exit code of one package run of the current run: the runner's last '<label> <type> parent=<p> exit=<n>
+        # result=<r>' line after this run's start marker, or $null when there is none (or the marker is missing).
+        $runExitOf = {
+            param($Run, [string]$RunLabel, [string]$DeploymentType)
+            if (-not (Test-Path -LiteralPath $exitCodeLog)) { return $null }
+            $codeLines = @(Get-Content -LiteralPath $exitCodeLog -ErrorAction SilentlyContinue | Where-Object { $_ })
+            if ($Run -and $Run.Marker) {
+                $at = [array]::LastIndexOf([string[]]$codeLines, [string]$Run.Marker)
+                if ($at -lt 0) { return $null }
+                $codeLines = @($codeLines | Select-Object -Skip ($at + 1))
+            }
+            $code = $null
+            foreach ($codeLine in $codeLines) {
+                $m = [regex]::Match([string]$codeLine, '^\[[^\]]*\]\s+' + [regex]::Escape($RunLabel) + '\s+' + [regex]::Escape($DeploymentType) + '\s+parent=\S+\s+exit=(-?\d{1,10})\s+result=')
+                $n = 0L
+                if ($m.Success -and [long]::TryParse($m.Groups[1].Value, [ref]$n) -and $n -ge [int]::MinValue -and $n -le [int]::MaxValue) { $code = [int]$n }
+            }
+            $code
+        }
+        # What a remove-prior exit code of the package means (installer-identity PR 3; the device texts and docs/publishing.md
+        # say the same): host constants, '' for any other code.
+        $priorExitText = {
+            param([int]$Code)
+            switch ($Code) {
+                69101 { 'a Block prior-install rule refused the install: the prior install it declares is present'; break }
+                69102 { 'a newer version of the prior install is present than its rule covers (VersionMax)'; break }
+                69105 { 'a prior-install rule cannot be applied safely on this device (invalid data, the prior in another folder than the rule names, an uninstaller or folder others can change, a device marker that cannot be written, or a 32-bit host)'; break }
+                69106 { "this package's own product is already registered next to the prior install"; break }
+                69107 { 'a restart is pending, or the removal of the prior install needs one: nothing was removed, the install runs after the restart'; break }
+                69108 { "the prior install's uninstaller failed, or ran longer than 30 minutes"; break }
+                69109 { "the prior install's uninstall key or main program file is still there after its uninstaller"; break }
+                69110 { "the prior install came back after this package removed it on this device (another deployment or the vendor's updater installed it again)"; break }
+                69111 { 'removal of prior installs is switched off on this device (RemovePriorDisabled)'; break }
+                69112 { "the package's installer is missing or cannot be opened"; break }
+                1618 { 'Intune retries it later: the prior app was still running after the close-apps dialog, Windows Installer was busy, or the prior install changed while the dialog was open'; break }
+                default { '' }
+            }
+        }
+        # The same texts for the Hyper-V provider's warning and Intune-parity note of an install or update phase of a project
+        # with prior-install rules (live rows TIMEOUT, RC2-BLOCK: the phase warning and an InstallUninstall record named the
+        # code only).
+        $priorExitMeaning = @{}
+        foreach ($pc in 69101, 69102, 69105, 69106, 69107, 69108, 69109, 69110, 69111, 69112, 1618) { $priorExitMeaning[[int]$pc] = & $priorExitText $pc }
+        # The update's own exit code as a host assertion (@{ Name; Result; Text }), or nothing when it succeeded. The waiter
+        # counts it in its summary (live rows OP-BLOCK, OP-NEWER, OP-OWN, KILL-*, APP-RUNNING, RC2-BLOCK: the console said
+        # "N assertion(s) failed" while the record held N+1).
+        $updateExitRow = {
+            param($Run)
+            $code = & $runExitOf $Run 'update' 'Install'
+            if ($null -eq $code -or $psadtSuccessCodes -contains $code) { return }
+            $meaning = & $priorExitText $code
+            @{ Name = 'UpdateExitCode-PostUpdate'; Result = 'FAIL'; Text = "The update exited with code $code$(if ($meaning) { ": $meaning" })." }
+        }
+        # An Update run whose update itself exited outside the success codes did not update the app, whatever its assertions
+        # say (live run OP-OWN: a 69106 refusal left a same-version baseline that satisfied every post-update assertion and
+        # the test PASSED). The verdict is then $false, with the code (and what a remove-prior code means) in the Notes and a
+        # host assertion 'UpdateExitCode-PostUpdate = FAIL' in the record. Said once (live row RC2-BLOCK): a Hyper-V phase
+        # already warned, with the meaning (its ExitMeaning; -ProviderWarned), and an Intune-parity phase already wrote its
+        # sentence into the Notes (-ParityNotes: no second sentence for the same code).
+        $judgeUpdateExit = {
+            param($Run, $Verdict, [bool]$ProviderWarned, [object[]]$ParityNotes)
+            $out = @{ Verdict = $Verdict; Notes = @(); Assertions = @() }
+            $row = & $updateExitRow $Run
+            if (-not $row) { return $out }
+            $sentence = [string]$row['Text']
+            $code = [regex]::Match($sentence, 'code (-?\d+)').Groups[1].Value
+            $noted = @($ParityNotes | Where-Object { [string]$_ -like "Intune-parity phase 'Update*' exited with code $code[.:]*" }).Count -gt 0
+            if (-not $noted) { $out.Notes = @($sentence) }
+            $out.Assertions = @(@{ Name = 'UpdateExitCode-PostUpdate'; Result = 'FAIL' })
+            if ($Verdict -ne $false) { Write-Warning "$sentence The update did not succeed, so the Update test FAILED although its assertions $(if ($Verdict -eq $true) { 'passed' } else { 'gave no verdict' })." }
+            elseif (-not $ProviderWarned) { Write-Warning $sentence }
+            $out.Verdict = $false
+            $out
+        }
         # Keeps the run's logs in its own folder, Sandbox\Logs\Runs\<run>\ (test campaign F2): the next run (the
         # next leg of a Both run) overwrites the top-level Sandbox\Logs files it writes, and files only an earlier
         # run wrote stay there, so only the run folder is exactly this run's. Under Sandbox the guest
@@ -493,6 +630,17 @@ function Test-Win32ToolkitProject {
             $rel = Save-Win32ToolkitTestRunLog -Run $Run
             if ($rel) { Write-Host "Run logs         : $(Join-Path $ProjectPath $rel)" -ForegroundColor Gray }
             [string]$rel
+        }
+        # The tripwire of a Windows Sandbox run of a project with prior-install state (installer-identity PR 3, L18): its
+        # guest keeps running after the assertion waiter returned (an unattended guest shuts itself down; a timed-out one
+        # does not), so the project is compared only once this run's sandbox is closed - whatever the verdict - and BEFORE
+        # anything is recorded. A sandbox that cannot be confirmed closed within 10 minutes fails closed (W32T.GuestTamper).
+        $assertSandboxTripwire = {
+            param($Trip, [string]$RunScenario)
+            $closed = Wait-Win32ToolkitSandboxFree -TimeoutSeconds 600 -OwnRun
+            if (-not $closed) { $closed = Wait-Win32ToolkitSandboxFree -TimeoutSeconds 60 }
+            if (-not $closed) { Assert-Win32ToolkitProjectTripwire -ProjectPath $ProjectPath -Scenario $RunScenario -Reason "this run's Windows Sandbox could not be confirmed closed" }
+            Assert-Win32ToolkitProjectTripwire -ProjectPath $ProjectPath -Before $Trip -Scenario $RunScenario
         }
         # Stage declared dependencies (winget installers / packaged projects) into Sandbox\Dependencies\ so
         # the guest installs them BEFORE the app — the same order Intune uses on a real device. Returns 0
@@ -537,6 +685,8 @@ function Test-Win32ToolkitProject {
                 # install tattoo); after uninstall it must be GONE. Value-free, reads AppConfig in the guest.
                 $null = New-InstallAssertionScript -ProjectPath $ProjectPath
                 $assertCmd = "& 'C:\PSADT\Sandbox\InstallAssertions.ps1'"
+                # The two assertions the guest always writes (PASS, FAIL or SKIP): a complete log without one lost lines.
+                $iuRequired = @('InstallDetected-PostInstall', 'UninstallClean-PostUninstall')
                 # Clear a previous run's log so the verdict reflects THIS run only.
                 $installAssertLog = Join-Path $ProjectPath 'Sandbox\Logs\InstallAssertions.log'
                 if (Test-Path -LiteralPath $installAssertLog) { Remove-Item -LiteralPath $installAssertLog -Force -ErrorAction SilentlyContinue }
@@ -564,9 +714,18 @@ function Test-Win32ToolkitProject {
                     # 'exit $LASTEXITCODE' (single-quoted: literal for the guest), so the provider sees the
                     # EXACT PSADT exit code and judges it against SuccessExitCodes.
                     if ($interactive) {
-                        # GUI phases force -DeployMode Interactive so the operator always sees PSADT's dialogs.
+                        # GUI phases force -DeployMode Interactive so the operator always sees PSADT's dialogs. The install of
+                        # an Enforce project may first run the prior's uninstaller for up to 30 minutes: 55 minutes, as the
+                        # parity phase (live row MSIBUSY).
+                        $guiInstallPhase = @{ Label = 'Install (GUI)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -DeploymentType Install -DeployMode Interactive -Label app; exit $LASTEXITCODE'; Interactive = $true; SuccessExitCodes = $psadtSuccessCodes }
+                        if ($priorRemovalRunnerMinutes -gt 0) {
+                            $guiInstallPhase['Command'] = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -DeploymentType Install -DeployMode Interactive -TimeoutMinutes ' + $priorRemovalRunnerMinutes + ' -Label app; exit $LASTEXITCODE'
+                            $guiInstallPhase['RunnerTimeoutMinutes'] = $priorRemovalRunnerMinutes
+                            $guiInstallPhase['PriorRemoval'] = $true
+                        }
+                        if ($priorExitMeaning.Count -gt 0) { $guiInstallPhase['ExitMeaning'] = $priorExitMeaning }
                         $phases += @(
-                            @{ Label = 'Install (GUI)';                   Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -DeploymentType Install -DeployMode Interactive -Label app; exit $LASTEXITCODE'; Interactive = $true; SuccessExitCodes = $psadtSuccessCodes }
+                            $guiInstallPhase
                             @{ Label = 'Assert: installed';               Command = "$assertCmd -Phase PostInstall"; IgnoreExit = $true }
                             @{ Label = 'Test the app in the VM window';   Pause = $true }
                             @{ Label = 'Uninstall (GUI)';                 Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -DeploymentType Uninstall -DeployMode Interactive -Label app; exit $LASTEXITCODE'; Interactive = $true; SuccessExitCodes = $psadtSuccessCodes }
@@ -580,15 +739,23 @@ function Test-Win32ToolkitProject {
                         # via Sandbox\IntuneCommandLine.json) from a 32-bit cmd.exe parent, as SYSTEM, in the
                         # package folder, with no -DeployMode — the way the IME launches it. Replaces the old
                         # 64-bit '.ps1 -DeployMode Silent' runs (spec Q7). ParityHint names the likely cause
-                        # of exit code 1460 (the runner's limit: 25 minutes, 35 for the uninstall) in the
+                        # of exit code 1460 (the runner's limit: 25 minutes, 35 for the uninstall, 55 for the install of a
+                        # package with Enforce prior-install rules) in the
                         # provider's warning (L16).
                         # The uninstall outlives the device's 30-minute EXE uninstaller limit, so a hung
                         # uninstaller ends with exit code 69113 as on a device (installer-identity PR 2
                         # follow-up F2). A host int constant: the runner's -TimeoutMinutes and the phase key
                         # RunnerTimeoutMinutes (the provider sets the phase backstop 5 minutes above it) must agree.
                         $uninstallParityRunnerMinutes = 35
+                        $installPhase = @{ Label = 'Install (Intune parity)';   Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label app; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes; ParityHint = $parityDialogHint }
+                        if ($priorRemovalRunnerMinutes -gt 0) {
+                            $installPhase['Command'] = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -TimeoutMinutes ' + $priorRemovalRunnerMinutes + ' -Label app; exit $LASTEXITCODE'
+                            $installPhase['RunnerTimeoutMinutes'] = $priorRemovalRunnerMinutes
+                            $installPhase['PriorRemoval'] = $true
+                        }
+                        if ($priorExitMeaning.Count -gt 0) { $installPhase['ExitMeaning'] = $priorExitMeaning }
                         $phases += @(
-                            @{ Label = 'Install (Intune parity)';   Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label app; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes; ParityHint = $parityDialogHint }
+                            $installPhase
                             @{ Label = 'Assert: installed';         Command = "$assertCmd -Phase PostInstall"; IgnoreExit = $true }
                             @{ Label = 'Uninstall (Intune parity)'; Command = ('& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Uninstall -TimeoutMinutes ' + $uninstallParityRunnerMinutes + ' -Label app; exit $LASTEXITCODE'); SuccessExitCodes = $psadtSuccessCodes; ParityHint = 'Uninstaller'; RunnerTimeoutMinutes = $uninstallParityRunnerMinutes }
                             @{ Label = 'Assert: uninstalled';       Command = "$assertCmd -Phase PostUninstall"; IgnoreExit = $true }
@@ -602,7 +769,11 @@ function Test-Win32ToolkitProject {
                     $parityExitNotes = [System.Collections.Generic.List[string]]::new()
                     # The run's Timing and Lane for the record (speed-up PR 1, D12).
                     $runInfo = @{}
+                    # Tripwire (installer-identity PR 3, L18): taken after every host write of the preparation.
+                    $iuTrip = if ($priorState) { Get-Win32ToolkitProjectTripwire -ProjectPath $ProjectPath } else { $null }
                     $ran = Invoke-Win32ToolkitHyperVRun -ProjectPath $ProjectPath -Phase $phases -Output @('Sandbox\Logs\*') -ParityExitNote $parityExitNotes -RunInfo $runInfo
+                    # The project was copied in (never mapped): the guest can no longer write. Checked before any host write.
+                    if ($priorState) { Assert-Win32ToolkitProjectTripwire -ProjectPath $ProjectPath -Before $iuTrip -Scenario 'InstallUninstall' }
                     if ($ran) {
                         Write-Host "✓ Hyper-V install/uninstall completed. Logs: $(Join-Path $ProjectPath 'Sandbox\Logs')" -ForegroundColor Green
                     } else {
@@ -622,7 +793,7 @@ function Test-Win32ToolkitProject {
                         $iuNotes = @('The previous run''s InstallAssertions.log could not be removed before the run: the result is Inconclusive.') + $iuNotes
                     }
                     elseif (Test-Path -LiteralPath $installAssertLog) {
-                        $iuVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -SinglePass -LogFileName 'InstallAssertions.log' -Label 'INSTALL/UNINSTALL TEST'
+                        $iuVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -SinglePass -LogFileName 'InstallAssertions.log' -Label 'INSTALL/UNINSTALL TEST' -RequiredAssertion $iuRequired
                         if (-not $ran -and $iuVerdict -eq $true) {
                             $iuVerdict = $null
                             Write-Warning 'The assertions passed, but the Hyper-V run did not complete (see the warnings above): the result is Inconclusive, not a pass.'
@@ -699,6 +870,8 @@ function Test-Win32ToolkitProject {
                 Write-Host '=============================================' -ForegroundColor Cyan
 
                 $runLog = Initialize-Win32ToolkitTestRunLog -ProjectPath $ProjectPath -Scenario 'InstallUninstall'
+                # Tripwire (installer-identity PR 3, L18): a project with prior-install state runs only unattended here.
+                $iuTrip = if ($priorState) { Get-Win32ToolkitProjectTripwire -ProjectPath $ProjectPath } else { $null }
                 $launched = (Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched
                 if ($launched) {
                     Write-Host "`n✓ Final demo sandbox launched successfully!" -ForegroundColor Green
@@ -711,8 +884,9 @@ function Test-Win32ToolkitProject {
                 # slow-first-boot margin): if the operator closes the sandbox before the PostUninstall assertion,
                 # the run can never complete, so we must not block the host on the 30-min Update default.
                 $iuVerdict = if ($launched) {
-                    Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend Sandbox -TimeoutMinutes 10 -LogFileName 'InstallAssertions.log' -Label 'INSTALL/UNINSTALL TEST'
+                    Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend Sandbox -TimeoutMinutes 10 -LogFileName 'InstallAssertions.log' -Label 'INSTALL/UNINSTALL TEST' -RequiredAssertion $iuRequired
                 } else { $null }
+                if ($priorState) { & $assertSandboxTripwire $iuTrip 'InstallUninstall' }
                 & $showExitCodes $runLog
                 $runFolder = & $saveRunLog $runLog $(if ($launched) { 60 } else { 0 })
                 Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'InstallUninstall' -Backend 'Sandbox' `
@@ -721,7 +895,7 @@ function Test-Win32ToolkitProject {
                 # now by the rule of the start-up wait (never while wsb lists a sandbox), so the next run and other tools
                 # find no sandbox (installer-identity PR 2 follow-up F10). Only after a completed run (a verdict): an
                 # inconclusive run's sandbox is usually still running. Never changes the verdict.
-                if ($launched -and -not $sbInteractive -and $null -ne $iuVerdict) { $null = Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90 -OwnRun }
+                if ($launched -and -not $sbInteractive -and $null -ne $iuVerdict -and -not $priorState) { $null = Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90 -OwnRun }
                 return $iuVerdict
             }
 
@@ -753,6 +927,123 @@ function Test-Win32ToolkitProject {
 
                 # An unattended Hyper-V Update got here only past the Intune-parity pre-check, asked before anything was
                 # written and before any baseline is downloaded or copied ($parityDialogHint is its 1460 hint).
+
+                # ── Prior-install proof group (installer-identity PR 3, L27) ─────────────────────
+                # Which Enforce entries this run checks, decided BEFORE the baseline is picked: -ProofEntryId (one proof
+                # group, validated before anything ran), else with Auto the first group in Id order; when the operator chose
+                # the old version's technology (-BaselineInstallerType <type>, or Packaged - also the legs of Both), the group
+                # of that technology whose registry view that old version writes (its architecture is the packaged
+                # installer's: x86 writes WOW6432Node on the 64-bit guest, x64 or arm64 the native view). Entries of another
+                # technology or registry view are asserted absent. A proof is recorded only while the project's remove-prior
+                # blocks are this catalog's revision (L38).
+                $proofEntryIds = [string[]]@()
+                $otherEntryIds = [string[]]@()
+                $recordProof = $false
+                if ($priorEntries.Count -gt 0) {
+                    if ($ProofEntryId) {
+                        $proofEntryIds = [string[]]@($ProofEntryId | Where-Object { $_ } | Select-Object -Unique)
+                    }
+                    elseif ($proofGroups.Count -gt 0 -and -not $useBaselineProject) {
+                        if ($BaselineInstallerType -eq 'Auto') { $proofGroup = $proofGroups[0] }
+                        elseif ($BaselineInstallerType -ne 'Both') {
+                            $chosenType = if ($BaselineInstallerType -eq 'Packaged') { [string](@(Resolve-Win32ToolkitBaselineFamily -ProjectPath $ProjectPath -Mode Packaged -NoProbe)[0].InstallerType) } else { [string]$BaselineInstallerType }
+                            # The registry view this run's old version writes. A chosen technology keeps the packaged installer's
+                            # architecture (the Files\ manifest: the -Architecture of the download below), and on the 64-bit test
+                            # guest an x86 installer writes WOW6432Node, an x64 or arm64 one the native view. An unknown
+                            # architecture (winget's choice) matches the technology only.
+                            $runArch = ''
+                            $runFiles = Join-Path $ProjectPath 'Files'
+                            if (Test-Path -LiteralPath $runFiles -PathType Container) {
+                                $runYaml = Get-YAMLInstallerInfo -FilesPath $runFiles
+                                if ($runYaml) { $runArch = ([string]$runYaml.Architecture).ToLowerInvariant() }
+                            }
+                            $runView = if ($runArch -eq 'x86') { 'Wow6432' } elseif ($runArch -in @('x64', 'arm64')) { 'Native' } else { '' }
+                            $proofGroup = @($proofGroups | Where-Object { $_.UninstallerType -eq $chosenType -and (-not $runView -or [string]$_.View -eq $runView) }) | Select-Object -First 1
+                        }
+                        if ($proofGroup) { $proofEntryIds = [string[]]$proofGroup.EntryIds }
+                    }
+                    if ($proofGroup) { $otherEntryIds = [string[]]$proofGroup.OtherEntryIds }
+                    $recordProof = $true
+                    $projectRevision = (Get-Win32ToolkitDeployScriptShape -Path (Join-Path $ProjectPath 'Invoke-AppDeployToolkit.ps1')).RemovePriorRevision
+                    if ($projectRevision -ne (Get-Win32ToolkitDeployScriptBlock -Name RemovePriorRevision)) {
+                        $recordProof = $false
+                        Write-Warning "The project's remove-prior blocks are not this version's catalog (revision $projectRevision): this Update test records no prior-install proof. Re-create the project."
+                    }
+                    if ($proofEntryIds.Count -gt 0) {
+                        $absentText = if ($otherEntryIds.Count) { "; asserted absent: $($otherEntryIds -join ', ')" } else { '' }
+                        Write-Host "Prior installs   : this run checks $($proofEntryIds -join ', ')$absentText" -ForegroundColor Cyan
+                        # Live row INTERACTIVE: a Sandbox or watched run checks the Enforce rules but can never prove them (the
+                        # proof state reads Backend and Mode); say so before the run, not only when Export refuses.
+                        $proofRunMode = Get-Win32ToolkitTestMode -Backend $resolvedBackend @modeArgs -WarningAction SilentlyContinue
+                        $checkedEnforce = @($proofEntryIds | Where-Object { $cid = $_; @($priorEntries | Where-Object { [string]$_.Id -ceq $cid -and [string]$_.Mode -ceq 'Enforce' }).Count -gt 0 })
+                        if ($checkedEnforce.Count -gt 0 -and ($resolvedBackend -ne 'HyperV' -or $proofRunMode -ne 'Unattended')) {
+                            $runKind = if ($resolvedBackend -ne 'HyperV') { 'Windows Sandbox' } else { 'watched' }
+                            # Live row MSIBUSY: a watched run that fails (a retry code such as 1618 too) revokes an existing proof.
+                            Write-Warning "This $runKind run checks the Enforce rule(s) $($checkedEnforce -join ', ') but cannot prove them, even when it passes: an Enforce rule is proven only by an Update test on Hyper-V, unattended (-Backend HyperV -TestMode Unattended). If it fails (also with a retry code such as 1618), it revokes their current proof."
+                        }
+                    }
+                    elseif ($useBaselineProject -and $proofGroups.Count -gt 0) {
+                        # Live row OP-OWN: a toolkit-package baseline (-BaselineProjectPath) has no proof group, so the run asserts
+                        # nothing about the rules; say so instead of staying silent.
+                        $uncheckedIds = @($proofGroups | ForEach-Object { @($_.EntryIds) } | Select-Object -Unique)
+                        # Live row OP-OWN (round 1): "not checked" read as if the package's own prior-check did not run.
+                        Write-Warning "Prior installs: not asserted by this test. A -BaselineProjectPath baseline installs a toolkit package, so this run neither checks nor proves the Enforce rule(s) $($uncheckedIds -join ', ') (the package's own prior-check and remove-prior still run in the guest and may refuse); prove them with an Update test without -BaselineProjectPath (-Backend HyperV -TestMode Unattended)."
+                    }
+                }
+                # The group's baseline (L27): its uninstaller technology as a pin (Resolve-Win32ToolkitBaselineFamily -EntryId)
+                # and the architecture of its registry view (Wow6432 -> x86, Native -> a 64-bit installer) whenever the toolkit
+                # picks the technology (Auto, given or not) and no baseline project is used. -SpecificVersion and -VersionsBack
+                # choose only the version (how an operator reaches a version inside an entry's VersionMin..VersionMax window);
+                # a chosen technology (-BaselineInstallerType <type>, Packaged, Both) keeps the packaged installer's architecture.
+                $groupTechPinned = [bool]$proofGroup -and -not $useBaselineProject -and $baselineMode -eq 'Auto'
+                # Everything the proof is bound to (L12), taken right before the guest starts; completed after the run.
+                $proofTaken = $null
+                $takeProof = {
+                    if (-not $recordProof) { return $null }
+                    $b = Get-Win32ToolkitPriorProofBinding -ProjectPath $ProjectPath
+                    $baseSha = ''
+                    if (-not $useBaselineProject -and $oldInstaller -and $oldInstaller.InstallerPath -and (Test-Path -LiteralPath $oldInstaller.InstallerPath -PathType Leaf)) {
+                        $baseSha = (Get-FileHash -LiteralPath $oldInstaller.InstallerPath -Algorithm SHA256).Hash
+                    }
+                    $capIds = [string[]]@($priorEntries | Where-Object { $proofEntryIds -ccontains [string]$_.Id -and $_.PSObject.Properties['CaptureId'] -and [string]$_.CaptureId -cmatch '^[a-f0-9]{16}$' } |
+                            ForEach-Object { [string]$_.CaptureId } | Select-Object -Unique)
+                    @{
+                        PriorInstallsHash = $b.PriorInstallsHash; ScriptSha256 = $b.ScriptSha256; FilesSha256 = $b.FilesSha256; SupportFilesSha256 = $b.SupportFilesSha256
+                        CatalogVersion = $b.CatalogVersion; BaselineInstallerSha256 = $baseSha; EntryIds = $proofEntryIds; CaptureIds = $capIds; RequirementChecked = [bool]$requirementFifth
+                    }
+                }
+                # After the run: the versions the guest observed (C-14: size cap, parse, known ids, printable text) and the
+                # entries whose seeded user file was deleted (DATA lines - never assertions, L14).
+                $completeProof = {
+                    param($P)
+                    if ($null -eq $P) { return $null }
+                    $observed = @{}
+                    $obsFile = Join-Path $ProjectPath 'Sandbox\Logs\PriorObservations.json'
+                    if ((Test-Path -LiteralPath $obsFile -PathType Leaf) -and (Get-Item -LiteralPath $obsFile).Length -le 1MB) {
+                        try {
+                            foreach ($o in @(Get-Content -LiteralPath $obsFile -Raw -Encoding UTF8 | ConvertFrom-Json | Where-Object { $_ -is [System.Management.Automation.PSCustomObject] -and $_.PSObject.Properties['Id'] })) {
+                                $oid = [string]$o.Id
+                                if ($P.EntryIds -ccontains $oid -and $o.PSObject.Properties['Version']) { $observed[$oid] = ConvertTo-Win32ToolkitSafeText -Text ([string]$o.Version) -MaxLength 64 }
+                            }
+                        }
+                        catch {
+                            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                            Write-Verbose "PriorObservations.json could not be read: $($_.Exception.Message)"
+                        }
+                    }
+                    $lost = [System.Collections.Generic.List[string]]::new()
+                    $updLog = Join-Path $ProjectPath 'Sandbox\Logs\UpdateAssertions.log'
+                    if (Test-Path -LiteralPath $updLog -PathType Leaf) {
+                        foreach ($line in @(Get-Content -LiteralPath $updLog -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+                            $m = [regex]::Match([string]$line, '^\s*(?:\[[^\]]*\]\s+)?DATA\s+UserDataKept-PostUpdate\.([a-z0-9-]{1,40})\s*=\s*(KEPT|LOST)\b')
+                            if ($m.Success -and $m.Groups[2].Value -eq 'LOST' -and $P.EntryIds -ccontains $m.Groups[1].Value -and -not $lost.Contains($m.Groups[1].Value)) { $lost.Add($m.Groups[1].Value) }
+                        }
+                    }
+                    $P['ObservedVersions'] = $observed
+                    $P['DataLoss'] = [string[]]$lost.ToArray()
+                    if ($lost.Count -gt 0) { Write-Warning "The prior install's uninstaller deleted a user file in its folder ($($lost -join ', ')): Export asks for a DATA-LOSS acknowledgement (Set-Win32ToolkitPriorInstall -Acknowledge DATA-LOSS)." }
+                    $P
+                }
 
                 if ($useBaselineProject) {
                     # ── Baseline = a previous TOOLKIT package (no winget) ──────────────────
@@ -824,7 +1115,12 @@ function Test-Win32ToolkitProject {
                     # Resolved BEFORE the version is picked, so the operator knows which technology the old version
                     # must ship (Dv5). Every leg pins an installer type (never an unpinned download, never a locale);
                     # Auto prefers the other technology winget ships for this app (V22, D5).
-                    $legs = @(Resolve-Win32ToolkitBaselineFamily -ProjectPath $ProjectPath -Mode $baselineMode)
+                    $legs = if ($groupTechPinned) { @(Resolve-Win32ToolkitBaselineFamily -ProjectPath $ProjectPath -Mode Auto -EntryId $proofEntryIds) }
+                            else { @(Resolve-Win32ToolkitBaselineFamily -ProjectPath $ProjectPath -Mode $baselineMode) }
+                    if ($groupTechPinned -and $proofGroup.Architecture -and $proofGroup.Architecture -ne $architecture) {
+                        Write-Host "Baseline architecture : $($proofGroup.Architecture) (the registry view of $($proofEntryIds -join ', '))" -ForegroundColor Gray
+                        $architecture = $proofGroup.Architecture
+                    }
                     if ($legs.Count -eq 0) {
                         throw 'No Update baseline technology could be resolved for this project.'
                     }
@@ -1095,8 +1391,12 @@ function Test-Win32ToolkitProject {
                 # it detects a REAL old install: PreUpdate = requirement met on the old baseline,
                 # PostUpdate = still met + tattoo holds the NEW version (the Intune detection rule).
                 # With -SkipRequirementCheck the requirement assertions are SKIPped (tattoo still runs).
+                # Whether the requirement checked here carries the prior-install signal (a proof needs it, installer-identity PR 3).
+                $requirementFifth = $false
                 if (-not $SkipRequirementCheck) {
                     $reqRule = Get-Win32ToolkitRequirementRule -ProjectPath $ProjectPath
+                    $reqFile = Join-Path $ProjectPath 'SupportFiles\UpdateRequirement.ps1'
+                    $requirementFifth = [bool]$reqRule -and (Test-Path -LiteralPath $reqFile -PathType Leaf) -and ([System.IO.File]::ReadAllText($reqFile)).Contains('$w32tPrData')
                     if (-not $reqRule) {
                         Write-Warning 'No update requirement rule could be built for this project — the requirement assertions will be SKIPPED in the sandbox.'
                         # Remove a stale UpdateRequirement.ps1 from an earlier packaging so the sandbox
@@ -1112,12 +1412,17 @@ function Test-Win32ToolkitProject {
                 }
                 $assertionPath = New-UpdateAssertionScript -ProjectPath $ProjectPath `
                     -SkipRequirement:$SkipRequirementCheck -OldVersion $targetVersion `
-                    -ExpectBaselineTattoo:$useBaselineProject
+                    -ExpectBaselineTattoo:$useBaselineProject -ProofEntryIds $proofEntryIds -OtherEntryIds $otherEntryIds
                 Write-Host "✓ Assertion script : $assertionPath" -ForegroundColor Green
+                # The assertions the guest always writes (PASS, FAIL or SKIP), one pair per checked prior-install entry: a
+                # complete log without one of them lost lines (live run SB-ENFORCE), so the waiter calls it inconclusive.
+                $updRequired = @('Requirement-PreUpdate', 'Requirement-PostUpdate', 'OldArpGone-PostUpdate', 'Tattoo-PostUpdate', 'NewAppIntact-PostUpdate') +
+                    @($proofEntryIds | Where-Object { $_ } | ForEach-Object { "PriorPresent-PreUpdate.$_"; "PriorAbsent-PostUpdate.$_" }) +
+                    @($otherEntryIds | Where-Object { $_ } | ForEach-Object { "OtherPriorAbsent-PreUpdate.$_"; "OtherPriorAbsent-PostUpdate.$_" })
 
                 # Fresh run: clear the assertions log and the ARP snapshot state from any previous run.
                 $logsDir = Join-Path $ProjectPath 'Sandbox\Logs'
-                foreach ($f in 'UpdateAssertions.log', 'PreBaselineArp.json', 'PreUpdateArpBaseline.json') {
+                foreach ($f in 'UpdateAssertions.log', 'PreBaselineArp.json', 'PreUpdateArpBaseline.json', 'PriorObservations.json', 'PriorSeeds.json', 'PriorCandidates.json') {
                     $fp = Join-Path $logsDir $f
                     if (Test-Path -LiteralPath $fp) { Remove-Item -LiteralPath $fp -Force -ErrorAction SilentlyContinue }
                 }
@@ -1169,15 +1474,32 @@ function Test-Win32ToolkitProject {
                     # line from a 32-bit parent with no -DeployMode, exactly as the IME launches it.
                     if ($interactive) {
                         $phases += @{ Label = 'Verify the OLD install in the VM window'; Pause = $true; Interactive = $true }
-                        $phases += @{ Label = 'Update (PSADT GUI)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -DeploymentType Install -DeployMode Interactive -Label update; exit $LASTEXITCODE'; Interactive = $true; SuccessExitCodes = $psadtSuccessCodes }
+                        # The watched update of an Enforce project gets the removal's 30 minutes too (live row MSIBUSY: only the
+                        # parity phase had them).
+                        $guiUpdatePhase = @{ Label = 'Update (PSADT GUI)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -DeploymentType Install -DeployMode Interactive -Label update; exit $LASTEXITCODE'; Interactive = $true; SuccessExitCodes = $psadtSuccessCodes }
+                        if ($priorRemovalRunnerMinutes -gt 0) {
+                            $guiUpdatePhase['Command'] = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -DeploymentType Install -DeployMode Interactive -TimeoutMinutes ' + $priorRemovalRunnerMinutes + ' -Label update; exit $LASTEXITCODE'
+                            $guiUpdatePhase['RunnerTimeoutMinutes'] = $priorRemovalRunnerMinutes
+                            $guiUpdatePhase['PriorRemoval'] = $true
+                        }
+                        if ($priorExitMeaning.Count -gt 0) { $guiUpdatePhase['ExitMeaning'] = $priorExitMeaning }
+                        $phases += $guiUpdatePhase
                     }
                     else {
-                        $phases += @{ Label = 'Update (Intune parity)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label update; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes; ParityHint = $parityDialogHint }
+                        $updatePhase = @{ Label = 'Update (Intune parity)'; Command = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -Label update; exit $LASTEXITCODE'; SuccessExitCodes = $psadtSuccessCodes; ParityHint = $parityDialogHint }
+                        if ($priorRemovalRunnerMinutes -gt 0) {
+                            $updatePhase['Command'] = '& ''C:\PSADT\Sandbox\Invoke-PsadtPackage.ps1'' -IntuneParity -DeploymentType Install -TimeoutMinutes ' + $priorRemovalRunnerMinutes + ' -Label update; exit $LASTEXITCODE'
+                            $updatePhase['RunnerTimeoutMinutes'] = $priorRemovalRunnerMinutes
+                            $updatePhase['PriorRemoval'] = $true
+                        }
+                        if ($priorExitMeaning.Count -gt 0) { $updatePhase['ExitMeaning'] = $priorExitMeaning }
+                        $phases += $updatePhase
                     }
-                    $phases += @(
-                        @{ Label = 'Assert: PostUpdate'; Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate" }
-                        @{ Label = 'CollectLogs';        Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true; Always = $true }
-                    )
+                    $phases += @{ Label = 'Assert: PostUpdate'; Command = "& 'C:\PSADT\Sandbox\UpdateAssertions.ps1' -Phase PostUpdate" }
+                    # A watched run pauses after the update too (live row GUP: the updated app could not be checked before the
+                    # VM was restored), after the post-update assertions, so what the operator does is not judged.
+                    if ($interactive) { $phases += @{ Label = 'Check the updated app in the VM window'; Pause = $true; Interactive = $true } }
+                    $phases += @{ Label = 'CollectLogs'; Command = "& 'C:\PSADT\Sandbox\CollectLogs.ps1'"; IgnoreExit = $true; Always = $true }
 
                     # How the Intune-parity update ended when it failed, for the record's Notes (R6 #3, as the install/uninstall).
                     $parityExitNotes = [System.Collections.Generic.List[string]]::new()
@@ -1189,9 +1511,18 @@ function Test-Win32ToolkitProject {
                     if ($interactive) { Write-Host "`nRunning an INTERACTIVE Update test in the Hyper-V VM (verify the old install in the vmconnect window, then press Enter)..." -ForegroundColor Cyan }
                     else { Write-Host "`nRunning an UNATTENDED Update test in the Hyper-V VM with the Intune command line (32-bit parent, SYSTEM)..." -ForegroundColor Cyan }
                     $runLog = Initialize-Win32ToolkitTestRunLog -ProjectPath $ProjectPath -Scenario 'Update' -Family ([string]$baselineInfo.Family)
-                    if (-not (Invoke-Win32ToolkitHyperVRun @hvArgs)) {
+                    # Tripwire and proof binding (installer-identity PR 3, L12, L18): after every host write of the preparation.
+                    $priorGuard = $priorState -or $proofEntryIds.Count -gt 0
+                    $updTrip = if ($priorGuard) { Get-Win32ToolkitProjectTripwire -ProjectPath $ProjectPath } else { $null }
+                    $proofTaken = & $takeProof
+                    $hvCompleted = Invoke-Win32ToolkitHyperVRun @hvArgs
+                    # The project was copied in (never mapped): the guest can no longer write. Checked before any host write.
+                    if ($priorGuard) { Assert-Win32ToolkitProjectTripwire -ProjectPath $ProjectPath -Before $updTrip -Scenario 'Update' }
+                    if (-not $hvCompleted) {
                         Write-Warning 'The Hyper-V update run did not complete cleanly — see the warnings above.'
                     }
+                    $proofArg = @{}
+                    if ($proofTaken) { $proofArg['Proof'] = & $completeProof $proofTaken }
                     & $showExitCodes $runLog
                     # The logs came back with the copy-out: nothing to wait for.
                     $runFolder = & $saveRunLog $runLog 0
@@ -1202,12 +1533,16 @@ function Test-Win32ToolkitProject {
                     $assertLog = Join-Path $ProjectPath 'Sandbox\Logs\UpdateAssertions.log'
                     if (-not (Test-Path -LiteralPath $assertLog)) {
                         Write-Warning "No UpdateAssertions.log came back from the VM — the assertions never ran, or the copy-out failed. Check $ProjectPath\Sandbox\Logs and the phase warnings above."
-                        Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $null -Notes (@(@('Assertions log did not return from the VM.') + @($parityExitNotes)) -join ' ') -Baseline $baselineInfo -LogFolder $runFolder -Timing (& $withPrecheck $runInfo.Timing) -Lane $runInfo.Lane
+                        Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $null -Notes (@(@('Assertions log did not return from the VM.') + @($parityExitNotes)) -join ' ') -Baseline $baselineInfo -LogFolder $runFolder -Timing (& $withPrecheck $runInfo.Timing) -Lane $runInfo.Lane @proofArg
                         return $null
                     }
-                    $updVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -SinglePass
+                    $updVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -Backend HyperV -SinglePass -RequiredAssertion $updRequired -HostCheck { & $updateExitRow $runLog }
+                    # The provider warned for the update phase (with the meaning: the phase carries ExitMeaning); an
+                    # Intune-parity phase also wrote its sentence into $parityExitNotes.
+                    $updExit = & $judgeUpdateExit $runLog $updVerdict $true @($parityExitNotes)
+                    $updVerdict = $updExit.Verdict
                     Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'HyperV' -Mode $(if ($interactive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict -Baseline $baselineInfo -LogFolder $runFolder `
-                        -Notes (@($parityExitNotes) -join ' ') -Timing (& $withPrecheck $runInfo.Timing) -Lane $runInfo.Lane
+                        -Notes (@(@($parityExitNotes) + @($updExit.Notes)) -join ' ') -ExtraAssertion $updExit.Assertions -Timing (& $withPrecheck $runInfo.Timing) -Lane $runInfo.Lane @proofArg
                     if ($updVerdict -eq $false) { & $warnTechSwitch }
                     return $updVerdict
                 }
@@ -1278,6 +1613,11 @@ function Test-Win32ToolkitProject {
                 Write-Host '================================================'          -ForegroundColor Cyan
 
                 $runLog = Initialize-Win32ToolkitTestRunLog -ProjectPath $ProjectPath -Scenario 'Update' -Family ([string]$baselineInfo.Family)
+                # Tripwire and proof binding (installer-identity PR 3): after every host write of the preparation. A project with
+                # prior-install state runs only unattended here (a watched run was refused above).
+                $priorGuard = $priorState -or $proofEntryIds.Count -gt 0
+                $updTrip = if ($priorGuard) { Get-Win32ToolkitProjectTripwire -ProjectPath $ProjectPath } else { $null }
+                $proofTaken = & $takeProof
                 $launched = (Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched
                 if ($launched) {
                     Write-Host "`n✓ Update test sandbox launched." -ForegroundColor Green
@@ -1288,15 +1628,22 @@ function Test-Win32ToolkitProject {
                 # ── Step 8: Wait for the in-sandbox assertions and report pass/fail ──────
                 # The verdict is RETURNED ($true pass / $false fail / $null inconclusive) so callers
                 # (finalize pipeline, TUI, automation) can gate on a failed update test.
-                $updVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath
+                $updVerdict = Wait-Win32ToolkitUpdateAssertion -ProjectPath $ProjectPath -RequiredAssertion $updRequired -HostCheck { & $updateExitRow $runLog }
+                # The guest may still run after the waiter returned: compare only once this run's sandbox is closed (L18).
+                if ($priorGuard) { & $assertSandboxTripwire $updTrip 'Update' }
+                $proofArg = @{}
+                if ($proofTaken) { $proofArg['Proof'] = & $completeProof $proofTaken }
                 & $showExitCodes $runLog
+                $updExit = & $judgeUpdateExit $runLog $updVerdict $false @()
+                $updVerdict = $updExit.Verdict
                 $runFolder = & $saveRunLog $runLog $(if ($launched) { 60 } else { 0 })
                 Write-Win32ToolkitTestOutcome -ProjectPath $ProjectPath -Scenario 'Update' -Backend 'Sandbox' `
-                    -Mode $(if ($sbInteractive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict -Baseline $baselineInfo -LogFolder $runFolder
+                    -Mode $(if ($sbInteractive) { 'Interactive' } else { 'Unattended' }) -Verdict $updVerdict -Baseline $baselineInfo -LogFolder $runFolder `
+                    -Notes (@($updExit.Notes) -join ' ') -ExtraAssertion $updExit.Assertions @proofArg
                 if ($updVerdict -eq $false) { & $warnTechSwitch }
                 # The unattended sandbox's leftover window, as after the install/uninstall test (F10): only after a
                 # completed run, closed by the start-up wait's rule. Never changes the verdict.
-                if ($launched -and -not $sbInteractive -and $null -ne $updVerdict) { $null = Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90 -OwnRun }
+                if ($launched -and -not $sbInteractive -and $null -ne $updVerdict -and -not $priorGuard) { $null = Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90 -OwnRun }
                 return $updVerdict
             }
         }

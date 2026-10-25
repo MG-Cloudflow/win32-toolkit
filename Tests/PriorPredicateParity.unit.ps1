@@ -9,8 +9,13 @@
           fifth (no tattoo, no UpgradeCode, no product codes, no names - asserted) -> exit 0 + '1' exactly when Proven;
       (b) the deploy script's PriorEvaluate (the entry as Report, so no file system is needed) -> its State;
       (c) the predicate itself ($w32tPrState) -> its State;
+      (d) the Update test's guest assertions - the prior-install text of the Sandbox\UpdateAssertions.ps1 that the REAL
+          generator (New-UpdateAssertionScript) writes, run for the entry as a proof entry, PreUpdate then PostUpdate,
+          with the prior's files in a stand-in Program Files folder: the outcome it records in PriorObservations.json
+          (Plan = Proven, Unproven = Unverified, Refuse = Newer, Absent), PriorPresent-PreUpdate PASS exactly when Proven
+          and PriorAbsent-PostUpdate PASS exactly when Absent;
     are run in Windows PowerShell 5.1 children with every registry call shadowed, and must agree row by row with the
-    expected state. (The Update test's guest assertions join this table with installer-identity PR 3 U1.)
+    expected state (S13: the requirement, the deploy script and the Update test can never disagree).
 
     Nothing is installed; projects under %TEMP%. Run:  pwsh -File Tests\PriorPredicateParity.unit.ps1
 #>
@@ -25,7 +30,8 @@ function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
 foreach ($f in 'Get-Win32ToolkitAppConfig', 'ConvertTo-PSSingleQuoted', 'Test-Win32ToolkitProductCode', 'Get-Win32ToolkitRequirementRule', 'Test-Win32ToolkitPriorInstallEntry',
-    'ConvertTo-Win32ToolkitPriorVersion', 'Get-Win32ToolkitDeployScriptBlock', 'Get-Win32ToolkitDeployScriptShape', 'Test-Win32ToolkitPsadtVersionSupported', 'ConvertTo-Win32ToolkitSafeText') {
+    'ConvertTo-Win32ToolkitPriorVersion', 'Get-Win32ToolkitDeployScriptBlock', 'Get-Win32ToolkitDeployScriptShape', 'Test-Win32ToolkitPsadtVersionSupported', 'ConvertTo-Win32ToolkitSafeText',
+    'New-UpdateAssertionScript') {
     . (Join-Path $repo "Private\$f.ps1")
 }
 $script:PsadtSupportedRange = [pscustomobject]@{ Min = [version]'4.1.0'; MaxExclusive = [version]'4.3.0'; Display = '4.1.x and 4.2.x' }
@@ -36,6 +42,9 @@ if (-not (Test-Path -LiteralPath $ps51)) { Write-Host 'SKIP: Windows PowerShell 
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ('w32par_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $null = New-Item -ItemType Directory -Path $root -Force
+# The guest run (d) needs a stand-in Program Files folder whose path the deploy evaluation accepts as canonical: no 8.3
+# short name (the temp path can be one, e.g. C:\Users\ABCDEF~1), so it lives under the long profile path.
+$pfRoot = Join-Path $env:USERPROFILE ('AppData\Local\Temp\w32parpf-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $utf8 = [Text.UTF8Encoding]::new($false)
 $PC = '{5C6F8543-7EA8-40B9-B78F-04C78300DE7F}'
 
@@ -110,19 +119,51 @@ try {
     [IO.File]::WriteAllText($predFile, (Get-Win32ToolkitDeployScriptBlock -Name PriorPredicate), [Text.UTF8Encoding]::new($true))
     [IO.File]::WriteAllText($evalFile, (Get-Win32ToolkitDeployScriptBlock -Name PriorEvaluate), [Text.UTF8Encoding]::new($true))
 
+    # (d) The Update test's guest assertions, from the REAL generator: its prior-install text (the catalog predicate and
+    # evaluation, verbatim, then the fixed assertion text) up to the footer, and its data file (the entry 'p' as the one
+    # proof entry). The text reads only the two data files, which the harness hands it in place of C:\PSADT\...
+    $p1 = Join-Path $root 'p1'
+    $assertScript = New-UpdateAssertionScript -ProjectPath $p1 -ProofEntryIds 'p' -SkipRequirement
+    $assertText = [IO.File]::ReadAllText($assertScript) -replace "`r`n", "`n"
+    $guestStart = $assertText.IndexOf((Get-Win32ToolkitDeployScriptBlock -Name PriorPredicate), [StringComparison]::Ordinal)
+    $guestEnd = if ($guestStart -ge 0) { $assertText.IndexOf('Write-AssertLine "=== End $Phase ==="', $guestStart, [StringComparison]::Ordinal) } else { -1 }
+    $guestText = if ($guestStart -ge 0 -and $guestEnd -gt $guestStart) { $assertText.Substring($guestStart, $guestEnd - $guestStart) } else { '' }
+    if ($guestText.StartsWith((Get-Win32ToolkitDeployScriptBlock -Name PriorPredicate) + "`n" + (Get-Win32ToolkitDeployScriptBlock -Name PriorEvaluate) + "`n", [StringComparison]::Ordinal) -and
+        $guestText.Contains('ASSERT PriorPresent-PreUpdate.') -and $guestText.Contains('ASSERT PriorAbsent-PostUpdate.')) {
+        Ok "the generated UpdateAssertions.ps1 holds the catalog predicate and evaluation verbatim, then the prior assertions ($($guestText.Length) characters taken for (d))"
+    } else { Bad 'the prior-install text of the generated UpdateAssertions.ps1 was not found' }
+    $guestFile = Join-Path $root 'guest.ps1'
+    # With the script's own JSON-array reader (its header defines it; the prior text reads PriorSeeds.json with it).
+    [IO.File]::WriteAllText($guestFile, ([regex]::Match($assertText, '(?s)function Read-JsonArray.*?\n\}').Value + "`n" + $guestText), [Text.UTF8Encoding]::new($true))
+    $guestDataFile = Join-Path $p1 'Sandbox\UpdateAssertionData.json'
+
     $harness = @'
-param([string]$CasesFile, [string]$PredFile, [string]$EvalFile)
+param([string]$CasesFile, [string]$PredFile, [string]$EvalFile, [string]$GuestFile, [string]$GuestDataFile, [string]$PfRoot)
 Set-StrictMode -Version 1
 $ErrorActionPreference = 'Stop'
 $cases = Get-Content -LiteralPath $CasesFile -Raw -Encoding UTF8 | ConvertFrom-Json
 # Global: the requirement script runs as its own script file, where $script: would name ITS scope.
 $global:W32tParityReg = @{}
 $arp = @{ Native = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'; Wow6432 = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall' }
+# (d) a stand-in Program Files folder with the prior's program file and uninstaller, and the guest's log folder.
+$PF = Join-Path $PfRoot 'PF'
+$logDir = Join-Path $PfRoot 'Logs'
+foreach ($d in (Join-Path $PF 'Notepad++'), $logDir) { [void][IO.Directory]::CreateDirectory($d) }
+[IO.File]::WriteAllText((Join-Path $PF 'Notepad++\notepad++.exe'), 'x'); [IO.File]::WriteAllText((Join-Path $PF 'Notepad++\uninstall.exe'), 'x')
+$env:ProgramFiles = $PF
+$global:W32tGuestData = [IO.File]::ReadAllText($GuestDataFile)
+$global:W32tGuestCfg = ''
+$global:W32tAsserts = @()
 function Test-Path {
     [CmdletBinding()] param([string]$LiteralPath, [string]$Path, [string]$PathType)
     $p = $LiteralPath; if (-not $p) { $p = $Path }
-    if ($p -notlike 'HKLM:\SOFTWARE\*Microsoft\Windows\CurrentVersion\Uninstall\*') { throw "unexpected path $p" }
-    return $global:W32tParityReg.ContainsKey($p.ToLowerInvariant())
+    if ($p -like 'HKLM:*') {
+        if ($p -notlike 'HKLM:\SOFTWARE\*Microsoft\Windows\CurrentVersion\Uninstall\*') { throw "unexpected path $p" }
+        return $global:W32tParityReg.ContainsKey($p.ToLowerInvariant())
+    }
+    # Files: only below the stand-in folder (the prior's files and the guest's log folder).
+    if (-not $p.StartsWith($PfRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "unexpected path $p" }
+    Microsoft.PowerShell.Management\Test-Path @PSBoundParameters
 }
 function Get-ItemProperty {
     [CmdletBinding()] param([string]$LiteralPath, [string]$Path, [string]$Name)
@@ -133,9 +174,28 @@ function Get-ItemProperty {
     foreach ($n in @($k.Keys)) { $o | Add-Member -MemberType NoteProperty -Name $n -Value $k[$n] }
     $o
 }
+# The stand-in folder belongs to the test user: report SYSTEM-only permissions, as on a real Program Files folder.
+function Get-Acl {
+    [CmdletBinding()] param([string]$LiteralPath)
+    if (-not $LiteralPath.StartsWith($PfRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "unexpected ACL read $LiteralPath" }
+    $o = New-Object psobject
+    $o | Add-Member -MemberType ScriptMethod -Name GetOwner -Value { param($t) New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-18' }
+    $o | Add-Member -MemberType ScriptMethod -Name GetAccessRules -Value { param($a, $b, $t) , @() }
+    $o
+}
+# The guest reads its two data files from C:\PSADT: hand it the test's instead.
+function Get-Content {
+    [CmdletBinding()] param([string]$LiteralPath, [switch]$Raw, [string]$Encoding)
+    if ($LiteralPath -eq 'C:\PSADT\Sandbox\UpdateAssertionData.json') { return $global:W32tGuestData }
+    if ($LiteralPath -eq 'C:\PSADT\SupportFiles\AppConfig.json') { return $global:W32tGuestCfg }
+    if (-not $LiteralPath.StartsWith($PfRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "unexpected read $LiteralPath" }
+    Microsoft.PowerShell.Management\Get-Content @PSBoundParameters
+}
+function Write-AssertLine([string]$Message) { $global:W32tAsserts += $Message }
 $predText = [IO.File]::ReadAllText($PredFile); $evalText = [IO.File]::ReadAllText($EvalFile)
 . ([scriptblock]::Create($predText))
 . ([scriptblock]::Create($evalText))
+$guestSb = [scriptblock]::Create([IO.File]::ReadAllText($GuestFile))
 $cfg = New-Object psobject -Property @{ App = (New-Object psobject -Property @{ Version = '9.0' }); Installer = (New-Object psobject -Property @{ Type = 'msi' })
     OwnIdentity = (New-Object psobject -Property @{ ProductCode = '{5C6F8543-7EA8-40B9-B78F-04C78300DE7F}'; ArpKeys = @() }) }
 foreach ($c in @($cases)) {
@@ -143,6 +203,8 @@ foreach ($c in @($cases)) {
     if (-not $c.Absent) {
         $vals = @{}
         foreach ($pp in $c.Obs.PSObject.Properties) { $vals[$pp.Name] = $pp.Value }
+        # Registered in the stand-in Program Files folder (only the guest's deploy evaluation (d) reads this path).
+        $vals['UninstallString'] = '"' + (Join-Path $PF 'Notepad++\uninstall.exe') + '"'
         $global:W32tParityReg[("$($arp[$c.ObsView])\$($c.ObsKey)").ToLowerInvariant()] = $vals
     }
     # (a) the requirement script
@@ -154,26 +216,47 @@ foreach ($c in @($cases)) {
     $rep = $c.Entry.PSObject.Copy(); $rep.Mode = 'Report'
     $ev = & $w32tPrEvaluate $rep $cfg
     $evState = switch ($ev.Outcome) { 'Report' { [string]$ev.State } 'Unproven' { 'Unverified' } 'Absent' { 'Absent' } default { 'Outcome ' + $ev.Outcome } }
-    'ROW|' + $c.L + '|' + $c.Want + '|' + $req + '|' + $state + '|' + $evState
+    # (d) the Update test's guest assertions, the entry (Enforce) as the run's proof entry: PreUpdate, then PostUpdate.
+    $global:W32tGuestCfg = ConvertTo-Json -InputObject (New-Object psobject -Property @{ App = (New-Object psobject -Property @{ Version = '9.0'; ScriptAuthor = 'Contoso IT' })
+            Installer = (New-Object psobject -Property @{ Type = 'msi'; FileName = 'x.msi' })
+            OwnIdentity = (New-Object psobject -Property @{ ProductCode = '{5C6F8543-7EA8-40B9-B78F-04C78300DE7F}'; ArpKeys = @() })
+            PriorInstalls = (New-Object psobject -Property @{ SchemaVersion = '1.0'; Entries = @($c.Entry) }) }) -Depth 8
+    $obsFile = Join-Path $logDir 'PriorObservations.json'
+    if ([IO.File]::Exists($obsFile)) { [IO.File]::Delete($obsFile) }
+    $global:W32tAsserts = @()
+    $guest = & { $Phase = 'PreUpdate'; . $guestSb; $Phase = 'PostUpdate'; . $guestSb; 'ran' }
+    $obs = @([IO.File]::ReadAllText($obsFile) | ConvertFrom-Json)
+    $outcome = @($obs | Where-Object { $_.Id -eq 'p' } | ForEach-Object { [string]$_.Outcome }) -join ','
+    # A refusal is the Newer state only when the guest's PriorPresent line names it (anything else is a 69105 refusal).
+    $newer = @($global:W32tAsserts | Where-Object { $_ -like 'ASSERT PriorPresent-PreUpdate.p = FAIL (a NEWER prior install is present*' }).Count -eq 1
+    $guestState = switch ($outcome) { 'Plan' { 'Proven' } 'Unproven' { 'Unverified' } 'Refuse' { if ($newer) { 'Newer' } else { 'Refused' } } 'Absent' { 'Absent' } default { 'Outcome ' + $outcome } }
+    $present =@($global:W32tAsserts | Where-Object { $_ -like 'ASSERT PriorPresent-PreUpdate.p = *' } | ForEach-Object { $_.Split(' ')[3] }) -join ','
+    $absent = @($global:W32tAsserts | Where-Object { $_ -like 'ASSERT PriorAbsent-PostUpdate.p = *' } | ForEach-Object { $_.Split(' ')[3] }) -join ','
+    'ROW|' + $c.L + '|' + $c.Want + '|' + $req + '|' + $state + '|' + $evState + '|' + $guestState + '|' + $present + '|' + $absent + '|' + (@($guest) -join '')
 }
 '@
     $hFile = Join-Path $root 'harness.ps1'
     [IO.File]::WriteAllText($hFile, $harness, [Text.UTF8Encoding]::new($true))
-    $out = @(& $ps51 -NoProfile -ExecutionPolicy Bypass -File $hFile -CasesFile $casesFile -PredFile $predFile -EvalFile $evalFile 2>&1 | ForEach-Object { "$_" })
+    $out = @(& $ps51 -NoProfile -ExecutionPolicy Bypass -File $hFile -CasesFile $casesFile -PredFile $predFile -EvalFile $evalFile -GuestFile $guestFile -GuestDataFile $guestDataFile -PfRoot $pfRoot 2>&1 | ForEach-Object { "$_" })
     $seen = 0
     foreach ($l in $out) {
         if ($l -notlike 'ROW|*') { if ($l.Trim()) { Write-Host "  | $l" -ForegroundColor DarkGray }; continue }
         $seen++
         $x = $l.Split('|')
-        $label = $x[1]; $want = $x[2]; $req = $x[3]; $state = $x[4]; $ev = $x[5]
+        $label = $x[1]; $want = $x[2]; $req = $x[3]; $state = $x[4]; $ev = $x[5]; $guest = $x[6]; $present = $x[7]; $absent = $x[8]; $ran = $x[9]
         $reqWant = if ($want -eq 'Proven') { 'met' } else { 'not met' }
-        if ($state -eq $want -and $ev -eq $want -and $req -eq $reqWant) { Ok "$label -> $want (predicate, deploy evaluation and requirement '$req' agree)" }
-        else { Bad "$label : want $want; predicate $state, deploy evaluation $ev, requirement $req" }
+        $presentWant = if ($want -eq 'Proven') { 'PASS' } else { 'FAIL' }
+        $absentWant = if ($want -eq 'Absent') { 'PASS' } else { 'FAIL' }
+        if ($state -eq $want -and $ev -eq $want -and $req -eq $reqWant -and $guest -eq $want -and $present -eq $presentWant -and $absent -eq $absentWant -and $ran -eq 'ran') {
+            Ok "$label -> $want (predicate, deploy evaluation, requirement '$req' and the Update-test assertions PriorPresent $present / PriorAbsent $absent agree)"
+        }
+        else { Bad "$label : want $want; predicate $state, deploy evaluation $ev, requirement $req, guest $guest (PriorPresent '$present', PriorAbsent '$absent', $ran)" }
     }
     if ($seen -eq $rows.Count) { Ok "all $seen rows ran in Windows PowerShell 5.1" } else { Bad "only $seen of $($rows.Count) rows ran" }
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    if ([IO.Directory]::Exists($pfRoot)) { [IO.Directory]::Delete($pfRoot, $true) }
 }
 
 Write-Host ''

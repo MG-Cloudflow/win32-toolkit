@@ -253,6 +253,28 @@ $null = Add-Win32ToolkitTestResult -ProjectPath $proj8 -Scenario 'InstallUninsta
 if (@((Get-Win32ToolkitTestResult -ProjectPath $proj8)[-1].Timing.Phases).Count -eq 0 -and (Get-Content -LiteralPath $p8 -Raw -Encoding UTF8) -match '"Phases":\s*\[\s*\]') { Ok 'no phase ran: Phases is an empty array' } else { Bad 'an empty phase list was not written as []' }
 $all8 = Get-Win32ToolkitTestResult -ProjectPath $proj8   # the reader returns the array itself (unary comma)
 if ($all8.Count -eq 5) { Ok 'round trip: every record reads back' } else { Bad "records: $($all8.Count)" }
+# ── [9] Proof: the prior-install proof allow-list (installer-identity PR 3, spec 2.10) ─────────────────────
+Write-Host '[9] -Proof is written through an allow-list; without it the record keeps its older shape' -ForegroundColor Cyan
+$proj9 = New-Proj; $made += $proj9
+$h64 = 'AB' * 32
+$null = Add-Win32ToolkitTestResult -ProjectPath $proj9 -Scenario 'Update' -Backend 'HyperV' -Verdict 'Passed' -Proof @{
+    PriorInstallsHash = $h64; ScriptSha256 = $h64; FilesSha256 = $h64; SupportFilesSha256 = $h64; BaselineInstallerSha256 = ''; CatalogVersion = '1a2cadc16dec5c3b'
+    EntryIds = @('nsis-x64', 'NSIS', ('x' * 41)); CaptureIds = @('3f9c0a7d51e2b846', 'XYZ'); RequirementChecked = $true
+    ObservedVersions = @{ 'nsis-x64' = "8.9.5`e[31m"; 'Bad Id' = '1' }; DataLoss = @('nsis-x64'); Unknown = 'dropped' }
+$r9 = (Get-Win32ToolkitTestResult -ProjectPath $proj9)[-1]
+$pr = $r9.Proof
+if ((@($pr.PSObject.Properties.Name) -join ',') -eq 'SchemaVersion,PriorInstallsHash,ScriptSha256,FilesSha256,SupportFilesSha256,BaselineInstallerSha256,CatalogVersion,EntryIds,CaptureIds,RequirementChecked,ObservedVersions,DataLoss') { Ok 'the Proof keys in the frozen order; an unknown key dropped' } else { Bad "proof keys: $(@($pr.PSObject.Properties.Name) -join ',')" }
+if ($pr.PriorInstallsHash -ceq $h64 -and $pr.BaselineInstallerSha256 -eq '' -and $pr.CatalogVersion -ceq '1a2cadc16dec5c3b' -and $pr.RequirementChecked -eq $true -and (@($pr.EntryIds) -join ',') -eq 'nsis-x64' -and (@($pr.CaptureIds) -join ',') -eq '3f9c0a7d51e2b846' -and (@($pr.DataLoss) -join ',') -eq 'nsis-x64') {
+    Ok 'hashes, catalog version, ids (bad ids dropped), RequirementChecked and DataLoss kept'
+} else { Bad "proof values: $($pr | ConvertTo-Json -Compress)" }
+if ($pr.ObservedVersions.'nsis-x64' -eq '8.9.5?[31m' -and -not $pr.ObservedVersions.PSObject.Properties['Bad Id']) { Ok 'ObservedVersions: neutralised text, bad ids dropped' } else { Bad "observed: $($pr.ObservedVersions | ConvertTo-Json -Compress)" }
+$null = Add-Win32ToolkitTestResult -ProjectPath $proj9 -Scenario 'Update' -Backend 'HyperV' -Verdict 'Passed' -Proof @{ PriorInstallsHash = $h64.ToLowerInvariant(); CatalogVersion = 'XYZ'; EntryIds = 'nsis-x64'; RequirementChecked = 'true'; ObservedVersions = 'x'; DataLoss = @{ a = 1 } }
+$pw = (Get-Win32ToolkitTestResult -ProjectPath $proj9)[-1].Proof
+if ($pw.PriorInstallsHash -eq '' -and $pw.CatalogVersion -eq '' -and $null -eq $pw.EntryIds -and $null -eq $pw.RequirementChecked -and $null -eq $pw.ObservedVersions -and $null -eq $pw.DataLoss -and @($pw.CaptureIds).Count -eq 0) {
+    Ok 'wrong types: a lower-case hash and a bad catalog version -> '''', a string id list, a string boolean, a string map and a map list -> null, an absent list -> []'
+} else { Bad "proof wrong types: $($pw | ConvertTo-Json -Compress)" }
+$null = Add-Win32ToolkitTestResult -ProjectPath $proj9 -Scenario 'Update' -Backend 'HyperV' -Verdict 'Passed'
+if (-not (Get-Win32ToolkitTestResult -ProjectPath $proj9)[-1].PSObject.Properties['Proof']) { Ok 'without -Proof: no Proof property (older shape)' } else { Bad 'a Proof property without -Proof' }
 # ── cleanup ───────────────────────────────────────────────────────────────────────────────────────
 foreach ($m in $made) { Remove-Item -LiteralPath $m -Recurse -Force -ErrorAction SilentlyContinue }
 

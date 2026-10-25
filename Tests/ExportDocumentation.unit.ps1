@@ -307,6 +307,20 @@ $md9b = Get-Content -LiteralPath $out9b -Raw
 if ($md9 -ceq $md9b) { Ok 'the document is byte-identical with and without Timing / Lane' } else { Bad 'Timing / Lane changed the customer documentation' }
 if ($md9 -cnotmatch 'win32tk-measure' -and $md9 -cnotmatch 'CopyInSha256|Attestation|SecondsSinceTeardown') { Ok 'no VM name, hash or timing key is shown' } else { Bad 'run facts leaked into the document' }
 
+# ══ Test 10: an Update record with a prior-install Proof (installer-identity PR 3) renders as before ══════════════
+Write-Host '[10] a record with a Proof renders exactly as the same record without it' -ForegroundColor Cyan
+$rec10 = [ordered]@{ Scenario = 'Update'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-25T09:00:00Z'; Verdict = 'Passed'
+    Assertions = @(@{ Name = 'PriorPresent-PreUpdate.nsis-x64'; Result = 'PASS' }, @{ Name = 'PriorAbsent-PostUpdate.nsis-x64'; Result = 'PASS' }); Notes = '' }
+@($rec10) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $proj 'Documentation\TestResults.json') -Encoding UTF8
+$out10a = Join-Path $proj 'Documentation_noproof.md'
+$null = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath $out10a 3>$null
+$rec10['Proof'] = [ordered]@{ SchemaVersion = '1.0'; PriorInstallsHash = ('AB' * 32); ScriptSha256 = ('AB' * 32); FilesSha256 = ('AB' * 32); SupportFilesSha256 = ('AB' * 32)
+    BaselineInstallerSha256 = ('CD' * 32); CatalogVersion = '1a2cadc16dec5c3b'; EntryIds = @('nsis-x64'); CaptureIds = @(); RequirementChecked = $true; ObservedVersions = [ordered]@{ 'nsis-x64' = '8.9.5' }; DataLoss = @('nsis-x64') }
+@($rec10) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $proj 'Documentation\TestResults.json') -Encoding UTF8
+$out10b = Join-Path $proj 'Documentation_proof.md'
+$null = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath $out10b 3>$null
+$md10a = Get-Content -LiteralPath $out10a -Raw; $md10b = Get-Content -LiteralPath $out10b -Raw
+if ($md10a -ceq $md10b -and $md10b -notmatch 'ABABABAB|CDCDCDCD|1a2cadc16dec5c3b') { Ok 'byte-identical with and without the Proof; no hash is shown' } else { Bad 'the Proof changed the customer documentation' }
 # ── Cleanup ───────────────────────────────────────────────────────────────────────
 Remove-Item -LiteralPath $proj, $bare -Recurse -Force -ErrorAction SilentlyContinue
 

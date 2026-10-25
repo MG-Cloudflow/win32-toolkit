@@ -111,6 +111,17 @@ try {
     if ($l.Count -eq 1 -and $l[0].Origin -eq 'Entry' -and $l[0].InstallerType -eq 'inno' -and $l[0].Family -eq 'exe' -and -not $l[0].FallbackInstallerType) { Ok 'Auto + PriorInstalls Enforce entry (inno) -> Entry (Block and non-EXE entries skipped; wins over the sibling)' }
     else { Bad "entry: $($l | ConvertTo-Json -Compress)" }
 
+    # c2. installer-identity PR 3 (L27): the Enforce entries in Id order; -EntryId picks the group of those entries
+    $cfgGroups = [pscustomobject]@{ App = [pscustomobject]@{ Name = 'Npp' }; PriorInstalls = [pscustomobject]@{ Entries = @(
+                [pscustomobject]@{ Id = 'zz-nsis'; Mode = 'Enforce'; UninstallerType = 'nullsoft' },
+                [pscustomobject]@{ Id = 'aa-inno'; Mode = 'Enforce'; UninstallerType = 'inno' }) } }
+    $pg = New-BfProj $nppDelta $cfgGroups
+    $l = Get-Leg $pg 'Auto'
+    if ($l[0].Origin -eq 'Entry' -and $l[0].InstallerType -eq 'inno') { Ok 'Auto: the first Enforce entry in Id ORDER (aa-inno), not in file order' } else { Bad "id order: $($l | ConvertTo-Json -Compress)" }
+    $l = @(Resolve-Win32ToolkitBaselineFamily -ProjectPath $pg -Mode Auto -EntryId 'zz-nsis')
+    if ($l[0].Origin -eq 'Entry' -and $l[0].InstallerType -eq 'nullsoft') { Ok 'Auto -EntryId zz-nsis -> the second group''s technology (nullsoft), not the first entry''s' } else { Bad "entry id: $($l | ConvertTo-Json -Compress)" }
+    $l = @(Resolve-Win32ToolkitBaselineFamily -ProjectPath $pg -Mode Auto -EntryId 'unknown')
+    if ($l[0].Origin -eq 'Sibling') { Ok 'Auto -EntryId naming no Enforce entry -> the sibling step as before' } else { Bad "no entry: $($l | ConvertTo-Json -Compress)" }
     # d. a zip-wrapped-only sibling (TeamViewer 15.82.6 x64, packaged nullsoft)
     $script:source = [pscustomobject]@{ InstallerType = 'nullsoft'; Family = 'exe'; Scope = 'machine' }
     $l = Get-Leg (New-BfProj (New-Delta @(New-Sib wix msi 5 '' -Zip))) 'Auto'

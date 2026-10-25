@@ -561,6 +561,21 @@ else {
     $nc51 = @($l51 | Where-Object { $_ -like '*UninstallKeys has an entry that is not a plain key name*' })
     $want51 = if ($real.Count) { "*ASSERT AppArpGone-PostUninstall = FAIL (*: [[]Registry64] $($real[0]))" } else { '*ASSERT AppArpGone-PostUninstall = PASS' }
     if ($a51.Count -eq 1 -and $a51[0] -like $want51 -and $nc51.Count -eq 1 -and $l51[-1] -like '*RESULT COMPLETE') { Ok "Windows PowerShell 5.1 runs it against the real registry: the trailing-LF entry not checked, a missing key gone$(if ($real.Count) { ', an existing 64-bit key -> FAIL' } else { ' -> PASS (no 64-bit Uninstall key to probe)' })" } else { Bad "5.1 run:`n    $($l51 -join "`n    ")" }
+
+    # Live run SB-ENFORCE (2026-10-27): the host reads the mapped log while the Windows Sandbox guest appends to it, and
+    # 5.1 Add-Content fails on a file another process holds open, dropping the line (a lost FAIL turned a failed run
+    # into a pass). The generated writer, under 5.1, while this process holds a read handle (read/write sharing).
+    $w51 = New-TempDir
+    $k6Dirs.Add($w51)
+    $wLog = Join-Path $w51 'InstallAssertions.log'
+    $wFn = [regex]::Match($genText, '(?s)function Write-AssertLine.*?\r?\n\}').Value
+    [System.IO.File]::WriteAllText((Join-Path $w51 'w.ps1'), ("param([string]`$Log)`r`n`$assertLog = `$Log`r`n" + $wFn + "`r`nfor (`$i = 1; `$i -le 20; `$i++) { Write-AssertLine ('ASSERT Line' + `$i + ' = PASS') }`r`n"), (New-Object System.Text.UTF8Encoding($true)))
+    $held = [System.IO.File]::Open($wLog, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    try { $null = & $ps51 -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $w51 'w.ps1') -Log $wLog 2>&1 }
+    finally { $held.Dispose() }
+    $wLines = @(Get-Content -LiteralPath $wLog -Encoding UTF8 | Where-Object { $_ -match '^\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ\] ASSERT Line\d+ = PASS$' })
+    $wBytes = [System.IO.File]::ReadAllBytes($wLog)
+    if ($wLines.Count -eq 20 -and $wBytes.Length -gt 3 -and $wBytes[0] -eq 0xEF -and $wBytes[1] -eq 0xBB -and $wBytes[2] -eq 0xBF) { Ok '5.1: every line is written while the host holds the log open for reading (UTF-8 with a BOM, as before)' } else { Bad "5.1 writer under a held reader: $($wLines.Count) of 20 lines" }
 }
 
 # cleanup

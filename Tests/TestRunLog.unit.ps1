@@ -185,6 +185,12 @@ try {
     if ($recsT.Count -eq 5 -and $recsT[3].Timing.TotalSeconds -eq 12.3 -and $recsT[3].Lane.VMName -eq 'vm' -and $recsT[3].Lane.ConcurrentLanes -eq 1 -and
         -not $recsT[4].PSObject.Properties['Timing'] -and -not $recsT[4].PSObject.Properties['Lane']) { Ok 'Write-Win32ToolkitTestOutcome -Timing / -Lane reach the record; $null ones write no property' }
     else { Bad "timing records: $($recsT | Select-Object -Skip 3 | ConvertTo-Json -Compress -Depth 4)" }
+    # Live run OP-OWN: a host assertion (the update's own exit code) joins the guest's; a name the log holds keeps the
+    # guest's result; anything that is not a PASS/FAIL/SKIP pair is ignored.
+    Write-Win32ToolkitTestOutcome -ProjectPath $p -Scenario Update -Backend HyperV -Verdict $false -ExtraAssertion @(@{ Name = 'UpdateExitCode-PostUpdate'; Result = 'FAIL' }, @{ Name = 'OldArpGone-PostUpdate'; Result = 'FAIL' }, @{ Name = 'Bad'; Result = 'MAYBE' }, 'text')
+    $recX = @(Get-Win32ToolkitTestResult -ProjectPath $p | ForEach-Object { $_ })[-1]
+    $namesX = @($recX.Assertions | ForEach-Object { "$($_.Name)=$($_.Result)" }) -join ','
+    if ($recX.Verdict -eq 'Failed' -and $namesX -ceq 'OldArpGone-PostUpdate=PASS,UpdateExitCode-PostUpdate=FAIL') { Ok "-ExtraAssertion: the host's UpdateExitCode-PostUpdate FAIL is recorded after the guest's assertions ($namesX)" } else { Bad "extra assertions: $namesX" }
 
     # --- [6] Get-Win32ToolkitTestRunLogFolder -----------------------------------------------------------
     Write-Host '[6] Get-Win32ToolkitTestRunLogFolder: filters, and only the Runs shape' -ForegroundColor Cyan

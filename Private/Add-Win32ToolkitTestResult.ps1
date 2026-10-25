@@ -8,7 +8,7 @@ function Add-Win32ToolkitTestResult {
         "all the tests we did". Entries are appended newest-last.
 
         Each entry has the shape:
-            { Scenario, Backend, Mode, TimestampUtc, Verdict, Assertions[], Notes [, Baseline] [, OldArpSurvivors[]] [, LogFolder] [, NotRun] [, Timing] [, Lane] }
+            { Scenario, Backend, Mode, TimestampUtc, Verdict, Assertions[], Notes [, Baseline] [, OldArpSurvivors[]] [, LogFolder] [, NotRun] [, Timing] [, Lane] [, Proof] }
         where Assertions is an array of @{ Name; Result } (Result in PASS|FAIL|SKIP). Baseline (the Update
         test's old-version variant: Version, Mode, Origin, RequestedInstallerType, InstallerType, Family,
         UsedFallback, FallbackReason, RequestedScope, Scope, ScopeRelaxed, Unavailable, Locale, Source,
@@ -67,6 +67,13 @@ function Add-Win32ToolkitTestResult {
         DefenderExclusionCount, SignatureAgeDays, FromCache } or $null). Names pass ConvertTo-Win32ToolkitSafeText
         (64 characters at most); an Id that is not a GUID is ''; a value of the wrong type becomes $null. Omitted
         or $null: no Lane property.
+    .PARAMETER Proof
+        An Update run that checked prior-install rules (installer-identity PR 3, spec 2.10): written as the Proof property
+        through an allow-list, keys in this order: SchemaVersion, PriorInstallsHash, ScriptSha256, FilesSha256,
+        SupportFilesSha256, BaselineInstallerSha256 (64 upper-case hex, else ''), CatalogVersion (16 lower-case hex, else ''),
+        EntryIds and DataLoss (ids ^[a-z0-9-]{1,40}$, at most 32), CaptureIds (16 lower-case hex, at most 32),
+        RequirementChecked (bool, else $null), ObservedVersions (id -> version text, 64 characters at most). Omitted or
+        $null: no Proof property. Get-Win32ToolkitPriorProofState reads it.
     .EXAMPLE
         Add-Win32ToolkitTestResult -ProjectPath $p -Scenario InstallUninstall -Backend Sandbox `
             -Verdict Passed -Assertions @(@{ Name = 'Installed'; Result = 'PASS' }) -Notes 'clean run'
@@ -110,7 +117,9 @@ function Add-Win32ToolkitTestResult {
 
         [hashtable]$Timing,
 
-        [hashtable]$Lane
+        [hashtable]$Lane,
+
+        [hashtable]$Proof
     )
 
     $docDir = Join-Path $ProjectPath 'Documentation'
@@ -264,6 +273,39 @@ function Add-Win32ToolkitTestResult {
             }
         }
         $entry | Add-Member -NotePropertyName Lane -NotePropertyValue ([pscustomobject]$l)
+    }
+
+    # A prior-install proof (installer-identity PR 3, spec 2.10, L12): an ALLOW-LIST like Timing - what the Update run
+    # checked (the hashes the device reads, the entries, the floor captures) and what it observed. A hash that is not 64
+    # upper-case hex (CatalogVersion: 16 lower-case hex) becomes '', an id that is not ^[a-z0-9-]{1,40}$ is dropped (at most
+    # 32), a value of the wrong type becomes $null. Get-Win32ToolkitPriorProofState reads it.
+    if ($PSBoundParameters.ContainsKey('Proof') -and $null -ne $Proof) {
+        $hex64 = { param($v) if ($v -is [string] -and $v -cmatch '^[0-9A-F]{64}$') { $v } else { '' } }
+        $idList = { param($v, [string]$Rx) if ($null -eq $v) { , @() } elseif ($v -is [string] -or $v -is [System.Collections.IDictionary]) { $null } else { , @(@($v) | Where-Object { $_ -is [string] -and $_ -cmatch $Rx } | Select-Object -Unique -First 32) } }
+        $observed = $null
+        $ov = $Proof['ObservedVersions']
+        if ($ov -is [System.Collections.IDictionary]) {
+            $observed = [ordered]@{}
+            foreach ($k in @($ov.Keys | ForEach-Object { [string]$_ } | Where-Object { $_ -cmatch '^[a-z0-9-]{1,40}$' } | Sort-Object | Select-Object -First 32)) {
+                $observed[$k] = ConvertTo-Win32ToolkitSafeText -Text ([string]$ov[$k]) -MaxLength 64
+            }
+            $observed = [pscustomobject]$observed
+        }
+        $p = [ordered]@{
+            SchemaVersion           = '1.0'
+            PriorInstallsHash       = & $hex64 $Proof['PriorInstallsHash']
+            ScriptSha256            = & $hex64 $Proof['ScriptSha256']
+            FilesSha256             = & $hex64 $Proof['FilesSha256']
+            SupportFilesSha256      = & $hex64 $Proof['SupportFilesSha256']
+            BaselineInstallerSha256 = & $hex64 $Proof['BaselineInstallerSha256']
+            CatalogVersion          = if ($Proof['CatalogVersion'] -is [string] -and $Proof['CatalogVersion'] -cmatch '^[0-9a-f]{16}$') { $Proof['CatalogVersion'] } else { '' }
+            EntryIds                = & $idList $Proof['EntryIds'] '^[a-z0-9-]{1,40}$'
+            CaptureIds              = & $idList $Proof['CaptureIds'] '^[a-f0-9]{16}$'
+            RequirementChecked      = & $bool $Proof['RequirementChecked']
+            ObservedVersions        = $observed
+            DataLoss                = & $idList $Proof['DataLoss'] '^[a-z0-9-]{1,40}$'
+        }
+        $entry | Add-Member -NotePropertyName Proof -NotePropertyValue ([pscustomobject]$p)
     }
 
     $entries += $entry

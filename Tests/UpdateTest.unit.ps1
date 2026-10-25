@@ -22,6 +22,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 
 . (Join-Path $repo 'Private\Select-Win32ToolkitOlderVersion.ps1')
 . (Join-Path $repo 'Private\New-UpdateAssertionScript.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitDeployScriptBlock.ps1')   # C-9 (installer-identity PR 3): the generator embeds the prior-install catalog texts
 . (Join-Path $repo 'Private\Wait-Win32ToolkitUpdateAssertion.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitAppConfig.ps1')
 . (Join-Path $repo 'Private\ConvertTo-PSSingleQuoted.ps1')
@@ -160,6 +161,44 @@ try {
     $ps = Join-Path $base 'wait-skip'
     New-AssertLog $ps @('[t] ASSERT Requirement-PreUpdate = SKIP (n/a)', '[t] ASSERT Tattoo-PostUpdate = SKIP (n/a)', '[t] RESULT COMPLETE')
     if ($null -eq (Wait-Win32ToolkitUpdateAssertion -ProjectPath $ps -TimeoutMinutes 1 6>$null 3>$null)) { Ok 'all SKIP -> $null (nothing verified)' } else { Bad 'SKIP verdict wrong' }
+
+    # Live run SB-ENFORCE (2026-10-27): a complete log that lost lines (no Tattoo-/OldArpGone-/PriorAbsent-PostUpdate)
+    # was PASSED on its three remaining lines. Names the guest always writes are required: one missing -> inconclusive.
+    $req = @('Requirement-PreUpdate', 'Requirement-PostUpdate', 'Tattoo-PostUpdate')
+    $vMissing = Wait-Win32ToolkitUpdateAssertion -ProjectPath $pp -TimeoutMinutes 1 -RequiredAssertion ($req + 'PriorAbsent-PostUpdate.nsis-x64') 6>$null 3>$null
+    if ($null -eq $vMissing) { Ok 'a complete PASS log without a required assertion -> $null (lines were lost), not PASSED' } else { Bad 'missing required assertion still passed' }
+    $vPresent = Wait-Win32ToolkitUpdateAssertion -ProjectPath $pp -TimeoutMinutes 1 -RequiredAssertion $req 6>$null
+    if ($vPresent -eq $true) { Ok 'every required assertion present -> $true' } else { Bad 'required set present but not passed' }
+    $vFail = Wait-Win32ToolkitUpdateAssertion -ProjectPath $pf -TimeoutMinutes 1 -RequiredAssertion ($req + 'OldArpGone-PostUpdate') 6>$null 3>$null
+    if ($vFail -eq $false) { Ok 'a FAIL stays conclusive when required assertions are missing too' } else { Bad 'FAIL not conclusive with missing required' }
+    $srcT = Get-Content -LiteralPath (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1') -Raw
+    if (([regex]::Matches($srcT, 'Wait-Win32ToolkitUpdateAssertion -ProjectPath \$ProjectPath[^\r\n]*-RequiredAssertion \$(updRequired|iuRequired)')).Count -eq 4 -and
+        $srcT.Contains("'Requirement-PreUpdate', 'Requirement-PostUpdate', 'OldArpGone-PostUpdate', 'Tattoo-PostUpdate', 'NewAppIntact-PostUpdate'") -and $srcT.Contains('"PriorPresent-PreUpdate.$_"; "PriorAbsent-PostUpdate.$_"') -and
+        $srcT.Contains("`$iuRequired = @('InstallDetected-PostInstall', 'UninstallClean-PostUninstall')")) { Ok 'all four waits (Update and Install/Uninstall, Sandbox and Hyper-V) pass the always-written names, one pair per checked prior-install entry' } else { Bad 'Test-Win32ToolkitProject does not pass -RequiredAssertion at every wait' }
+
+    # Live rows OP-BLOCK, OP-NEWER, OP-OWN, KILL-*, APP-RUNNING, RC2-BLOCK: the console said "N assertion(s) failed" (in
+    # hashtable order) while the record also held the host's UpdateExitCode-PostUpdate FAIL. -HostCheck rows count too,
+    # listed first, with their sentence under the headline; the guest's follow in the order it wrote them.
+    $ph = Join-Path $base 'wait-host'
+    New-AssertLog $ph @('[t] ASSERT Requirement-PreUpdate = FAIL (x)', '[t] ASSERT Tattoo-PostUpdate = FAIL (y)', '[t] ASSERT NewAppIntact-PostUpdate = PASS', '[t] ASSERT OldArpGone-PostUpdate = FAIL (z)', '[t] RESULT COMPLETE')
+    $hostRow = { @{ Name = 'UpdateExitCode-PostUpdate'; Result = 'FAIL'; Text = 'The update exited with code 69101: a Block prior-install rule refused the install.' } }
+    $hostOut = @(Wait-Win32ToolkitUpdateAssertion -ProjectPath $ph -TimeoutMinutes 1 -HostCheck $hostRow 3>$null 6>&1 | ForEach-Object { "$_" })
+    $verdictH = $hostOut | Where-Object { $_ -eq 'False' }
+    $head = @($hostOut | Where-Object { $_ -match 'UPDATE TEST FAILED' })
+    $idxHead = [array]::IndexOf($hostOut, ($head | Select-Object -First 1))
+    if ($head.Count -eq 1 -and $head[0] -match '— 4 assertion\(s\) failed: UpdateExitCode-PostUpdate, Requirement-PreUpdate, Tattoo-PostUpdate, OldArpGone-PostUpdate$' -and
+        $hostOut[$idxHead + 1] -match 'The update exited with code 69101: a Block prior-install rule' -and @($hostOut | Where-Object { $_ -match '^\s*ASSERT UpdateExitCode-PostUpdate = FAIL \(host\)$' }).Count -eq 1) {
+        Ok '-HostCheck: the host FAIL is listed, counted first (4 = 3 guest + 1 host) and its sentence printed under the headline; the guest order kept'
+    } else { Bad "host check summary: $($hostOut -join ' | ')" }
+    if ($null -ne $verdictH -or @($hostOut)[-1] -eq 'False') { Ok '-HostCheck FAIL -> $false' } else { Bad "host check verdict: $($hostOut -join ' | ')" }
+    $vHostOnly = Wait-Win32ToolkitUpdateAssertion -ProjectPath $pp -TimeoutMinutes 1 -HostCheck $hostRow 6>$null 3>$null
+    if ($vHostOnly -eq $false) { Ok 'all guest assertions PASS but the host FAIL -> $false' } else { Bad 'host FAIL ignored on a passing log' }
+    $vHostNone = Wait-Win32ToolkitUpdateAssertion -ProjectPath $pp -TimeoutMinutes 1 -HostCheck { } 6>$null
+    if ($vHostNone -eq $true) { Ok 'a host check with no row leaves the verdict to the guest' } else { Bad 'empty host check' }
+    $pn = Join-Path $base 'wait-host-none'
+    New-Item -ItemType Directory -Path $pn -Force | Out-Null
+    $vHostNoLog = Wait-Win32ToolkitUpdateAssertion -ProjectPath $pn -TimeoutMinutes 0 -HostCheck $hostRow 6>$null 3>$null
+    if ($vHostNoLog -eq $false) { Ok 'no guest log but a host FAIL -> $false (the update failed)' } else { Bad 'no log + host FAIL' }
 
     $pt = Join-Path $base 'wait-timeout'
     New-Item -ItemType Directory -Path $pt -Force | Out-Null
@@ -374,7 +413,88 @@ try {
     Invoke-Expression $vuFn
     if ((Test-VersionUnchanged '2.5.0' '2.5') -and (Test-VersionUnchanged '2.53.0' '2.53.0') -and -not (Test-VersionUnchanged '2.5.1' '2.5') -and -not (Test-VersionUnchanged '2.54.0' '2.53.0')) { Ok 'Test-VersionUnchanged: trailing-zero drift equal, prefix bump 2.5->2.5.1 NOT unchanged' } else { Bad 'version-unchanged rules wrong (prefix false-FAIL risk)' }
     if ($ag -match [regex]::Escape('Test-VersionUnchanged "$($p.DisplayVersion)" $expectedOldVersion')) { Ok 'PostUpdate bump-decision uses strict Test-VersionUnchanged' } else { Bad 'PostUpdate still uses loose match for bump' }
-    if ($ag -match [regex]::Escape('ConvertFrom-Json | Where-Object { $_ -and $_.KeyPath }')) { Ok 'identified-set read filters the empty-array artifact (SKIP not false-PASS)' } else { Bad 'empty-array JSON guard missing' }
+    if ($ag -match [regex]::Escape('$identified = @(Read-JsonArray $identifiedFile | Where-Object { $_ -and $_.KeyPath })')) { Ok 'identified-set read element by element, filtering the empty-array artifact (SKIP not false-PASS)' } else { Bad 'identified-set read is not element by element' }
+    # Live run OP-OWN (2026-10-27): under Windows PowerShell 5.1 ConvertFrom-Json writes a JSON array as ONE object, so the
+    # PreBaseline exclusion never worked and two surviving old entries were read back as one (their versions joined into
+    # '8.9.8.1 8.9.8.1', judged "upgraded": a false OldArpGone PASS). The generated script, run under 5.1 with its ARP
+    # reads stubbed and C:\PSADT pointed at a temp folder.
+    $ps51j = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (Test-Path -LiteralPath $ps51j) {
+        $jRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('w32arp_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+        $jProj = Join-Path $jRoot 'proj'
+        New-Item -ItemType Directory -Path (Join-Path $jProj 'SupportFiles'), (Join-Path $jRoot 'guest\Sandbox\Logs'), (Join-Path $jRoot 'guest\SupportFiles') -Force | Out-Null
+        $jCfg = '{"App":{"DisplayName":"Notepad++","Name":"","Vendor":"Notepad++ Team","Version":"8.9.8.2","ScriptAuthor":"Contoso IT"},"Uninstall":{"AppName":"Notepad++ (64-bit x64)"}}'
+        [System.IO.File]::WriteAllText((Join-Path $jProj 'SupportFiles\AppConfig.json'), $jCfg, (New-Object System.Text.UTF8Encoding($false)))
+        [System.IO.File]::WriteAllText((Join-Path $jRoot 'guest\SupportFiles\AppConfig.json'), $jCfg, (New-Object System.Text.UTF8Encoding($false)))
+        $jText = Get-Content -LiteralPath (New-UpdateAssertionScript -ProjectPath $jProj -OldVersion '8.9.8.1' -SkipRequirement) -Raw
+        $jStub = @'
+$identifiedFile  = Join-Path $logDir 'PreUpdateArpBaseline.json'
+function Get-ArpEntries { $s = Get-Content -LiteralPath $env:W32T_T_ARP -Raw | ConvertFrom-Json; foreach ($x in @($s)) { if ($x) { [pscustomobject]@{ KeyPath = [string]$x.KeyPath; DisplayName = [string]$x.DisplayName; DisplayVersion = [string]$x.DisplayVersion } } } }
+function Get-ItemProperty { param([string]$LiteralPath, $Name, $ErrorAction) $s = Get-Content -LiteralPath $env:W32T_T_ARP -Raw | ConvertFrom-Json; foreach ($x in @($s)) { if ($x -and [string]$x.KeyPath -eq $LiteralPath) { return [pscustomobject]@{ DisplayName = [string]$x.DisplayName; DisplayVersion = [string]$x.DisplayVersion; UninstallString = '' } } }; throw 'absent' }
+'@
+        $jText = $jText.Replace("`$identifiedFile  = Join-Path `$logDir 'PreUpdateArpBaseline.json'", $jStub.TrimEnd()).Replace('C:\PSADT\', (Join-Path $jRoot 'guest') + '\')
+        $jScript = Join-Path $jRoot 'UpdateAssertions.ps1'
+        [System.IO.File]::WriteAllText($jScript, $jText, (New-Object System.Text.UTF8Encoding($true)))
+        $jKey = { param($n) "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$n" }
+        $jRun = {
+            param([object[]]$Before, [object[]]$Baseline)
+            $log = Join-Path $jRoot 'guest\Sandbox\Logs\UpdateAssertions.log'
+            Get-ChildItem -LiteralPath (Join-Path $jRoot 'guest\Sandbox\Logs') -File | Remove-Item -Force
+            $state = Join-Path $jRoot 'arp.json'
+            foreach ($step in @(@('PreBaseline', $Before), @('PreUpdate', $Baseline), @('PostUpdate', $Baseline))) {
+                [System.IO.File]::WriteAllText($state, (ConvertTo-Json -InputObject @($step[1]) -Depth 3), (New-Object System.Text.UTF8Encoding($false)))
+                $env:W32T_T_ARP = $state
+                try { & $ps51j -NoProfile -ExecutionPolicy Bypass -File $jScript -Phase $step[0] *> $null } finally { Remove-Item Env:\W32T_T_ARP -ErrorAction SilentlyContinue }
+            }
+            @(Get-Content -LiteralPath $log -ErrorAction SilentlyContinue)
+        }
+        try {
+            # The vendor NSIS install was there before the baseline (a declared dependency); the baseline adds the MSI.
+            $nsis = [pscustomobject]@{ KeyPath = (& $jKey 'Notepad++'); DisplayName = 'Notepad++ (64-bit x64)'; DisplayVersion = '8.9.8.1' }
+            $msi = [pscustomobject]@{ KeyPath = (& $jKey '{5C6F0000-0000-0000-0000-000000000001}'); DisplayName = 'Notepad++ (64-bit x64)'; DisplayVersion = '8.9.8.1' }
+            $other = [pscustomobject]@{ KeyPath = (& $jKey 'Other'); DisplayName = 'Other'; DisplayVersion = '1.0' }
+            $lines = & $jRun @($nsis, $other) @($nsis, $other, $msi)
+            $idLine = @($lines | Where-Object { $_ -match 'PreUpdate: identified' })
+            $failLine = @($lines | Where-Object { $_ -match 'ASSERT OldArpGone-PostUpdate = FAIL' })
+            if ($idLine.Count -eq 1 -and $idLine[0] -match 'identified 1 ARP entry' -and $failLine.Count -eq 1 -and $failLine[0] -match [regex]::Escape('{5C6F0000') -and $failLine[0] -notmatch 'Uninstall\\Notepad\+\+\]') {
+                Ok '5.1: an entry present before the baseline is not the old app; the surviving baseline entry FAILs OldArpGone'
+            } else { Bad "5.1 PreBaseline exclusion: $($lines -join ' | ')" }
+            # Two old entries the baseline installed, both still registered at the old version after the update.
+            $a = [pscustomobject]@{ KeyPath = (& $jKey 'AppA'); DisplayName = 'Notepad++'; DisplayVersion = '8.9.8.1' }
+            $b = [pscustomobject]@{ KeyPath = (& $jKey 'AppB'); DisplayName = 'Notepad++ (64-bit x64)'; DisplayVersion = '8.9.8.1' }
+            $lines = & $jRun @() @($a, $b)
+            $failLine = @($lines | Where-Object { $_ -match 'ASSERT OldArpGone-PostUpdate = FAIL' })
+            if (@($lines | Where-Object { $_ -match 'identified 2 ARP entry' }).Count -eq 1 -and $failLine.Count -eq 1 -and $failLine[0] -match 'AppA' -and $failLine[0] -match 'AppB' -and @($lines | Where-Object { $_ -match 'OldArpGone-PostUpdate = PASS' }).Count -eq 0) {
+                Ok '5.1: two surviving old entries stay two (OldArpGone FAIL names both, never a PASS)'
+            } else { Bad "5.1 two survivors: $($lines -join ' | ')" }
+            # Read-JsonArray itself: 0, 1 and 2 elements, as 5.1 writes them.
+            $rjFn = [regex]::Match($jText, '(?s)function Read-JsonArray.*?\r?\n\}').Value
+            $rjScript = Join-Path $jRoot 'rj.ps1'
+            [System.IO.File]::WriteAllText($rjScript, ($rjFn + "`r`n" + @'
+$f = Join-Path $env:TEMP ('w32rj_' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.json')
+foreach ($case in @(@(), @(@{ Path = 'p1' }), @(@{ Path = 'p1' }, @{ Path = 'p2' }))) {
+    ConvertTo-Json -InputObject @($case) | Set-Content -LiteralPath $f -Encoding UTF8
+    'n=' + @(Read-JsonArray $f | Where-Object { $_ -and $_.Path }).Count
+}
+Remove-Item -LiteralPath $f -Force
+'n=' + @(Read-JsonArray (Join-Path $env:TEMP 'w32rj-missing.json')).Count
+'@), (New-Object System.Text.UTF8Encoding($true)))
+            $rj = @(& $ps51j -NoProfile -ExecutionPolicy Bypass -File $rjScript 2>&1 | ForEach-Object { "$_" })
+            if (($rj -join ',') -eq 'n=0,n=1,n=2,n=0') { Ok '5.1: Read-JsonArray gives 0, 1 and 2 elements (and nothing for a missing file)' } else { Bad "Read-JsonArray: $($rj -join ',')" }
+            # Live run SB-ENFORCE (2026-10-27): the host polls the mapped UpdateAssertions.log while the Windows Sandbox guest
+            # appends to it; 5.1 Add-Content fails on a file another process holds open and dropped 7 PostUpdate lines (a
+            # lost FAIL would turn a failed update into a pass). The generated writer under 5.1, behind a held read handle.
+            $wLog = Join-Path $jRoot 'held.log'
+            $wFn = [regex]::Match($jText, '(?s)function Write-AssertLine.*?\r?\n\}').Value
+            [System.IO.File]::WriteAllText((Join-Path $jRoot 'w.ps1'), ("param([string]`$Log)`r`n`$assertLog = `$Log`r`n" + $wFn + "`r`nfor (`$i = 1; `$i -le 20; `$i++) { Write-AssertLine ('ASSERT Line' + `$i + ' = PASS') }`r`n"), (New-Object System.Text.UTF8Encoding($true)))
+            $held = [System.IO.File]::Open($wLog, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            try { $null = & $ps51j -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $jRoot 'w.ps1') -Log $wLog 2>&1 }
+            finally { $held.Dispose() }
+            $wLines = @(Get-Content -LiteralPath $wLog -Encoding UTF8 | Where-Object { $_ -match '^\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ\] ASSERT Line\d+ = PASS$' })
+            if ($wLines.Count -eq 20) { Ok '5.1: every assertion line is written while the host holds the log open for reading' } else { Bad "5.1 writer under a held reader: $($wLines.Count) of 20 lines" }
+        }
+        finally { Remove-Item -LiteralPath $jRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    } else { Bad 'Windows PowerShell 5.1 is not available for the OldArpGone guest test' }
     # Single-entry ConvertTo-Json round-trip (the 5.1 array-collapse trap the PreBaseline/identified files hit)
     $one = @([pscustomobject]@{ KeyPath = 'k'; DisplayName = 'n'; DisplayVersion = 'v' })
     $rtOne = @(ConvertTo-Json -InputObject @($one) | ConvertFrom-Json)

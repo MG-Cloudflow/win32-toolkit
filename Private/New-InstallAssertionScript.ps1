@@ -66,7 +66,22 @@ if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path 
 $assertLog = Join-Path $logDir 'InstallAssertions.log'
 function Write-AssertLine([string]$Message) {
     # UTC with a 'Z' (invariant culture), like PsadtExitCodes.log: in order whatever the guest's time zone.
-    ('[{0}] {1}' -f ([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture) + 'Z'), $Message) | Add-Content -Path $assertLog -Encoding UTF8
+    # Appended with read sharing: the host reads this log while the guest writes it (Windows Sandbox maps the folder),
+    # and Windows PowerShell 5.1's Add-Content fails on a file another process holds open, which dropped the line.
+    # A short retry covers any other transient lock. UTF-8 with a BOM on a new file, as Add-Content wrote it.
+    $assertText = ('[{0}] {1}' -f ([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture) + 'Z'), $Message) + "`r`n"
+    $assertBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($assertText)
+    for ($assertTry = 1; $assertTry -le 100; $assertTry++) {
+        $assertStream = $null
+        try {
+            $assertStream = [System.IO.File]::Open($assertLog, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+            if ($assertStream.Length -eq 0) { $assertStream.Write([byte[]](0xEF, 0xBB, 0xBF), 0, 3) }
+            $assertStream.Write($assertBytes, 0, $assertBytes.Length)
+            return
+        }
+        catch { Start-Sleep -Milliseconds 100 }
+        finally { if ($null -ne $assertStream) { $assertStream.Dispose() } }
+    }
 }
 
 Write-AssertLine ('=== Phase: {0} ===' -f $Phase)

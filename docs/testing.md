@@ -82,7 +82,10 @@ desktop: its checkpoint is taken at an AutoLogon desktop. PSADT's Auto mode show
 signed-in user, and PSADT 4.1 shows its welcome dialog whenever the user may defer, even when the app has
 no processes to close. So before an unattended Hyper-V test of a PSADT 4.1 package with **no processes to
 close** and a **welcome dialog that lets the user defer** (the org template's welcome with `AllowDefer`,
-or a deferrable welcome in the deploy script), the toolkit checks the VM over PowerShell Direct. When a
+or a deferrable welcome in the deploy script), the toolkit checks the VM over PowerShell Direct. A
+Zero-Config MSI package (an empty app name, an MSI in `Files`) is not such a package when its MSI's File table
+holds a program: PSADT adds those programs to the processes to close and runs silently while none of them is
+running. When a
 user is signed in, which the toolkit's VM always is, the test is **not started**: nobody would answer the
 dialog, so the run would wait 25 minutes and then fail with exit code 1460. A warning says so before
 anything runs (nothing is written, cleared or downloaded for the test: the logs of the previous run stay
@@ -388,6 +391,50 @@ old version was installed and how, so every verdict can be read with its baselin
 | `LogFolder` | The run's own log folder, `Sandbox\Logs\Runs\<run>` (every scenario). When an Update test fails, the console, Export and Publish name the `UpdateAssertions.log` in this folder. |
 
 Records written by older versions of the toolkit have no `Baseline` or `LogFolder`; they are kept as they are.
+
+### Prior installs: the proof run
+
+A package with **prior-install rules** (another installer technology of the app that the package refuses, or removes
+before it installs; see [Packaging](packaging.md#prior-installs-remove-another-installer-technology-before-installing))
+uses the Update test as their proof. The run checks one **proof group**: the Enforce rules that share an uninstaller
+technology and registry view (or, for rules from a sibling capture, the same floor capture). Pick one with
+`-ProofEntryId` (an id that is not an Enforce rule of one group is refused before anything runs); without it the first
+group (in Id order) is checked. Unless you choose the old version's technology (`-BaselineInstallerType <type>`,
+`Packaged` or `Both`), the old version is pinned to the group's technology and to an architecture that writes the
+group's registry view (an x86 installer for a rule in the 32-bit registry view, a 64-bit one for a rule in the 64-bit
+view); `-SpecificVersion` and `-VersionsBack` choose only its version. When you choose the technology
+(`-BaselineInstallerType <type>` or `Packaged`), the run checks the group of that technology whose registry view the old
+version writes: the packaged installer's architecture (an x86 package's old version writes the 32-bit view).
+
+The guest then also asserts, with the deploy script's own prior-install code:
+
+| Assertion | Meaning |
+|---|---|
+| `PriorPresent-PreUpdate.<id>` | The baseline produced the prior install, and the package would remove it (identity, version window, uninstaller path, permissions). |
+| `SiblingIdentityStable-PreUpdate.<id>` | Rules from a sibling capture: the baseline shows the version its floor capture saw. |
+| `OtherPriorAbsent-PreUpdate.<id>`, `-PostUpdate.<id>` | Rules of another technology or view are not present (this baseline must not produce them). |
+| `PriorAbsent-PostUpdate.<id>` | After the update the prior install is gone. |
+| `PriorResidue-PostUpdate.<id>` | Rules from a sibling capture: no service of the prior install is left. |
+| `NewAppIntact-PostUpdate` | The package's own program files (from its install capture) are in place, and its own MSI is registered (an MSIX package: provisioned). |
+
+User data is reported, never judged: the guest seeds a file in the prior's folder and writes
+`DATA UserDataKept-PostUpdate.<id> = KEPT` or `= LOST`. A deleted file never fails the test; Export asks for a
+`DATA-LOSS` acknowledgement instead.
+
+The record gets a `Proof`: the hashes of what the device reads (the rules and the package's own identity, the deploy
+script, every file under `Files\` and `SupportFiles\` - the org hooks included -, the baseline installer, the prior-install
+code version), the checked rules, whether the update requirement carried the prior-install signal, the versions the guest
+observed and the rules that lost user data. **Only a passing Hyper-V Unattended run proves an Enforce rule**, and only
+while none of those hashes changed; a newer failed run (any backend) takes the proof back.
+
+Two safety rules apply to every Update and InstallUninstall run of a project with prior-install rules or sibling-capture
+records:
+
+- a **watched Windows Sandbox** run is refused (`W32T.PriorInstallRefused`): that sandbox stays open with the project
+  mapped read-write. Use `-Backend HyperV`, or `-TestMode Unattended`;
+- the project is hashed before the guest starts and compared once the guest can no longer write (Hyper-V: when the run
+  returns; Windows Sandbox: once its sandbox is closed). A changed, new or missing file outside `Sandbox\` stops the test
+  with `W32T.GuestTamper`, writes `Documentation\GuestTamper.json` and records nothing: re-create the project.
 
 <!-- SCREENSHOT: Host console showing the Update test verdict block (PASS with the requirement and tattoo assertions listed) -->
 

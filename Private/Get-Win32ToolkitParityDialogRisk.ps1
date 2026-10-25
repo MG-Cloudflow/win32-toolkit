@@ -12,7 +12,9 @@ function Get-Win32ToolkitParityDialogRisk {
         a dialog). A project is AT RISK when all of these hold:
           1. its deploy script has the PSADT 4.1 template shape (Get-Win32ToolkitDeployScriptShape);
           2. SupportFiles\AppConfig.json lists no process to close (ProcessesToClose, the non-empty entries,
-             as the deploy script filters them);
+             as the deploy script filters them), and the package is not a Zero-Config MSI whose File table names a
+             program (an empty App.Name and an MSI in Files: PSADT adds those programs to the processes to close,
+             Get-Win32ToolkitMsiExecutableName; MsiProcessCount);
           3. its Pre-Install phase has a welcome dialog that can defer:
              - OrgUi:  the toolkit 'Pre-Install:org-ui' block, with AppConfig OrgUi.Welcome.Enabled and
                        OrgUi.Welcome.AllowDefer set;
@@ -25,7 +27,7 @@ function Get-Win32ToolkitParityDialogRisk {
     .PARAMETER ProjectPath
         The PSADT project folder (the folder that contains Invoke-AppDeployToolkit.ps1).
     .OUTPUTS
-        [pscustomobject] AtRisk [bool], Shape [string], ProcessCount [int], Welcome ('OrgUi', 'Script' or ''),
+        [pscustomobject] AtRisk [bool], Shape [string], ProcessCount [int], MsiProcessCount [int], Welcome ('OrgUi', 'Script' or ''),
         WelcomeDefers [bool], Reason [string].
     .EXAMPLE
         if ((Get-Win32ToolkitParityDialogRisk -ProjectPath $proj).AtRisk) { 'a PSADT 4.1 dialog would wait' }
@@ -38,7 +40,7 @@ function Get-Win32ToolkitParityDialogRisk {
         [string]$ProjectPath
     )
 
-    $atRisk = $false; $shapeName = ''; $processCount = 0; $welcome = ''; $welcomeDefers = $false; $reason = ''
+    $atRisk = $false; $shapeName = ''; $processCount = 0; $msiProcessCount = 0; $welcome = ''; $welcomeDefers = $false; $reason = ''
     try {
         $scriptPath = Join-Path $ProjectPath 'Invoke-AppDeployToolkit.ps1'
         $configPath = Join-Path $ProjectPath 'SupportFiles\AppConfig.json'
@@ -57,8 +59,22 @@ function Get-Win32ToolkitParityDialogRisk {
                 $cfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath -ErrorAction Stop
                 $listed = if ($cfg -and $cfg.PSObject.Properties['ProcessesToClose']) { $cfg.ProcessesToClose } else { $null }
                 $processCount = @($listed | Where-Object { $_ }).Count
+                # PSADT Zero-Config MSI (an empty App.Name, an MSI in Files): the session adds the programs of that MSI's
+                # File table to its processes to close before it resolves Auto mode, so with none of them running PSADT
+                # 4.1 runs silently too (live checks OP-CONTROL, HOOK-BUILD, GOAL-CAPTURE: 'MSI Executable List [notepad++,
+                # GUP]' ... 'none were running, changing deployment mode to [Silent]').
+                if ($processCount -eq 0) {
+                    $appName = if ($cfg.PSObject.Properties['App'] -and $cfg.App -and $cfg.App.PSObject.Properties['Name']) { [string]$cfg.App.Name } else { '' }
+                    if ([string]::IsNullOrWhiteSpace($appName)) {
+                        $msiFile = @(Get-ChildItem -LiteralPath (Join-Path $ProjectPath 'Files') -Filter '*.msi' -File -ErrorAction SilentlyContinue | Sort-Object -Property Name) | Select-Object -First 1
+                        if ($msiFile) { $msiProcessCount = @(Get-Win32ToolkitMsiExecutableName -Path $msiFile.FullName | Where-Object { $_ }).Count }
+                    }
+                }
                 if ($processCount -gt 0) {
                     $reason = 'the app has processes to close: PSADT 4.1 asks only while one of them is running'
+                }
+                elseif ($msiProcessCount -gt 0) {
+                    $reason = "a PSADT 4.1 Zero-Config MSI package: PSADT adds the $msiProcessCount program(s) of the MSI's File table to the processes to close and runs silently while none of them is running"
                 }
                 else {
                     $region = $shape.Layout.Phases['Pre-Install']
@@ -116,6 +132,7 @@ function Get-Win32ToolkitParityDialogRisk {
         AtRisk        = [bool]$atRisk
         Shape         = $shapeName
         ProcessCount  = [int]$processCount
+        MsiProcessCount = [int]$msiProcessCount
         Welcome       = $welcome
         WelcomeDefers = [bool]$welcomeDefers
         Reason        = $reason
