@@ -126,6 +126,8 @@ presence check) that gates it to machines where the app already exists. Detectio
 version-aware tattoo rule, so older installs get updated and detect once they reach this version.
 If no requirement rule can be built, the publish fails fast rather than creating an app that would
 apply to every device.
+For a package with Enforce prior-install rules, the update app also applies to devices that have a prior install
+one of those rules would remove (see [Packages that remove a prior install](#packages-that-remove-a-prior-install)).
 
 **Re-publish behavior:** every publish creates a **new** app. Intune has no overwrite. To retire
 an old version, delete it or configure supersedence in the portal.
@@ -145,9 +147,9 @@ below name the kinds of warning in these docs, and the warning text does not pri
 |---|---|---|
 | `INSTALL-FAILED` | The latest install/uninstall test failed (for example the app's own uninstall entry stayed: `AppArpGone-PostUninstall`). The warning names the failed checks. | Read the `InstallAssertions.log` it names, fix the package, run the test again. |
 | `INSTALL-INCONCLUSIVE` | The latest install/uninstall test gave no verdict (closed early, timed out). | Run it again. |
-| `UPDATE-FAILED` | The latest Update test from that installer technology failed. The warning names the failed assertions (for example `OldArpGone-PostUpdate`). | Read the `UpdateAssertions.log` the warning names (in the failed run's own folder, `Sandbox\Logs\Runs\<run>\`, or `Sandbox\Logs\` for a run recorded before those folders existed) before you assign the app. |
+| `UPDATE-FAILED` | The latest Update test from that installer technology failed. The warning names the failed assertions (for example `OldArpGone-PostUpdate`) and, when the update itself failed, its exit code and what it means. After the refusal of a Block prior-install rule (69101) it is a note: that outcome is intended (its `Requirement-PreUpdate` failure is by design: the update app's requirement detects only installs an Enforce rule names). A retry code (1618, 69107) means the run judged nothing; the warning names that code's causes. | Read the `UpdateAssertions.log` the warning names (in the failed run's own folder, `Sandbox\Logs\Runs\<run>\`, or `Sandbox\Logs\` for a run recorded before those folders existed) before you assign the app. |
 | `ID-TECH-SWITCH` | An Update test saw the vendor's other installer technology (for example its NSIS EXE) stay registered after this package installed. | **Do not publish this package to devices that have the other technology:** they would get two registrations over one folder. Package the technology your devices already have (see [Installer technology](packaging.md#installer-technology)). |
-| `ID-SIBLING-UNTESTED` | winget also ships another installer technology for this app, and the latest Update test from it did not pass (or none ran). | Run `Test-Win32ToolkitProject -Scenario Update -BaselineInstallerType Both`. Once the latest test from that technology passes, the warning goes away. |
+| `ID-SIBLING-UNTESTED` | winget also ships another installer technology for this app, and the latest Update test from it did not pass (or none ran). | Run `Test-Win32ToolkitProject -Scenario Update -BaselineInstallerType Both`. Once the latest test from that technology passes, the warning goes away. The advice follows the failed run: after a Block rule's refusal (69101) it is a note (make the rule Enforce and prove it to remove that install); after a retry code, run it again; after 69102, widen the rule's version window (the warning prints the command, which keeps the rule's mode and lowest version) or test from an old version inside it; after 69111, remove what switches removal off on the test VM; when the rule's identity did not match the install on the test VM, replace the rule from that test's candidate (the warning prints the command); with a Report rule, that install stays next to the package by design (make it Enforce); when the run left a prior-install candidate, declare it (Block first), or, in a project created by an earlier win32-toolkit version, re-create the project and run the Update test again first. |
 | `UNSAFE-CLEANUP` (publish only) | The project's uninstall cleanup paths fail the check that packaging enforces, so a package exported before this check deletes folders outside the app's own install folder. | Re-run the install capture, re-export, then publish. |
 | `PRIOR-BLOCK-FLEET` | A **Block** prior-install rule: devices with that other installer technology fail this install (69101) until the rule is Enforce. | Assign the app to a pilot group first. |
 | `PRIOR-NO-WELCOME` | An Enforce rule, but the org template turns the welcome dialog off: nothing closes the prior app before its removal, so devices where it runs retry (1618). | Turn the welcome dialog on in the org template, or accept the retries. |
@@ -220,7 +222,7 @@ The app is published with these return codes. All of them are **failed**, except
 | 69101 | The prior install is present and its rule is **Block**. | Decide: prove it and set the rule to Enforce, or keep blocking. |
 | 69102 | A **newer** version of the prior install is present than the rule covers. | Package the next version (the rules are carried forward with a raised window). If the vendor's own updater keeps installing the prior technology, disable that updater for devices that get this package. |
 | 69105 | A rule cannot be applied safely on this device: invalid data, the prior installed in another folder than the rule names, an uninstaller or folder that accounts other than SYSTEM, Administrators or TrustedInstaller can change, a device marker that cannot be written, or a 32-bit host. | Fix the data and package again, fix the folder's permissions, or set the rule to Block. |
-| 69106 | This package's own product is already registered next to the prior install. | Clean the device up by hand. |
+| 69106 | This package's own product is already registered next to the prior install. | Clean the device up by hand: remove the other install (its own uninstaller, for example from Settings > Apps), then repair or reinstall this app. The next version of this package handles such a device itself when its MSI has a new ProductCode (a major upgrade, as Notepad++ ships): its own older product is no refusal there, so it removes the prior and upgrades. |
 | 69107 | A restart is pending, or the removal needs one. | Nothing: the install runs after the restart. |
 | 69108 | The prior's uninstaller failed, or ran longer than 30 minutes. | Check that uninstaller in the PSAppDeployToolkit log. |
 | 69109 | The prior's uninstall key or main program file is still there after its uninstaller. | As 69108. |
@@ -263,6 +265,11 @@ If removals go wrong on devices:
 To clear a `Removed` marker once the cause of a 69110 is fixed, delete the value
 `HKLM\SOFTWARE\<ScriptAuthor>\win32-toolkit\PriorInstalls\<View>\<Key>\Removed` with a **64-bit** remediation
 (`<View>` is `Native` or `Wow6432`, `<Key>` the prior's uninstall key name).
+
+If the cause was the vendor's own updater installing the prior again **over this package's own MSI install** (Notepad++'s
+updater does), clearing the marker is not enough for the same package version: the device then refuses with 69106 (its own
+product is registered next to the prior install). Clean that device up by hand (see 69106 above), or wait for the next
+version of the package.
 
 ## Apps published before this version
 

@@ -112,7 +112,9 @@ sessions, it warns and the test starts as usual. PSADT 4.2 packages are not chec
 Auto mode to Silent when no listed process is running.
 
 **Exit code 1460.** The guest runner stops a package that is still running after 25 minutes (35 for the
-Intune-parity uninstall, see below) and records exit code 1460. For an Intune-parity phase the warning
+Intune-parity uninstall, see below; 55 for the install and the update of a package with Enforce
+[prior-install rules](packaging.md#prior-installs-remove-another-installer-technology-before-installing), watched or unattended, which may first run the prior's
+uninstaller for up to 30 minutes) and records exit code 1460. For an Intune-parity phase the warning
 names the likely cause:
 
 - **Install or update phase**: a PSADT dialog waiting for the user signed in to the VM (for example
@@ -129,14 +131,18 @@ version stops an EXE uninstaller that is still running after 30 minutes and fail
 The Intune-parity uninstall of an unattended Hyper-V test may run 35 minutes (40 for the whole phase), so
 it ends the same way: exit code 69113 (the warning says so), and the uninstall assertions fail because the
 detection tattoo stays, as on a device. The other limits stay below the device limit: 25 minutes in the
-guest runner for the install, the update and the watched uninstall (30 for the Hyper-V phase around it),
-and 10 minutes for the Sandbox install/uninstall wait. A hung uninstaller shows there as exit code 1460
+guest runner for the install, the update and the watched uninstall (30 for the Hyper-V phase around it;
+55 and 60 for the install and the update of a package with Enforce prior-install rules: 30 for the removal of the
+prior, 25 for the install), and 10 minutes for the Sandbox install/uninstall wait. A hung uninstaller shows there as exit code 1460
 (watched Hyper-V) or as an Inconclusive run (Sandbox).
 
 The `Documentation\TestResults.json` record of an unattended Hyper-V run says how each Intune-parity phase
 that failed ended: its `Notes` give one sentence per phase with the exit code, and say what 69113 (the
 app's own uninstaller was still running at the device's 30-minute limit and was stopped) and 1460 (the
-test's own limit for the phase was reached) mean. The customer documentation does not show `Notes`.
+test's own limit for the phase was reached) mean, and, for a project with prior-install rules, what the
+prior-install exit codes 69101-69112 and 1618 mean (the same meanings as in
+[Packages that remove a prior install](publishing.md#packages-that-remove-a-prior-install)); the Update
+test's warning names them too. The customer documentation does not show `Notes`.
 
 The record of a Hyper-V run also keeps `Timing` (seconds per step: opening the VM, copying the project in,
 each phase that ran, the teardown, the whole run, and whether the run could skip its first checkpoint
@@ -425,10 +431,11 @@ The record gets a `Proof`: the hashes of what the device reads (the rules and th
 script, every file under `Files\` and `SupportFiles\` - the org hooks included -, the baseline installer, the prior-install
 code version), the checked rules, whether the update requirement carried the prior-install signal, the versions the guest
 observed and the rules that lost user data. **Only a passing Hyper-V Unattended run proves an Enforce rule**, and only
-while none of those hashes changed; a newer failed run (any backend) takes the proof back.
+while none of those hashes changed; a newer failed run (any backend or mode, also one that ends with a retry code such as
+1618 or 69107) takes the proof back, and a watched or Windows Sandbox run says so before it starts.
 
-Two safety rules apply to every Update and InstallUninstall run of a project with prior-install rules or sibling-capture
-records:
+Two safety rules apply to every Update and InstallUninstall run of a project with prior-install rules, decisions, lost
+rules (`Documentation\PriorInstallDropped.json`, after a `GUEST-TAMPER` re-creation) or sibling-capture records:
 
 - a **watched Windows Sandbox** run is refused (`W32T.PriorInstallRefused`): that sandbox stays open with the project
   mapped read-write. Use `-Backend HyperV`, or `-TestMode Unattended`;

@@ -385,6 +385,30 @@ described in [Testing packages](testing.md#watched-vs-unattended).
 Two more things fall out of the same diff: any new **App Paths** registry entries become the
 PSADT `AppProcessesToClose` list (so an open app is closed gracefully before install/uninstall),
 and the **services** the app registered are recorded in the documentation for troubleshooting.
+The diff also records the package's **own identity** (`OwnIdentity` in `SupportFiles\AppConfig.json`: the
+uninstall keys the install created and, for an MSI, its product and upgrade codes), for every installer type.
+
+### Another installer technology on the device (prior installs)
+
+A device can already have the app from another installer technology, for example the vendor's NSIS setup while
+the package installs the MSI. A **prior-install rule** ([Packaging](packaging.md#prior-installs-remove-another-installer-technology-before-installing))
+tells the package what to do about it. In the deploy script's Pre-Install phase the toolkit's code runs in this order:
+
+1. **prior-check**, before any dialog: it reads the rules from `SupportFiles\AppConfig.json`, looks for each declared
+   install and decides. It removes nothing. A refusal (Block 69101, a newer prior 69102, unsafe or invalid data 69105,
+   the kill switch 69111, ...) stops the deployment here, before any app is closed.
+2. the **close-apps dialog** of the org template: the process names of the Block and Enforce rules are part of
+   `ProcessesToClose`, so it closes the prior app too.
+3. the org template's Pre-Install **hook**, if any.
+4. **remove-prior**: for each prior that prior-check proved, the same check again, then that install's own
+   uninstaller with constant switches, then a check that its uninstall key and main program are gone. Only then
+   does the install start.
+
+The matching is exact and conservative: an install that is not exactly the declared one (another publisher or name,
+an older version than the rule's window) is **left as it is** and the install goes on; the device only gets a
+`LastSeen` marker. A rule never names the package's own uninstall entry (its own identity, recorded by the install
+capture), and an Enforce rule ships only after a Hyper-V test removed that prior with this exact package (a rule you
+typed or took from an Update test can instead carry a recorded `PROOF` waiver; a rule from a sibling capture never can).
 
 Because the guest starts clean every time, the diff contains only what *this* installer did, no
 noise from previously installed software. That is why the capture runs in a disposable guest and
