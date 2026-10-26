@@ -136,7 +136,7 @@ function Get-Win32ToolkitProjectSource {
     [pscustomobject]@{ SchemaVersion = '1.0'; PinnedBy = $PinnedBy; RequestedInstallerType = $RequestedInstallerType; WingetClient = $WingetClient }
 }
 function Write-Win32ToolkitIdentityDelta {
-    param($ProjectPath, $TenantId, [switch]$Quiet)
+    param($ProjectPath, $TenantId, [switch]$Quiet, [switch]$CapturingSiblings)
     $script:IdentitySeen = $PSBoundParameters; $script:IdentityAt = @($script:Calls)
 }
 function Download-WingetApp {
@@ -397,6 +397,7 @@ $cfgSrc = (Get-Win32ToolkitAppConfig -ProjectPath $newProj).Source
 if ($cfgSrc -and $cfgSrc.PinnedBy -eq 'parameter') { Ok 'AppConfig.json carries the Source section' } else { Bad 'no Source in AppConfig.json' }
 $is = $script:IdentitySeen
 if ($is -and $is['ProjectPath'] -eq $newProj -and $is['TenantId'] -eq '' -and (@($script:IdentityAt) -join ',') -eq 'create,download,generate,apply,icon') { Ok 'the identity checks run once, after the icon step and before Finalize, for the new project' } else { Bad "identity args: $(if ($is) { ($is.Keys | ForEach-Object { "$_=$($is[$_])" }) -join '; ' }) calls before: [$(@($script:IdentityAt) -join ',')]" }
+if ($is -and $is.ContainsKey('CapturingSiblings') -and -not $is['CapturingSiblings']) { Ok 'the identity checks are told whether this run captures siblings (-CapturingSiblings: off without -CaptureSiblingTechnologies; live row GOAL-CAPTURE)' } else { Bad "identity CapturingSiblings: $(if ($is) { ($is.Keys | ForEach-Object { "$_=$($is[$_])" }) -join '; ' })" }
 if (($script:Calls -join ',') -match 'icon,assert:Finalize:False,document') { Ok 'Finalize still runs after the identity checks (warnings never block)' } else { Bad "calls=[$($script:Calls -join ',')]" }
 if ($script:SnapSeen -eq $newProj -and 'create' -notin @($script:SnapAt) -and $script:CopySeen -and $script:CopySeen['ProjectPath'] -eq $newProj -and $script:CopySeen['Snapshot'].Marker -eq 'snap' -and (@($script:CopyAt) -join ',') -eq 'create,download,generate,apply') {
     Ok 'Invoke-Win32Toolkit: the prior-install snapshot is read before Create-PSADTProject and handed to the carry right after the configure step, before the icon (L4, L5)'

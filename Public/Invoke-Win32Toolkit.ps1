@@ -489,7 +489,7 @@ function Invoke-Win32Toolkit {
 
                     # Installer identity checks (other technologies winget ships, the earlier versions in this
                     # template): warnings only, written to Documentation\IdentityDelta.json; never blocks (fail-open).
-                    $null = Write-Win32ToolkitIdentityDelta -ProjectPath $projectFullPath -TenantId $tenantId
+                    $null = Write-Win32ToolkitIdentityDelta -ProjectPath $projectFullPath -TenantId $tenantId -CapturingSiblings:$CaptureSiblingTechnologies
 
                     Write-Host "`n✓ SUCCESS: Project created, app downloaded, and PSADT configured!" -ForegroundColor Green
 

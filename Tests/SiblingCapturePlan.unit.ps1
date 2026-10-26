@@ -28,7 +28,7 @@ $fail = 0
 function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
-foreach ($f in 'ConvertTo-Win32ToolkitSafeText', 'Get-Win32ToolkitInstallerFamily', 'Get-Win32ToolkitSiblingInstaller', 'Get-Win32ToolkitSiblingCapturePlan', 'Get-Win32ToolkitAppConfig', 'Get-Win32ToolkitDeployScriptBlock', 'ConvertTo-Win32ToolkitPriorVersion') {
+foreach ($f in 'ConvertTo-Win32ToolkitSafeText', 'Get-Win32ToolkitInstallerFamily', 'Get-Win32ToolkitSiblingInstaller', 'Get-Win32ToolkitSiblingCapturePlan', 'Get-Win32ToolkitSiblingCaptureClass', 'Get-Win32ToolkitAppConfig', 'Get-Win32ToolkitDeployScriptBlock', 'ConvertTo-Win32ToolkitPriorVersion') {
     . (Join-Path $repo "Private\$f.ps1")
 }
 $fx = Join-Path $repo 'Tests\Fixtures\winget-manifests'
@@ -111,6 +111,11 @@ try {
     $proj = New-PlanProject '2.0' 'wix'
     $plan = Get-Win32ToolkitSiblingCapturePlan -ProjectPath $proj
     if ((TypeOf $plan 'nullsoft').Class -eq 'RemovableNow' -and (TypeOf $plan 'inno').Class -eq 'RemovableNow' -and (TypeOf $plan 'burn').Class -eq 'ReportOnly' -and @((TypeOf $plan 'burn').Captures).Count -eq 0 -and $plan.EstimatedRuns -eq 4) { Ok 'NSIS and Inno Setup of one family are both planned; Burn is ReportOnly and not captured' } else { Bad "both: $($plan.Types | Select-Object Type, Class, @{n='c';e={Caps $_}} | ConvertTo-Json -Compress)" }
+    # Live rows OP-OWN, SB-REGRESSION: the ReportOnly reason is operator text and named the internal plan id '(PR 7)'.
+    if ((TypeOf $plan 'burn').Reason -ceq 'removing a burn sibling comes in a later win32-toolkit version' -and
+        (Get-Win32ToolkitSiblingCaptureClass -Sibling ([pscustomobject]@{ EffectiveType = 'wix'; InstallerType = 'wix'; Registers = $true; ZipWrapped = $false; Architecture = 'x64' })).Reason -ceq 'removing an MSI sibling comes in a later win32-toolkit version') {
+        Ok 'the ReportOnly reasons name no internal plan id (burn, wix)'
+    } else { Bad "reason: $((TypeOf $plan 'burn').Reason)" }
     $planR = Get-Win32ToolkitSiblingCapturePlan -ProjectPath $proj -IncludeReportOnly
     if (@((TypeOf $planR 'burn').Captures).Count -eq 2) { Ok '-IncludeReportOnly captures the ReportOnly types too' } else { Bad "report only: $(Caps (TypeOf $planR 'burn'))" }
     $planF = Get-Win32ToolkitSiblingCapturePlan -ProjectPath $proj -SiblingInstallerType inno

@@ -49,9 +49,12 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 # C-9 (TUI audit G4): a failed build names the folder it left marked (Find-Win32ToolkitNotConfiguredProject + the marker reader).
 foreach ($f in 'Sanitize-ProjectName', 'Get-Win32ToolkitPaths', 'Get-Win32ToolkitInstallerFamily', 'ConvertTo-Win32ToolkitSafeText',
     'Get-Win32ToolkitSiblingInstaller', 'Invoke-Win32ToolkitWingetWizard', 'Show-Win32ToolkitRunResult',
-    'Get-Win32ToolkitNotConfiguredMarker', 'Find-Win32ToolkitNotConfiguredProject') {
+    'Get-Win32ToolkitNotConfiguredMarker', 'Find-Win32ToolkitNotConfiguredProject', 'Get-Win32ToolkitSiblingCaptureClass') {
     . (Join-Path $repo "Private\$f.ps1")
 }
+# C-9 (installer-identity PR 3b, P2): the capture question asks whether Hyper-V is ready; ready here, and the confirm shadow says No.
+$script:hvNotReady = @()
+function Test-Win32ToolkitHyperVReady { @($script:hvNotReady) }
 
 # --- real probe results over the fixtures (before the probe is shadowed) -----------------------------
 $fx = Join-Path $repo 'Tests\Fixtures\winget-manifests'
@@ -100,7 +103,12 @@ function Get-SpectreEscapedText { param($Text) ([string]$Text).Replace('[', '[['
 # Nothing ticked unless a case sets $script:multiPattern ([9]: the install/uninstall test).
 $script:multiPattern = $null
 function Read-SpectreMultiSelection { param($Message, $Choices, $Color, [switch]$AllowEmpty) if ($script:multiPattern) { @($Choices | Where-Object { $_ -like $script:multiPattern }) } else { @() } }
-function Read-SpectreConfirm { param($Message, $DefaultAnswer) $Message -eq 'Build this now?' }
+$script:captureConfirms = [System.Collections.Generic.List[object]]::new(); $script:captureYes = $false
+function Read-SpectreConfirm {
+    param($Message, $DefaultAnswer)
+    if ([string]$Message -like 'Also capture the other installer technologies*') { $script:captureConfirms.Add([pscustomobject]@{ Message = [string]$Message; Default = [string]$DefaultAnswer }); return [bool]$script:captureYes }
+    $Message -eq 'Build this now?'
+}
 function Get-WingetAppDetails { param($AppId) 'x64' }
 function Get-Win32ToolkitTemplateChoice { param($BasePath) 'Contoso' }
 function Show-Win32ToolkitDependencyPicker { param($BasePath, $Existing, $ExcludeProject) @() }   # C-9 (TUI audit G9): -ExcludeProject
@@ -152,9 +160,17 @@ function Get-Win32ToolkitSiblingInstaller {
 $script:invokeArgs = $null
 function Invoke-Win32Toolkit {
     # C-9 (TUI audit G5): the wizard always passes -NoPublishPrompt.
-    param($Id, $Architecture, $TemplateName, $BasePath, [switch]$Force, $DependsOn, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, $InstallerType, [switch]$NoPublishPrompt)
+    # C-9 (installer-identity PR 3b, P2): the capture switches of the two-step flow; a case may return a result object.
+    param($Id, $Architecture, $TemplateName, $BasePath, [switch]$Force, $DependsOn, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, $InstallerType, [switch]$NoPublishPrompt,
+        [switch]$CaptureSiblingTechnologies, $ApplySiblingCapture)
     $script:invokeArgs = $PSBoundParameters
+    if ($script:invokeResult) { $script:invokeResult }
 }
+$script:invokeResult = $null
+$script:reviewCalls = [System.Collections.Generic.List[string]]::new()
+$script:exportCalls = [System.Collections.Generic.List[object]]::new()
+function Show-Win32ToolkitSiblingCaptureReview { param($ProjectPath) $script:reviewCalls.Add([string]$ProjectPath) }
+function Export-Win32ToolkitIntuneWin { param($ProjectPath, [switch]$PublishIntune, [switch]$NoPublishPrompt) $script:exportCalls.Add([pscustomobject]@{ ProjectPath = [string]$ProjectPath; PublishIntune = [bool]$PublishIntune; NoPublishPrompt = [bool]$NoPublishPrompt }) }
 
 function New-Anchor([string]$Type, [string]$Reason = 'published', [string]$Name = 'Notepad++_x64_8.8.9') {
     [pscustomobject]@{ Name = $Name; Template = 'Contoso'; Path = "C:\x\$Name"; Version = '8.8.9'; WingetId = 'Notepad++.Notepad++'; InstallerType = $Type
@@ -308,7 +324,7 @@ try {
     if ($script:techAsked -eq 1 -and $script:techChoices[0] -eq "appx (APPX package) - winget's default" -and (HasType $a) -and $a['InstallerType'] -eq 'msix') { Ok 'appx + exe: the appx family choice passes -InstallerType msix' } else { Bad "asked=$script:techAsked choices=[$($script:techChoices -join ' | ')] type=[$($a['InstallerType'])]" }
     $st = App 'Contoso Store' 'Contoso.Store' '1.0'
     $a = Invoke-Wizard -App $st -Probe $probeStore -Anchor $null -Pick 0
-    if ($script:techAsked -eq 1 -and $script:techChoices.Count -eq 2 -and (HasType $a) -and $a['InstallerType'] -eq 'msix' -and -not (& $grey 'msstore')) { Ok 'msstore + appx: one msix choice (passes msix); msstore is not listed as unpackageable (its family can be packaged)' } else { Bad "choices=[$($script:techChoices -join ' | ')] type=[$($a['InstallerType'])]" }
+    if ($script:techAsked -eq 1 -and $script:techChoices.Count -eq 2 -and (HasType $a) -and $a['InstallerType'] -eq 'msix' -and -not (& $grey 'msstore.*cannot be packaged')) { Ok 'msstore + appx: one msix choice (passes msix); msstore is not listed as unpackageable (its family can be packaged)' } else { Bad "choices=[$($script:techChoices -join ' | ')] type=[$($a['InstallerType'])]" }
 
     # == [6] version unknown =============================================================================
     Write-Host "[6] version 'Unknown' -> no probe, no lookup, grey line" -ForegroundColor Cyan
@@ -384,6 +400,32 @@ try {
     Invoke-Win32ToolkitManualWizard -BasePath $BASE 6>$null 3>$null
     if (@(& $testRow).Count -eq 0 -and ($script:panels -join "`n") -match 'Test/capture : ') { Ok 'manual wizard, test not ticked -> no Test mode row' } else { Bad "manual panels: $($script:panels -join ' || ')" }
     $script:cfg = @{}; $script:biResolved = 'Sandbox'
+    # == [10] the capture question (installer-identity PR 3b, P2) =========================================
+    Write-Host '[10] the capture question and the two-step flow (PR 3b)' -ForegroundColor Cyan
+    $script:captureConfirms.Clear(); $script:captureYes = $false; $script:reviewCalls.Clear(); $script:exportCalls.Clear()
+    $a = Invoke-Wizard -App $npp -Probe $probeNpp -Anchor $null -Pick 0
+    $cc = @($script:captureConfirms)
+    if ($cc.Count -eq 1 -and $cc[0].Message -match '^Also capture the other installer technologies \(nullsoft\) so the package can remove them before installing\? About 2 capture runs now \(about 10-18 min\) and 1 proof run per identity\.$' -and $cc[0].Default -eq 'n' -and -not $a.ContainsKey('CaptureSiblingTechnologies') -and $script:reviewCalls.Count -eq 0) {
+        Ok 'a RemovableNow sibling (nullsoft of a WiX package) -> one question, default No; No -> no capture switch'
+    } else { Bad "question: $($cc | ConvertTo-Json -Compress) args=$(@($a.Keys) -join ',')" }
+    $script:captureConfirms.Clear()
+    $null = Invoke-Wizard -App $npp -Probe $probeWix -Anchor $null
+    if ($script:captureConfirms.Count -eq 0) { Ok 'winget ships only the packaged technology -> no question' } else { Bad 'asked for wix only' }
+    $script:captureConfirms.Clear(); $script:hvNotReady = @('the test VM win32tk-golden does not exist')
+    $null = Invoke-Wizard -App $npp -Probe $probeNpp -Anchor $null -Pick 0
+    $script:hvNotReady = @()
+    if ($script:captureConfirms.Count -eq 0 -and (& $grey 'nullsoft\) cannot be captured on this PC: Hyper-V is not ready \(the test VM win32tk-golden does not exist\)')) { Ok 'Hyper-V not ready -> no question; a grey line says why' } else { Bad "not ready: $($script:hostLines -join ' || ')" }
+    $script:captureYes = $true; $script:multiPattern = 'Package*'
+    $script:invokeResult = [pscustomobject]@{ PSTypeName = 'Win32Toolkit.RunResult'; Command = 'Invoke-Win32Toolkit'; Status = 'Succeeded'; ProjectPath = 'C:\x\Projects\Contoso\Notepad++_x64_8.9.8.1'; ProjectName = 'Notepad++_x64_8.9.8.1'
+        Mode = 'Winget'; Capture = 'Done'; Tests = @(); IntuneWinPath = ''; Published = @(); Problems = @() }
+    $a = Invoke-Wizard -App $npp -Probe $probeNpp -Anchor $null -Pick 0
+    $exp = @($script:exportCalls)
+    if ($a['CaptureSiblingTechnologies'] -and $a['ApplySiblingCapture'] -eq 'None' -and -not $a.ContainsKey('PackageIntune') -and -not $a.ContainsKey('PublishIntune') -and
+        (@($script:reviewCalls) -join ',') -ceq 'C:\x\Projects\Contoso\Notepad++_x64_8.9.8.1' -and $exp.Count -eq 1 -and $exp[0].ProjectPath -ceq 'C:\x\Projects\Contoso\Notepad++_x64_8.9.8.1' -and -not $exp[0].PublishIntune -and $exp[0].NoPublishPrompt) {
+        Ok 'Yes -> build and capture WITHOUT packaging (-ApplySiblingCapture None), then the review, then the package as ticked'
+    } else { Bad "two-step: args=$(@($a.Keys) -join ',') review=$(@($script:reviewCalls) -join ',') export=$($exp | ConvertTo-Json -Compress)" }
+    if (($script:panels -join "`n") -match [regex]::Escape('Other techs  : capture nullsoft on the Hyper-V test VM, then review (Block first) before packaging')) { Ok 'the Review panel names the capture' } else { Bad "panel: $($script:panels -join ' || ')" }
+    $script:captureYes = $false; $script:multiPattern = $null; $script:invokeResult = $null
 }
 finally {
     Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue

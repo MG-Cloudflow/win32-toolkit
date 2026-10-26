@@ -110,7 +110,7 @@ function Invoke-Win32ToolkitFinalize {
     throw 'Invoke-Win32ToolkitFinalize ran even though the download failed'
 }
 function Write-Win32ToolkitIdentityDelta {
-    param($ProjectPath, $TenantId, [switch]$Quiet)
+    param($ProjectPath, $TenantId, [switch]$Quiet, [switch]$CapturingSiblings)
     throw 'Write-Win32ToolkitIdentityDelta ran even though the download failed'
 }
 function Set-Win32ToolkitAppDependency {

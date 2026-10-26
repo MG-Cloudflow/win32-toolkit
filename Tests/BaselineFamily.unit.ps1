@@ -54,7 +54,7 @@ try {
     $script:deltaWrites = 0
     $script:deltaToWrite = $null
     function Write-Win32ToolkitIdentityDelta {
-        param($ProjectPath, $TenantId, [switch]$Quiet)
+        param($ProjectPath, $TenantId, [switch]$Quiet, [switch]$CapturingSiblings)
         $script:deltaWrites++
         if ($script:deltaToWrite) {
             $d = Join-Path $ProjectPath 'Documentation'

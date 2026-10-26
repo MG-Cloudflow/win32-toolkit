@@ -37,6 +37,13 @@ function Get-Win32ToolkitIdentityDelta {
         The sibling probe result.
     .PARAMETER TattooKey
         This package's '<ScriptAuthor>\<Vendor>\<DisplayName>' (for ID-TATTOO).
+    .PARAMETER PriorRule
+        The project's prior-install entries (Data set; the Project set reads AppConfig.PriorInstalls). A testable sibling
+        whose technology a Block or Enforce entry names (UninstallerType, in the registry view of the architecture) is
+        handled on devices: ID-SIBLING-FAMILY leaves it out, or is Info naming the rules (Data.CoveredBy) when every
+        testable sibling is covered. One a Report entry names stays a Warning that names that rule and the step to Enforce
+        (live row OP-REPORT). The "capture it" advice is given only when the plan could capture an uncovered sibling
+        (Get-Win32ToolkitSiblingCaptureClass RemovableNow; live row SB-REGRESSION: an MSI sibling is ReportOnly).
     .PARAMETER ProjectPath
         The project to evaluate (Project set). A relative, '~' or PSDrive path is resolved against the
         current PowerShell location.
@@ -46,6 +53,9 @@ function Get-Win32ToolkitIdentityDelta {
         Reuse the probe stored in Documentation\IdentityDelta.json when it matches.
     .PARAMETER TenantId
         Only publications to this tenant anchor (default: AppConfig.Intune.TenantId).
+    .PARAMETER CapturingSiblings
+        The current run captures the other installer technologies (-CaptureSiblingTechnologies): ID-SIBLING-FAMILY
+        then says so instead of advising a re-run with that switch.
     .OUTPUTS
         [pscustomobject] SchemaVersion, GeneratedUtc, Source, Predecessor, HighestUnanchored, Probe, Siblings,
         SameFamilyOther, NotRegistering, Findings.
@@ -72,6 +82,14 @@ function Get-Win32ToolkitIdentityDelta {
         [AllowEmptyString()]
         [string]$TattooKey = '',
 
+        [Parameter(ParameterSetName = 'Data')]
+        [AllowNull()]
+        [object[]]$PriorRule,
+
+        [Parameter(ParameterSetName = 'Data')]
+        [AllowEmptyString()]
+        [string]$CommandProjectPath = '',
+
         [Parameter(Mandatory, ParameterSetName = 'Project')]
         [ValidateNotNullOrEmpty()]
         [string]$ProjectPath,
@@ -85,7 +103,9 @@ function Get-Win32ToolkitIdentityDelta {
         [Parameter(ParameterSetName = 'Project')]
         [AllowNull()]
         [AllowEmptyString()]
-        [string]$TenantId = ''
+        [string]$TenantId = '',
+
+        [switch]$CapturingSiblings
     )
 
     $safe = { param($Value, [int]$Max = 256) ConvertTo-Win32ToolkitSafeText -Text ([string]$Value) -MaxLength $Max }
@@ -178,8 +198,13 @@ function Get-Win32ToolkitIdentityDelta {
             }
         }
 
+        # The project's prior-install rules: a sibling technology a Block or Enforce rule names is handled on devices; one a
+        # Report rule names is named (live row OP-REPORT).
+        $rules = @()
+        $pi = & $prop $cfg 'PriorInstalls'
+        if ($pi) { $rules = @(@(& $prop $pi 'Entries') | Where-Object { $null -ne $_ -and @('Block', 'Enforce', 'Report') -ccontains [string](& $prop $_ 'Mode') }) }
         return Get-Win32ToolkitIdentityDelta -Source $src -Predecessor $pred -Probe $probeResult `
-            -TattooKey ('{0}\{1}\{2}' -f $author.Trim(), $vendor.Trim(), $display.Trim())
+            -TattooKey ('{0}\{1}\{2}' -f $author.Trim(), $vendor.Trim(), $display.Trim()) -PriorRule $rules -CapturingSiblings:$CapturingSiblings -CommandProjectPath $ProjectPath
     }
 
     # ======================== Data set: pure comparison ========================
@@ -251,19 +276,70 @@ function Get-Win32ToolkitIdentityDelta {
     $siblingFamily = $false
     if ($probeOk -and $testable.Count -gt 0) {
         $siblingFamily = $true
-        $labels = @(& $distinct @($testable | ForEach-Object { & $safe $_.Label 128 }))
-        $pcs    = @(& $distinct @($testable | ForEach-Object { & $safe $_.ProductCode 128 }))
-        $pins   = @(& $distinct @($testable | ForEach-Object { [string]$_.PinValue }))
+        # Live rows GOAL-EXPORT and GOAL-CAPTURE: a sibling technology a Block or Enforce prior-install rule names (its
+        # uninstaller technology, in the registry view of this architecture) is handled on devices, so the "two
+        # registrations" advice does not apply to it; and a run that captures siblings does not advise capturing them.
+        $ruleSet = @($PriorRule)
+        $archView = switch (([string]$arch).ToLowerInvariant()) { 'x86' { 'Wow6432' } 'x64' { 'Native' } 'arm64' { 'Native' } default { '' } }
+        $coverOf = {
+            param($Sibling)
+            @($ruleSet | Where-Object { $null -ne $_ -and @('Block', 'Enforce') -ccontains [string](& $prop $_ 'Mode') -and
+                    (& $same (& $prop $_ 'UninstallerType') (& $prop $Sibling 'EffectiveType')) -and (-not $archView -or [string](& $prop $_ 'View') -ceq $archView) })
+        }
+        $uncovered = @($testable | Where-Object { (& $coverOf $_).Count -eq 0 })
+        $coveredBy = @(& $distinct @($testable | ForEach-Object { & $coverOf $_ } | ForEach-Object { & $safe (& $prop $_ 'Id') 64 }))
+        $shown  = if ($uncovered.Count) { $uncovered } else { $testable }
+        $labels = @(& $distinct @($shown | ForEach-Object { & $safe $_.Label 128 }))
+        $pcs    = @(& $distinct @($shown | ForEach-Object { & $safe $_.ProductCode 128 }))
+        $pins   = @(& $distinct @($shown | ForEach-Object { [string]$_.PinValue }))
         $pcText = if ($pcs.Count) { " (ProductCode/ARP key '{0}')" -f ($pcs -join "', '") } else { '' }
-        $msg = ("winget also ships {0} for {1} of {2} {3}{4}. Devices that already have that install would get two registrations over one folder. " +
-                'Keep one technology across your devices: to package that one instead, use -InstallerType {5}; ' +
-                'to test the switch, run Test-Win32ToolkitProject -Scenario Update -BaselineInstallerType Both; or re-run with -CaptureSiblingTechnologies to capture it (the package can then remove that install before installing).') -f
-               ($labels -join ' and '), $arch, $id, $ver, $pcText, ($pins -join ' or -InstallerType ')
-        & $add 'ID-SIBLING-FAMILY' 'Warning' $msg @{
-            Families     = @(& $distinct @($testable | ForEach-Object { [string]$_.Family }))
-            Types        = @(& $distinct @($testable | ForEach-Object { [string]$_.EffectiveType }))
+        # The first sentence on its own (Data.Lead): the package advisory rewrites what follows it when an Update test
+        # contradicts the coverage sentence (live rows OP-UNPROVEN, OP-NEWER).
+        $lead = 'winget also ships {0} for {1} of {2} {3}{4}.' -f ($labels -join ' and '), $arch, $id, $ver, $pcText
+        # The commands name the project when it is known (live row OP-REPORT: '-Id ... -Mode Enforce' without the mandatory
+        # -ProjectPath failed as printed).
+        $projArg = if ($CommandProjectPath) { " -ProjectPath '{0}'" -f (& $safe $CommandProjectPath 1024).Replace("'", "''") } else { '' }
+        if ($uncovered.Count) {
+            # A Report rule names it (live row OP-REPORT): side by side by design; the step is that rule to Enforce.
+            $reportOf = {
+                param($Sibling)
+                @($ruleSet | Where-Object { $null -ne $_ -and [string](& $prop $_ 'Mode') -ceq 'Report' -and
+                        (& $same (& $prop $_ 'UninstallerType') (& $prop $Sibling 'EffectiveType')) -and (-not $archView -or [string](& $prop $_ 'View') -ceq $archView) })
+            }
+            $reportRules = @($uncovered | ForEach-Object { & $reportOf $_ } | Where-Object { $_ })
+            $reportIds = @(& $distinct @($reportRules | ForEach-Object { & $safe (& $prop $_ 'Id') 64 }))
+            # The capture advice only when a capture could make the package remove an uncovered sibling (live row SB-REGRESSION:
+            # an MSI sibling is ReportOnly in this version, the plan captures nothing for it).
+            $capturable = @($uncovered | Where-Object { (Get-Win32ToolkitSiblingCaptureClass -Sibling $_).Class -eq 'RemovableNow' })
+            $notCapturable = @($uncovered | Where-Object { (Get-Win32ToolkitSiblingCaptureClass -Sibling $_).Class -ne 'RemovableNow' } | ForEach-Object { (Get-Win32ToolkitSiblingCaptureClass -Sibling $_).Reason } | Where-Object { $_ })
+            # The last option when a capture can help; otherwise a sentence of its own.
+            $captureTail = ''; $closing = ''
+            if ($reportIds.Count -gt 0) {
+                $captured = @($reportRules | Where-Object { [string](& $prop $_ 'Source') -ceq 'SiblingCapture' -or [string](& $prop $_ 'CaptureId') }).Count -gt 0
+                $how = if ($captured) { "approve its proposal as Enforce (Set-Win32ToolkitPriorInstall$projArg -FromSiblingCapture -Mode Enforce -ProposalId <id>; the List names it)" } else { "make it Enforce (Set-Win32ToolkitPriorInstall$projArg -Id $($reportIds[0]) -Mode Enforce)" }
+                $closing = "The prior-install rule(s) $($reportIds -join ', ') report that install (Report: the install goes on next to it): to remove it before installing, $how and prove it with an Update test on Hyper-V (unattended)."
+            }
+            elseif ($CapturingSiblings) { $captureTail = 'this run captures it (-CaptureSiblingTechnologies): a prior-install rule from that capture lets the package refuse (Block) or remove (Enforce) that install before installing.' }
+            elseif ($capturable.Count -gt 0) { $captureTail = 're-run with -CaptureSiblingTechnologies to capture it (the package can then remove that install before installing).' }
+            else { $closing = "A sibling capture cannot make the package remove that install yet: $(& $safe (@($notCapturable | Select-Object -Unique) -join '; ') 200)." }
+            # Concatenated, not a format string: the project path may hold braces.
+            $tailText = if ($captureTail) { "; or $captureTail" } else { ". $closing" }
+            $msg = $lead + ' Devices that already have that install would get two registrations over one folder. Keep one technology across your devices: to package that one instead, use -InstallerType ' +
+                   ($pins -join ' or -InstallerType ') + "; to test the switch, run Test-Win32ToolkitProject$projArg -Scenario Update -BaselineInstallerType Both" + $tailText
+            $severity = 'Warning'
+        }
+        else {
+            $msg = ('{0} The prior-install rule(s) {1} name that install, so devices that have it do not get two registrations: ' +
+                    'an Enforce rule removes it before installing, a Block rule refuses the install while it is there.') -f $lead, ($coveredBy -join ', ')
+            $severity = 'Info'
+        }
+        & $add 'ID-SIBLING-FAMILY' $severity $msg @{
+            Families     = @(& $distinct @($shown | ForEach-Object { [string]$_.Family }))
+            Types        = @(& $distinct @($shown | ForEach-Object { [string]$_.EffectiveType }))
             PinValues    = $pins
             ProductCodes = $pcs
+            CoveredBy    = $coveredBy
+            Lead         = $lead
         }
     }
     if ($probeOk -and $untestable.Count -gt 0) {

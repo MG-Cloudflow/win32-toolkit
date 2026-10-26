@@ -50,9 +50,16 @@ function Show-Win32ToolkitProjectActions {
                 $depWhy = ([string]$_.Exception.Message).TrimEnd('.', ' ')
                 Write-SpectreHost "[red]$(Get-SpectreEscapedText -Text "SupportFiles\AppConfig.json of this project cannot be read: $depWhy. Fix the JSON or re-create the project; Package and Publish refuse it until then.")[/]"
             }
+            # Prior installs (installer-identity PR 3b): the rules and how many are proven; an unreadable state is 'unknown'.
+            try {
+                $priorStates = @(Get-Win32ToolkitPriorProofState -ProjectPath $project.Path)
+                $priorText = "$($priorStates.Count) rule$(if ($priorStates.Count -ne 1) { 's' }), $(@($priorStates | Where-Object { $_.State -eq 'Proven' }).Count) proven"
+            }
+            catch { $priorText = 'unknown' }
             $act = Read-SpectreSelection -Message 'What would you like to do?' -Choices @(
                 [pscustomobject]@{ Key = 'test';    Label = 'Run a test (Windows Sandbox or Hyper-V VM)' }
                 [pscustomobject]@{ Key = 'deps';    Label = "Dependencies — apps installed BEFORE this one ($depText)" }
+                [pscustomobject]@{ Key = 'prior';   Label = "Prior installs - other technologies removed before install ($priorText)" }
                 [pscustomobject]@{ Key = 'finish';  Label = "Finalize / refresh ($((Get-Win32ToolkitBackendInfo).Label) capture -> auto uninstall)" }
                 [pscustomobject]@{ Key = 'package'; Label = 'Package to .intunewin' }
                 [pscustomobject]@{ Key = 'publish'; Label = 'Publish to Intune' }
@@ -60,9 +67,10 @@ function Show-Win32ToolkitProjectActions {
                 [pscustomobject]@{ Key = 'open';    Label = 'Open the project folder' }
                 [pscustomobject]@{ Key = 'another'; Label = 'Pick another project' }
                 [pscustomobject]@{ Key = 'back';    Label = 'Back to the main menu' }
-            ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 10
+            ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 11
 
             switch ($act.Key) {
+                'prior' { Show-Win32ToolkitPriorInstallScreen -ProjectPath $project.Path }
                 'deps' {
                     Clear-Host; Write-SpectreRule -Title 'Dependencies' -Color Blue
                     Write-SpectreHost '[grey]Intune installs these BEFORE this app. They are also installed first in the test/capture run, so the app is never tested without its runtime.[/]'
@@ -376,7 +384,7 @@ function Show-Win32ToolkitProjectActions {
                                 if ($advWarnings.Count -gt 0) {
                                     # Prior installs (installer-identity PR 3): a Block rule fails the install on every device that has the
                                     # prior, an Enforce rule without the welcome dialog retries there, a published predecessor reinstalls.
-                                    $severe = @($advWarnings | Where-Object { $_.Code -in @('UNSAFE-CLEANUP', 'INSTALL-FAILED', 'UPDATE-FAILED', 'ID-TECH-SWITCH', 'INSTALL-INCONCLUSIVE', 'PRIOR-BLOCK-FLEET', 'PRIOR-NO-WELCOME', 'PRIOR-PREDECESSOR-PUBLISHED') }).Count -gt 0
+                                    $severe = @($advWarnings | Where-Object { $_.Code -in @('UNSAFE-CLEANUP', 'INSTALL-FAILED', 'UPDATE-FAILED', 'ID-TECH-SWITCH', 'INSTALL-INCONCLUSIVE', 'PRIOR-BLOCK-FLEET', 'PRIOR-NO-WELCOME', 'PRIOR-PREDECESSOR-PUBLISHED', 'ID-SIBLING-UNAPPLIED') }).Count -gt 0
                                     $advText = @($advWarnings | ForEach-Object { [string]$_.Message }) -join "`n`n"
                                     $advHeader = if ($severe) { 'Review before you publish' } else { 'Check before you publish' }
                                     $advColor  = if ($severe) { 'Red' } else { 'Yellow' }

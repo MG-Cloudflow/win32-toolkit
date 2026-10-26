@@ -17,6 +17,8 @@ function Write-Win32ToolkitIdentityDelta {
         Only publications to this tenant anchor (default: AppConfig.Intune.TenantId).
     .PARAMETER Quiet
         Write the file without printing the findings.
+    .PARAMETER CapturingSiblings
+        The current run captures the other installer technologies (passed to Get-Win32ToolkitIdentityDelta).
     .OUTPUTS
         [pscustomobject] the delta, or $null on failure.
     .EXAMPLE
@@ -33,14 +35,16 @@ function Write-Win32ToolkitIdentityDelta {
         [AllowEmptyString()]
         [string]$TenantId = '',
 
-        [switch]$Quiet
+        [switch]$Quiet,
+
+        [switch]$CapturingSiblings
     )
 
     try {
         # Absolute first: [System.IO.File]::WriteAllText resolves a relative path against the process
         # directory, not the PowerShell location.
         $ProjectPath = $PSCmdlet.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ProjectPath)
-        $delta = Get-Win32ToolkitIdentityDelta -ProjectPath $ProjectPath -TenantId $TenantId
+        $delta = Get-Win32ToolkitIdentityDelta -ProjectPath $ProjectPath -TenantId $TenantId -CapturingSiblings:$CapturingSiblings
 
         $docDir = Join-Path $ProjectPath 'Documentation'
         if (-not (Test-Path -LiteralPath $docDir)) { New-Item -ItemType Directory -Path $docDir -Force | Out-Null }

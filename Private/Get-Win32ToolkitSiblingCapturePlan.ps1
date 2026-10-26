@@ -9,7 +9,7 @@ function Get-Win32ToolkitSiblingCapturePlan {
         1. The package version's sibling probe (Get-Win32ToolkitSiblingInstaller): the other families (Siblings) and the
            same family's other registration types (SameFamilyOther), by EffectiveType. msi and wix are one registration
            type; nullsoft, inno, burn and exe stay separate. The not-registering tuples (zip/portable) are listed too.
-        2. A class per type (SV29, Dv2):
+        2. A class per type (SV29, Dv2; Get-Win32ToolkitSiblingCaptureClass, shared with the winget wizard):
              nullsoft, inno                    RemovableNow
              exe                               RemovableNow (Block-only unless the binary shows NSIS or Inno Setup)
              msi, wix                          ReportOnly   (removal of an MSI sibling ships in PR 3c)
@@ -112,21 +112,11 @@ function Get-Win32ToolkitSiblingCapturePlan {
     $seen = @{}
     foreach ($t in @(@($probe.Siblings) + @($probe.SameFamilyOther) + @($probe.NotRegistering))) {
         if ($null -eq $t) { continue }
-        $eff = ([string]$t.EffectiveType).ToLowerInvariant()
-        $key = if ($t.ZipWrapped -or -not $t.Registers) { "nc|$($t.InstallerType)|$eff" } else { & $regType $eff }
-        if ($seen.ContainsKey($key)) { continue }
-        $seen[$key] = $true
-        $class = ''; $reason = ''
-        if ($t.Architecture -eq 'arm64') { $class = 'NotCapturable'; $reason = 'an ARM64 installer cannot be installed on the x64 test VM' }
-        elseif (-not $t.Registers -or $eff -in @('portable', 'pwa')) { $class = 'NotCapturable'; $reason = "a $eff package registers no uninstall entry (nothing to remove)" }
-        elseif ($t.ZipWrapped) { $class = 'NotCapturable'; $reason = "zip-wrapped installer ($eff inside a zip); extraction is not supported yet" }
-        elseif ($eff -in @('nullsoft', 'inno')) { $class = 'RemovableNow' }
-        elseif ($eff -eq 'exe') { $class = 'RemovableNow'; $reason = 'a generic EXE gives Block-only rules unless its uninstaller shows NSIS or Inno Setup' }
-        elseif ($eff -in @('msi', 'wix')) { $class = 'ReportOnly'; $reason = 'removal of an MSI sibling ships in a later version (PR 3c)' }
-        else { $class = 'ReportOnly'; $reason = "removal of a $eff sibling ships in a later version (PR 7)" }
-        $typeName = if ($class -eq 'NotCapturable') { $eff } else { & $regType $eff }
-        if ($typeName -eq 'msi' -and $eff -eq 'wix') { $typeName = 'wix' }
-        $types.Add([ordered]@{ Type = $typeName; EffectiveType = $eff; Class = $class; Reason = $reason; SameFamily = ([string]$t.Family -eq $pkgFamily); Captures = @() })
+        # The one classification (shared with the winget wizard's capture question).
+        $c = Get-Win32ToolkitSiblingCaptureClass -Sibling $t
+        if ($seen.ContainsKey($c.Key)) { continue }
+        $seen[$c.Key] = $true
+        $types.Add([ordered]@{ Type = $c.Type; EffectiveType = $c.EffectiveType; Class = $c.Class; Reason = $c.Reason; SameFamily = ([string]$t.Family -eq $pkgFamily); Captures = @() })
     }
     if ($SiblingInstallerType) {
         $wanted = @($SiblingInstallerType | ForEach-Object { & $regType $_.ToLowerInvariant() })

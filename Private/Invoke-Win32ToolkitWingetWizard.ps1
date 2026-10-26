@@ -208,6 +208,37 @@ function Invoke-Win32ToolkitWingetWizard {
         }
     }
 
+    # 4c. Prior installs (installer-identity PR 3b, spec 2.18): when winget ships another installer technology of this
+    # version that a package can remove (RemovableNow, the capture plan's own classification), offer to capture it.
+    # Default No. The capture runs on the Hyper-V test VM only in this version: a host without it is told so, no question.
+    $captureSiblings = $false
+    $captureTypes = @()
+    if ($probe -and $probe.Status -eq 'Ok') {
+        $reg = { param([string]$T) $t2 = $T.ToLowerInvariant(); if ($t2 -in @('msi', 'wix')) { 'msi' } else { $t2 } }
+        $pkgReg = & $reg ([string]$(if ($techPin) { $techPin } elseif ($anchor -and $anchorRow) { $anchorRow.EffectiveType } elseif ($families.Count) { $families[0].PinValue } else { '' }))
+        $classes = [System.Collections.Generic.List[object]]::new()
+        foreach ($t in @(@($probe.Siblings) + @($probe.SameFamilyOther) + @($probe.NotRegistering))) {
+            if ($null -eq $t) { continue }
+            $c = Get-Win32ToolkitSiblingCaptureClass -Sibling $t
+            if (@($classes | Where-Object { $_.Key -eq $c.Key }).Count -eq 0 -and (& $reg $c.Type) -ne $pkgReg) { $classes.Add($c) }
+        }
+        $captureTypes = @($classes | Where-Object { $_.Class -eq 'RemovableNow' } | ForEach-Object { $_.Type })
+        if ($captureTypes.Count -gt 0) {
+            foreach ($o in @($classes | Where-Object { $_.Class -ne 'RemovableNow' })) {
+                Write-SpectreHost "[grey]$(Get-SpectreEscapedText -Text ('{0}: {1} ({2})' -f $o.Type, $(if ($o.Class -eq 'ReportOnly') { 'can only be reported' } else { 'cannot be captured' }), $o.Reason))[/]"
+            }
+            $hvNotReady = @(Test-Win32ToolkitHyperVReady)
+            if ($hvNotReady.Count -gt 0) {
+                Write-SpectreHost "[grey]$(Get-SpectreEscapedText -Text ('The other installer technologies ({0}) cannot be captured on this PC: Hyper-V is not ready ({1}); this version captures on the Hyper-V test VM only.' -f ($captureTypes -join ', '), ($hvNotReady -join '; ')))[/]"
+            }
+            else {
+                $runs = 2 * $captureTypes.Count
+                Write-SpectreHost '[grey]The capture runs on the Hyper-V test VM, after the install capture; you review the proposals before anything is packaged.[/]'
+                $captureSiblings = Read-SpectreConfirm -Message (Get-SpectreEscapedText -Text ('Also capture the other installer technologies ({0}) so the package can remove them before installing? About {1} capture runs now (about {2}-{3} min) and 1 proof run per identity.' -f ($captureTypes -join ', '), $runs, (5 * $runs), (9 * $runs))) -DefaultAnswer 'n'
+            }
+        }
+    }
+
     # 4b. Dependencies — apps Intune must install BEFORE this one (e.g. a VC++ redistributable).
     # Sourced from winget or an already-packaged project; stored as data in AppConfig.json.
     $deps = @()
@@ -256,6 +287,7 @@ function Invoke-Win32ToolkitWingetWizard {
         $summaryLines.Add("Test mode    : $effMode ($why)")
     }
     $summaryLines.Add("Depends on   : $(if ($deps) { $deps -join ', ' } else { '(nothing)' })")
+    if ($captureSiblings) { $summaryLines.Add("Other techs  : capture $($captureTypes -join ', ') on the Hyper-V test VM, then review (Block first) before packaging") }
     $summaryLines.Add("After build  : $afterStr")
     $summary = $summaryLines -join "`n"
     Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $summary) -Header 'Review' -Border Rounded -Color Blue
@@ -281,6 +313,13 @@ function Invoke-Win32ToolkitWingetWizard {
     if ($doPublish) { $p.PublishIntune = $true }
     # Kept-and-marked lines (TUI audit G4): a project this run left marked not configured (Find-Win32ToolkitNotConfiguredProject).
     $keptLines = { param([string]$Path) @("The project folder was kept and marked not configured: $Path", 'Package and Publish refuse it until you package the app again (that replaces the folder).') }
+    # The capture of the other technologies (L25): build, test and capture first WITHOUT packaging, then the review, then
+    # package / publish as ticked - so a Block or Enforce choice is in the package.
+    if ($captureSiblings) {
+        $p.CaptureSiblingTechnologies = $true
+        $p.ApplySiblingCapture = 'None'
+        $null = $p.Remove('PackageIntune'); $null = $p.Remove('PublishIntune')
+    }
     $runStartUtc = [datetime]::UtcNow
     try {
         # The run is judged by its result object (TUI audit G2): Done only when it Succeeded.
@@ -291,6 +330,16 @@ function Invoke-Win32ToolkitWingetWizard {
         if ($r -and $r.Status -eq 'Failed' -and $r.ProjectPath) {
             foreach ($kept in @(Find-Win32ToolkitNotConfiguredProject -TemplateDirectory $templateDir -SinceUtc $runStartUtc -ProjectPath ([string]$r.ProjectPath))) {
                 foreach ($line in (& $keptLines $kept)) { Write-SpectreHost "[yellow]$(Get-SpectreEscapedText -Text $line)[/]" }
+            }
+        }
+        elseif ($captureSiblings -and $r -and $r.ProjectPath) {
+            Read-SpectrePause -Message 'Press any key to review the other installer technologies' -AnyKey | Out-Null
+            Show-Win32ToolkitSiblingCaptureReview -ProjectPath ([string]$r.ProjectPath)
+            if ($doPackage -or $doPublish) {
+                Clear-Host
+                Write-SpectreRule -Title "Packaging $(Get-SpectreEscapedText -Text $picked.Name)..." -Color Blue
+                Export-Win32ToolkitIntuneWin -ProjectPath ([string]$r.ProjectPath) -PublishIntune:$doPublish -NoPublishPrompt
+                Format-SpectrePanel -Data 'Packaged. See the messages above for the .intunewin path.' -Header 'Done' -Border Rounded -Color Green
             }
         }
     }

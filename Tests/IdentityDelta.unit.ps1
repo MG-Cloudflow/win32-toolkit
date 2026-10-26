@@ -30,7 +30,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 $wp3Files = @(
     'Get-Win32ToolkitInstallerFamily', 'Test-Win32ToolkitWingetNoApplicableInstaller', 'ConvertTo-Win32ToolkitSafeText',
     'Get-Win32ToolkitProjectSource', 'Get-Win32ToolkitSiblingInstaller', 'Get-Win32ToolkitPreviousProject',
-    'Get-Win32ToolkitIdentityDelta', 'Write-Win32ToolkitIdentityDelta'
+    'Get-Win32ToolkitIdentityDelta', 'Write-Win32ToolkitIdentityDelta',
+    'Get-Win32ToolkitSiblingCaptureClass'   # C-9: the capture advice only for a sibling the plan could capture (live row SB-REGRESSION)
 )
 foreach ($f in $wp3Files + @('Get-Win32ToolkitAppConfig')) { . (Join-Path $repo "Private\$f.ps1") }
 
@@ -110,6 +111,30 @@ if ((Codes $d) -eq 'ID-SIBLING-FAMILY') { Ok 'PinnedBy continuity -> no ID-NO-AN
 $anch = New-Match @{ InstallerType = 'wix'; Family = 'msi' }
 $d = Get-Win32ToolkitIdentityDelta -Source (New-Source) -Predecessor (New-Lookup $anch $null) -Probe $probeNpp -TattooKey $tattooNew
 if ((Codes $d) -eq 'ID-SIBLING-FAMILY') { Ok 'winget-default but an anchored same-family predecessor exists -> no ID-NO-ANCHOR' } else { Bad "anchored winget-default -> $(Codes $d)" }
+# Live row GOAL-EXPORT: a Block or Enforce rule that names the sibling's technology in this architecture's registry view
+# handles that install on devices: the finding is Info and names the rule instead of advising a switch or a capture.
+$ruleOf = { param([string]$Mode, [string]$View = 'Native', [string]$Type = 'nullsoft') [pscustomobject]@{ Id = 'nsis-x64'; Mode = $Mode; UninstallerType = $Type; View = $View } }
+foreach ($mode in 'Enforce', 'Block') {
+    $d = Get-Win32ToolkitIdentityDelta -Source (New-Source) -Probe $probeNpp -TattooKey $tattooNew -PriorRule @(& $ruleOf $mode)
+    $sf = Find $d 'ID-SIBLING-FAMILY'
+    if ($sf.Severity -eq 'Info' -and $sf.Message -match '^winget also ships nullsoft \(vendor EXE, NSIS\) for x64 of Notepad\+\+\.Notepad\+\+ 8\.9\.8\.1 .*The prior-install rule\(s\) nsis-x64 name that install' -and
+        $sf.Message -notmatch '-InstallerType|CaptureSiblingTechnologies|two registrations over one folder' -and (@($sf.Data.CoveredBy) -join ',') -eq 'nsis-x64' -and (Codes $d) -eq 'ID-SIBLING-FAMILY,ID-NO-ANCHOR') {
+        Ok "$(if ($mode -eq 'Enforce') { 'an' } else { 'a' }) $mode rule naming the nullsoft sibling (Native view, x64) -> ID-SIBLING-FAMILY Info naming the rule (Data.CoveredBy), no switch or capture advice; ID-NO-ANCHOR stays"
+    } else { Bad "$mode covered -> $(Codes $d) / $($sf.Severity) / $($sf.Message)" }
+}
+foreach ($c in @(@{ R = (& $ruleOf 'Report'); W = 'a Report rule' }, @{ R = (& $ruleOf 'Enforce' 'Wow6432'); W = 'a rule of the other registry view (Wow6432 on x64)' }, @{ R = (& $ruleOf 'Enforce' 'Native' 'inno'); W = 'a rule of another technology (inno)' })) {
+    $d = Get-Win32ToolkitIdentityDelta -Source (New-Source) -Probe $probeNpp -TattooKey $tattooNew -PriorRule @($c.R)
+    $sf = Find $d 'ID-SIBLING-FAMILY'
+    if ($sf.Severity -eq 'Warning' -and $sf.Message -match 'two registrations over one folder' -and @($sf.Data.CoveredBy).Count -eq 0) { Ok "$($c.W) does not cover the sibling -> the Warning as before" } else { Bad "$($c.W) -> $($sf.Severity) / $($sf.Message)" }
+}
+# Live row GOAL-CAPTURE: a run that captures siblings does not advise re-running with -CaptureSiblingTechnologies.
+$d = Get-Win32ToolkitIdentityDelta -Source (New-Source) -Probe $probeNpp -TattooKey $tattooNew -CapturingSiblings
+$sf = Find $d 'ID-SIBLING-FAMILY'
+if ($sf.Severity -eq 'Warning' -and $sf.Message -match 'this run captures it \(-CaptureSiblingTechnologies\): a prior-install rule from that capture lets the package refuse \(Block\) or remove \(Enforce\) that install' -and $sf.Message -notmatch 're-run with') {
+    Ok '-CapturingSiblings -> "this run captures it", never "re-run with -CaptureSiblingTechnologies"'
+} else { Bad "capturing -> $($sf.Message)" }
+$d = Get-Win32ToolkitIdentityDelta -Source (New-Source) -Probe $probeNpp -TattooKey $tattooNew
+if ((Find $d 'ID-SIBLING-FAMILY').Message -match 're-run with -CaptureSiblingTechnologies to capture it') { Ok 'without -CapturingSiblings -> the re-run advice as before' } else { Bad 'the re-run advice is gone' }
 
 # --- [2] TeamViewer, Paint.NET, appx, Git ----------------------------------------------------------
 Write-Host '[2] Zip-wrapped / registered-as / appx / single-technology siblings' -ForegroundColor Cyan
@@ -232,6 +257,21 @@ $named = @($allMessages | Where-Object { $_ -match 'CaptureSiblingTechnologies' 
 if ($allMessages.Count -ge 12 -and $named.Count -ge 1 -and @($named | Where-Object { ([regex]::Matches($_, 'CaptureSiblingTechnologies')).Count -ne 1 -or $_ -notmatch '^winget also ships ' }).Count -eq 0) { Ok "-CaptureSiblingTechnologies is named once, and only by ID-SIBLING-FAMILY (SV31; $($allMessages.Count) messages checked)" } else { Bad "SV31: $($allMessages.Count) messages, naming it: $($named -join ' | ')" }
 if (@($allMessages | Where-Object { $_ -match '[^\x20-\x7E]' }).Count -eq 0) { Ok 'every message is printable ASCII' } else { Bad 'a message has non-ASCII characters' }
 
+# Live row SB-REGRESSION: an MSI (wix) sibling of a nullsoft package was told "re-run with -CaptureSiblingTechnologies";
+# the plan captures nothing for it (ReportOnly: removal of an MSI sibling ships later).
+$msiProbe = [pscustomobject]@{ Status = 'Ok'; Reason = ''; WingetId = 'Notepad++.Notepad++'; Version = '8.9.8'; Architecture = 'x64'
+    Siblings = @([pscustomobject]@{ EffectiveType = 'wix'; InstallerType = 'wix'; Family = 'msi'; Registers = $true; Testable = $true; ZipWrapped = $false; PinValue = 'wix'; Architecture = 'x64'; Label = 'wix (MSI)'; ProductCode = '{224C0E17-FB79-4AE2-9A47-5556FCEF39C4}' }) }
+$m = (Find (Get-Win32ToolkitIdentityDelta -Source (New-Source @{ PinnedBy = 'parameter' }) -Probe $msiProbe) 'ID-SIBLING-FAMILY').Message
+if ($m -notmatch 'CaptureSiblingTechnologies' -and $m -match '-BaselineInstallerType Both\. A sibling capture cannot make the package remove that install yet: removing an MSI sibling comes in a later win32-toolkit version\.$') { Ok 'an MSI sibling (ReportOnly): no -CaptureSiblingTechnologies advice; the message says a capture cannot make it removable yet' } else { Bad "msi sibling: $m" }
+# Live rows OP-OWN, SB-REGRESSION: the reason named the internal plan id '(PR 3c)' inside a second pair of brackets.
+if ($m -notmatch '\(PR \d|\(\([^)]*\)\)' -and $m -notmatch 'ships in') { Ok 'the reason names no internal plan id and nests no brackets' } else { Bad "plan id: $m" }
+# Live row OP-REPORT: a Report rule naming the sibling got the generic advice (re-capture) instead of naming that rule.
+$reportRule = [pscustomobject]@{ Id = 'nsis-x64'; Mode = 'Report'; UninstallerType = 'nullsoft'; View = 'Native'; Source = 'UpdateTest' }
+$f = Find (Get-Win32ToolkitIdentityDelta -Source (New-Source @{ PinnedBy = 'parameter' }) -Probe $probeNpp -PriorRule @($reportRule)) 'ID-SIBLING-FAMILY'
+if ($f.Severity -eq 'Warning' -and $f.Message -match "The prior-install rule\(s\) nsis-x64 report that install \(Report: the install goes on next to it\): to remove it before installing, make it Enforce \(Set-Win32ToolkitPriorInstall -Id nsis-x64 -Mode Enforce\)" -and $f.Message -notmatch 'CaptureSiblingTechnologies') {
+    Ok 'a Report rule naming the sibling: still a Warning (side by side), naming that rule and the step to Enforce, no re-capture advice'
+} else { Bad "report rule: $($f.Severity) $($f.Message)" }
+
 # ======================== Project set (shadows) ========================
 Write-Host '[8] Project set: inputs gathered from the project (Source / predecessor / probe shadowed)' -ForegroundColor Cyan
 $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('w32delta_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -274,6 +314,25 @@ if ($pa.TemplateDirectory -eq (Split-Path $proj -Parent) -and $pa.ExcludePath -e
 } else { Bad "predecessor args $($pa | ConvertTo-Json -Compress)" }
 $null = Get-Win32ToolkitIdentityDelta -ProjectPath $proj -TenantId 'tenant-param'
 if ($script:predArgs.TenantId -eq 'tenant-param') { Ok '-TenantId overrides AppConfig.Intune.TenantId' } else { Bad "tenant = $($script:predArgs.TenantId)" }
+# The Project set reads the Block and Enforce rules from AppConfig.PriorInstalls (live row GOAL-EXPORT).
+$cfgRules = [ordered]@{}; foreach ($k in $cfg.Keys) { $cfgRules[$k] = $cfg[$k] }
+$cfgRules['PriorInstalls'] = [ordered]@{ SchemaVersion = '1.0'; Entries = @([ordered]@{ Id = 'nsis-x64'; Kind = 'ArpKey'; Mode = 'Enforce'; Key = 'Notepad++'; View = 'Native'; UninstallerType = 'nullsoft' }) }
+[System.IO.File]::WriteAllText((Join-Path $proj 'SupportFiles\AppConfig.json'), ($cfgRules | ConvertTo-Json -Depth 6), [System.Text.UTF8Encoding]::new($false))
+$d = Get-Win32ToolkitIdentityDelta -ProjectPath $proj
+$sf = Find $d 'ID-SIBLING-FAMILY'
+if ($sf.Severity -eq 'Info' -and (@($sf.Data.CoveredBy) -join ',') -eq 'nsis-x64') { Ok "Project set: the project's Enforce rule from AppConfig.PriorInstalls covers the nullsoft sibling -> Info" } else { Bad "project rules -> $($sf.Severity) / $($sf.Message)" }
+$d = Get-Win32ToolkitIdentityDelta -ProjectPath $proj -CapturingSiblings
+if ((Find $d 'ID-SIBLING-FAMILY').Severity -eq 'Info') { Ok 'Project set: -CapturingSiblings passes through (a covered sibling stays Info)' } else { Bad 'project capturing' }
+if ($sf.Data.Lead -match '^winget also ships nullsoft \(vendor EXE, NSIS\) for x64 of Notepad\+\+\.Notepad\+\+ 8\.9\.8\.1.*\.$' -and $sf.Message.StartsWith($sf.Data.Lead + ' The prior-install rule(s) nsis-x64 name that install', [StringComparison]::Ordinal)) { Ok 'Data.Lead is the first sentence of ID-SIBLING-FAMILY (the advisory replaces what follows it)' } else { Bad "lead: $($sf.Data.Lead)" }
+# Live row OP-REPORT (round 2): the Report sentence printed 'Set-Win32ToolkitPriorInstall -Id nsis-x64 -Mode Enforce' without the
+# mandatory -ProjectPath (as printed it failed with MissingMandatoryParameter); the project set names the project.
+$cfgRules['PriorInstalls'] = [ordered]@{ SchemaVersion = '1.0'; Entries = @([ordered]@{ Id = 'nsis-x64'; Kind = 'ArpKey'; Mode = 'Report'; Key = 'Notepad++'; View = 'Native'; UninstallerType = 'nullsoft' }) }
+[System.IO.File]::WriteAllText((Join-Path $proj 'SupportFiles\AppConfig.json'), ($cfgRules | ConvertTo-Json -Depth 6), [System.Text.UTF8Encoding]::new($false))
+$m = (Find (Get-Win32ToolkitIdentityDelta -ProjectPath $proj) 'ID-SIBLING-FAMILY').Message
+if ($m.Contains("make it Enforce (Set-Win32ToolkitPriorInstall -ProjectPath '$proj' -Id nsis-x64 -Mode Enforce)") -and $m.Contains("run Test-Win32ToolkitProject -ProjectPath '$proj' -Scenario Update -BaselineInstallerType Both")) { Ok 'Project set: the Report step and the switch test name -ProjectPath (the commands run as printed)' } else { Bad "report commands: $m" }
+[System.IO.File]::WriteAllText((Join-Path $proj 'SupportFiles\AppConfig.json'), ($cfg | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
+$d = Get-Win32ToolkitIdentityDelta -ProjectPath $proj -CapturingSiblings
+if ((Find $d 'ID-SIBLING-FAMILY').Message -match 'this run captures it') { Ok 'Project set: -CapturingSiblings reaches the Data set' } else { Bad 'project capturing text' }
 
 # A relative -ProjectPath (Export / Publish accept one) is resolved against the PowerShell location: a bare
 # folder name or '.' has no parent for Split-Path, which would leave the template folder empty.
