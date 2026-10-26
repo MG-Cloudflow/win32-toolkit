@@ -403,7 +403,7 @@ Records written by older versions of the toolkit have no `Baseline` or `LogFolde
 A package with **prior-install rules** (another installer technology of the app that the package refuses, or removes
 before it installs; see [Packaging](packaging.md#prior-installs-remove-another-installer-technology-before-installing))
 uses the Update test as their proof. The run checks one **proof group**: the Enforce rules that share an uninstaller
-technology and registry view (or, for rules from a sibling capture, the same floor capture). Pick one with
+technology and registry view (or, for rules from a [sibling capture](#capture-other-installer-technologies), the same floor capture). Pick one with
 `-ProofEntryId` (an id that is not an Enforce rule of one group is refused before anything runs); without it the first
 group (in Id order) is checked. Unless you choose the old version's technology (`-BaselineInstallerType <type>`,
 `Packaged` or `Both`), the old version is pinned to the group's technology and to an architecture that writes the
@@ -425,7 +425,9 @@ The guest then also asserts, with the deploy script's own prior-install code:
 
 User data is reported, never judged: the guest seeds a file in the prior's folder and writes
 `DATA UserDataKept-PostUpdate.<id> = KEPT` or `= LOST`. A deleted file never fails the test; Export asks for a
-`DATA-LOSS` acknowledgement instead.
+`DATA-LOSS` acknowledgement instead. For a rule from a sibling capture, the capture's removal probe is a second signal: it
+seeds configuration files too (`config.xml`), and when the uninstaller deleted one, Export asks for the same
+acknowledgement even if this run kept its file (an uninstaller may delete a `config.xml` and keep other files).
 
 The record gets a `Proof`: the hashes of what the device reads (the rules and the package's own identity, the deploy
 script, every file under `Files\` and `SupportFiles\` - the org hooks included -, the baseline installer, the prior-install
@@ -444,6 +446,130 @@ rules (`Documentation\PriorInstallDropped.json`, after a `GUEST-TAMPER` re-creat
   with `W32T.GuestTamper`, writes `Documentation\GuestTamper.json` and records nothing: re-create the project.
 
 <!-- SCREENSHOT: Host console showing the Update test verdict block (PASS with the requirement and tattoo assertions listed) -->
+
+## Capture other installer technologies
+
+Many apps are on winget in more than one installer technology: Notepad++ ships a WiX MSI and the vendor's NSIS
+setup, and devices may already have either one. The **sibling capture** installs each *other* technology of the app in
+a clean guest, records what it registered, and turns that into prior-install **proposals**: rules that make your
+package refuse (Block) or remove (Enforce) that other install before it installs. A capture never writes a rule; you
+review and approve the proposals (see [Packaging](packaging.md#from-a-sibling-capture-to-an-enforce-rule)).
+
+```powershell
+# Capture the other installer technologies of a packaged project
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario SiblingCapture
+```
+
+The same capture runs inside the packaging pipeline with `Invoke-Win32Toolkit -CaptureSiblingTechnologies`, and from
+the menu (the winget wizard asks once, default No, when the app has a technology the package can remove; a project's
+**Prior installs** screen offers it too).
+
+**Before anything is downloaded** the capture checks the project: its deploy script has the prior-install code (a
+project created before this version must be re-created), it is a winget app (manual apps have no siblings), the install
+capture recorded its own identity, and it is not an ARM64 package. Then it prints the **plan**:
+
+| Technology | Class | What happens |
+|---|---|---|
+| `nullsoft` (NSIS), `inno` (Inno Setup) | removable | captured; the proposals can become Enforce rules |
+| `exe` | removable | captured; Block-only unless the uninstaller turns out to be NSIS or Inno Setup |
+| `msi`, `wix`, `burn`, `msix` | report only | listed; captured only with `-IncludeReportOnly` (their removal comes in a later version) |
+| portable, zip-wrapped, ARM64 | not capturable | listed with the reason |
+
+Each technology is captured **twice**: at the newest version that offers it (at most the package version) and at the
+**floor**, the oldest version released in the last 12 months (or the 5th one before the newest when release dates are
+missing). A rule needs an identity seen in two captures; when only one version offers it, that version is captured
+twice. Plan about 3-5 minutes per capture (measured: about 2.5 minutes per capture run on a Hyper-V test VM).
+
+| Parameter | What it changes |
+|---|---|
+| `-SiblingInstallerType nullsoft,inno` | only these technologies |
+| `-SiblingVersion 8.7.9,8.9.8` | exactly these versions (one version is captured twice) |
+| `-SiblingCaptureVersionsBack n` | the floor is the n-th version before the newest |
+| `-SiblingCaptureCoverage n` | the newest version of each of the last n major.minor lines, so a rule covers more versions |
+| `-SiblingCaptureMaxExtra n` | when a technology registers differently between two captured versions (a drift), up to n more captures at the middle version until the change is found (default 4) |
+| `-SiblingArchitecture x86` | the 32-bit installers of a 64-bit app (their rules use the 32-bit registry view) |
+| `-Assisted` | you install each sibling yourself in the VM window when the run pauses, for an installer that cannot run silently (Hyper-V and an interactive console only) |
+| `-IncludeReportOnly` | also capture the report-only technologies |
+
+### What one capture does
+
+Each capture is an isolated run that sees **nothing of your project**: a work folder
+`Sandbox\SiblingRuns\<capture>-<time>\` holds the capture script, its data file and the downloaded installer (exactly
+that installer type and version, recorded with its SHA-256). The guest snapshots the machine (uninstall entries,
+Program Files and ProgramData folders, services, shortcuts, scheduled tasks, Store packages), installs the sibling
+silently (the switches winget would use), snapshots again, and then **probes** the removal: it runs the uninstaller with
+the same constant switches a device would (`/S _?=<folder>` for NSIS, `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` for
+Inno Setup) and checks that the entry and the program are gone. Edge, Windows Update and Store updates are held still
+during the run, so their changes are not mistaken for the app's. Windows 11 restarts its Windows Update service by itself,
+seconds after the test VM was restored or a few minutes later; that still counts as held still, before and after the
+install, when Windows Update installed nothing during the capture (Microsoft Defender's own updates aside). When it did,
+or an Edge updater could not be stopped before the install or ran during it, the capture warns with what it found and why
+(the state of each service and task, `before the install:` for what could not be held still before the install, and
+what Windows Update installed or that its log could not be read; `Documentation\SiblingCapture.json` keeps it for that
+run) and the proposals of that identity are Block-only (a record keeps that: a later capture does not take it back).
+
+What the guest writes comes back into a **quarantine** folder only, through an allow-list of file names and size caps;
+the copied uninstaller and main program are read on the host (signature, NSIS marker), never run, then deleted. Every
+string is checked before use. The project is hashed before the run and compared after it: a change stops the capture
+(`W32T.GuestTamper`). The result is a **capture record**, `Documentation\SiblingCapture\<id>.json`, named after the
+SHA-256 of its own bytes: a record changed afterwards is ignored. `Documentation\SiblingCapture.json` summarises the run
+(records, failures, report-only and not-capturable technologies, drift gaps).
+
+**Hyper-V or Windows Sandbox.** The capture runs on the [Hyper-V test VM](hyperv-vm.md) when it is ready. Otherwise it
+runs in Windows Sandbox, and says so before the first download: the sandbox maps only the work folder (read-only) and
+the quarantine (read-write), and the sibling installs as the sandbox's user, so **every proposal from a Sandbox capture
+is Block-only**. Windows allows one sandbox: when another one is open, the capture is refused before anything is
+downloaded (`W32T.SandboxBusy`); close it and capture again. An assisted capture (`-Assisted`) is Block-only too: it
+records the user signed in to the VM's console, who installs, and that user's per-user entries; it names, before it runs,
+the identities it makes Block-only (as below), and a run in which you install nothing (or cancel the setup) records
+nothing. A Sandbox record also joins the records of the identity it sees:
+a capture in Windows Sandbox of an identity your Hyper-V captures already made Enforce-eligible makes it Block-only (an
+Enforce rule of it is then refused at Export), and a later capture on Hyper-V does not take that back. So without a
+ready VM the pipeline does not capture a project whose captures already allow an Enforce rule (one problem in the run's
+result names them), `Test-Win32ToolkitProject -Scenario SiblingCapture` refuses it before any download
+(`W32T.SiblingCaptureUnsupported`, also with `-Backend HyperV`; only the technologies you capture count, so
+`-SiblingInstallerType` can leave them out), and the menu says it first and asks before it captures in Windows Sandbox
+(default No). `-Backend Sandbox` captures there on purpose.
+
+### From records to proposals
+
+The proposals are re-derived from the verified records every time you look at them (in the menu's review, by
+`Set-Win32ToolkitPriorInstall`, at Export), never trusted from a file. For each capture the **primary** entry is the
+one the sibling installer itself registered (its ProductCode or its Apps and Features name and publisher from the winget
+manifest); entries installed alongside it (a maintenance service, a runtime) are listed but never proposed, and an entry
+registered for the user only, or under the package's own uninstall key, gives no proposal. A proposal is
+**Enforce-eligible** only when every capture of its identity agrees, the removal probe was clean, the uninstaller is a
+proven NSIS or Inno Setup uninstaller inside the install folder under Program Files, its permissions let only SYSTEM,
+Administrators and TrustedInstaller change it, it has a main program, its versions follow the winget versions, and the
+captures ran unattended on Hyper-V. Otherwise it is Block-only, and the review says why (an Electron app's NSIS setup,
+built with electron-builder, usually ends here: its own uninstall needs switches the constant ones lack, and the probe
+leaves it installed). The window of a captured rule
+is never typed: it runs from the version the floor capture saw to the newest version a capture with the same identity
+saw.
+
+### Proving captured rules
+
+A captured Enforce rule is proven like any other (see [the proof run](#prior-installs-the-proof-run)), with one
+difference: its baseline is **exactly the floor capture's installer** (type, version, architecture, and the same
+SHA-256; a changed installer on winget stops the run before the guest: capture again). `-SiblingProof FloorAndNewest`
+adds a second run from the newest capture: it cannot prove anything, but a failure there takes the proof back.
+
+In the pipeline, `-RunTest Update` with unproven Enforce rules runs these proof runs **instead of** the generic Update
+test, one per group. A captured rule that cannot be proven is **demoted**: it is removed (it becomes a proposal again),
+its approval is marked demoted, and a warning names the failing checks; the rules left are proven again, because the
+proof covers the whole rule set (at most four rounds). Without Update in `-RunTest` (or without a ready Hyper-V VM),
+unproven captured rules are demoted without a proof run. When no proof round is left, a captured rule whose proof also
+covered a demoted rule is demoted too, with a warning that names that rule, so Export never refuses a captured rule as
+unproven only because another one failed. In a next version of the app, a demoted rule that the version before it
+carried still stops Export (`ID-PRIOR-DROPPED`) until you approve and prove it again, or acknowledge the drop. Rules you
+typed yourself are never demoted: Export refuses them until they are proven or waived.
+
+**Next versions.** A new version of the app carries the captured rules, their records and their approvals unchanged.
+Only a new capture moves them: when the newest capture sees the same identity at a higher version, the rule's
+`VersionMax` follows it (and it needs a new proof); when the identity changed, the old rule is frozen and the new
+identity is a new proposal to review.
+
+<!-- SCREENSHOT: The review screen of a sibling capture: the Notepad++ NSIS card with Block preselected -->
 
 ## What is "the update app"?
 

@@ -156,6 +156,8 @@ below name the kinds of warning in these docs, and the warning text does not pri
 | `PRIOR-PREDECESSOR-PUBLISHED` | An Enforce rule, and an earlier version of the app is published from this template. | Unassign the earlier app before you assign this one. |
 | `PRIOR-ENFORCE-PILOT` | The package removes another install of the app as SYSTEM. | Pilot first; the warning names the kill switch (see [Packages that remove a prior install](#packages-that-remove-a-prior-install)). |
 | `ID-PRIOR-OWN`, `PRIOR-CLASS-E` | A rule of the previous version was dropped because it names this package's own uninstall key; or the app belongs to a family whose versions install side by side (Python, .NET, ...). | Check that the right install is removed. |
+| `ID-SIBLING-UNAPPLIED` | A [sibling capture](testing.md#capture-other-installer-technologies) proposed a rule that is not applied: devices with that install keep it next to this package. The warning prints the command that applies it as Block. | Review the proposal (Block it, or approve it as Enforce). |
+| Other `ID-SIBLING-...` codes | What the sibling capture could not turn into a rule: a per-user install, the package's own uninstall key, a technology of the package's own family at its version, a new technology since the rules were made, a report-only or not-capturable technology, a drift gap, a Sandbox or assisted capture (Block only). | See [Capture other installer technologies](testing.md#capture-other-installer-technologies). |
 | Other `ID-...` codes | The identity checks from packaging time (another technology, an earlier version of another technology, a changed detection key, a user-scope installer, ...), shown again. | See [Installer technology](packaging.md#installer-technology). |
 
 They are shown **once per action**: `Export-Win32ToolkitIntuneWin -PublishIntune -PublishUpdate` prints
@@ -163,7 +165,7 @@ them once, not once per app, and a dry run (`-WhatIf`) prints them too. In the T
 Intune** shows them in a panel before you pick which app to publish: red when an install/uninstall test
 failed or gave no verdict, an Update test failed, a technology switch was seen, the cleanup paths are
 unsafe or a prior-install rule fails, retries or reinstalls on devices (`PRIOR-BLOCK-FLEET`, `PRIOR-NO-WELCOME`,
-`PRIOR-PREDECESSOR-PUBLISHED`), yellow for the other warnings.
+`PRIOR-PREDECESSOR-PUBLISHED`) or a captured install is not covered (`ID-SIBLING-UNAPPLIED`), yellow for the other warnings.
 When the cleanup paths are unsafe, the menu stops before asking which app to publish: packaging refuses
 such a project until Finalize / refresh re-runs the capture (or, when `SupportFiles\AppConfig.json` cannot be
 read, until you fix the file or re-create the project).

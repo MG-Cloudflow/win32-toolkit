@@ -120,7 +120,7 @@ packaged for multiple customers side by side. Details: [concepts](docs/concepts.
 | [Publish-Win32ToolkitIntuneApp](docs/reference/Publish-Win32ToolkitIntuneApp.md) | Upload to Intune via Graph ([guide](docs/publishing.md)) |
 | [Export-Win32ToolkitDocumentation](docs/reference/Export-Win32ToolkitDocumentation.md) | Customer-facing one-pager for a packaged app |
 | [Set-Win32ToolkitAppDependency](docs/reference/Set-Win32ToolkitAppDependency.md) | Declare app dependencies ([guide](docs/dependencies.md)) |
-| [Set-Win32ToolkitPriorInstall](docs/reference/Set-Win32ToolkitPriorInstall.md) | Declare another installer technology the package refuses or removes first ([guide](docs/packaging.md#prior-installs-remove-another-installer-technology-before-installing)) |
+| [Set-Win32ToolkitPriorInstall](docs/reference/Set-Win32ToolkitPriorInstall.md) | Declare another installer technology the package refuses or removes first: typed, from an Update test, or from a [sibling capture](docs/testing.md#capture-other-installer-technologies) ([guide](docs/packaging.md#prior-installs-remove-another-installer-technology-before-installing)) |
 | [Sync-Win32ToolkitAppDependency](docs/reference/Sync-Win32ToolkitAppDependency.md) | Re-attach dependencies on already-published apps |
 
 **Intune connection** ([guide](docs/intune-connection.md))

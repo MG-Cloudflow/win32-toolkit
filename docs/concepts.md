@@ -410,6 +410,12 @@ an older version than the rule's window) is **left as it is** and the install go
 capture), and an Enforce rule ships only after a Hyper-V test removed that prior with this exact package (a rule you
 typed or took from an Update test can instead carry a recorded `PROOF` waiver; a rule from a sibling capture never can).
 
+The rules do not have to be typed. A **sibling capture** (`-CaptureSiblingTechnologies`, or the menu) installs each
+other technology winget ships for the app in its own clean guest, records exactly what it registered, and proposes
+the rules; you approve them, Block first ([Testing](testing.md#capture-other-installer-technologies)). The guest never
+sees the project, its output comes back through an allow-list, and every proposal is re-derived from the hash-checked
+records whenever it is used.
+
 Because the guest starts clean every time, the diff contains only what *this* installer did, no
 noise from previously installed software. That is why the capture runs in a disposable guest and
 not on your admin workstation.

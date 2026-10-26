@@ -142,7 +142,51 @@ A rule is exact: the uninstall key under `HKLM\SOFTWARE\[WOW6432Node\]Microsoft\
    (see [the proof run](testing.md#prior-installs-the-proof-run)). The proof covers this exact package: any change to the rules, the deploy script, `Files\` or `SupportFiles\` needs a new run.
 5. **Package and publish to a pilot group first** ([Publishing](publishing.md#packages-that-remove-a-prior-install)).
 
-`Set-Win32ToolkitPriorInstall -ProjectPath <p>` alone lists the rules, their mode, where they came from, their proof state and what each one does on a device. `-Remove <id>` removes a rule.
+### From a sibling capture to an Enforce rule
+
+Instead of waiting for an Update test to fail, let the toolkit learn the other technologies: a **sibling capture**
+installs each one in a clean guest and proposes a rule for it ([Testing](testing.md#capture-other-installer-technologies)).
+
+```powershell
+# Package the WiX MSI and capture the vendor's NSIS setup too; Block what the capture finds
+Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -InstallerType wix `
+    -CaptureSiblingTechnologies -ApplySiblingCapture Block -RunTest Update
+```
+
+1. **Capture.** `-CaptureSiblingTechnologies` runs the capture after the install capture, before the tests (on the
+   Hyper-V test VM; without one, in Windows Sandbox with Block-only proposals, said before the download). On its own,
+   `Test-Win32ToolkitProject -ProjectPath <p> -Scenario SiblingCapture` does the same for an existing project. A capture
+   that cannot run (no own identity yet, an ARM64 package) is one problem in the run's result; the pipeline goes on.
+   Without a ready VM, a project whose captures already allow an Enforce rule (an Enforce-eligible proposal, or a
+   captured Enforce rule, for example carried from the version before) is not captured: a Windows Sandbox record would
+   make that identity Block-only, and a later capture on Hyper-V does not take that back
+   ([Testing](testing.md#what-one-capture-does)). The pipeline says so in the run's result; the command refuses it
+   (`W32T.SiblingCaptureUnsupported`) unless you add `-Backend Sandbox` on purpose.
+2. **Review.** `Set-Win32ToolkitPriorInstall -ProjectPath <p>` lists the proposals next to the rules: the identity, the
+   window, the confidence, whether it can become Enforce and why not. In the menu, **Work with an existing project →
+   Prior installs → Review the capture proposals** shows one card per proposal with what each choice does on a device.
+   Block is the first choice. Enforce (offered only when the Hyper-V test VM is ready, since it is proven there right
+   away) asks once more (No shows the card again), records the approval, runs the proof
+   and asks for the acknowledgements packaging needs, each with its reason: `DATA-LOSS` when the uninstaller deletes
+   data (the card says so), `SIGNER-MISMATCH` when the other technology is signed differently from your package.
+   **Widen** captures one more, older version of that technology and shows the card again; without a ready Hyper-V VM it
+   (like **Capture the other installer technologies** on the Prior installs screen) first says the capture would run in
+   Windows Sandbox, names what that would make Block-only, and asks (default No). An error never skips a card.
+3. **Block first.** `-ApplySiblingCapture Block` (or
+   `Set-Win32ToolkitPriorInstall -ProjectPath <p> -FromSiblingCapture -Mode Block`) turns every proposal of high
+   confidence without flags into a Block rule; a proposal that is already a rule is never changed this way. Name one
+   with `-ProposalId <id>` to apply it whatever its confidence.
+4. **Enforce by name.** `Set-Win32ToolkitPriorInstall -ProjectPath <p> -FromSiblingCapture -Mode Enforce -ProposalId nsis-x64`
+   asks once per proposal and records an **approval** of exactly that identity (kept on your computer). Only an
+   Enforce-eligible proposal can be approved; there is no `-ApplySiblingCapture Enforce`.
+5. **Prove it** with an Update test on Hyper-V (`-RunTest Update` in the pipeline, or
+   `Test-Win32ToolkitProject -ProjectPath <p> -Scenario Update -Backend HyperV -TestMode Unattended`): it starts from the
+   floor capture's installer. A captured rule that cannot be proven is demoted back to a proposal.
+
+The window, the uninstaller and the signer of a captured rule come from its records: a captured rule cannot be
+re-declared by hand (`W32T.PriorInstallRefused`), and a PROOF, VERSIONMIN or DISPLAYNAME waiver is never accepted for it.
+
+`Set-Win32ToolkitPriorInstall -ProjectPath <p>` alone lists the rules, their mode, where they came from, their proof state and what each one does on a device, and the proposals of the project's sibling captures. `-Remove <id>` removes a rule. In the menu, **Work with an existing project → Prior installs** shows the same and lets you review, capture, declare (Block first), change, remove and prove rules; choosing Enforce there asks once more (default No).
 
 **Requirements.** A rule needs the package's own identity, which the install capture records (`OwnIdentity` in `SupportFiles\AppConfig.json`): a rule never names the package's own uninstall entry. The process names of Block and Enforce rules are added to `ProcessesToClose`, so the close-apps dialog closes the prior app before it is removed (an org template that turns the welcome dialog off gets a warning: devices where the app runs retry with 1618). A project created by an earlier win32-toolkit version has no place for the rules in its deploy script: re-create it (copy hand-written Install code out first).
 
@@ -155,14 +199,17 @@ A rule is exact: the uninstall key under `HKLM\SOFTWARE\[WOW6432Node\]Microsoft\
 | `PRIOR-INVALID` | A rule is invalid (the message names it) | Fix or remove it |
 | `PRIOR-PROOF` | An Enforce rule no passing Hyper-V Unattended Update test proved for this exact package | Run the proof, or record a waiver: `-Waive PROOF -Target <id> -Reason '<why>'` |
 | `PRIOR-VERSIONMIN` | An Enforce rule removes versions older than the oldest one a proof run removed | Raise `VersionMin`, prove the older version, or `-Waive VERSIONMIN` |
-| `PRIOR-DATA-LOSS` | The proof run saw the prior's uninstaller delete user data | `-Acknowledge DATA-LOSS -Target <id> -Reason '<why>'` if that is acceptable |
+| `PRIOR-DATA-LOSS` | The proof run saw the prior's uninstaller delete user data, or the capture's removal probe saw it delete configuration in its folder | `-Acknowledge DATA-LOSS -Target <id> -Reason '<why>'` if that is acceptable |
 | `ID-PRIOR-DROPPED` | A rule of the previous version of the app is missing, or a rule that was not kept because a test guest changed the project | Declare it again, or `-Acknowledge ID-PRIOR-DROPPED -Target <id> -Reason '<why>'` |
-| `PRIOR-CAPTURE-RECORD`, `PRIOR-APPROVAL` | A rule from a sibling capture lost its capture record or its approval | Capture again, approve its proposal again |
+| `PRIOR-CAPTURE-RECORD` | A rule from a sibling capture lost its capture record, or its records now give another identity or window (it was edited, or a newer capture raised the window) | Capture again, or apply its proposal again |
+| `PRIOR-APPROVAL` | A captured Enforce rule has no current approval of exactly its identity (missing, demoted, or the rule changed) | Approve its proposal again (`-FromSiblingCapture -Mode Enforce -ProposalId <id>`) |
+| `PRIOR-NOT-ELIGIBLE` | A captured Enforce rule whose capture evidence no longer allows removal (the review names why) | Set it to Block, or capture again |
+| `PRIOR-SIGNER` | The captured install is signed by someone else than your package's installer (a winget manifest may name another vendor's product) | Check it, then `-Acknowledge SIGNER-MISMATCH -Target <id> -Reason '<why>'` |
 | `GUEST-TAMPER` | A test guest changed the project's files | Re-create the project; its rules, decisions and capture records are not kept, and each rule is listed as `ID-PRIOR-DROPPED` until you declare it again or acknowledge it |
 
 Waivers and acknowledgements are kept in `Documentation\PriorInstallDecisions.json` on your computer; they never ship.
 
-**Next versions keep the rules.** A new version of the app gets the rules of the highest earlier version of the same app and architecture in the template folder: an operator rule's `VersionMax` is raised to the new version (for an EXE package, to the earlier version), and each Enforce rule needs a new proof run. Rebuilding the same version (`-Force`) keeps its rules and decisions. A rule removed on purpose stays removed. A project a test guest changed (`GUEST-TAMPER`) keeps no rules, decisions or capture records when you re-create it, and gives none to the next version: packaging the re-created project, or the next version, lists each of its rules as `ID-PRIOR-DROPPED` until you declare it again or acknowledge it. Which rules were lost is kept in `Documentation\PriorInstallDropped.json` on your computer; it never ships. A carried rule that is not valid for the new package is dropped on its own, with a warning naming the problem. The update app (`-PublishUpdate`) also applies to devices that have a prior install an Enforce rule would remove, so they get the package too.
+**Next versions keep the rules.** A new version of the app gets the rules of the highest earlier version of the same app and architecture in the template folder: an operator rule's `VersionMax` is raised to the new version (for an EXE package, to the earlier version), and each Enforce rule needs a new proof run. Rebuilding the same version (`-Force`) keeps its rules and decisions. A rule removed on purpose stays removed. A project a test guest changed (`GUEST-TAMPER`) keeps no rules, decisions or capture records when you re-create it, and gives none to the next version: packaging the re-created project, or the next version, lists each of its rules as `ID-PRIOR-DROPPED` until you declare it again (for a captured rule: capture the sibling technologies again and apply its proposal) or acknowledge it. Which rules were lost is kept in `Documentation\PriorInstallDropped.json` on your computer; it never ships. A carried rule that is not valid for the new package is dropped on its own, with a warning naming the problem. A rule from a sibling capture is carried **unchanged**, with its capture records and its approval; only a new capture moves its window (`-CaptureSiblingTechnologies` again). The update app (`-PublishUpdate`) also applies to devices that have a prior install an Enforce rule would remove, so they get the package too.
 
 ## The Staging copy: what ships and what never does
 
