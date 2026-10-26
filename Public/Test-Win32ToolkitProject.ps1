@@ -61,7 +61,10 @@ function Test-Win32ToolkitProject {
                          capture, and record what it registered (Documentation\SiblingCapture\<id>.json) for
                          prior-install rules. Nothing of the project enters the guest but the sibling
                          installer and the capture script; its output comes back into a quarantine through an
-                         allow-list. It never writes a rule: approve the proposals with Set-Win32ToolkitPriorInstall.
+                         allow-list. It never writes a new rule: approve the proposals with Set-Win32ToolkitPriorInstall.
+                         After a capture that recorded something, the rules that came from earlier captures follow
+                         it: a newer version with the same identity raises their VersionMax, another identity
+                         freezes them (Track Frozen; review the new proposal).
                          Returns $true (at least one record), $false (every capture failed) or $null (nothing to
                          capture). Refused (W32T.SiblingCaptureUnsupported / W32T.PriorInstallSlotsMissing) for a
                          manual app, a project without its own identity (run the install capture first), an ARM64
@@ -385,7 +388,11 @@ function Test-Win32ToolkitProject {
             if ($IncludeReportOnly) { $planArgs['IncludeReportOnly'] = $true }
             $plan = Get-Win32ToolkitSiblingCapturePlan @planArgs
             $plan.Backend = 'HyperV'
-            return (Invoke-Win32ToolkitSiblingCapture -ProjectPath $ProjectPath -Plan $plan -Backend HyperV)
+            $captured = Invoke-Win32ToolkitSiblingCapture -ProjectPath $ProjectPath -Plan $plan -Backend HyperV
+            # The D61 raise (installer-identity PR 3b, X1): a newer capture of a captured rule's identity raises its VersionMax;
+            # a changed identity freezes the rule. Only after a capture that recorded something.
+            if ($captured -eq $true) { $null = Update-Win32ToolkitPriorInstallWindow -ProjectPath $ProjectPath }
+            return $captured
         }
 
         # -BaselineProject: resolve a friendly '<Template>\<Name>' (or 'project:<Template>\<Name>') reference

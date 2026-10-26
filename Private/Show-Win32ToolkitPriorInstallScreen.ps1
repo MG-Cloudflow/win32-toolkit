@@ -89,7 +89,6 @@ function Show-Win32ToolkitPriorInstallScreen {
                 'capture' {
                     Clear-Host; Write-SpectreRule -Title 'Capturing the other installer technologies...' -Color Blue
                     $done = Test-Win32ToolkitProject -ProjectPath $ProjectPath -Scenario SiblingCapture -Backend HyperV
-                    $null = Update-Win32ToolkitPriorInstallWindow -ProjectPath $ProjectPath
                     if ($null -ne $done) { Show-Win32ToolkitSiblingCaptureReview -ProjectPath $ProjectPath; $skipPause = $true }
                 }
                 'candidates' {

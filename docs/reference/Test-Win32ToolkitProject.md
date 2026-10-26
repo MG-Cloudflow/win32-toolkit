@@ -184,7 +184,10 @@ Assertion results
 Nothing of the project enters the guest but the sibling
                      installer and the capture script; its output comes back into a quarantine through an
                      allow-list.
-It never writes a rule: approve the proposals with Set-Win32ToolkitPriorInstall.
+It never writes a new rule: approve the proposals with Set-Win32ToolkitPriorInstall.
+                     After a capture that recorded something, the rules that came from earlier captures follow
+                     it: a newer version with the same identity raises their VersionMax, another identity
+                     freezes them (Track Frozen; review the new proposal).
                      Returns $true (at least one record), $false (every capture failed) or $null (nothing to
                      capture).
 Refused (W32T.SiblingCaptureUnsupported / W32T.PriorInstallSlotsMissing) for a
