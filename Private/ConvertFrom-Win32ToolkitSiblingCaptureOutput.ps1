@@ -20,12 +20,19 @@ function ConvertFrom-Win32ToolkitSiblingCaptureOutput {
         no record: Failure names why.
     .PARAMETER RunFolder
         The capture's work folder (Sandbox\SiblingRuns\<CaptureKey>-<stamp>).
+    .PARAMETER OutputFolder
+        Where the guest output is (default <RunFolder>\quarantine\Out, the Hyper-V copy-back; a Windows Sandbox capture
+        writes straight into <RunFolder>\quarantine). An assisted capture (Context.Run.Mode Assisted) has no install file:
+        the operator installed the sibling, so the install counts as completed - but one that left no uninstall entry of
+        the app (no provisional primary, no per-user entry) gives no record: the operator installed nothing.
     .PARAMETER Context
         The host facts: @{ CaptureKey; Package = @{...}; Sibling = @{...}; Run = @{ Backend; Mode; ToolkitVersion;
         GuestScriptSha256; DependenciesSkipped; Seconds }; InstallerPath }.
     .OUTPUTS
         [pscustomobject] Record (an ordered dictionary or $null), Failure ('' or the reason), NoiseDetail (the guest's noise-control
-        states, '<service> <state>/<start mode>; ...', printable text for the operator; never part of the record).
+        states, '<service> <state>/<start mode>; ...', printable text for the operator; never part of the record), NoiseCause
+        ('' when Verified, else why: the controls could not be held before the install, Windows Update installed something,
+        its log could not be read, or a service or task was not held still; '; '-joined).
     .EXAMPLE
         $r = ConvertFrom-Win32ToolkitSiblingCaptureOutput -RunFolder $run -Context $facts
     #>
@@ -37,11 +44,14 @@ function ConvertFrom-Win32ToolkitSiblingCaptureOutput {
         [string]$RunFolder,
 
         [Parameter(Mandatory)]
-        [hashtable]$Context
+        [hashtable]$Context,
+
+        [AllowEmptyString()]
+        [string]$OutputFolder = ''
     )
 
     $key = [string]$Context.CaptureKey
-    $out = Join-Path $RunFolder 'quarantine\Out'
+    $out = if ($OutputFolder) { $OutputFolder } else { Join-Path $RunFolder 'quarantine\Out' }
     $fail = { param([string]$Why) [pscustomobject]@{ Record = $null; Failure = $Why } }
     $prop = {
         param($Object, [string]$Name)
@@ -83,13 +93,21 @@ function ConvertFrom-Win32ToolkitSiblingCaptureOutput {
         if ($key -cnotmatch '^[a-z0-9_.+-]{1,80}$') { return (& $fail 'the capture key is not valid') }
         if (-not (Test-Path -LiteralPath $out -PathType Container)) { return (& $fail 'the guest returned no output') }
         $pre = & $readJson "SiblingPre_$key.json"
-        $inst = & $readJson "SiblingInstall_$key.json"
+        $assisted = [string]$Context.Run.Mode -eq 'Assisted'
+        $inst = & $readJson "SiblingInstall_$key.json" -Optional:$assisted
+        if ($null -eq $inst -and $assisted) { $inst = [pscustomobject]@{ ExitCode = 0; TimedOut = $false; Completed = $true; RebootRequested = $false; Lingering = @(); Seconds = 0 } }
         if (-not (& $bool $inst 'Completed')) {
             $why = if (& $bool $inst 'TimedOut') { 'the sibling installer was still running after 20 minutes' } else { "the sibling installer failed (exit code $(& $int $inst 'ExitCode'))" }
             return (& $fail $why)
         }
         $cap = & $readJson "SiblingCapture_$key.json"
         if (& $bool $cap 'PostSiblingFailed') { return (& $fail 'the snapshot after the install failed') }
+        # An assisted install proves nothing by itself (no exit code): no new uninstall entry of the app (no primary) and no
+        # per-user one means the operator installed nothing, cancelled, or ran another file. Recorded, it would mark every
+        # identity at that version Unstable for good (live row ASSISTED: a good Enforce-eligible identity became Block-only).
+        if ($assisted -and -not (& $str $cap 'ProvisionalPrimary') -and @(& $list $cap 'HkcuArp').Count -eq 0) {
+            return (& $fail 'the assisted install left no uninstall entry of this app (nothing installed, the setup cancelled, or another file): nothing is recorded; capture it again')
+        }
         $probe = & $readJson "SiblingProbe_$key.json" -Optional
 
         # ---- host checks of the copied binaries (never executed; deleted afterwards, L31) ----
@@ -144,8 +162,21 @@ function ConvertFrom-Win32ToolkitSiblingCaptureOutput {
         $noise = & $str $cap 'NoiseControl'
         if (@('Verified', 'Unverified') -cnotcontains $noise) { $noise = 'Unverified' }
         # What the guest's noise control found (live row GOAL-CAPTURE: an Unverified record said nothing about why): for the
-        # operator only, never part of the record. Guest text: printable, short, at most 16 items.
-        $noiseDetail = (@(& $list $cap 'NoiseDetail' | Select-Object -First 16 | ForEach-Object { ConvertTo-Win32ToolkitSafeText -Text ([string]$_) -MaxLength 80 } | Where-Object { $_ }) -join '; ')
+        # operator only, never part of the record. Guest text: printable, at most 20 items of 160 characters; a nested list
+        # (a guest script before the fix of live rows RAISE / ASSISTED) is flattened, never joined into one cut string.
+        $noiseItems = @(& $list $cap 'NoiseDetail' | ForEach-Object { $_ } | Select-Object -First 20 | ForEach-Object { ConvertTo-Win32ToolkitSafeText -Text ([string]$_) -MaxLength 160 } | Where-Object { $_ })
+        $noiseDetail = $noiseItems -join '; '
+        # Why it was not verified, from the guest's constant item prefixes (live rows DEMOTE, INNO, ASSISTED: the warning said
+        # "Windows Update installed something" when the check before the install had failed and nothing was installed).
+        $noiseCause = ''
+        if ($noise -ne 'Verified') {
+            $causes = [System.Collections.Generic.List[string]]::new()
+            if (@($noiseItems | Where-Object { $_.StartsWith('before the install: ', [StringComparison]::Ordinal) }).Count -gt 0) { $causes.Add('the update services and tasks could not be held still before the install') }
+            if (@($noiseItems | Where-Object { $_.StartsWith('Windows Update installed: ', [StringComparison]::Ordinal) }).Count -gt 0) { $causes.Add('Windows Update installed something during the capture') }
+            if (@($noiseItems | Where-Object { $_.StartsWith('Windows Update event log unreadable', [StringComparison]::Ordinal) }).Count -gt 0) { $causes.Add('the Windows Update event log could not be read, so a restarted update service could not be excused') }
+            if ($causes.Count -eq 0) { $causes.Add('an update service or task was not held still during the capture') }
+            $noiseCause = $causes -join '; '
+        }
         $probeResult = & $str $probe 'Result'
         if (@('Clean', 'NeedsRestart', 'TimedOut', 'Survived', 'NotProbed') -cnotcontains $probeResult) { $probeResult = 'NotProbed' }
         $probedView = & $str $probe 'ProbedView'
@@ -188,7 +219,7 @@ function ConvertFrom-Win32ToolkitSiblingCaptureOutput {
         }
         $typed = ConvertTo-Win32ToolkitSiblingCaptureRecord -InputObject $record
         if ($null -eq $typed) { return (& $fail 'the capture output does not have the record shape') }
-        return [pscustomobject]@{ Record = $typed; Failure = ''; NoiseDetail = $noiseDetail }
+        return [pscustomobject]@{ Record = $typed; Failure = ''; NoiseDetail = $noiseDetail; NoiseCause = $noiseCause }
     }
     catch {
         if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }

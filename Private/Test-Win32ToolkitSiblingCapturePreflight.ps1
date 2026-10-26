@@ -13,17 +13,22 @@ function Test-Win32ToolkitSiblingCapturePreflight {
           a winget project (manual apps have no winget siblings)         W32T.SiblingCaptureUnsupported
           OwnIdentity recorded (the install capture ran)                 W32T.SiblingCaptureUnsupported
           the package architecture is x64 or x86 (not arm64)             W32T.SiblingCaptureUnsupported
-          the Hyper-V test VM is ready (this version captures on         W32T.SiblingCaptureUnsupported
-          Hyper-V only)
+          -Assisted: the Hyper-V test VM is ready and the console can  W32T.SiblingCaptureUnsupported
+          answer a prompt (D62)
 
-        The backend is -Backend, else the configured test backend. Never throws (a W32T.* error from a helper is
-        re-thrown); every reason is a sentence for the operator.
+        The backend (SV28): -Backend, else the Hyper-V test VM when it is ready, else Windows Sandbox. A Hyper-V capture
+        whose VM is not ready runs in Windows Sandbox instead, with one note said before the first download: there the
+        sibling installs as a user and every proposal is Block-only (Run.Backend Sandbox). Never throws (a W32T.* error
+        from a helper is re-thrown); every reason and note is a sentence for the operator.
     .PARAMETER ProjectPath
         The PSADT project folder.
     .PARAMETER Backend
-        HyperV or Sandbox (default: the configured test backend).
+        HyperV or Sandbox (default: Hyper-V when the test VM is ready, else Windows Sandbox).
+    .PARAMETER Assisted
+        An assisted capture: the operator installs the sibling in the VM window (Hyper-V only, a console that can
+        prompt; its proposals are Block-only, D62).
     .OUTPUTS
-        [pscustomobject] Ok, Code, Reasons[], Backend, WingetId, Architecture.
+        [pscustomobject] Ok, Code, Reasons[], Notes[], Backend, WingetId, Architecture.
     .EXAMPLE
         $pre = Test-Win32ToolkitSiblingCapturePreflight -ProjectPath $p
     #>
@@ -36,10 +41,13 @@ function Test-Win32ToolkitSiblingCapturePreflight {
 
         [AllowEmptyString()]
         [ValidateSet('', 'HyperV', 'Sandbox')]
-        [string]$Backend = ''
+        [string]$Backend = '',
+
+        [switch]$Assisted
     )
 
     $reasons = [System.Collections.Generic.List[string]]::new()
+    $notes = [System.Collections.Generic.List[string]]::new()
     $state = @{ Code = '' }
     $fail = { param([string]$Code, [string]$Reason) if (-not $state.Code) { $state.Code = $Code }; $reasons.Add($Reason) }
     $resolved = ''
@@ -62,14 +70,23 @@ function Test-Win32ToolkitSiblingCapturePreflight {
         $arch = ([string]$src.Architecture).ToLowerInvariant()
         if (-not $arch -and $cfg.PSObject.Properties['App']) { $arch = ([string]$cfg.App.Arch).ToLowerInvariant() }
         if ($arch -notin @('x64', 'x86')) { & $fail 'W32T.SiblingCaptureUnsupported' "the package architecture is '$arch': an ARM64 sibling cannot be installed on the x64 test VM" }
-        $resolved = if ($Backend) { $Backend } else { [string](Get-Win32ToolkitConfigValue -Name 'TestBackend' -Default 'Sandbox') }
+        # SV28: the Hyper-V test VM when it is ready (only it gives removable rules), else Windows Sandbox (Block-only).
+        $resolved = if ($Backend) { $Backend } else { 'HyperV' }
         if ($resolved -eq 'HyperV') {
             $notReady = @(Test-Win32ToolkitHyperVReady)
-            if ($notReady.Count -gt 0) { & $fail 'W32T.SiblingCaptureUnsupported' ("Hyper-V is not ready (" + ($notReady -join '; ') + '): this win32-toolkit version captures the other installer technologies on the Hyper-V test VM only') }
+            if ($notReady.Count -gt 0) {
+                if ($Assisted) { & $fail 'W32T.SiblingCaptureUnsupported' ("an assisted capture runs on the Hyper-V test VM, which is not ready (" + ($notReady -join '; ') + ')') }
+                else {
+                    $resolved = 'Sandbox'
+                    $notes.Add("Hyper-V is not ready (" + ($notReady -join '; ') + '): this capture runs in Windows Sandbox as a user and can only give Block-only proposals.')
+                }
+            }
         }
-        else {
-            & $fail 'W32T.SiblingCaptureUnsupported' 'the test backend is Windows Sandbox: this win32-toolkit version captures the other installer technologies on the Hyper-V test VM only (pass -Backend HyperV, or set up the test VM with New-Win32ToolkitTestVM)'
-        }
+        elseif ($Assisted) { & $fail 'W32T.SiblingCaptureUnsupported' 'an assisted capture runs on the Hyper-V test VM only (not in Windows Sandbox)' }
+        else { $notes.Add('This capture runs in Windows Sandbox as a user and can only give Block-only proposals (the Hyper-V test VM gives removable ones).') }
+        # A service, a CI job or redirected input, and also a console started with -NonInteractive (live row ASSISTED: a
+        # 'pwsh -NonInteractive -File' host passed, two VM runs were spent and each failed at the operator's prompt).
+        if ($Assisted -and ((Test-Win32ToolkitHostNonInteractive) -or (Test-Win32ToolkitNonInteractiveSwitch))) { & $fail 'W32T.SiblingCaptureUnsupported' 'an assisted capture needs a console that can answer a prompt (this one cannot)' }
     }
     catch {
         if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
@@ -79,6 +96,7 @@ function Test-Win32ToolkitSiblingCapturePreflight {
         Ok           = $reasons.Count -eq 0
         Code         = [string]$state.Code
         Reasons      = [string[]]$reasons.ToArray()
+        Notes        = [string[]]$notes.ToArray()
         Backend      = $resolved
         WingetId     = $wingetId
         Architecture = $arch

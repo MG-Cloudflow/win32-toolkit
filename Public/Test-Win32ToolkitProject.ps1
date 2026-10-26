@@ -61,14 +61,26 @@ function Test-Win32ToolkitProject {
                          capture, and record what it registered (Documentation\SiblingCapture\<id>.json) for
                          prior-install rules. Nothing of the project enters the guest but the sibling
                          installer and the capture script; its output comes back into a quarantine through an
-                         allow-list. It never writes a new rule: approve the proposals with Set-Win32ToolkitPriorInstall.
+                         allow-list. It never writes a new rule: approve the proposals with Set-Win32ToolkitPriorInstall
+                         (at the end it names every proposal that is not a rule yet, with the command that applies it).
                          After a capture that recorded something, the rules that came from earlier captures follow
                          it: a newer version with the same identity raises their VersionMax, another identity
                          freezes them (Track Frozen; review the new proposal).
-                         Returns $true (at least one record), $false (every capture failed) or $null (nothing to
-                         capture). Refused (W32T.SiblingCaptureUnsupported / W32T.PriorInstallSlotsMissing) for a
+                         Returns $true (at least one record), $false (every capture failed, or the winget manifests
+                         could not be read, for example while GitHub rate-limits this computer: a warning says when
+                         to capture again) or $null (nothing to capture). Refused (W32T.SiblingCaptureUnsupported / W32T.PriorInstallSlotsMissing) for a
                          manual app, a project without its own identity (run the install capture first), an ARM64
-                         package, a project created before this version, or without a ready Hyper-V test VM.
+                         package or a project created before this version. Without a ready Hyper-V test VM it runs
+                         in Windows Sandbox (said up front): there the sibling installs as a user and every
+                         proposal is Block-only; a sandbox that cannot be confirmed closed after its capture stops
+                         the run with W32T.GuestTamper (its output folder could still change; rebuild the project).
+                         A Sandbox record also joins the records of the identity it sees
+                         and makes that identity Block-only for good (a later capture on Hyper-V does not take
+                         that back), so when the project's captures already allow an Enforce rule (an
+                         Enforce-eligible proposal or a captured Enforce rule of the types to capture) a capture
+                         without a ready VM is refused instead (W32T.SiblingCaptureUnsupported, before any
+                         download), with or without -Backend HyperV. Only -Backend Sandbox captures in Windows
+                         Sandbox on purpose.
 .PARAMETER VersionsBack
     Update scenario only. Automatically selects the version that is X positions older
     than the currently packaged version (e.g. 1 = the immediately previous release).
@@ -180,6 +192,19 @@ function Test-Win32ToolkitProject {
 .PARAMETER IncludeReportOnly
     SiblingCapture scenario only: also capture the types whose removal is not supported yet (MSI, WiX, Burn, MSIX); their
     records are listed, never proposed.
+.PARAMETER SiblingCaptureCoverage
+    SiblingCapture scenario only: capture the newest version and the newest version of each of the last n major.minor
+    lines that offer the type (1-10), so a rule covers more of the versions devices may have.
+.PARAMETER SiblingCaptureMaxExtra
+    SiblingCapture scenario only: when a technology registers differently between two captured versions (a drift),
+    capture up to n more versions between them to find where it changed (0-10, default 4).
+.PARAMETER SiblingArchitecture
+    SiblingCapture scenario only: x86 captures the 32-bit installers of a 64-bit app (their rules use the WOW6432Node
+    view); default the package's architecture.
+.PARAMETER Assisted
+    SiblingCapture scenario only: on the Hyper-V test VM, you install each sibling yourself in the VM window when the
+    run pauses (for an installer that cannot run silently). Needs a console that can answer a prompt; its proposals
+    are Block-only.
 .EXAMPLE
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario Update -VersionsBack 1 -SkipRequirementCheck
 .EXAMPLE
@@ -211,6 +236,9 @@ function Test-Win32ToolkitProject {
 .EXAMPLE
     # Capture the other installer technologies of a WiX package (the vendor's NSIS setup) on the Hyper-V test VM
     Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario SiblingCapture -Backend HyperV
+.EXAMPLE
+    # Capture in Windows Sandbox on purpose: Block-only proposals, and every identity it sees becomes Block-only
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario SiblingCapture -Backend Sandbox
 #>
     [CmdletBinding()]
     param(
@@ -299,7 +327,23 @@ function Test-Win32ToolkitProject {
         [int]$SiblingCaptureVersionsBack,
 
         [Parameter(Mandatory = $false)]
-        [switch]$IncludeReportOnly
+        [switch]$IncludeReportOnly,
+
+        # SiblingCapture scenario only (installer-identity PR 3b, X2): coverage, bisection budget, x86 siblings, assisted.
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 10)]
+        [int]$SiblingCaptureCoverage,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(0, 10)]
+        [int]$SiblingCaptureMaxExtra = 4,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('x64', 'x86')]
+        [string]$SiblingArchitecture,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$Assisted
     )
 
     # The optional per-project lease (speed-up PR 3, TestProjectLease): $null unless taken below; released in the finally.
@@ -365,7 +409,7 @@ function Test-Win32ToolkitProject {
             }
         }
         if ($Scenario -ne 'SiblingCapture') {
-            $siblingOnly = @('SiblingInstallerType', 'SiblingVersion', 'SiblingCaptureVersionsBack', 'IncludeReportOnly') | Where-Object { $PSBoundParameters.ContainsKey($_) }
+            $siblingOnly = @('SiblingInstallerType', 'SiblingVersion', 'SiblingCaptureVersionsBack', 'IncludeReportOnly', 'SiblingCaptureCoverage', 'SiblingCaptureMaxExtra', 'SiblingArchitecture', 'Assisted') | Where-Object { $PSBoundParameters.ContainsKey($_) }
             if ($siblingOnly) {
                 # Live row ASSISTED: "-Assisted apply only" for a single parameter.
                 throw "$(@($siblingOnly | ForEach-Object { "-$_" }) -join ', ') $(if (@($siblingOnly).Count -eq 1) { 'applies' } else { 'apply' }) only to -Scenario SiblingCapture (got '$Scenario')."
@@ -375,23 +419,75 @@ function Test-Win32ToolkitProject {
         # Sibling capture (installer-identity PR 3b, spec 2.14): its own isolated runs on the Hyper-V test VM (no PSADT
         # dialog, so no Intune-parity pre-check, and no requirement step), under the per-project lease taken above.
         if ($Scenario -eq 'SiblingCapture') {
-            $pre = Test-Win32ToolkitSiblingCapturePreflight -ProjectPath $ProjectPath -Backend $(if ($Backend) { $Backend } else { '' })
+            $pre = Test-Win32ToolkitSiblingCapturePreflight -ProjectPath $ProjectPath -Backend $(if ($Backend) { $Backend } else { '' }) -Assisted:$Assisted
             if (-not $pre.Ok) {
                 throw [System.Management.Automation.ErrorRecord]::new(
                     [System.InvalidOperationException]::new("The other installer technologies of '$projectName' cannot be captured: $($pre.Reasons -join '; '). Nothing was downloaded or run."),
                     $pre.Code, [System.Management.Automation.ErrorCategory]::InvalidOperation, $ProjectPath)
+            }
+            # A Windows Sandbox record joins the records of the identity it sees and makes it Block-only for good (SV28): a
+            # VM that is not ready never turns this capture into a Sandbox one over captures an Enforce rule can use, as
+            # the pipeline skips it (spec Dv14). Only -Backend Sandbox captures there on purpose.
+            if ([string]$pre.Backend -eq 'Sandbox' -and $Backend -ne 'Sandbox') {
+                $sandboxLoss = @(Get-Win32ToolkitSiblingSandboxImpact -ProjectPath $ProjectPath -SiblingType $SiblingInstallerType)
+                if ($sandboxLoss.Count -gt 0) {
+                    throw [System.Management.Automation.ErrorRecord]::new(
+                        [System.InvalidOperationException]::new("The other installer technologies of '$projectName' were not captured: the Hyper-V test VM is not ready, and a capture in Windows Sandbox would make $($sandboxLoss -join ', ') Block-only (a Sandbox record is never Enforce-eligible and stays with the records of the identity it sees). Capture again when the VM is ready, or in Windows Sandbox on purpose with -Backend Sandbox. Nothing was downloaded or run."),
+                        'W32T.SiblingCaptureUnsupported', [System.Management.Automation.ErrorCategory]::InvalidOperation, $ProjectPath)
+                }
+            }
+            # Windows allows one sandbox: a busy one is refused once, before a warning, the plan and any download (live row
+            # SB-CAPTURE: each capture waited 90 s and failed with a plain error, after a "Block-only for good" warning).
+            if ([string]$pre.Backend -eq 'Sandbox' -and -not (Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90)) {
+                throw [System.Management.Automation.ErrorRecord]::new(
+                    [System.InvalidOperationException]::new("The other installer technologies of '$projectName' were not captured: another Windows Sandbox is still running after 90 s (Windows allows one; a sandbox left open for verification, for example). Close it and capture again. Nothing was downloaded or run."),
+                    'W32T.SandboxBusy', [System.Management.Automation.ErrorCategory]::ResourceBusy, $ProjectPath)
+            }
+            if ([string]$pre.Backend -eq 'Sandbox' -and $Backend -eq 'Sandbox') {
+                # -Backend Sandbox on purpose stays the operator's choice (Dv14), but the capture names what it costs (live row
+                # SB-CAPTURE: the generic Block-only line implied that the Hyper-V captures of the identity stay removable).
+                $sandboxLoss = @(Get-Win32ToolkitSiblingSandboxImpact -ProjectPath $ProjectPath -SiblingType $SiblingInstallerType)
+                if ($sandboxLoss.Count -gt 0) {
+                    Write-Warning "This capture in Windows Sandbox (-Backend Sandbox) makes $($sandboxLoss -join ', ') Block-only for good: a Sandbox record joins the records of the identity it sees, and a later capture on the Hyper-V test VM does not take that back."
+                }
+            }
+            elseif ($Assisted) {
+                # An assisted record joins the records of the identity it sees too (flag Assisted, D62): say what it costs before
+                # it runs, as for Windows Sandbox (live row ASSISTED: an Enforce-eligible identity became Block-only silently).
+                $assistedLoss = @(Get-Win32ToolkitSiblingSandboxImpact -ProjectPath $ProjectPath -SiblingType $SiblingInstallerType)
+                if ($assistedLoss.Count -gt 0) {
+                    Write-Warning "This assisted capture (-Assisted) makes $($assistedLoss -join ', ') Block-only for good: an assisted record joins the records of the identity it sees, and a later unattended capture does not take that back."
+                }
             }
             $planArgs = @{ ProjectPath = $ProjectPath }
             if ($SiblingInstallerType) { $planArgs['SiblingInstallerType'] = $SiblingInstallerType }
             if ($SiblingVersion) { $planArgs['SiblingVersion'] = $SiblingVersion }
             if ($SiblingCaptureVersionsBack) { $planArgs['VersionsBack'] = $SiblingCaptureVersionsBack }
             if ($IncludeReportOnly) { $planArgs['IncludeReportOnly'] = $true }
+            if ($SiblingCaptureCoverage) { $planArgs['Coverage'] = $SiblingCaptureCoverage }
+            if ($SiblingArchitecture) { $planArgs['Architecture'] = $SiblingArchitecture }
+            # SV28: a Hyper-V VM that is not ready means Windows Sandbox (Block-only), said before the first download.
+            foreach ($note in @($pre.Notes | Where-Object { $_ })) { Write-Warning $note }
             $plan = Get-Win32ToolkitSiblingCapturePlan @planArgs
-            $plan.Backend = 'HyperV'
-            $captured = Invoke-Win32ToolkitSiblingCapture -ProjectPath $ProjectPath -Plan $plan -Backend HyperV
+            $plan.Backend = [string]$pre.Backend
+            $captured = Invoke-Win32ToolkitSiblingCapture -ProjectPath $ProjectPath -Plan $plan -Backend ([string]$pre.Backend) -Assisted:$Assisted -MaxExtra $SiblingCaptureMaxExtra
             # The D61 raise (installer-identity PR 3b, X1): a newer capture of a captured rule's identity raises its VersionMax;
             # a changed identity freezes the rule. Only after a capture that recorded something.
             if ($captured -eq $true) { $null = Update-Win32ToolkitPriorInstallWindow -ProjectPath $ProjectPath }
+            # What to approve next (design 7.12.7): every current proposal that is not a rule yet, with its exact command, as
+            # the pipeline prints them. Fail-open: the records are written whatever this says.
+            if ($null -ne $captured) {
+                try {
+                    foreach ($row in @(Get-Win32ToolkitPriorInstallFinding -ProjectPath $ProjectPath -Stage Advisory | Where-Object { $_.Code -eq 'ID-SIBLING-UNAPPLIED' })) {
+                        Write-Host "Sibling capture: $($row.Message)" -ForegroundColor Yellow
+                    }
+                    Write-Host "Every proposal, with its window and flags: Set-Win32ToolkitPriorInstall -ProjectPath '$ProjectPath'" -ForegroundColor Gray
+                }
+                catch {
+                    if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                    Write-Verbose "The sibling-capture proposals could not be listed: $($_.Exception.Message)"
+                }
+            }
             return $captured
         }
 

@@ -10,9 +10,13 @@
       [2] the order: after the install capture is processed, under the per-project lease (TestProjectLease On), before
           the tests: pre-flight, plan, capture, the raise; with None nothing is written and the commands are printed.
       [3] no capture: the install capture failed, or the pre-flight refuses (no OwnIdentity, an arm64 package, Hyper-V not
-          ready) -> one Problems sentence, the pipeline goes on, nothing thrown; W32T.GuestTamper still aborts.
+          ready) -> one Problems sentence, the pipeline goes on, nothing thrown; W32T.GuestTamper still aborts. Without a
+          ready VM (Windows Sandbox) a project whose captures already allow an Enforce rule is not captured (one sentence
+          naming them); one without such captures is captured in Windows Sandbox, and so is one whose only rule is a
+          Block or Report rule of an ineligible proposal; a ready VM captures over an Enforce-eligible proposal.
       [4] -ApplySiblingCapture Block: only the High flag-free proposal becomes a Block rule, after the raise; an existing
-          rule of the same identity (an approved Enforce rule) is never rewritten (B27).
+          rule of the same identity (an approved Enforce rule) is never rewritten (B27); a ready VM captures over that
+          Enforce rule and raises its VersionMax (D61).
       [5] proof and demotion: unproven Enforce rules + -RunTest Update -> the proof loop replaces the generic Update run
           (one proof run per group, the Update verdict in Result.Tests); a failing captured rule is demoted (removed, its
           approval Demoted, named in Problems); an operator rule never is (the -Waive PROOF sentence); -RunTest without
@@ -45,7 +49,7 @@ $golden = [IO.File]::ReadAllText((Join-Path $repo 'Tests\Fixtures\psadt-4.1.8\In
 # ---- shadows: the documentation capture, the VM, the tests ----
 $script:log = [System.Collections.Generic.List[string]]::new()
 $script:jsonOk = $true; $script:docOk = $true
-$script:preOk = $true; $script:preReasons = @()
+$script:preOk = $true; $script:preReasons = @(); $script:preBackend = 'HyperV'
 $script:captureThrows = $false; $script:captureWrites = @()
 $script:hvNotReady = @(); $script:leaseCfg = 'Off'
 $script:failIds = @()
@@ -64,15 +68,16 @@ function Get-Win32ToolkitConfigValue { param($Name, $Default) if ($Name -eq 'Tes
 function Test-Win32ToolkitElevated { $true }
 function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose) $null = $VMName, $VMId, $ProjectPath; $script:log.Add("lease:enter:$Purpose"); [pscustomobject]@{ Kind = 'Project' } }
 function Exit-Win32ToolkitHyperVLease { param($Lease) $null = $Lease; $script:log.Add('lease:exit') }
-function Test-Win32ToolkitSiblingCapturePreflight { param($ProjectPath, $Backend) $null = $ProjectPath; $script:log.Add("preflight:$Backend"); [pscustomobject]@{ Ok = $script:preOk; Code = $(if ($script:preOk) { '' } else { 'W32T.SiblingCaptureUnsupported' }); Reasons = [string[]]$script:preReasons; Backend = 'HyperV' } }
-function Get-Win32ToolkitSiblingCapturePlan { param($ProjectPath) $null = $ProjectPath; $script:log.Add('plan'); [pscustomobject]@{ Backend = ''; Types = @() } }
+function Test-Win32ToolkitSiblingCapturePreflight { param($ProjectPath, $Backend) $null = $ProjectPath; $script:log.Add("preflight:$Backend"); [pscustomobject]@{ Ok = $script:preOk; Code = $(if ($script:preOk) { '' } else { 'W32T.SiblingCaptureUnsupported' }); Reasons = [string[]]$script:preReasons; Backend = $script:preBackend } }
+$script:planRuns = 1; $script:captureResult = $true; $script:planProbe = $null; $script:planTypes = @()
+function Get-Win32ToolkitSiblingCapturePlan { param($ProjectPath) $null = $ProjectPath; $script:log.Add('plan'); [pscustomobject]@{ Backend = ''; PackageProbe = $script:planProbe; Types = @($script:planTypes); EstimatedRuns = $script:planRuns } }
 function Invoke-Win32ToolkitSiblingCapture {
     param($ProjectPath, $Plan, $Backend)
     $null = $Plan
     $script:log.Add("capture:$Backend")
     if ($script:captureThrows) { throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new('a guest changed project files'), 'W32T.GuestTamper', [System.Management.Automation.ErrorCategory]::SecurityError, $ProjectPath) }
     foreach ($a in $script:captureWrites) { $null = Write-TestSiblingRecord -ProjectPath $ProjectPath -Record (New-TestSiblingRecord @a) }
-    $true
+    $script:captureResult
 }
 $realRaise = ${function:Update-Win32ToolkitPriorInstallWindow}
 function Update-Win32ToolkitPriorInstallWindow { param($ProjectPath) $script:log.Add('raise'); & $realRaise -ProjectPath $ProjectPath }
@@ -128,7 +133,7 @@ function New-PProject([string]$Name) {
 $nsisRecs = @(@{ Version = '8.7.9'; Role = 'Floor' }, @{ Version = '8.9.8' })
 $flaggedRecs = @(@{ Type = 'exe'; NoNsis = $true; Key = 'NppPortable'; ProductCodes = @('NppPortable'); DisplayName = 'Npp Portable'; Dir = 'NppPortable'; Main = 'npp.exe'; DefaultInstallLocation = ''; Version = '8.7.9'; Role = 'Floor' },
     @{ Type = 'exe'; NoNsis = $true; Key = 'NppPortable'; ProductCodes = @('NppPortable'); DisplayName = 'Npp Portable'; Dir = 'NppPortable'; Main = 'npp.exe'; DefaultInstallLocation = ''; Version = '8.9.8' })
-function Reset-Case { $script:log.Clear(); $script:jsonOk = $true; $script:docOk = $true; $script:preOk = $true; $script:preReasons = @(); $script:captureThrows = $false; $script:captureWrites = @(); $script:hvNotReady = @(); $script:leaseCfg = 'Off'; $script:failIds = @() }
+function Reset-Case { $script:log.Clear(); $script:jsonOk = $true; $script:docOk = $true; $script:preOk = $true; $script:preReasons = @(); $script:preBackend = 'HyperV'; $script:captureThrows = $false; $script:captureWrites = @(); $script:hvNotReady = @(); $script:leaseCfg = 'Off'; $script:failIds = @(); $script:planRuns = 1; $script:captureResult = $true; $script:planProbe = $null; $script:planTypes = @() }
 function Invoke-Final([string]$P, [hashtable]$A = @{}) {
     $script:lastResult = Initialize-Win32ToolkitRunResult -Command 'Invoke-Win32Toolkit' -Mode 'Winget'
     $script:lastOut = @(Invoke-Win32ToolkitFinalize -ProjectPath $P -ProjectName (Split-Path $P -Leaf) -Result $script:lastResult @A -WarningVariable w -WarningAction SilentlyContinue 6>&1 | ForEach-Object { "$_" })
@@ -168,8 +173,8 @@ try {
     $notReady = & $runPromise $true 'None'
     $script:hvNotReady = @()
     $orphan = & $runPromise $false 'Block'
-    if (@($ready | Where-Object { $_ -match '^Sibling capture: after the install capture, each other installer technology .* Hyper-V test VM' }).Count -eq 1 -and @($notReady | Where-Object { $_ -match '^WARN:Sibling capture: Hyper-V is not ready \(the test VM win32tk-golden does not exist\)' }).Count -eq 1 -and @($orphan | Where-Object { $_ -match '^WARN:-ApplySiblingCapture Block has no effect without -CaptureSiblingTechnologies: ignored' }).Count -eq 1) {
-        Ok 'the promise: Hyper-V ready -> what will happen; not ready -> the warning before the download; -ApplySiblingCapture alone -> one warning, ignored'
+    if (@($ready | Where-Object { $_ -match '^Sibling capture: after the install capture, each other installer technology .* Hyper-V test VM' }).Count -eq 1 -and @($notReady | Where-Object { $_ -match '^WARN:Sibling capture: Hyper-V is not ready \(the test VM win32tk-golden does not exist\): the other installer technologies are captured in Windows Sandbox as a user and can only give Block-only proposals; a project whose earlier captures allow an Enforce rule is not captured there \(that would make them Block-only\)\.$' }).Count -eq 1 -and @($orphan | Where-Object { $_ -match '^WARN:-ApplySiblingCapture Block has no effect without -CaptureSiblingTechnologies: ignored' }).Count -eq 1) {
+        Ok 'the promise: Hyper-V ready -> what will happen; not ready -> Windows Sandbox, Block-only, said before the download (SV28); -ApplySiblingCapture alone -> one warning, ignored'
     } else { Bad "promise: $($ready -join ' | ') // $($notReady -join ' | ') // $($orphan -join ' | ')" }
 
     # == [2] the order ==========================================================================================
@@ -249,6 +254,105 @@ try {
     $fq = ''
     try { Invoke-Final $p @{ CaptureSiblingTechnologies = $true; RunTest = @('InstallUninstall') } } catch { $fq = $_.FullyQualifiedErrorId }
     if ($fq -eq 'W32T.GuestTamper' -and $script:log -notcontains 'test:InstallUninstall' -and $script:log[-1] -eq 'lease:exit') { Ok 'W32T.GuestTamper still aborts the run (no test runs; the lease is released)' } else { Bad "tamper: '$fq' $($script:log -join '>')" }
+    # Live rows RAISE, INNO: nothing planned because the winget manifests could not be read ($false, no capture run, no
+    # index written) is its own sentence; "every capture failed (... SiblingCapture.json lists why)" is for runs that failed.
+    # The sentence follows the plan's causes: Transient (later), Permanent (capturing again does not help), WingetList.
+    foreach ($c in @(
+            @{ Runs = 0; L = 'nothing planned, Transient'; Probe = [pscustomobject]@{ Status = 'Unavailable'; Reason = 'RateLimited'; Cause = 'Transient' }; Types = @(); Rx = "^The other installer technologies were not captured: their winget manifests could not be read \(the warning above says why and when\)\. Capture them again later: Test-Win32ToolkitProject -ProjectPath '.+' -Scenario SiblingCapture\.$" }
+            @{ Runs = 0; L = 'nothing planned, the package manifest gone (Permanent)'; Probe = [pscustomobject]@{ Status = 'Unavailable'; Reason = 'NotFound'; Cause = 'Permanent' }; Types = @(); Rx = "^The other installer technologies were not captured: their winget manifests could not be used \(the warning above says why\); capturing again will not change that: check the project's winget id and version\.$" }
+            @{ Runs = 0; L = 'nothing planned, the winget version list failed (WingetList)'; Probe = [pscustomobject]@{ Status = 'Ok'; Reason = ''; Cause = '' }; Types = @([pscustomobject]@{ Type = 'nullsoft'; ProbeFailed = $true; ProbeCause = 'WingetList' }); Rx = "^The other installer technologies were not captured: the app's winget versions could not be listed \(the warning above says why\)\. Check winget on this computer, then capture them again: Test-Win32ToolkitProject -ProjectPath '.+' -Scenario SiblingCapture\.$" }
+            @{ Runs = 0; L = 'nothing planned, Permanent + WingetList types (capturing again can help)'; Probe = [pscustomobject]@{ Status = 'Ok'; Reason = ''; Cause = '' }; Types = @([pscustomobject]@{ Type = 'exe'; ProbeFailed = $true; ProbeCause = 'Permanent' }, [pscustomobject]@{ Type = 'nullsoft'; ProbeFailed = $true; ProbeCause = 'WingetList' }); Rx = "^The other installer technologies were not captured: the app's winget versions could not be listed .+ Check winget on this computer, then capture them again: .+\.$" }
+            @{ Runs = 0; L = 'nothing planned, Permanent + Transient types (capturing again can help)'; Probe = [pscustomobject]@{ Status = 'Ok'; Reason = ''; Cause = '' }; Types = @([pscustomobject]@{ Type = 'exe'; ProbeFailed = $true; ProbeCause = 'Permanent' }, [pscustomobject]@{ Type = 'inno'; ProbeFailed = $true; ProbeCause = 'Transient' }); Rx = "^The other installer technologies were not captured: their winget manifests could not be read \(the warning above says why and when\)\. Capture them again later: .+\.$" }
+            @{ Runs = 0; L = 'nothing planned, only a Permanent type (no package-id hint)'; Probe = [pscustomobject]@{ Status = 'Ok'; Reason = ''; Cause = '' }; Types = @([pscustomobject]@{ Type = 'exe'; ProbeFailed = $true; ProbeCause = 'Permanent' }); Rx = "^The other installer technologies were not captured: their winget manifests could not be used \(the warning above says why\); capturing again will not change that\.$" }
+            @{ Runs = 0; L = 'nothing planned, a Permanent type next to a ReportOnly type that was not probed'; Probe = [pscustomobject]@{ Status = 'Ok'; Reason = ''; Cause = '' }; Types = @([pscustomobject]@{ Type = 'msi'; Class = 'ReportOnly'; ProbeFailed = $false; ProbeCause = '' }, [pscustomobject]@{ Type = 'inno'; Class = 'RemovableNow'; ProbeFailed = $true; ProbeCause = 'Permanent' }); Rx = "^The other installer technologies were not captured: their winget manifests could not be used \(the warning above says why\); capturing again will not change that\.$" }
+            @{ Runs = 2; L = 'every planned capture failed'; Probe = $null; Types = @(); Rx = '^Every capture of the other installer technologies failed \(Documentation\\SiblingCapture\.json lists why\): no new proposal\.$' })) {
+        Reset-Case
+        $p = New-PProject ('unread' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+        $script:captureResult = $false; $script:planRuns = $c.Runs; $script:planProbe = $c.Probe; $script:planTypes = $c.Types
+        Invoke-Final $p @{ CaptureSiblingTechnologies = $true; RunTest = @('InstallUninstall') }
+        if (@($script:lastResult.Problems | Where-Object { $_ -match $c.Rx }).Count -eq 1 -and @($script:lastResult.Problems).Count -eq 1 -and $script:log -contains 'test:InstallUninstall') {
+            Ok "the capture returned `$false, $($c.L) (EstimatedRuns $($c.Runs)) -> its own Problems sentence; the tests still run"
+        } else { Bad "$($c.L): $($script:lastResult.Problems -join ' | ') / $($script:log -join '>')" }
+    }
+    # The Finalize retry command parses back to the exact project path: ' and U+2019 (a PowerShell quote that
+    # Sanitize-ProjectName keeps) in a name over 64 characters, in both sentences that carry it; a bidi override (U+202E)
+    # reads '?'.
+    foreach ($kc in @(
+            @{ L = 'Transient'; Lead = 'Capture them again later: '; Probe = [pscustomobject]@{ Status = 'Unavailable'; Reason = 'RateLimited'; Cause = 'Transient' }; Types = @() },
+            @{ L = 'WingetList'; Lead = 'capture them again: '; Probe = [pscustomobject]@{ Status = 'Ok'; Reason = ''; Cause = '' }; Types = @([pscustomobject]@{ Type = 'nullsoft'; ProbeFailed = $true; ProbeCause = 'WingetList' }) })) {
+        Reset-Case
+        $p = New-PProject ("unread$([char]0x2019)q'x" + ('z' * 80) + [guid]::NewGuid().ToString('N').Substring(0, 6))
+        $script:captureResult = $false; $script:planRuns = 0; $script:planProbe = $kc.Probe; $script:planTypes = $kc.Types
+        Invoke-Final $p @{ CaptureSiblingTechnologies = $true; RunTest = @('InstallUninstall') }
+        $s = [string](@($script:lastResult.Problems) | Where-Object { $_.Contains($kc.Lead) } | Select-Object -First 1)
+        $cmd = if ($s) { $s.Substring($s.IndexOf($kc.Lead) + $kc.Lead.Length) -replace '\.$', '' } else { '' }
+        $e = $null; $ast = [System.Management.Automation.Language.Parser]::ParseInput($cmd, [ref]$null, [ref]$e)
+        $ca = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+        $val = $null
+        if ($ca.Count -eq 1) { $els = @($ca[0].CommandElements); for ($j = 0; $j -lt $els.Count - 1; $j++) { if ($els[$j] -is [System.Management.Automation.Language.CommandParameterAst] -and $els[$j].ParameterName -eq 'ProjectPath') { $val = $els[$j + 1].SafeGetValue() } } }
+        if ($s -and @($e).Count -eq 0 -and @($ast.EndBlock.Statements).Count -eq 1 -and $ca.Count -eq 1 -and $val -ceq $p -and $p.Length -gt 128) { Ok "nothing planned ($($kc.L)): the retry command parses back to the exact $($p.Length)-character project path (' and U+2019 in it)" } else { Bad "retry command ($($kc.L)): errors $(@($e).Count) statements $(@($ast.EndBlock.Statements).Count) value [$val] path [$p]" }
+    }
+    Reset-Case
+    $p = New-PProject ("unread$([char]0x202E)rtl" + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    $script:captureResult = $false; $script:planRuns = 0; $script:planProbe = [pscustomobject]@{ Status = 'Unavailable'; Reason = 'RateLimited'; Cause = 'Transient' }; $script:planTypes = @()
+    Invoke-Final $p @{ CaptureSiblingTechnologies = $true; RunTest = @('InstallUninstall') }
+    $s = [string](@($script:lastResult.Problems) | Where-Object { $_ -match 'Capture them again later: ' } | Select-Object -First 1)
+    if ($s -and -not $s.Contains([string][char]0x202E) -and $s.Contains('unread?rtl')) { Ok 'nothing planned: a U+202E in the project path reads ? in the retry command' } else { Bad "bidi in path: [$s]" }
+    # Without a ready VM the pre-flight resolves Windows Sandbox. A Sandbox record joins the records of the identity it
+    # sees and makes it Block-only, so a project whose captures already allow an Enforce rule is not captured there.
+    $sandboxRec = @(@{ Version = '8.6.0'; Role = 'Extra'; Backend = 'Sandbox' })
+    $skipRx = '^The other installer technologies were not captured: the Hyper-V test VM is not ready, and a capture in Windows Sandbox would make '
+    Reset-Case
+    $p = New-PProject 'sbeligible'
+    foreach ($a in $nsisRecs) { $null = Write-TestSiblingRecord -ProjectPath $p -Record (New-TestSiblingRecord @a) }
+    $script:preBackend = 'Sandbox'; $script:captureWrites = $sandboxRec
+    $threw = $null
+    try { Invoke-Final $p @{ CaptureSiblingTechnologies = $true; RunTest = @('InstallUninstall') } } catch { $threw = $_ }
+    $sb = @($script:lastResult.Problems | Where-Object { $_ -match ($skipRx + 'nsis-x64 Block-only .*-Scenario SiblingCapture -Backend Sandbox\.$') })
+    $still = @((ConvertTo-Win32ToolkitSiblingProposal -ProjectPath $p).Proposals | Where-Object { $_.ProposalId -eq 'nsis-x64' -and $_.EnforceEligible })
+    if (-not $threw -and $sb.Count -eq 1 -and @($script:log | Where-Object { $_ -like 'capture*' -or $_ -eq 'plan' -or $_ -eq 'raise' }).Count -eq 0 -and $still.Count -eq 1 -and $script:log -contains 'test:InstallUninstall') {
+        Ok 'Sandbox only + an Enforce-eligible proposal -> no capture (it would make nsis-x64 Block-only), one Problems sentence, the proposal stays eligible, the tests run'
+    } else { Bad "sandbox eligible: threw=$threw $($script:log -join '>') / $($script:lastResult.Problems -join ' | ') / eligible=$($still.Count)" }
+    Reset-Case
+    $p = New-PProject 'sbrule'
+    Add-Applied $p
+    $script:preBackend = 'Sandbox'; $script:captureWrites = $sandboxRec
+    Invoke-Final $p @{ CaptureSiblingTechnologies = $true; RunTest = @('InstallUninstall') }
+    if (@($script:lastResult.Problems | Where-Object { $_ -match ($skipRx + [regex]::Escape('nsis-x64 (Enforce rule nsis-x64) Block-only')) }).Count -eq 1 -and @($script:log | Where-Object { $_ -like 'capture*' }).Count -eq 0) {
+        Ok 'Sandbox only + a captured Enforce rule -> no capture; the sentence names the rule'
+    } else { Bad "sandbox rule: $($script:log -join '>') / $($script:lastResult.Problems -join ' | ')" }
+    Reset-Case
+    $p = New-PProject 'sbfirst'
+    $script:preBackend = 'Sandbox'; $script:captureWrites = $nsisRecs
+    Invoke-Final $p @{ CaptureSiblingTechnologies = $true; RunTest = @('InstallUninstall') }
+    if ($script:log -contains 'capture:Sandbox' -and $script:log -contains 'raise' -and @($script:lastResult.Problems | Where-Object { $_ -match $skipRx }).Count -eq 0) {
+        Ok 'Sandbox only + nothing an Enforce rule can use yet -> the capture runs in Windows Sandbox as before'
+    } else { Bad "sandbox first: $($script:log -join '>') / $($script:lastResult.Problems -join ' | ')" }
+    # The skip is for Windows Sandbox only: a ready VM captures over an Enforce-eligible proposal.
+    Reset-Case
+    $p = New-PProject 'hveligible'
+    foreach ($a in $nsisRecs) { $null = Write-TestSiblingRecord -ProjectPath $p -Record (New-TestSiblingRecord @a) }
+    $script:captureWrites = @(@{ Version = '8.9.9'; Role = 'Newest' })
+    Invoke-Final $p @{ CaptureSiblingTechnologies = $true; RunTest = @('InstallUninstall') }
+    $hvProp = @((ConvertTo-Win32ToolkitSiblingProposal -ProjectPath $p).Proposals | Where-Object { $_.ProposalId -eq 'nsis-x64' })[0]
+    if (($script:log -join '>') -match 'preflight:HyperV>plan>capture:HyperV>raise>' -and @($script:lastResult.Problems).Count -eq 0 -and $hvProp.EnforceEligible -and $hvProp.VersionMax -ceq '8.9.9.0') {
+        Ok 'a ready Hyper-V VM + an Enforce-eligible proposal -> captured on Hyper-V, no Problems sentence; the proposal stays eligible (8.9.9.0)'
+    } else { Bad "hyper-v eligible: $($script:log -join '>') / $($script:lastResult.Problems -join ' | ') / $($hvProp.VersionMax) $($hvProp.EnforceEligible)" }
+    # Only Enforce rules and Enforce-eligible proposals count: a Block or Report rule of a proposal that can never be
+    # Enforce (GenericExe) costs nothing, so the capture runs in Windows Sandbox.
+    foreach ($mode in 'Block', 'Report') {
+        Reset-Case
+        $p = New-PProject ("sbonly$mode")
+        foreach ($a in $flaggedRecs) { $null = Write-TestSiblingRecord -ProjectPath $p -Record (New-TestSiblingRecord @a) }
+        $null = Set-Win32ToolkitPriorInstall -ProjectPath $p -FromSiblingCapture -Mode $mode -ProposalId 'exe-x64' -Confirm:$false 6>$null
+        $impact = @(Get-Win32ToolkitSiblingSandboxImpact -ProjectPath $p)
+        $script:preBackend = 'Sandbox'
+        Invoke-Final $p @{ CaptureSiblingTechnologies = $true; RunTest = @('InstallUninstall') }
+        $rule = @((Get-Cfg $p).PriorInstalls.Entries | Where-Object Id -ceq 'exe-x64')[0]
+        if ($rule.Mode -ceq $mode -and $impact.Count -eq 0 -and $script:log -contains 'capture:Sandbox' -and @($script:lastResult.Problems | Where-Object { $_ -match $skipRx }).Count -eq 0) {
+            Ok "Sandbox only + a $mode rule of an ineligible proposal (GenericExe) -> nothing named, captured in Windows Sandbox"
+        } else { Bad "sandbox $mode rule: impact=$($impact -join ', ') $($script:log -join '>') / $($script:lastResult.Problems -join ' | ')" }
+    }
 
     # == [4] Block ================================================================================================
     Write-Host '[4] -ApplySiblingCapture Block' -ForegroundColor Cyan
@@ -267,6 +371,12 @@ try {
     Invoke-Final $p @{ CaptureSiblingTechnologies = $true; ApplySiblingCapture = 'Block'; RunTest = @('Update') }
     $ids = (@((Get-Cfg $p).PriorInstalls.Entries) | ForEach-Object { "$($_.Id)=$($_.Mode)" }) -join ','
     if ($ids -ceq 'nsis-x64=Enforce' -and $script:log -contains 'proof:nsis-x64') { Ok '-ApplySiblingCapture Block keeps an existing Enforce rule of the same identity (B27); its proof runs' } else { Bad "block keep: $ids / $($script:log -join '>')" }
+    # The next-version flow of the goal: a ready VM captures over a captured Enforce rule (the Windows Sandbox skip is for
+    # a VM that is not ready only), and the newer capture raises the rule's VersionMax (D61).
+    $keep = @((Get-Cfg $p).PriorInstalls.Entries | Where-Object Id -ceq 'nsis-x64')[0]
+    if (($script:log -join '>') -match 'preflight:HyperV>plan>capture:HyperV>raise>' -and $keep.VersionMax -ceq '8.9.9.0' -and @($script:lastResult.Problems | Where-Object { $_ -match $skipRx }).Count -eq 0) {
+        Ok 'a ready Hyper-V VM + a captured Enforce rule -> captured on Hyper-V (no Windows Sandbox skip), VersionMax raised to 8.9.9.0'
+    } else { Bad "hyper-v over an Enforce rule: $($script:log -join '>') / VersionMax=$($keep.VersionMax) / $($script:lastResult.Problems -join ' | ')" }
 
     # == [5] proof and demotion ===================================================================================
     Write-Host '[5] proof and demotion (L37)' -ForegroundColor Cyan

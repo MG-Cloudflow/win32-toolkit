@@ -427,10 +427,12 @@ the vendor NSIS setup of an app packaged as MSI) on the Hyper-V test VM, record 
 turn it into prior-install proposals: rules that make this package refuse (Block) or remove (Enforce)
 that other install before it installs.
 About 3-5 minutes per capture; a host whose Hyper-V test VM is not
-ready is told before the download and captures nothing.
-A refused or failed capture is reported and the
-pipeline goes on.
-Review and approve the proposals with Set-Win32ToolkitPriorInstall (or the menu).
+ready is told before the download and captures in Windows Sandbox (Block-only proposals), except a project
+whose earlier captures already allow an Enforce rule: a Sandbox capture would make them Block-only, so it is
+skipped.
+A refused, skipped or failed capture is reported and the pipeline goes on.
+Review and approve the
+proposals with Set-Win32ToolkitPriorInstall (or the menu).
 
 ```yaml
 Type: SwitchParameter

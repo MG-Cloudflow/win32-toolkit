@@ -336,6 +336,11 @@ function ConvertTo-Win32ToolkitSiblingProposal {
             $id = $sortedIds[$i]
             $caps = @($id.Captures)
             $first = $caps[0]
+            # The versions between two identities are a gap, whatever each one's count (the bisection narrows it).
+            if ($i -gt 0) {
+                $prev = $sortedIds[$i - 1]
+                $gaps.Add([pscustomobject]@{ Type = $first.Type; Architecture = $first.Architecture; From = (& $safe @($prev.Captures | Sort-Object { & $toV $_.SiblingVersion })[-1].SiblingVersion 64); To = (& $safe @($caps | Sort-Object { & $toV $_.SiblingVersion })[0].SiblingVersion 64) })
+            }
             if ($caps.Count -lt 2) {
                 $unattributed.Add([pscustomobject]@{ CaptureId = $first.CaptureId; Key = $first.Primary; View = $first.View; Reason = 'this identity was seen in one capture only' })
                 continue
@@ -410,10 +415,6 @@ function ConvertTo-Win32ToolkitSiblingProposal {
                 ObservedVersions    = [string[]]@($caps | ForEach-Object { $_.ObservedVersion } | Sort-Object -Unique)
             }
             $proposals.Add([pscustomobject]@{ P = $p; Reasons = $reasons; Stem = "$(switch ($p.UninstallerType) { 'nullsoft' { 'nsis' } 'inno' { 'inno' } default { 'exe' } })-$(if ($p.View -eq 'Wow6432') { 'x86' } else { 'x64' })"; MaxW = $id.MaxW })
-            if ($i -gt 0) {
-                $prev = $sortedIds[$i - 1]
-                $gaps.Add([pscustomobject]@{ Type = $first.Type; Architecture = $first.Architecture; From = (& $safe @($prev.Captures | Sort-Object { & $toV $_.SiblingVersion })[-1].SiblingVersion 64); To = (& $safe @($caps | Sort-Object { & $toV $_.SiblingVersion })[0].SiblingVersion 64) })
-            }
         }
     }
 

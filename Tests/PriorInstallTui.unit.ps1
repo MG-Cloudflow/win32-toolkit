@@ -14,6 +14,11 @@
           approval dates, proof state); declaring from the last Update test lists Block first (V15), Enforce never first;
           prove now runs the loop.
       [4] the project actions list a 'prior' row with the number of rules and how many are proven.
+      [5] Widen captures one more version and the card comes back (also after an error); a refused write shows the card
+          again; without a ready Hyper-V VM, Widen and the screen's capture say it would run in Windows Sandbox, name
+          what a Sandbox record would make Block-only (Widen: of that technology only) and offer to cancel (SV28; default
+          No; Yes captures with -Backend Sandbox); the card names the probe, noise-control and stability (unstable)
+          results; Enforce on the Prior installs screen (mode, candidates) asks once more.
 
     Run:  pwsh -File Tests\PriorInstallTui.unit.ps1
 #>
@@ -48,7 +53,8 @@ function Write-SpectreHost { param($Message) $script:hostLines.Add([string]$Mess
 $script:panels = [System.Collections.Generic.List[object]]::new()
 function Format-SpectrePanel { param($Data, $Header, $Border, $Color) $null = $Border; $script:panels.Add([pscustomobject]@{ Data = [string]$Data; Header = [string]$Header; Color = [string]$Color }) }
 function Out-SpectreHost { param([Parameter(ValueFromPipeline)]$InputObject) process { $null = $InputObject } }
-function Read-SpectrePause { param($Message, [switch]$AnyKey) $null = $Message, $AnyKey }
+$script:pauses = 0
+function Read-SpectrePause { param($Message, [switch]$AnyKey) $null = $Message, $AnyKey; $script:pauses++ }
 function Get-SpectreEscapedText { param($Text) ([string]$Text).Replace('[', '[[').Replace(']', ']]') }
 $script:tableRows = [System.Collections.Generic.List[object]]::new()
 $script:tableMarkup = [System.Collections.Generic.List[bool]]::new()
@@ -72,6 +78,15 @@ function Read-SpectreText { param($Message) $null = $Message; $script:textAnswer
 function Get-AuthenticodeSignature { [CmdletBinding()] param([string]$LiteralPath) $null = $LiteralPath; [pscustomobject]@{ Status = 'Valid'; SignerCertificate = [pscustomobject]@{ Subject = $script:TestSiblingSigner } } }
 $script:hvNotReady = @()
 function Test-Win32ToolkitHyperVReady { @($script:hvNotReady) }
+$script:tests = [System.Collections.Generic.List[object]]::new()
+$script:testThrows = $false
+$script:testResult = $true
+function Test-Win32ToolkitProject {
+    param($ProjectPath, $Scenario, $Backend, [string[]]$SiblingInstallerType, [string[]]$SiblingVersion)
+    $script:tests.Add([pscustomobject]@{ ProjectPath = $ProjectPath; Scenario = $Scenario; Backend = $Backend; Type = (@($SiblingInstallerType) -join ','); Version = (@($SiblingVersion) -join ',') })
+    if ($script:testThrows) { throw 'the capture run failed' }
+    $script:testResult
+}
 $script:demotions = [System.Collections.Generic.List[object]]::new()
 $script:demoteResult = $null
 function Invoke-Win32ToolkitPriorDemotion { param($ProjectPath, [switch]$Prove, $MaxRounds) $null = $MaxRounds; $script:demotions.Add([pscustomobject]@{ ProjectPath = $ProjectPath; Prove = [bool]$Prove }); if ($script:demoteResult) { return $script:demoteResult }; [pscustomobject]@{ Rounds = 1; Proven = [string[]]@('nsis-x64'); Demoted = @(); Unproven = [string[]]@() } }
@@ -103,7 +118,7 @@ function Add-Records([string]$P, [hashtable]$A = @{}) {
     foreach ($v in @(@{ Version = '8.7.9'; Role = 'Floor' }, @{ Version = '8.9.8' })) { $x = $A.Clone(); foreach ($k in $v.Keys) { $x[$k] = $v[$k] }; $null = Write-TestSiblingRecord -ProjectPath $P -Record (New-TestSiblingRecord @x) }
 }
 $genericExe = @{ Type = 'exe'; NoNsis = $true; Key = 'NppPortable'; ProductCodes = @('NppPortable'); DisplayName = 'Npp Portable'; Dir = 'NppPortable'; Main = 'npp.exe'; DefaultInstallLocation = '' }
-function Reset-Ui { $script:hostLines.Clear(); $script:panels.Clear(); $script:selections.Clear(); $script:confirms.Clear(); $script:tableRows.Clear(); $script:demotions.Clear(); $script:confirmYes = $false; $script:hvNotReady = @(); $script:textAnswer = '' }
+function Reset-Ui { $script:hostLines.Clear(); $script:panels.Clear(); $script:selections.Clear(); $script:confirms.Clear(); $script:tableRows.Clear(); $script:demotions.Clear(); $script:tests.Clear(); $script:testThrows = $false; $script:testResult = $true; $script:pauses = 0; $script:confirmYes = $false; $script:hvNotReady = @(); $script:textAnswer = '' }
 function Get-Cfg([string]$P) { Get-Content -LiteralPath (Join-Path $P 'SupportFiles\AppConfig.json') -Raw | ConvertFrom-Json }
 $cards = { @($script:selections | Where-Object { $_.Message -like 'What should the package do with*' }) }
 
@@ -125,6 +140,7 @@ try {
     if ($card.Data -match 'Window       : 8\.7\.9\.0 <= version <= 8\.9\.8\.0' -and $card.Data -match 'Not covered  : devices with a version below 8\.7\.9\.0 keep it next to this package' -and $card.Data -match 'Removal      : uninstall\.exe /S _\?=<its folder>' -and $card.Data -match 'Block   : devices with this nullsoft install FAIL this install \(69101\) until the rule is Enforce') {
         Ok 'the card: the window, the uncovered range, the constant removal command, the device consequence of each choice (SV30)'
     } else { Bad "card: $($card.Data)" }
+    if ($card.Data -match 'Checks       : removal probe clean, noise control verified, stable over 2 captures') { Ok 'the card: the removal probe, noise-control and stability results' } else { Bad "checks: $($card.Data)" }
     $exeCard = @($script:panels | Where-Object { $_.Header -like 'Proposal exe-x64*' })[0]
     if ($exeCard.Data -match 'Enforce      : not offered \(GenericExe:') { Ok 'an ineligible proposal says why Enforce is not offered' } else { Bad "exe card: $($exeCard.Data)" }
     if (-not (Get-Cfg $p).PSObject.Properties['PriorInstalls']) { Ok 'Skip writes nothing' } else { Bad 'skip wrote' }
@@ -260,6 +276,146 @@ try {
     $menu = @($script:selections | Where-Object { $_.Message -eq 'What would you like to do?' })[0]
     $row = @($menu.Labels | Where-Object { $_ -like 'Prior installs*' })
     if ($row.Count -eq 1 -and $row[0] -eq 'Prior installs - other technologies removed before install (2 rules, 0 proven)' -and $menu.Keys -contains 'prior') { Ok "the 'prior' row: $($row[0])" } else { Bad "menu: $($menu.Labels -join ' | ')" }
+
+    # == [5] Widen, errors, the capture backend (SV28) and Enforce asked once more =================================
+    Write-Host '[5] Widen, errors, the capture backend and the Enforce confirmation' -ForegroundColor Cyan
+    $firstThen = { param([string]$First) $script:cardShown = 0; $script:pick = [scriptblock]::Create("param(`$Message, `$Choices) if (`$Message -like 'What should the package do with*') { `$script:cardShown++; `$k = if (`$script:cardShown -eq 1) { '$First' } else { 'Skip' }; @(`$Choices | Where-Object Key -eq `$k)[0] } else { @(`$Choices)[0] }") }
+    $pw = New-TProject 'widen'
+    Add-Records $pw
+    # A ready VM: Widen asks for a version, captures it on Hyper-V, and the same card comes back (Widen decides nothing).
+    Reset-Ui; & $firstThen 'Widen'; $script:textAnswer = '8.6.0'
+    Show-Win32ToolkitSiblingCaptureReview -ProjectPath $pw
+    $t = @($script:tests)
+    if ($t.Count -eq 1 -and $t[0].Scenario -eq 'SiblingCapture' -and $t[0].Backend -eq 'HyperV' -and $t[0].Type -eq 'nullsoft' -and $t[0].Version -eq '8.6.0' -and $script:cardShown -eq 2 -and $script:confirms.Count -eq 0) {
+        Ok 'Widen with a ready VM -> one capture of that version on Hyper-V, nothing asked, then the same card again'
+    } else { Bad "widen: $($t | ConvertTo-Json -Compress) cards=$($script:cardShown)" }
+    # A Widen capture that recorded nothing ($false: GitHub limits this computer, the version is unknown; $null) keeps its
+    # warnings on screen until a key is pressed; one that recorded something goes straight back to the card. The final
+    # 'Press any key to return' pause of the screen counts once in each run.
+    $widenSeen = foreach ($want in @($true, $false, $null)) {
+        Reset-Ui; & $firstThen 'Widen'; $script:textAnswer = '8.6.0'; $script:testResult = $want
+        Show-Win32ToolkitSiblingCaptureReview -ProjectPath $pw
+        [pscustomobject]@{ Want = $want; Tests = $script:tests.Count; Cards = $script:cardShown; Pauses = $script:pauses }
+    }
+    $base = $widenSeen[0].Pauses
+    if (@($widenSeen | Where-Object { $_.Tests -ne 1 -or $_.Cards -ne 2 }).Count -eq 0 -and $widenSeen[1].Pauses -eq $base + 1 -and $widenSeen[2].Pauses -eq $base + 1) { Ok 'Widen: $true -> back to the card; $false or $null -> one more pause first (the warnings stay readable), then the same card' } else { Bad "widen pause: $($widenSeen | ConvertTo-Json -Compress)" }
+    # Hyper-V not ready: the capture would run in Windows Sandbox; the line names what it would make Block-only, and No
+    # (the default) captures nothing and shows the card again.
+    Reset-Ui; & $firstThen 'Widen'; $script:textAnswer = '8.6.0'; $script:hvNotReady = @('the test VM win32tk-golden does not exist')
+    Show-Win32ToolkitSiblingCaptureReview -ProjectPath $pw
+    $sbLine = @($script:hostLines | Where-Object { $_ -like '`[yellow`]Hyper-V is not ready (the test VM win32tk-golden does not exist): this capture would run in Windows Sandbox as a user and can only give Block-only proposals. A Sandbox record joins the records of the identity it sees: nsis-x64 would become Block-only*' })
+    $sbAsk = @($script:confirms | Where-Object { $_.Message -eq 'Capture in Windows Sandbox anyway?' })
+    if ($sbLine.Count -eq 1 -and $sbAsk.Count -eq 1 -and $sbAsk[0].Default -eq 'n' -and $script:tests.Count -eq 0 -and $script:cardShown -eq 2 -and @($script:selections | Where-Object { $_.Message -like 'An older*' }).Count -eq 0) {
+        Ok 'Widen without a ready VM -> the Windows Sandbox line names nsis-x64 (it would become Block-only), the offer to cancel (default No); No captures nothing, the card comes back'
+    } else { Bad "widen not ready: lines=$($script:hostLines -join ' || ') asks=$($sbAsk.Count) tests=$($script:tests.Count) cards=$($script:cardShown)" }
+    Reset-Ui; & $firstThen 'Widen'; $script:textAnswer = '8.6.0'; $script:hvNotReady = @('the test VM win32tk-golden does not exist'); $script:confirmYes = $true
+    Show-Win32ToolkitSiblingCaptureReview -ProjectPath $pw
+    if ($script:tests.Count -eq 1 -and $script:tests[0].Backend -eq 'Sandbox' -and $script:tests[0].Version -eq '8.6.0') { Ok 'Yes at the offer -> the capture runs in Windows Sandbox, on purpose (-Backend Sandbox)' } else { Bad "widen sandbox: $($script:tests | ConvertTo-Json -Compress)" }
+    # A failed capture decides nothing either: the error panel, then the same card.
+    Reset-Ui; & $firstThen 'Widen'; $script:textAnswer = '8.6.0'; $script:testThrows = $true
+    Show-Win32ToolkitSiblingCaptureReview -ProjectPath $pw
+    if (@($script:panels | Where-Object { $_.Header -eq 'Error' -and $_.Data -match 'the capture run failed' }).Count -eq 1 -and $script:cardShown -eq 2 -and -not (Get-Cfg $pw).PSObject.Properties['PriorInstalls']) {
+        Ok 'Widen fails -> the error panel, then the same card (the proposal is never skipped by an error)'
+    } else { Bad "widen error: cards=$($script:cardShown) panels=$($script:panels | ForEach-Object Header)" }
+    # A refused Enforce write: the error panel, then the card again (Block still first); nothing written.
+    Reset-Ui; & $firstThen 'Enforce'; $script:confirmYes = $true
+    $realSet = ${function:Set-Win32ToolkitPriorInstall}
+    function Set-Win32ToolkitPriorInstall {
+        [CmdletBinding(SupportsShouldProcess)]
+        param($ProjectPath, [switch]$FromSiblingCapture, $Mode, $ProposalId)
+        $null = $FromSiblingCapture, $Mode, $ProposalId
+        if ($PSCmdlet.ShouldProcess([string]$ProjectPath, 'write the rule')) {
+            $refused = [System.InvalidOperationException]::new('refused for the test')
+            throw [System.Management.Automation.ErrorRecord]::new($refused, 'W32T.PriorInstallRefused', [System.Management.Automation.ErrorCategory]::InvalidOperation, $null)
+        }
+    }
+    try { Show-Win32ToolkitSiblingCaptureReview -ProjectPath $pw } finally { ${function:Set-Win32ToolkitPriorInstall} = $realSet }
+    $again = @(& $cards)
+    if (@($script:panels | Where-Object { $_.Header -eq 'Error' -and $_.Data -match 'refused for the test' }).Count -eq 1 -and $again.Count -eq 2 -and $again[1].Keys[0] -eq 'Block' -and $script:demotions.Count -eq 0) {
+        Ok 'a refused Enforce write -> the error panel, then the same card, Block first; no proof run'
+    } else { Bad "enforce refused: cards=$($again.Count) demotions=$($script:demotions.Count)" }
+    # The card says when the probe was not clean and the noise control not verified.
+    $pn = New-TProject 'noisy'
+    Add-Records $pn @{ ProbeResult = 'Survived'; Noise = 'Unverified' }
+    Reset-Ui; & $firstThen 'Skip'
+    Show-Win32ToolkitSiblingCaptureReview -ProjectPath $pn
+    $nc = @($script:panels | Where-Object { $_.Header -like 'Proposal nsis-x64*' })[0]
+    if ($nc.Data -match 'Checks       : removal probe NOT clean, noise control NOT verified, stable over 2 captures') { Ok 'a probe that was not clean and an unverified noise control are named on the card' } else { Bad "noisy: $($nc.Data)" }
+    # Another identity inside the versions of this one (interleaved captures): the card says unstable.
+    $pu = New-TProject 'unstable'
+    foreach ($a in @(@{ Version = '8.5.0'; Role = 'Floor'; Publisher = 'Don Ho' }, @{ Version = '8.6.0'; Role = 'Extra' }, @{ Version = '8.7.0'; Role = 'Extra'; Publisher = 'Don Ho' }, @{ Version = '8.8.0'; Role = 'Newest' })) { $null = Write-TestSiblingRecord -ProjectPath $pu -Record (New-TestSiblingRecord @a) }
+    $up = @((ConvertTo-Win32ToolkitSiblingProposal -ProjectPath $pu).Proposals | Where-Object { $_.ProposalId -ceq 'nsis-x64' })[0]
+    Reset-Ui; & $firstThen 'Skip'
+    Show-Win32ToolkitSiblingCaptureReview -ProjectPath $pu
+    $uc = @($script:panels | Where-Object { $_.Header -like 'Proposal nsis-x64:*' })[0]
+    if ($up.Stability -eq 'Unstable' -and $uc.Data -match "Checks       : removal probe clean, noise control verified, unstable over $(@($up.CaptureIds).Count) captures") { Ok "an unstable proposal -> the card's checks say 'unstable over $(@($up.CaptureIds).Count) captures'" } else { Bad "unstable: $($up.Stability) / $($uc.Data)" }
+    # Widen names only what a Windows Sandbox capture of THAT technology would cost (-SiblingType).
+    $pt = New-TProject 'twotypes'
+    Add-Records $pt
+    Add-Records $pt @{ Type = 'inno'; Key = 'NppInno_is1'; InnoMarkers = $true; ProductCodes = @('NppInno_is1'); DisplayName = 'Npp Inno'; Dir = 'NppInno'; Main = 'nppi.exe'; Uninstaller = 'unins000.exe'; DefaultInstallLocation = '' }
+    $both = (@(Get-Win32ToolkitSiblingSandboxImpact -ProjectPath $pt) | Sort-Object) -join ','
+    $nsisOnly = @(Get-Win32ToolkitSiblingSandboxImpact -ProjectPath $pt -SiblingType nullsoft) -join ','
+    Reset-Ui; & $firstThen 'Widen'; $script:hvNotReady = @('the test VM win32tk-golden does not exist')
+    Show-Win32ToolkitSiblingCaptureReview -ProjectPath $pt
+    $first = @(& $cards)[0]
+    $wl = @($script:hostLines | Where-Object { $_ -like '`[yellow`]Hyper-V is not ready*' })
+    if ($both -ceq 'inno-x64,nsis-x64' -and $nsisOnly -ceq 'nsis-x64' -and $first.Message -like '*NppInno_is1?' -and $wl.Count -eq 1 -and $wl[0] -match ': inno-x64 would become Block-only' -and $wl[0] -notmatch 'nsis-x64' -and $script:tests.Count -eq 0) {
+        Ok 'two eligible technologies -> Widen on the Inno Setup card names only inno-x64 (-SiblingType); the impact of one type is that type only'
+    } else { Bad "widen one type: both=$both nsis=$nsisOnly first=$($first.Message) lines=$($wl -join ' || ')" }
+
+    # The Prior installs screen: capture without a ready VM asks first; with one, it captures on Hyper-V.
+    $pcap = New-TProject 'capture'
+    Reset-Ui; $script:hvNotReady = @('the test VM win32tk-golden does not exist')
+    $queue = [System.Collections.Generic.Queue[string]]::new(); foreach ($k in 'capture', 'back') { $queue.Enqueue($k) }
+    $script:pick = { param($Message, $Choices) $want = $queue.Dequeue(); @($Choices | Where-Object { $_.PSObject.Properties['Key'] -and $_.Key -eq $want })[0] }
+    Show-Win32ToolkitPriorInstallScreen -ProjectPath $pcap
+    if ($script:tests.Count -eq 0 -and @($script:confirms | Where-Object { $_.Message -eq 'Capture in Windows Sandbox anyway?' -and $_.Default -eq 'n' }).Count -eq 1 -and @($script:hostLines | Where-Object { $_ -like '`[yellow`]Hyper-V is not ready*Windows Sandbox*' }).Count -eq 1) {
+        Ok 'Prior installs > capture without a ready VM -> the Windows Sandbox line and the offer to cancel; No captures nothing'
+    } else { Bad "screen capture not ready: tests=$($script:tests.Count) confirms=$($script:confirms | ConvertTo-Json -Compress)" }
+    Reset-Ui; $script:hvNotReady = @('the test VM win32tk-golden does not exist'); $script:confirmYes = $true
+    $queue = [System.Collections.Generic.Queue[string]]::new(); foreach ($k in 'capture', 'back') { $queue.Enqueue($k) }
+    Show-Win32ToolkitPriorInstallScreen -ProjectPath $pcap
+    if ($script:tests.Count -eq 1 -and $script:tests[0].Backend -eq 'Sandbox' -and $script:tests[0].Scenario -eq 'SiblingCapture') { Ok 'Prior installs > capture without a ready VM, Yes at the offer -> captured in Windows Sandbox on purpose (-Backend Sandbox)' } else { Bad "screen capture sandbox: $($script:tests | ConvertTo-Json -Compress)" }
+    Reset-Ui
+    $queue = [System.Collections.Generic.Queue[string]]::new(); foreach ($k in 'capture', 'back') { $queue.Enqueue($k) }
+    Show-Win32ToolkitPriorInstallScreen -ProjectPath $pcap
+    if ($script:tests.Count -eq 1 -and $script:tests[0].Backend -eq 'HyperV' -and $script:tests[0].Scenario -eq 'SiblingCapture' -and $script:confirms.Count -eq 0) { Ok 'Prior installs > capture with a ready VM -> captured on Hyper-V, nothing asked' } else { Bad "screen capture: $($script:tests | ConvertTo-Json -Compress)" }
+    # Live rows RAISE, INNO: the capture's output waits for a key in every case (a run that recorded something can still
+    # say "Not captured: inno ... capture again", and the review clears the screen); only $true then opens the review.
+    # The order is recorded: P = a pause, R = the review.
+    $realReview = ${function:Show-Win32ToolkitSiblingCaptureReview}
+    $realPause = ${function:Read-SpectrePause}
+    ${function:Show-Win32ToolkitSiblingCaptureReview} = { param($ProjectPath) $null = $ProjectPath; $script:seq += 'R' }
+    ${function:Read-SpectrePause} = { param($Message, [switch]$AnyKey) $null = $Message, $AnyKey; $script:pauses++; $script:seq += 'P' }
+    try {
+        $seen = foreach ($want in @($true, $false, $null)) {
+            Reset-Ui; $script:testResult = $want; $script:seq = ''
+            $queue = [System.Collections.Generic.Queue[string]]::new(); foreach ($k in 'capture', 'back') { $queue.Enqueue($k) }
+            Show-Win32ToolkitPriorInstallScreen -ProjectPath $pcap
+            "$(if ($null -eq $want) { 'null' } else { $want })=$($script:seq)"
+        }
+    }
+    finally { ${function:Show-Win32ToolkitSiblingCaptureReview} = $realReview; ${function:Read-SpectrePause} = $realPause }
+    if (($seen -join ',') -ceq 'True=PR,False=P,null=P') { Ok 'capture $true -> a pause, then the review; $false or $null -> no review, the warnings stay until a key is pressed' } else { Bad "after capture: $($seen -join ',')" }
+
+    # Enforce from the Prior installs screen asks once more (default No), as the review card does.
+    Reset-Ui
+    $queue = [System.Collections.Generic.Queue[string]]::new(); foreach ($k in 'mode', 'nsis-x86', 'Enforce', 'back') { $queue.Enqueue($k) }
+    $script:pick = { param($Message, $Choices) $want = $queue.Dequeue(); if ($Message -eq 'Which rule?') { @($Choices | Where-Object { ([string]$_).StartsWith("$want ") })[0] } else { @($Choices | Where-Object { $_.PSObject.Properties['Key'] -and $_.Key -eq $want })[0] } }
+    Show-Win32ToolkitPriorInstallScreen -ProjectPath $pe
+    $ask = @($script:confirms | Where-Object { $_.Message -like 'Remove NppOld `[`[Wow6432`]`] (rule nsis-x86) as SYSTEM on every device before installing?*' })
+    $x86 = @((Get-Cfg $pe).PriorInstalls.Entries | Where-Object Id -eq 'nsis-x86')[0]
+    if ($ask.Count -eq 1 -and $ask[0].Default -eq 'n' -and $x86.Mode -eq 'Block') { Ok 'change mode to Enforce -> asked once more (default No); No changes nothing' } else { Bad "mode no: $($script:confirms | ConvertTo-Json -Compress) mode=$($x86.Mode)" }
+    Reset-Ui; $script:confirmYes = $true
+    $queue = [System.Collections.Generic.Queue[string]]::new(); foreach ($k in 'mode', 'nsis-x86', 'Enforce', 'back') { $queue.Enqueue($k) }
+    Show-Win32ToolkitPriorInstallScreen -ProjectPath $pe
+    $x86 = @((Get-Cfg $pe).PriorInstalls.Entries | Where-Object Id -eq 'nsis-x86')[0]
+    if ($x86.Mode -eq 'Enforce') { Ok 'Yes -> the rule is Enforce' } else { Bad "mode yes: $($x86.Mode) panels=$($script:panels | ForEach-Object Data)" }
+    Reset-Ui
+    $queue = [System.Collections.Generic.Queue[string]]::new(); foreach ($k in 'candidates', 'Enforce', 'back') { $queue.Enqueue($k) }
+    $before = (Get-Content -LiteralPath (Join-Path $pe 'SupportFiles\AppConfig.json') -Raw)
+    Show-Win32ToolkitPriorInstallScreen -ProjectPath $pe
+    if (@($script:confirms | Where-Object { $_.Message -like 'Remove the High candidate of the last Update test as SYSTEM*' -and $_.Default -eq 'n' }).Count -eq 1 -and (Get-Content -LiteralPath (Join-Path $pe 'SupportFiles\AppConfig.json') -Raw) -ceq $before) { Ok 'declare a candidate as Enforce -> asked once more; No writes nothing' } else { Bad "candidates no: $($script:confirms | ConvertTo-Json -Compress)" }
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

@@ -11,7 +11,8 @@ Test-Win32ToolkitProject [[-ProjectPath] <String>] [[-BasePath] <String>] [[-Sce
  [[-BaselineProjectPath] <String>] [[-BaselineProject] <String>] [[-BaselineInstallerType] <String>]
  [[-Backend] <String>] [-Unattended] [[-TestMode] <String>] [[-ProofEntryId] <String[]>]
  [[-SiblingInstallerType] <String[]>] [[-SiblingVersion] <String[]>] [[-SiblingCaptureVersionsBack] <Int32>]
- [-IncludeReportOnly] [-ProgressAction <ActionPreference>] [<CommonParameters>]
+ [-IncludeReportOnly] [[-SiblingCaptureCoverage] <Int32>] [[-SiblingCaptureMaxExtra] <Int32>]
+ [[-SiblingArchitecture] <String>] [-Assisted] [-ProgressAction <ActionPreference>] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -131,6 +132,12 @@ Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.5
 Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario SiblingCapture -Backend HyperV
 ```
 
+### EXAMPLE 13
+```
+# Capture in Windows Sandbox on purpose: Block-only proposals, and every identity it sees becomes Block-only
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario SiblingCapture -Backend Sandbox
+```
+
 ## PARAMETERS
 
 ### -ProjectPath
@@ -184,15 +191,29 @@ Assertion results
 Nothing of the project enters the guest but the sibling
                      installer and the capture script; its output comes back into a quarantine through an
                      allow-list.
-It never writes a new rule: approve the proposals with Set-Win32ToolkitPriorInstall.
+It never writes a new rule: approve the proposals with Set-Win32ToolkitPriorInstall
+                     (at the end it names every proposal that is not a rule yet, with the command that applies it).
                      After a capture that recorded something, the rules that came from earlier captures follow
                      it: a newer version with the same identity raises their VersionMax, another identity
                      freezes them (Track Frozen; review the new proposal).
-                     Returns $true (at least one record), $false (every capture failed) or $null (nothing to
-                     capture).
+                     Returns $true (at least one record), $false (every capture failed, or the winget manifests
+                     could not be read, for example while GitHub rate-limits this computer: a warning says when
+                     to capture again) or $null (nothing to capture).
 Refused (W32T.SiblingCaptureUnsupported / W32T.PriorInstallSlotsMissing) for a
                      manual app, a project without its own identity (run the install capture first), an ARM64
-                     package, a project created before this version, or without a ready Hyper-V test VM.
+                     package or a project created before this version.
+Without a ready Hyper-V test VM it runs
+                     in Windows Sandbox (said up front): there the sibling installs as a user and every
+                     proposal is Block-only; a sandbox that cannot be confirmed closed after its capture stops
+                     the run with W32T.GuestTamper (its output folder could still change; rebuild the project).
+                     A Sandbox record also joins the records of the identity it sees
+                     and makes that identity Block-only for good (a later capture on Hyper-V does not take
+                     that back), so when the project's captures already allow an Enforce rule (an
+                     Enforce-eligible proposal or a captured Enforce rule of the types to capture) a capture
+                     without a ready VM is refused instead (W32T.SiblingCaptureUnsupported, before any
+                     download), with or without -Backend HyperV.
+Only -Backend Sandbox captures in Windows
+                     Sandbox on purpose.
 
 ```yaml
 Type: String
@@ -514,6 +535,72 @@ Accept wildcard characters: False
 ### -IncludeReportOnly
 SiblingCapture scenario only: also capture the types whose removal is not supported yet (MSI, WiX, Burn, MSIX); their
 records are listed, never proposed.
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -SiblingCaptureCoverage
+SiblingCapture scenario only: capture the newest version and the newest version of each of the last n major.minor
+lines that offer the type (1-10), so a rule covers more of the versions devices may have.
+
+```yaml
+Type: Int32
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: 15
+Default value: 0
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -SiblingCaptureMaxExtra
+SiblingCapture scenario only: when a technology registers differently between two captured versions (a drift),
+capture up to n more versions between them to find where it changed (0-10, default 4).
+
+```yaml
+Type: Int32
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: 16
+Default value: 4
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -SiblingArchitecture
+SiblingCapture scenario only: x86 captures the 32-bit installers of a 64-bit app (their rules use the WOW6432Node
+view); default the package's architecture.
+
+```yaml
+Type: String
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: 17
+Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -Assisted
+SiblingCapture scenario only: on the Hyper-V test VM, you install each sibling yourself in the VM window when the
+run pauses (for an installer that cannot run silently).
+Needs a console that can answer a prompt; its proposals
+are Block-only.
 
 ```yaml
 Type: SwitchParameter

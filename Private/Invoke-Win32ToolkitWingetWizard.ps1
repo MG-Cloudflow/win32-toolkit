@@ -210,9 +210,10 @@ function Invoke-Win32ToolkitWingetWizard {
 
     # 4c. Prior installs (installer-identity PR 3b, spec 2.18): when winget ships another installer technology of this
     # version that a package can remove (RemovableNow, the capture plan's own classification), offer to capture it.
-    # Default No. The capture runs on the Hyper-V test VM only in this version: a host without it is told so, no question.
+    # Default No. A host without a ready Hyper-V test VM is told its capture runs in Windows Sandbox (Block-only, SV28).
     $captureSiblings = $false
     $captureTypes = @()
+    $captureNote = 'on the Hyper-V test VM'
     if ($probe -and $probe.Status -eq 'Ok') {
         $reg = { param([string]$T) $t2 = $T.ToLowerInvariant(); if ($t2 -in @('msi', 'wix')) { 'msi' } else { $t2 } }
         $pkgReg = & $reg ([string]$(if ($techPin) { $techPin } elseif ($anchor -and $anchorRow) { $anchorRow.EffectiveType } elseif ($families.Count) { $families[0].PinValue } else { '' }))
@@ -229,13 +230,13 @@ function Invoke-Win32ToolkitWingetWizard {
             }
             $hvNotReady = @(Test-Win32ToolkitHyperVReady)
             if ($hvNotReady.Count -gt 0) {
-                Write-SpectreHost "[grey]$(Get-SpectreEscapedText -Text ('The other installer technologies ({0}) cannot be captured on this PC: Hyper-V is not ready ({1}); this version captures on the Hyper-V test VM only.' -f ($captureTypes -join ', '), ($hvNotReady -join '; ')))[/]"
+                # SV28: a Sandbox-only host captures as a user and gets Block-only proposals; answering No cancels the capture.
+                Write-SpectreHost "[yellow]$(Get-SpectreEscapedText -Text ('Hyper-V is not ready ({0}): the capture would run in Windows Sandbox as a user and can only give Block-only proposals (devices with that install FAIL this one; a later Hyper-V capture does not make that identity removable).' -f ($hvNotReady -join '; ')))[/]"
             }
-            else {
-                $runs = 2 * $captureTypes.Count
-                Write-SpectreHost '[grey]The capture runs on the Hyper-V test VM, after the install capture; you review the proposals before anything is packaged.[/]'
-                $captureSiblings = Read-SpectreConfirm -Message (Get-SpectreEscapedText -Text ('Also capture the other installer technologies ({0}) so the package can remove them before installing? About {1} capture runs now (about {2}-{3} min) and 1 proof run per identity.' -f ($captureTypes -join ', '), $runs, (5 * $runs), (9 * $runs))) -DefaultAnswer 'n'
-            }
+            else { Write-SpectreHost '[grey]The capture runs on the Hyper-V test VM, after the install capture; you review the proposals before anything is packaged.[/]' }
+            $runs = 2 * $captureTypes.Count
+            $captureSiblings = Read-SpectreConfirm -Message (Get-SpectreEscapedText -Text ('Also capture the other installer technologies ({0}) so the package can remove them before installing? About {1} capture runs now (about {2}-{3} min) and 1 proof run per identity.' -f ($captureTypes -join ', '), $runs, (3 * $runs), (5 * $runs))) -DefaultAnswer 'n'
+            if ($captureSiblings -and $hvNotReady.Count -gt 0) { $captureNote = 'in Windows Sandbox (Block-only)' }
         }
     }
 
@@ -274,7 +275,8 @@ function Invoke-Win32ToolkitWingetWizard {
     $summaryLines.Add("Application  : $($picked.Name)  (v$($picked.Version))")
     $summaryLines.Add("Winget ID    : $($picked.Id)")
     $summaryLines.Add("Architecture : $arch")
-    $summaryLines.Add("Installer tech : $techSummary")
+    # One 12-character label column (the TUI wizard's Review panel; "Installer tech" was two characters too long).
+    $summaryLines.Add("Installer    : $techSummary")
     $summaryLines.Add("Template     : $template")
     $summaryLines.Add("Base folder  : $BasePath")
     $summaryLines.Add("Test/capture : $($bi.Label)")
@@ -287,7 +289,7 @@ function Invoke-Win32ToolkitWingetWizard {
         $summaryLines.Add("Test mode    : $effMode ($why)")
     }
     $summaryLines.Add("Depends on   : $(if ($deps) { $deps -join ', ' } else { '(nothing)' })")
-    if ($captureSiblings) { $summaryLines.Add("Other techs  : capture $($captureTypes -join ', ') on the Hyper-V test VM, then review (Block first) before packaging") }
+    if ($captureSiblings) { $summaryLines.Add("Other techs  : capture $($captureTypes -join ', ') $captureNote, then review (Block first) before packaging") }
     $summaryLines.Add("After build  : $afterStr")
     $summary = $summaryLines -join "`n"
     Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $summary) -Header 'Review' -Border Rounded -Color Blue

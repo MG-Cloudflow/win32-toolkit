@@ -48,9 +48,12 @@ function Invoke-Win32ToolkitFinalize {
     .PARAMETER CaptureSiblingTechnologies
         Installer-identity PR 3b (spec 2.17): after the install capture, capture the other installer technologies
         winget ships for the app (Test-Win32ToolkitSiblingCapturePreflight, Get-Win32ToolkitSiblingCapturePlan,
-        Invoke-Win32ToolkitSiblingCapture on the Hyper-V test VM), then raise the windows of the captured rules
+        Invoke-Win32ToolkitSiblingCapture on the Hyper-V test VM, or in Windows Sandbox with Block-only proposals when the
+        VM is not ready), then raise the windows of the captured rules
         (Update-Win32ToolkitPriorInstallWindow). A refused pre-flight or a failed capture is one problem sentence; the
-        pipeline goes on. W32T.GuestTamper stays fatal.
+        pipeline goes on. W32T.GuestTamper stays fatal. Without a ready VM, a project whose captures already allow an
+        Enforce rule (an Enforce-eligible proposal, or a captured Enforce rule) is not captured: a Sandbox record would
+        make that identity Block-only (Get-Win32ToolkitSiblingSandboxImpact); one problem sentence names them.
     .PARAMETER ApplySiblingCapture
         With -CaptureSiblingTechnologies: None (default; the proposals are listed with their commands) or Block (every
         High-confidence proposal without flags whose identity is not a rule yet becomes a Block rule; never Enforce).
@@ -304,15 +307,39 @@ function Invoke-Win32ToolkitFinalize {
                 }
                 else {
                     $pre = Test-Win32ToolkitSiblingCapturePreflight -ProjectPath $ProjectPath -Backend HyperV
+                    # A Windows Sandbox record joins the records of the identity it sees and makes it Block-only (SV28):
+                    # without a ready VM, a project whose captures already allow an Enforce rule is not captured again.
+                    $sandboxLoss = @(if ($pre.Ok -and [string]$pre.Backend -eq 'Sandbox') { Get-Win32ToolkitSiblingSandboxImpact -ProjectPath $ProjectPath })
                     if (-not $pre.Ok) {
                         & $problem ("The other installer technologies were not captured: " + ($pre.Reasons -join '; ') + '.')
                     }
+                    elseif ($sandboxLoss.Count -gt 0) {
+                        & $problem ("The other installer technologies were not captured: the Hyper-V test VM is not ready, and a capture in Windows Sandbox would make " + ($sandboxLoss -join ', ') +
+                            " Block-only (a Sandbox record is never Enforce-eligible and stays with the records of the identity it sees). Capture again when the VM is ready, or in Windows Sandbox on purpose: Test-Win32ToolkitProject -ProjectPath '$ProjectPath' -Scenario SiblingCapture -Backend Sandbox.")
+                    }
                     else {
+                        # SV28: a Hyper-V VM that is not ready means Windows Sandbox (Block-only proposals), said here.
+                        foreach ($note in @($pre.Notes | Where-Object { $_ })) { Write-Warning $note }
                         try {
                             $plan = Get-Win32ToolkitSiblingCapturePlan -ProjectPath $ProjectPath
-                            $plan.Backend = 'HyperV'
-                            $captured = Invoke-Win32ToolkitSiblingCapture -ProjectPath $ProjectPath -Plan $plan -Backend HyperV
-                            if ($captured -eq $false) { & $problem 'Every capture of the other installer technologies failed (Documentation\SiblingCapture.json lists why): no new proposal.' }
+                            $plan.Backend = [string]$pre.Backend
+                            $captured = Invoke-Win32ToolkitSiblingCapture -ProjectPath $ProjectPath -Plan $plan -Backend ([string]$pre.Backend)
+                            # Nothing planned (live rows RAISE, INNO): the winget manifests could not be read, and no index was
+                            # written. What helps follows the plan's causes: only when every cause is Permanent does capturing
+                            # again change nothing; else WingetList (this computer's winget), else Transient (later).
+                            if ($captured -eq $false -and [int]$plan.EstimatedRuns -eq 0) {
+                                $pkgCause = @($plan.PSObject.Properties['PackageProbe'] | Where-Object { $_.Value -and [string]$_.Value.Status -ne 'Ok' } | ForEach-Object { [string]$_.Value.Cause })
+                                $causes = @($pkgCause + @(@($plan.Types) | Where-Object { $_ -and $_.PSObject.Properties['ProbeFailed'] -and $_.ProbeFailed } | ForEach-Object { [string]$_.ProbeCause }))
+                                $retryable = @($causes | Where-Object { $_ -ne 'Permanent' })
+                                $again = "Test-Win32ToolkitProject -ProjectPath '$([System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent((ConvertTo-Win32ToolkitSafeText -Text $ProjectPath -MaxLength 1024)))' -Scenario SiblingCapture"
+                                if ($causes.Count -gt 0 -and $retryable.Count -eq 0) {
+                                    & $problem ("The other installer technologies were not captured: their winget manifests could not be used (the warning above says why); capturing again will not change that" +
+                                        $(if ($pkgCause.Count -gt 0) { ": check the project's winget id and version." } else { '.' }))
+                                }
+                                elseif ($retryable -contains 'WingetList') { & $problem "The other installer technologies were not captured: the app's winget versions could not be listed (the warning above says why). Check winget on this computer, then capture them again: $again." }
+                                else { & $problem "The other installer technologies were not captured: their winget manifests could not be read (the warning above says why and when). Capture them again later: $again." }
+                            }
+                            elseif ($captured -eq $false) { & $problem 'Every capture of the other installer technologies failed (Documentation\SiblingCapture.json lists why): no new proposal.' }
                         }
                         catch {
                             if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }

@@ -510,18 +510,19 @@ $l = Run 'PostUpdate'; "F3|" + ($l -join '|')
     $script:testBackend = 'HyperV'; $script:testModeCfg = 'Unattended'
     Remove-Item Function:\Wait-Win32ToolkitSandboxFree -ErrorAction SilentlyContinue
     $writeFloor = {
-        param([string]$P, [string]$Sha)
+        param([string]$P, [string]$Sha, [string]$Arch = 'x64')
+        $view = if ($Arch -eq 'x86') { 'Wow6432' } else { 'Native' }
         $rec = ConvertTo-Win32ToolkitSiblingCaptureRecord -InputObject ([ordered]@{
-                SchemaVersion = '1.0'; CaptureKey = 'nullsoft-8.8.9'
+                SchemaVersion = '1.0'; CaptureKey = "nullsoft-8.8.9$(if ($Arch -eq 'x86') { '-x86' })"
                 Package = [ordered]@{ WingetId = 'Notepad++.Notepad++'; Version = '8.9.8.1'; Architecture = 'x64'; InstallerType = 'wix'; Family = 'msi' }
-                Sibling = [ordered]@{ InstallerType = 'nullsoft'; EffectiveType = 'nullsoft'; Version = '8.8.9'; Role = 'Floor'; ReleaseDate = '2025-12-09'; Scope = 'machine'; Locale = ''; Architecture = 'x64'
-                    InstallerFile = 'npp.8.8.9.Installer.x64.exe'; InstallerSha256 = $Sha; SilentArgs = '/S'; SilentArgsSource = 'catalog'; Manifest = [ordered]@{ ProductCodes = @('App') } }
+                Sibling = [ordered]@{ InstallerType = 'nullsoft'; EffectiveType = 'nullsoft'; Version = '8.8.9'; Role = 'Floor'; ReleaseDate = '2025-12-09'; Scope = 'machine'; Locale = ''; Architecture = $Arch
+                    InstallerFile = "npp.8.8.9.Installer.$Arch.exe"; InstallerSha256 = $Sha; SilentArgs = '/S'; SilentArgsSource = 'catalog'; Manifest = [ordered]@{ ProductCodes = @('App') } }
                 Run = [ordered]@{ Backend = 'HyperV'; Mode = 'Unattended'; GuestScriptSha256 = ('C' * 64) }
                 Install = [ordered]@{ ExitCode = 0; Completed = $true }
-                Observation = [ordered]@{ Candidates = @([ordered]@{ Key = 'App'; View = 'Native'; DisplayName = 'App (64-bit)'; DisplayVersion = '8.8.9'; Publisher = 'Vendor Team' })
+                Observation = [ordered]@{ Candidates = @([ordered]@{ Key = 'App'; View = $view; DisplayName = 'App (64-bit)'; DisplayVersion = '8.8.9'; Publisher = 'Vendor Team' })
                     Services = @([ordered]@{ Name = 'AppUpdater'; DisplayName = 'App updater'; ImageLeaf = 'upd.exe' }); Shortcuts = @('C:\ProgramData\Microsoft\Windows\Start Menu\Programs\App.lnk')
                     Tasks = @([ordered]@{ Path = '\AppTask'; ActionLeaf = 'upd.exe' }); NoiseControl = 'Verified'; ProvisionalPrimary = 'App' }
-                Probe = [ordered]@{ Result = 'Clean'; ProbedKey = 'App'; ProbedView = 'Native' }
+                Probe = [ordered]@{ Result = 'Clean'; ProbedKey = 'App'; ProbedView = $view }
                 HostChecks = [ordered]@{ NsisMagic = $true } })
         $bytes = [Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json -InputObject $rec -Depth 12 -Compress -EscapeHandling EscapeNonAscii))
         $hasher = [Security.Cryptography.SHA256]::Create(); $id = (-join ($hasher.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })).Substring(0, 16); $hasher.Dispose()
@@ -575,6 +576,19 @@ $l = Run 'PostUpdate'; "F3|" + ($l -join '|')
     if (@($w | Where-Object { "$_" -match 'this run uses version 8\.8\.8' -and "$_" -match 'cannot prove' }).Count -eq 1 -and $d0['InstallerType'] -eq 'nullsoft' -and $d0['FamilyPin'] -and -not $d0['ExactType'] -and $d0['Architecture'] -eq 'x64' -and $d0['Version'] -eq '8.8.8') {
         Ok 'only -SpecificVersion on a captured group -> the group''s technology and architecture at that version (never the floor pin), one "cannot prove" warning'
     } else { Bad "captured + version: $($d0 | ConvertTo-Json -Compress) warnings $($w -join ' | ')" }
+    # X2: the x86 sibling of an x64 package (Test-Win32ToolkitProject -Scenario SiblingCapture -SiblingArchitecture x86)
+    # gives a Wow6432 rule whose floor capture is the x86 installer: the proof installs exactly that x86 installer.
+    $p86 = Join-Path $root 'capture86'; $null = New-Item -ItemType Directory -Path $p86 -Force
+    $cid86 = & $writeFloor $p86 $bsha 'x86'
+    $p86 = New-ProofProject 'capture86' @((Entry 'nsis-x86' 'Enforce' @{ Source = 'SiblingCapture'; CaptureId = $cid86; VersionMin = '8.8.9'; View = 'Wow6432'; InstallDir = '%ProgramFiles(x86)%\App' }))
+    Reset-Run
+    $w = $null
+    $v = Test-Win32ToolkitProject -ProjectPath $p86 -Scenario Update -WarningVariable w -WarningAction SilentlyContinue 6>$null
+    $d0 = if ($script:dl.Count) { $script:dl[0] } else { @{} }
+    $o = $script:outcomes[0]
+    if ($v -eq $true -and $d0['ExactType'] -and $d0['InstallerType'] -eq 'nullsoft' -and $d0['Version'] -eq '8.8.9' -and $d0['Architecture'] -eq 'x86' -and $o.HasProof -and (@($o.Proof.CaptureIds) -join ',') -eq $cid86 -and (@($o.Proof.EntryIds) -join ',') -eq 'nsis-x86' -and @($w | Where-Object { "$_" -match 'cannot prove' }).Count -eq 0) {
+        Ok 'an x86 capture''s Wow6432 rule: the floor baseline is the x86 installer (-ExactType nullsoft 8.8.9 -Architecture x86), its Proof names the floor capture'
+    } else { Bad "x86 floor: $($d0 | ConvertTo-Json -Compress) proof $($o.Proof | ConvertTo-Json -Compress) warnings $($w -join ' | ')" }
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

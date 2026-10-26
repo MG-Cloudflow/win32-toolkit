@@ -12,8 +12,11 @@ function Get-Win32ToolkitSiblingCaptureScript {
           start of every phase  a 32-bit process on a 64-bit OS exits 2 (first); the data file read; CaptureKey must
                                 be ^[a-z0-9_.+-]{1,80}$ and OutDir 'C:\PSADT\Out' or 'C:\W32TOut'
           PreSibling            noise control (edgeupdate, edgeupdatem, wuauserv, UsoSvc stopped and disabled; the Edge
-                                update tasks disabled; Store auto-download and automatic updates off) and the snapshot (uninstall entries of
-                                HKLM native, HKLM WOW6432Node and the account's HKCU; top-level folders of Program Files,
+                                update tasks disabled; Store auto-download and automatic updates off; checked with the
+                                PostSibling rule from its own start time, up to three tries 5 s apart; what it could not
+                                hold is kept as NoiseFailed) and the snapshot (uninstall entries of
+                                HKLM native, HKLM WOW6432Node and the account's HKCU - for an assisted capture the console
+                                user's, through HKEY_USERS\<SID>, also the record's Account (SV18); top-level folders of Program Files,
                                 Program Files (x86), ProgramData; services; Start Menu and public desktop shortcuts;
                                 scheduled tasks; Appx packages; pending file renames) -> SiblingPre_<key>.json
           Install               the installer with the data file's switches, the handle cached, 20 minutes for the
@@ -26,8 +29,10 @@ function Get-Win32ToolkitSiblingCaptureScript {
                                 every controlled service is still stopped and disabled and every task disabled; wuauserv
                                 and UsoSvc started again by Windows' own update repair (WaaSMedicSvc, live checks
                                 2026-10-26) count as controlled while the Windows Update client logged no installation
-                                (events 19, 20, 43; Defender's intelligence and platform updates aside) since PreSibling.
-                                NoiseDetail lists the states found (for the operator).
+                                (events 19, 20, 43; Defender's intelligence and platform updates aside) since PreSibling,
+                                and only when PreSibling held. NoiseDetail (one flat list) names what PreSibling could not
+                                hold ('before the install: ...'), the states found and, when not verified, what Windows
+                                Update installed or why its log could not be read (for the operator).
           Probe                 only an NSIS or Inno Setup primary: sentinels seeded, its uninstaller run with the
                                 constant switches, the process tree waited for (15 minutes), the postconditions checked
                                 -> SiblingProbe_<key>.json
@@ -66,6 +71,23 @@ $w32tScOut = [string]$w32tScData.OutDir
 if (@('C:\PSADT\Out', 'C:\W32TOut') -notcontains $w32tScOut) { exit 2 }
 if (@('PreSibling', 'Install', 'PostSibling', 'Probe', 'CollectLogs', 'All') -notcontains $Phase) { exit 2 }
 try { [void](New-Item -ItemType Directory -Path (Join-Path $w32tScOut 'Logs') -Force) } catch { exit 2 }
+## The record's Account and the per-user uninstall entries the snapshot reads: the phase's own account (SYSTEM), or, for an
+## assisted capture, the user signed in to the console who installs the sibling (SV18), through HKEY_USERS\<that SID>.
+$w32tScAccount = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$w32tScUserArp = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
+if ([string]$w32tScData.Mode -eq 'Assisted') {
+    try {
+        $w32tScUser = [string](Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).UserName
+        if ($w32tScUser) {
+            $w32tScSid = [string](New-Object System.Security.Principal.NTAccount($w32tScUser)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+            if ($w32tScSid -match '^S-1-5-21-[0-9-]+$' -and (Test-Path -LiteralPath ('Registry::HKEY_USERS\' + $w32tScSid))) {
+                $w32tScAccount = $w32tScUser
+                $w32tScUserArp = 'Registry::HKEY_USERS\' + $w32tScSid + '\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
+            }
+        }
+    }
+    catch { $null = $_ }
+}
 
 $w32tScWrite = {
     param([string]$w32tName, $w32tObj)
@@ -104,7 +126,7 @@ $w32tScArp = {
     $w32tHives = @(
         @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'; View = 'Native' },
         @{ Path = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'; View = 'Wow6432' },
-        @{ Path = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'; View = 'User' })
+        @{ Path = $w32tScUserArp; View = 'User' })
     foreach ($w32tH in $w32tHives) {
         if (-not (Test-Path -LiteralPath $w32tH.Path)) { continue }
         foreach ($w32tK in @(Get-ChildItem -LiteralPath $w32tH.Path -ErrorAction SilentlyContinue)) {
@@ -121,12 +143,18 @@ $w32tScArp = {
     }
     return ,$w32tList
 }
+## Read through the registry API: an absent value is $null, not a TerminatingError record in the transcript (live row INNO).
 $w32tScPfro = {
+    $w32tK = $null
     try {
-        $w32tV = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -Name PendingFileRenameOperations -ErrorAction Stop).PendingFileRenameOperations
+        $w32tK = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager')
+        if ($null -eq $w32tK) { return ,@() }
+        $w32tV = $w32tK.GetValue('PendingFileRenameOperations', $null)
+        if ($null -eq $w32tV) { return ,@() }
         return ,@(@($w32tV) | Where-Object { $_ } | ForEach-Object { [string]$_ })
     }
     catch { return ,@() }
+    finally { if ($null -ne $w32tK) { $w32tK.Close() } }
 }
 $w32tScSnapshot = {
     $w32tRoots = New-Object System.Collections.ArrayList
@@ -180,29 +208,44 @@ $w32tScKillTree = {
     param([int]$w32tRootId)
     try { [void](& (Join-Path $env:SystemRoot 'System32\taskkill.exe') /PID $w32tRootId /T /F 2>&1) } catch { $null = $_ }
 }
-## Windows Update installed nothing since this UTC time (yyyy-MM-ddTHH:mm:ssZ): no installation event (19, 20, 43) of the
-## Windows Update client in the System log, Microsoft Defender's own intelligence and platform updates aside. Any read
-## problem answers $false.
-$w32tScWuQuiet = {
+## What Windows Update installed since this UTC time (yyyy-MM-ddTHH:mm:ssZ): the titles of the installation events (19, 20, 43)
+## of the Windows Update client in the System log, Microsoft Defender's own intelligence and platform updates aside, as
+## 'Windows Update installed: <title>'; a read problem is one 'Windows Update event log unreadable' item.
+## No matching event is the usual answer, not an error: it is read from -ErrorVariable, so the phase transcript gets no
+## TerminatingError(Get-WinEvent) line for it (live row ASSISTED).
+$w32tScWuSeen = {
     param([string]$w32tSince)
+    $w32tOut = New-Object System.Collections.ArrayList
     $w32tFrom = [DateTime]::MinValue
-    if (-not [DateTime]::TryParseExact($w32tSince, 'yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture, ([Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal), [ref]$w32tFrom)) { return $false }
+    if (-not [DateTime]::TryParseExact($w32tSince, 'yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture, ([Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal), [ref]$w32tFrom)) { [void]$w32tOut.Add('Windows Update event log unreadable (no start time)'); return ,$w32tOut }
     $w32tEv = @()
-    try { $w32tEv = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-WindowsUpdateClient'; Id = 19, 20, 43; StartTime = $w32tFrom.ToLocalTime() } -ErrorAction Stop) }
+    $w32tEvErr = $null
+    try { $w32tEv = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-WindowsUpdateClient'; Id = 19, 20, 43; StartTime = $w32tFrom.ToLocalTime() } -ErrorAction SilentlyContinue -ErrorVariable w32tEvErr) }
     catch {
-        if ([string]$_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { return $true }
-        return $false
+        if ([string]$_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { [void]$w32tOut.Add('Windows Update event log unreadable') }
+        return ,$w32tOut
+    }
+    if (@(@($w32tEvErr) | Where-Object { $null -ne $_ -and [string]$_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*' }).Count -gt 0) {
+        [void]$w32tOut.Add('Windows Update event log unreadable')
+        return ,$w32tOut
     }
     foreach ($w32tE in $w32tEv) {
         $w32tTitle = ''
         try { $w32tTitle = [string]$w32tE.Properties[0].Value } catch { $w32tTitle = '' }
-        if ($w32tTitle -notmatch 'Microsoft Defender|KB2267602|KB4052623') { return $false }
+        if ($w32tTitle -notmatch 'Microsoft Defender|KB2267602|KB4052623') { [void]$w32tOut.Add('Windows Update installed: ' + $w32tTitle) }
     }
-    return $true
+    return ,$w32tOut
+}
+## Windows Update installed nothing since that time (and its log could be read).
+$w32tScWuQuiet = {
+    param([string]$w32tSince)
+    $w32tSeen = & $w32tScWuSeen $w32tSince
+    return (@($w32tSeen).Count -eq 0)
 }
 ## The noise control holds: every controlled service Stopped and Disabled, every Edge update task Disabled. With a start
-## time (PostSibling): wuauserv and UsoSvc may have been started again by Windows' own update repair (WaaSMedicSvc sets
-## wuauserv back to Manual and starts it a few minutes later on Windows 11) while Windows Update installed nothing.
+## time (PreSibling and PostSibling, both from PreSibling's start): wuauserv and UsoSvc may have been started again by
+## Windows' own update repair (WaaSMedicSvc sets wuauserv back to Manual and starts it, on Windows 11 a few minutes later or
+## seconds after a restored VM resumed) while Windows Update installed nothing.
 $w32tScNoiseCheck = {
     param($w32tItems, [string]$w32tSince)
     $w32tWu = $null
@@ -248,21 +291,64 @@ $w32tScNoiseState = {
     }
     return ,$w32tOut
 }
+## The states the noise control did not hold ('<name> <state>/<start mode>' that is not 'Stopped/Disabled', '<task> <state>'
+## that is not 'Disabled'), or one item saying the states could not be read.
+$w32tScNoiseFailed = {
+    param($w32tItems)
+    $w32tOut = New-Object System.Collections.ArrayList
+    foreach ($w32tX in @(& $w32tScNoiseState $w32tItems)) { foreach ($w32tY in @($w32tX)) { if ([string]$w32tY -notmatch ' (Stopped/)?Disabled$') { [void]$w32tOut.Add([string]$w32tY) } } }
+    if ($w32tOut.Count -eq 0) { [void]$w32tOut.Add('the service and task states could not be read') }
+    return ,$w32tOut
+}
+## Stops and disables the controlled services and disables the Edge update tasks (each step on its own: one that fails does
+## not stop the others).
+$w32tScHold = {
+    param($w32tItems)
+    foreach ($w32tN in @($w32tItems)) {
+        if ($w32tN.Kind -eq 'Service') {
+            try { Stop-Service -Name ([string]$w32tN.Name) -Force -ErrorAction Stop } catch { $null = $_ }
+            try { Set-Service -Name ([string]$w32tN.Name) -StartupType Disabled -ErrorAction Stop } catch { $null = $_ }
+        }
+        elseif ($w32tN.Kind -eq 'Task') {
+            try {
+                foreach ($w32tT in @(Get-ScheduledTask -ErrorAction Stop | Where-Object { ([string]$_.TaskPath + [string]$_.TaskName) -eq [string]$w32tN.Name })) { [void](Disable-ScheduledTask -InputObject $w32tT -ErrorAction Stop) }
+            }
+            catch { $null = $_ }
+        }
+    }
+}
+## The record's NoiseDetail: ONE flat list of strings (live rows RAISE, ASSISTED: '@(& ... | Select-Object -First 16)' wrapped
+## the returned list, Windows PowerShell 5.1 wrote [[...]] and the host showed one string cut at 80 characters): what
+## PreSibling could not hold, each 'before the install: ...' (at most 4; live rows DEMOTE, INNO, ASSISTED: a failed check
+## before the install was never said), the states after the install (at most 12), and, when the noise control is not
+## verified, what Windows Update installed or why its log could not be read (at most 4 more).
+$w32tScNoiseDetail = {
+    param($w32tItems, [string]$w32tSince, [bool]$w32tVerified, $w32tPreFailed)
+    $w32tOut = New-Object System.Collections.ArrayList
+    $w32tN = 0
+    foreach ($w32tX in @($w32tPreFailed)) { foreach ($w32tY in @($w32tX)) { if ($null -ne $w32tY -and $w32tN -lt 4) { [void]$w32tOut.Add('before the install: ' + [string]$w32tY); $w32tN++ } } }
+    $w32tN = 0
+    foreach ($w32tX in @(& $w32tScNoiseState $w32tItems)) { foreach ($w32tY in @($w32tX)) { if ($w32tN -lt 12) { [void]$w32tOut.Add([string]$w32tY); $w32tN++ } } }
+    if (-not $w32tVerified) {
+        $w32tN = 0
+        foreach ($w32tX in @(& $w32tScWuSeen $w32tSince)) { foreach ($w32tY in @($w32tX)) { if ($w32tN -lt 4) { [void]$w32tOut.Add([string]$w32tY); $w32tN++ } } }
+    }
+    return ,$w32tOut
+}
 '@
 
     $body = @'
 
 $w32tScPre = {
+    ## The start time comes first: the Windows Update log is read from it, here and in PostSibling.
+    $w32tStarted = & $w32tScUtc
     $w32tNoise = New-Object System.Collections.ArrayList
     foreach ($w32tSvc in @('edgeupdate', 'edgeupdatem', 'wuauserv', 'UsoSvc')) {
         if (-not (Get-Service -Name $w32tSvc -ErrorAction SilentlyContinue)) { continue }
-        try { Stop-Service -Name $w32tSvc -Force -ErrorAction Stop } catch { $null = $_ }
-        try { Set-Service -Name $w32tSvc -StartupType Disabled -ErrorAction Stop } catch { $null = $_ }
         [void]$w32tNoise.Add(@{ Kind = 'Service'; Name = $w32tSvc })
     }
     try {
         foreach ($w32tT in @(Get-ScheduledTask -ErrorAction Stop | Where-Object { [string]$_.TaskName -like 'MicrosoftEdgeUpdateTask*' })) {
-            try { [void](Disable-ScheduledTask -InputObject $w32tT -ErrorAction Stop) } catch { $null = $_ }
             [void]$w32tNoise.Add(@{ Kind = 'Task'; Name = ([string]$w32tT.TaskPath + [string]$w32tT.TaskName) })
         }
     }
@@ -278,11 +364,22 @@ $w32tScPre = {
         [void](New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Name 'NoAutoUpdate' -Value 1 -PropertyType DWord -Force)
     }
     catch { $null = $_ }
+    ## Held when every control holds, with Windows' own update repair excused from the start time on, as in PostSibling (live
+    ## rows DEMOTE, INNO, ASSISTED: wuauserv running again seconds after the restored VM resumed made the check here fail for
+    ## good while Windows Update installed nothing). Up to three tries, 5 s apart: a service still starting cannot stop yet.
+    $w32tHeld = $false
+    for ($w32tTry = 1; $w32tTry -le 3 -and -not $w32tHeld; $w32tTry++) {
+        if ($w32tTry -gt 1) { Start-Sleep -Seconds 5 }
+        & $w32tScHold $w32tNoise
+        $w32tHeld = [bool](& $w32tScNoiseCheck $w32tNoise $w32tStarted)
+    }
+    $w32tPreFailed = @()
+    if (-not $w32tHeld) { $w32tPreFailed = @(& $w32tScNoiseFailed $w32tNoise | ForEach-Object { $_ }) }
     $w32tOs = [string][Environment]::OSVersion.Version
     try { $w32tOs = $w32tOs + '.' + [string](Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name UBR -ErrorAction Stop).UBR } catch { $null = $_ }
     & $w32tScWrite ('SiblingPre_' + $w32tScKey + '.json') ([ordered]@{
-            SchemaVersion = '1.0'; CaptureKey = $w32tScKey; StartedUtc = (& $w32tScUtc); Account = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-            Is64 = [Environment]::Is64BitOperatingSystem; OsBuild = $w32tOs; Noise = $w32tNoise; NoiseVerified = (& $w32tScNoiseCheck $w32tNoise); Snapshot = (& $w32tScSnapshot) })
+            SchemaVersion = '1.0'; CaptureKey = $w32tScKey; StartedUtc = $w32tStarted; Account = $w32tScAccount
+            Is64 = [Environment]::Is64BitOperatingSystem; OsBuild = $w32tOs; Noise = $w32tNoise; NoiseVerified = $w32tHeld; NoiseFailed = $w32tPreFailed; Snapshot = (& $w32tScSnapshot) })
     return 0
 }
 
@@ -428,7 +525,7 @@ $w32tScPost = {
     }
     $w32tNoise = 'Unverified'
     if ([bool]$w32tPre.NoiseVerified -and (& $w32tScNoiseCheck @($w32tPre.Noise) ([string]$w32tPre.StartedUtc))) { $w32tNoise = 'Verified' }
-    $w32tNoiseDetail = @(& $w32tScNoiseState @($w32tPre.Noise) | Select-Object -First 16)
+    $w32tNoiseDetail = & $w32tScNoiseDetail @($w32tPre.Noise) ([string]$w32tPre.StartedUtc) ($w32tNoise -eq 'Verified') @($w32tPre.NoiseFailed)
     & $w32tScWrite ('SiblingCapture_' + $w32tScKey + '.json') ([ordered]@{
             SchemaVersion = '1.0'; Candidates = $w32tCands
             Services = @(@($w32tPost.Services) | Where-Object { $w32tPreSvc -notcontains [string]$_.Name } | Select-Object -First 64)

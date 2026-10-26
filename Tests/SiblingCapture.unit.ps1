@@ -11,11 +11,14 @@
       [2] Invoke-Win32ToolkitSiblingCapture: the record is written as Documentation\SiblingCapture\<CaptureId>.json with
           CaptureId = the SHA-256 prefix of its bytes, it round-trips through Get-Win32ToolkitSiblingCaptureRecord, a
           tampered record is ignored; a type not offered -> CaptureFailed 'not offered', the rest go on; the index lists
-          records and failures; $true / $false / $null; the work folder holds the BOM script, the BOM-less data file (with
+          records and failures; $true / $false / $null; a plan whose winget manifests could not be read (the package's,
+          HTTP 429; or every version of a type) -> $false with one warning saying when to capture again, never "Nothing to
+          capture" (live rows RAISE, INNO); the work folder holds the BOM script, the BOM-less data file (with
           the package's publisher and the installer's switches) and the installer, the quarantine goes after a successful
           read; a guest that changes the project -> W32T.GuestTamper.
       [3] Test-Win32ToolkitSiblingCapturePreflight never throws: an unsupported shape, a manual app, no OwnIdentity, an
-          ARM64 package, a Sandbox backend or a Hyper-V VM that is not ready -> Ok false, the reason and the code.
+          ARM64 package -> Ok false, the reason and the code (the Windows Sandbox fallback of a Hyper-V VM that is not ready:
+          SiblingCaptureExtras.unit [2]).
       [4] Test-Win32ToolkitProject -Scenario SiblingCapture: a refused pre-flight throws its code and runs nothing; the
           result of the capture is returned; sibling parameters outside the scenario, and Update parameters in it, are
           refused.
@@ -98,6 +101,31 @@ try {
     if ($rn.Record -and $rn.Record.Observation.NoiseControl -eq 'Unverified' -and $rn.NoiseDetail -match '^wuauserv Running/Manual; edgeupdate Stopped/Disabled\?' -and -not $rn.Record.Observation.Contains('NoiseDetail')) { Ok 'NoiseDetail: the guest states for the operator (printable), not part of the record' } else { Bad "noise detail: '$($rn.NoiseDetail)' record keys $($rn.Record.Observation.Keys -join ',')" }
     $invSrc = [IO.File]::ReadAllText((Join-Path $repo 'Private\Invoke-Win32ToolkitSiblingCapture.ps1'))
     if ($invSrc -match "the guest noise control was not verified \(\`$\(if \(\`$read\.NoiseDetail\)") { Ok 'the capture warns with the noise states when a record is Unverified' } else { Bad 'no noise warning in Invoke-Win32ToolkitSiblingCapture' }
+    # Live rows DEMOTE, INNO, ASSISTED: the warning said "Windows Update installed something, or an updater ran" for a check
+    # before the install that failed while Windows Update installed nothing. The cause follows the guest's detail.
+    $causeOf = {
+        param([string[]]$Detail)
+        $rd = Join-Path $root ('run-cause-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+        $null = Write-Quarantine $rd @{ "SiblingCapture_$key.json" = [ordered]@{ SchemaVersion = '1.0'; Candidates = @((Cand)); NewRoots = @('C:\Program Files\Notepad++'); NoiseControl = 'Unverified'
+                NoiseDetail = $Detail; PfroCount = 0; ProvisionalPrimary = 'Notepad++'; ProvisionalView = 'Native' } }
+        (Read-Run $rd).NoiseCause
+    }
+    $cases = @(
+        @{ D = @('before the install: wuauserv Running/Manual', 'wuauserv Running/Manual'); W = 'the update services and tasks could not be held still before the install' }
+        @{ D = @('wuauserv Running/Manual', 'Windows Update installed: 2026-10 Cumulative Update (KB5099999)'); W = 'Windows Update installed something during the capture' }
+        @{ D = @('before the install: edgeupdate Running/Auto', 'Windows Update event log unreadable'); W = 'the update services and tasks could not be held still before the install; the Windows Update event log could not be read, so a restarted update service could not be excused' }
+        @{ D = @('edgeupdate Running/Auto'); W = 'an update service or task was not held still during the capture' }
+    )
+    $bad = @($cases | Where-Object { (& $causeOf $_.D) -cne $_.W })
+    if ($bad.Count -eq 0 -and $r.NoiseCause -eq '' -and $invSrc -match '\$read\.NoiseCause' -and $invSrc -notmatch 'Windows Update installed something, or an updater ran') { Ok 'NoiseCause follows the guest detail (before the install / Windows Update installed / log unreadable / not held still); a Verified record has none; the warning uses it' } else { Bad "noise cause: $(@($bad | ForEach-Object { "$($_.D -join ',') -> $(& $causeOf $_.D)" }) -join ' | ')" }
+    # Live rows RAISE, ASSISTED: a guest before the fix wrote the list nested ([[...]]); the host joined it into ONE string
+    # and cut it at 80 characters, so the cause (UsoSvc, the Windows Update event) never showed. Flattened; 160 per item.
+    $runN2 = Join-Path $root 'run-noise-nested'
+    $wuItem = 'Windows Update installed: 2026-10 Cumulative Update for Windows 11 Version 25H2 for x64-based Systems (KB5099999)'
+    $null = Write-Quarantine $runN2 @{ "SiblingCapture_$key.json" = [ordered]@{ SchemaVersion = '1.0'; Candidates = @((Cand)); NewRoots = @('C:\Program Files\Notepad++'); NoiseControl = 'Unverified'
+            NoiseDetail = @(, @('edgeupdate Stopped/Disabled', 'edgeupdatem Stopped/Disabled', 'wuauserv Running/Manual', 'UsoSvc Running/Auto', $wuItem)); PfroCount = 0; ProvisionalPrimary = 'Notepad++'; ProvisionalView = 'Native' } }
+    $rn2 = Read-Run $runN2
+    if ($rn2.NoiseDetail -ceq "edgeupdate Stopped/Disabled; edgeupdatem Stopped/Disabled; wuauserv Running/Manual; UsoSvc Running/Auto; $wuItem") { Ok 'a nested NoiseDetail list is flattened: every state and the full Windows Update title (not one string cut at 80)' } else { Bad "nested detail: '$($rn2.NoiseDetail)'" }
 
     $nul = [char]0; $esc = [char]0x1B; $rlo = [char]0x202E; $iso = [char]0x2066; $ls = [char]0x2028
     $hostile = @(
@@ -143,7 +171,7 @@ try {
     foreach ($d in 'SupportFiles', 'Documentation', 'Files') { $null = New-Item -ItemType Directory -Path (Join-Path $proj $d) -Force }
     [IO.File]::WriteAllText((Join-Path $proj 'SupportFiles\AppConfig.json'), (@{ App = @{ Version = '8.9.8.1'; Vendor = 'Notepad++ Team' }; OwnIdentity = @{ ProductCode = '{5C6F8543-7EA8-40B9-B78F-04C78300DE7F}'; ArpKeys = @(@{ Key = '{5C6F8543-7EA8-40B9-B78F-04C78300DE7F}'; View = 'Native' }) } } | ConvertTo-Json -Depth 5), $utf8)
     [IO.File]::WriteAllText((Join-Path $proj 'Invoke-AppDeployToolkit.ps1'), '# script', $utf8)
-    $script:dl = @(); $script:runs = @(); $script:offered = @('nullsoft-8.9.8', 'nullsoft-8.9.8-r'); $script:tamper = $false
+    $script:dl = @(); $script:runs = @(); $script:offered = @('nullsoft-8.9.8', 'nullsoft-8.9.8-r'); $script:tamper = $false; $script:noiseQ = $null
     function Download-OldVersionInstaller {
         param($AppId, $Version, $ProjectPath, $DestinationDir, $Architecture, $InstallerType, [switch]$ExactType, $Scope)
         $null = $AppId, $ProjectPath, $Architecture
@@ -160,7 +188,7 @@ try {
         param($ProjectPath, $Phase, $Output, $ResultDestination, $ResultAllowedEntry, $ResultMaxEntryBytes, $ResultMaxTotalBytes)
         $script:runs += [pscustomobject]@{ In = $ProjectPath; Phases = @($Phase | ForEach-Object Label); Stop = @($Phase | Where-Object StopRunOnFailure | ForEach-Object Label); Dest = $ResultDestination; Allow = $ResultAllowedEntry; Max = $ResultMaxEntryBytes; Total = $ResultMaxTotalBytes; Output = $Output }
         $k = ([IO.File]::ReadAllText((Join-Path $ProjectPath 'SiblingCapture.data.json')) | ConvertFrom-Json).CaptureKey
-        $null = Write-Quarantine (Split-Path -Parent $ResultDestination) @{} $k
+        $null = Write-Quarantine (Split-Path -Parent $ResultDestination) $(if ($script:noiseQ) { & $script:noiseQ $k } else { @{} }) $k
         if ($script:tamper) { [IO.File]::AppendAllText((Join-Path $proj 'SupportFiles\AppConfig.json'), ' ') }
         $true
     }
@@ -200,8 +228,142 @@ try {
     $res2 = @($res2Out | Where-Object { $_ -is [bool] }) | Select-Object -Last 1
     # Live row GOAL-CAPTURE: the announced cost follows the H-S20 measurement (about 2.5 minutes per Hyper-V capture run).
     if (@($res2Out | Where-Object { "$_" -match '^3 capture run\(s\) .*, about 9-15 minutes' }).Count -eq 1) { Ok 'the plan announces about 3-5 minutes per capture run (3 runs -> 9-15 minutes)' } else { Bad "estimate: $(@($res2Out | Where-Object { "$_" -match 'capture run' }) -join ' | ')" }
+    # Live row GOAL-CAPTURE (round 2): '(plus up to 4 if ...)' right after the minutes read as 4 minutes; it is 4 capture runs.
+    if (@($res2Out | Where-Object { "$_" -match '9-15 minutes; up to 4 more capture run\(s\), about 12-20 minutes, if a technology changed its identity between versions\.$' }).Count -eq 1) { Ok 'the extra bisection runs are named as capture runs with their own minutes (up to 4 more -> 12-20 minutes)' } else { Bad "extra estimate: $(@($res2Out | Where-Object { "$_" -match 'capture run' }) -join ' | ')" }
     $res3 = Invoke-Win32ToolkitSiblingCapture -ProjectPath $proj -Plan ([pscustomobject]@{ Package = $plan.Package; Types = @($plan.Types[1]); ProbeFailures = @() }) -Backend HyperV 6>$null 3>$null
     if ($res2 -eq $false -and $null -eq $res3) { Ok 'every capture failed -> $false; nothing to capture -> $null' } else { Bad "results: $res2 / $res3" }
+
+    # Live rows RAISE, INNO: a winget manifest that could not be read is not "nothing to capture": $false, one warning
+    # with the reason and when to capture again, no "Nothing to capture" line, no download, the index left as it was.
+    $idxPath = Join-Path $proj 'Documentation\SiblingCapture.json'
+    $idxHash = (Get-FileHash -LiteralPath $idxPath).Hash
+    $dlBefore = @($script:dl).Count
+    $at = '2026-10-29T14:05:00.0000000Z'
+    $limited = [pscustomobject]@{ Package = $plan.Package; Architecture = 'x64'; Backend = 'HyperV'; PackageProbe = [pscustomobject]@{ Status = 'Unavailable'; Reason = 'RateLimited'; RetryAfterUtc = $at; Cause = 'Transient' }
+        RetryAfterUtc = $at; Types = @(); ProbeFailures = @("the package version's winget manifest could not be read (RateLimited)"); EstimatedRuns = 0 }
+    $o4 = @(Invoke-Win32ToolkitSiblingCapture -ProjectPath $proj -Plan $limited -Backend HyperV -WarningVariable w4 -WarningAction SilentlyContinue 6>&1)
+    $r4 = @($o4 | Where-Object { $_ -is [bool] })
+    $h4 = @($o4 | Where-Object { $_ -isnot [bool] } | ForEach-Object { "$_" })
+    if ($r4.Count -eq 1 -and $r4[0] -eq $false -and @($w4).Count -eq 1 -and
+        "$($w4[0])" -match "^Nothing was captured: the winget manifest of Notepad\+\+\.Notepad\+\+ 8\.9\.8\.1 could not be read \(RateLimited\), so the other installer technologies of this app are not known\. GitHub limits requests from this computer until 14:05 UTC; capture again after that: Test-Win32ToolkitProject -ProjectPath '.+' -Scenario SiblingCapture\.$" -and
+        @($h4 | Where-Object { $_ -match 'Nothing to capture' }).Count -eq 0 -and @($script:dl).Count -eq $dlBefore -and (Get-FileHash -LiteralPath $idxPath).Hash -ceq $idxHash) {
+        Ok 'the package manifest rate-limited -> $false; one warning: could not be read (RateLimited), until 14:05 UTC, the command; no "Nothing to capture", no download, the index unchanged'
+    } else { Bad "limited: result [$($r4 -join ',')] warnings [$(@($w4) -join ' || ')] host [$($h4 -join ' || ')] downloads $(@($script:dl).Count - $dlBefore)" }
+    $innoWhy = 'its versions could not be checked: 2 winget manifest(s) could not be read (Network)'
+    $unchecked = [pscustomobject]@{ Package = $plan.Package; Architecture = 'x64'; Backend = 'HyperV'; PackageProbe = [pscustomobject]@{ Status = 'Ok'; Reason = ''; RetryAfterUtc = ''; Cause = '' }; RetryAfterUtc = ''
+        Types = @([pscustomobject]@{ Type = 'inno'; EffectiveType = 'inno'; Class = 'RemovableNow'; Reason = $innoWhy; ProbeFailed = $true; ProbeCause = 'Transient'; Captures = @() })
+        ProbeFailures = @('inno 2.9: the manifest could not be read (Network)', 'inno 2.8: the manifest could not be read (Network)'); EstimatedRuns = 0 }
+    $r5 = Invoke-Win32ToolkitSiblingCapture -ProjectPath $proj -Plan $unchecked -Backend HyperV -WarningVariable w5 -WarningAction SilentlyContinue 6>$null
+    if ($r5 -eq $false -and @($w5).Count -eq 1 -and "$($w5[0])" -match "^Nothing was captured: no technology could be checked \(inno: $([regex]::Escape($innoWhy))\)\. Capture again later: Test-Win32ToolkitProject -ProjectPath '.+' -Scenario SiblingCapture\.$" -and (Get-FileHash -LiteralPath $idxPath).Hash -ceq $idxHash) {
+        Ok 'the only capturable type is ProbeFailed (Transient) -> $false; one warning with the type''s own reason, capture again later'
+    } else { Bad "unchecked: $r5 [$(@($w5) -join ' || ')]" }
+    # One type planned, one ProbeFailed: the planned one is captured, and one warning names the other with the command.
+    $script:offered = @('nullsoft-8.9.8')
+    $nsOne = [pscustomobject]@{ Type = 'nullsoft'; EffectiveType = 'nullsoft'; Class = 'RemovableNow'; Reason = ''; ProbeFailed = $false; ProbeCause = ''; Captures = @($plan.Types[0].Captures[0]) }
+    $partial = [pscustomobject]@{ Package = $plan.Package; Architecture = 'x64'; Backend = 'HyperV'; PackageProbe = $unchecked.PackageProbe; RetryAfterUtc = '2026-10-29T09:30:00Z'
+        Types = @($nsOne, $unchecked.Types[0])
+        ProbeFailures = @('inno 2.9: the manifest could not be read (RateLimited); no further version was checked'); EstimatedRuns = 1 }
+    $r6 = Invoke-Win32ToolkitSiblingCapture -ProjectPath $proj -Plan $partial -Backend HyperV -MaxExtra 0 -WarningVariable w6 -WarningAction SilentlyContinue 6>$null
+    $w6t = @($w6 | ForEach-Object { "$_" } | Where-Object { $_ -match '^Not captured:' })
+    if ($r6 -eq $true -and $w6t.Count -eq 1 -and $w6t[0] -match "^Not captured: inno: $([regex]::Escape($innoWhy))\. GitHub limits requests from this computer until 09:30 UTC; capture again after that: Test-Win32ToolkitProject -ProjectPath '.+' -Scenario SiblingCapture -SiblingInstallerType inno\.$") {
+        Ok 'one type planned, one ProbeFailed -> the planned one is captured ($true); one warning names inno, the time and -SiblingInstallerType inno'
+    } else { Bad "partial: $r6 [$(@($w6) -join ' || ')]" }
+    # A ProbeFailed ReportOnly type: the command keeps -IncludeReportOnly (else that type is not captured again and the
+    # retry reads "Nothing to capture"); a type outside the -SiblingInstallerType set (appx) is not named in it.
+    foreach ($c in @(@{ T = 'appx'; Rx = ' -IncludeReportOnly\.$' }, @{ T = 'msi'; Rx = ' -IncludeReportOnly -SiblingInstallerType msi\.$' })) {
+        $script:offered = @('nullsoft-8.9.8')
+        $ro = [pscustomobject]@{ Type = $c.T; EffectiveType = $c.T; Class = 'ReportOnly'; Reason = 'its versions could not be checked: 1 winget manifest(s) could not be read (Network)'; ProbeFailed = $true; ProbeCause = 'Transient'; Captures = @() }
+        $pRo = [pscustomobject]@{ Package = $plan.Package; Architecture = 'x64'; Backend = 'HyperV'; PackageProbe = $unchecked.PackageProbe; RetryAfterUtc = ''; Types = @($nsOne, $ro); ProbeFailures = @(); EstimatedRuns = 1
+            Request = [pscustomobject]@{ SiblingInstallerType = [string[]]@(); SiblingVersion = [string[]]@(); VersionsBack = 0; Coverage = 0; IncludeReportOnly = $true } }
+        $r7 = Invoke-Win32ToolkitSiblingCapture -ProjectPath $proj -Plan $pRo -Backend HyperV -MaxExtra 0 -WarningVariable w7 -WarningAction SilentlyContinue 6>$null
+        $w7t = @($w7 | ForEach-Object { "$_" } | Where-Object { $_ -match '^Not captured:' })
+        if ($r7 -eq $true -and $w7t.Count -eq 1 -and $w7t[0] -match "-Scenario SiblingCapture$($c.Rx)" -and ($c.T -ne 'appx' -or $w7t[0] -notmatch 'SiblingInstallerType')) { Ok "a ProbeFailed ReportOnly $($c.T) -> the command keeps -IncludeReportOnly$(if ($c.T -eq 'appx') { ' and names no -SiblingInstallerType (appx is not in its set)' } else { ' and names -SiblingInstallerType msi' })" } else { Bad "reportonly $($c.T): $r7 [$(@($w7) -join ' || ')]" }
+    }
+    # The command keeps the scope of the run (x86 siblings, the versions asked for, the types, -Assisted); GitHub's time
+    # is rounded up to the minute (10:01:40 -> 10:02).
+    $scoped = [pscustomobject]@{ Package = $plan.Package; Architecture = 'x86'; Backend = 'HyperV'; PackageProbe = [pscustomobject]@{ Status = 'Unavailable'; Reason = 'RateLimited'; RetryAfterUtc = '2026-10-29T10:01:40.0000000Z'; Cause = 'Transient' }
+        RetryAfterUtc = '2026-10-29T10:01:40.0000000Z'; Types = @(); ProbeFailures = @(); EstimatedRuns = 0
+        Request = [pscustomobject]@{ SiblingInstallerType = [string[]]@('nullsoft'); SiblingVersion = [string[]]@("1.9", "2.0'x"); VersionsBack = 0; Coverage = 0; IncludeReportOnly = $false } }
+    $r8 = Invoke-Win32ToolkitSiblingCapture -ProjectPath $proj -Plan $scoped -Backend HyperV -Assisted -WarningVariable w8 -WarningAction SilentlyContinue 6>$null
+    if ($r8 -eq $false -and @($w8).Count -eq 1 -and "$($w8[0])" -match "until 10:02 UTC; capture again after that: Test-Win32ToolkitProject -ProjectPath '.+' -Scenario SiblingCapture -SiblingArchitecture x86 -SiblingVersion '1\.9','2\.0''x' -Assisted -SiblingInstallerType nullsoft\.$") {
+        Ok "the retry command keeps -SiblingArchitecture x86, -SiblingVersion (quoted), -Assisted and -SiblingInstallerType; 10:01:40 reads 'until 10:02 UTC'"
+    } else { Bad "scope: $r8 [$(@($w8) -join ' || ')]" }
+    # Causes that capturing again cannot fix: the package manifest is gone (Permanent) -> no "later", no command; the
+    # winget version list failed (WingetList) -> check winget on this computer.
+    $gone = [pscustomobject]@{ Package = $plan.Package; Architecture = 'x64'; Backend = 'HyperV'; PackageProbe = [pscustomobject]@{ Status = 'Unavailable'; Reason = 'NotFound'; RetryAfterUtc = ''; Cause = 'Permanent' }
+        RetryAfterUtc = ''; Types = @(); ProbeFailures = @(); EstimatedRuns = 0 }
+    $r9 = Invoke-Win32ToolkitSiblingCapture -ProjectPath $proj -Plan $gone -Backend HyperV -WarningVariable w9 -WarningAction SilentlyContinue 6>$null
+    $list = [pscustomobject]@{ Package = $plan.Package; Architecture = 'x64'; Backend = 'HyperV'; PackageProbe = $unchecked.PackageProbe; RetryAfterUtc = ''; ProbeFailures = @(); EstimatedRuns = 0
+        Types = @([pscustomobject]@{ Type = 'nullsoft'; EffectiveType = 'nullsoft'; Class = 'RemovableNow'; Reason = 'its versions could not be checked: the winget versions could not be listed'; ProbeFailed = $true; ProbeCause = 'WingetList'; Captures = @() }) }
+    $r10 = Invoke-Win32ToolkitSiblingCapture -ProjectPath $proj -Plan $list -Backend HyperV -WarningVariable w10 -WarningAction SilentlyContinue 6>$null
+    if ($r9 -eq $false -and "$($w9[0])" -match "could not be read \(NotFound\), so the other installer technologies of this app are not known\. Capturing again will not change this: check the project's winget id and version\.$" -and "$($w9[0])" -notmatch 'later|Test-Win32ToolkitProject' -and
+        $r10 -eq $false -and "$($w10[0])" -match "^Nothing was captured: no technology could be checked \(nullsoft: its versions could not be checked: the winget versions could not be listed\)\. Check winget on this computer \(winget show --id Notepad\+\+\.Notepad\+\+ --versions\), then capture again: Test-Win32ToolkitProject .+ -Scenario SiblingCapture\.$") {
+        Ok 'the package manifest gone (Permanent) -> "Capturing again will not change this", no command; the version list failed (WingetList) -> check winget, then the command'
+    } else { Bad "causes: $r9 [$(@($w9) -join ' || ')] / $r10 [$(@($w10) -join ' || ')]" }
+    # Mixed causes (second review): capturing again helps whenever one cause is not Permanent - the retry advice and the
+    # command, the Permanent types named after it; on the partial path the command names only the retryable types. Only
+    # Permanent types (with -SiblingVersion) -> no command, the versions named.
+    $tPerm = [pscustomobject]@{ Type = 'exe'; EffectiveType = 'exe'; Class = 'RemovableNow'; Reason = 'its versions could not be checked: 1 winget manifest(s) could not be read (Parse)'; ProbeFailed = $true; ProbeCause = 'Permanent'; Captures = @() }
+    $tList = [pscustomobject]@{ Type = 'inno'; EffectiveType = 'inno'; Class = 'RemovableNow'; Reason = 'its versions could not be checked: the winget versions could not be listed'; ProbeFailed = $true; ProbeCause = 'WingetList'; Captures = @() }
+    $mk = { param([object[]]$Types, [int]$Runs = 0, $Request = $null) [pscustomobject]@{ Package = $plan.Package; Architecture = 'x64'; Backend = 'HyperV'; PackageProbe = $unchecked.PackageProbe; RetryAfterUtc = ''; ProbeFailures = @(); EstimatedRuns = $Runs; Types = @($Types); Request = $Request } }
+    $wm = $null; $rm1 = Invoke-Win32ToolkitSiblingCapture -ProjectPath $proj -Plan (& $mk @($tPerm, $unchecked.Types[0])) -Backend HyperV -WarningVariable wm -WarningAction SilentlyContinue 6>$null
+    $mixT = "$($wm[0])"
+    $wm = $null; $rm2 = Invoke-Win32ToolkitSiblingCapture -ProjectPath $proj -Plan (& $mk @($tPerm, $tList)) -Backend HyperV -WarningVariable wm -WarningAction SilentlyContinue 6>$null
+    $mixL = "$($wm[0])"
+    $script:offered = @('nullsoft-8.9.8')
+    $wm = $null; $rm3 = Invoke-Win32ToolkitSiblingCapture -ProjectPath $proj -Plan (& $mk @($nsOne, $tPerm, $unchecked.Types[0]) 1) -Backend HyperV -MaxExtra 0 -WarningVariable wm -WarningAction SilentlyContinue 6>$null
+    $mixP = @($wm | ForEach-Object { "$_" } | Where-Object { $_ -match '^Not captured:' })
+    $wm = $null; $rm4 = Invoke-Win32ToolkitSiblingCapture -ProjectPath $proj -Plan (& $mk @($tPerm) 0 ([pscustomobject]@{ SiblingInstallerType = [string[]]@(); SiblingVersion = [string[]]@('2.7'); VersionsBack = 0; Coverage = 0; IncludeReportOnly = $false })) -Backend HyperV -WarningVariable wm -WarningAction SilentlyContinue 6>$null
+    $permOnly = "$($wm[0])"
+    # Only Permanent types of the default walk (no -SiblingVersion asked): no command and no "-SiblingVersion" hint.
+    $wm = $null; $rm5 = Invoke-Win32ToolkitSiblingCapture -ProjectPath $proj -Plan (& $mk @($tPerm) 0 ([pscustomobject]@{ SiblingInstallerType = [string[]]@('exe'); SiblingVersion = [string[]]@(); VersionsBack = 0; Coverage = 0; IncludeReportOnly = $false })) -Backend HyperV -WarningVariable wm -WarningAction SilentlyContinue 6>$null
+    $permWalk = "$($wm[0])"
+    if ($rm5 -eq $false -and $permWalk -match 'Capturing again will not change this: winget-pkgs has no usable manifest for these versions\.$' -and $permWalk -notmatch 'SiblingVersion|Test-Win32ToolkitProject') { Ok 'Permanent only, default walk (no -SiblingVersion) -> no command and no -SiblingVersion hint' } else { Bad "permanent walk: $rm5 [$permWalk]" }
+    if ($rm1 -eq $false -and $mixT -match 'Capture again later: Test-Win32ToolkitProject .+ -Scenario SiblingCapture\. \(exe: capturing again will not change that\.\)$' -and
+        $rm2 -eq $false -and $mixL -match 'Check winget on this computer .+ then capture again: Test-Win32ToolkitProject .+ -Scenario SiblingCapture\. \(exe: capturing again will not change that\.\)$' -and
+        $rm3 -eq $true -and $mixP.Count -eq 1 -and $mixP[0] -match '-Scenario SiblingCapture -SiblingInstallerType inno\. \(exe: capturing again will not change that\.\)$' -and
+        $rm4 -eq $false -and $permOnly -match 'Capturing again will not change this: winget-pkgs has no usable manifest for these versions \(check the versions named with -SiblingVersion\)\.$' -and $permOnly -notmatch 'Test-Win32ToolkitProject') {
+        Ok 'mixed causes: Permanent + Transient -> capture again later + the command, exe named as unchangeable; Permanent + WingetList -> check winget; partial -> -SiblingInstallerType inno only; Permanent only (-SiblingVersion) -> no command, the versions named'
+    } else { Bad "mixed: [$mixT] [$mixL] [$($mixP -join ' || ')] [$permOnly]" }
+    # The retry command keeps -IncludeReportOnly from the request on the package-probe path, -SiblingCaptureCoverage or
+    # -SiblingCaptureVersionsBack; quoting survives a typographic apostrophe in the project path (U+2019 ends a PowerShell
+    # single-quoted string too) and a long version is echoed whole.
+    $rs = { param($Rq) [pscustomobject]@{ Package = $plan.Package; Architecture = 'x64'; Backend = 'HyperV'; PackageProbe = [pscustomobject]@{ Status = 'Unavailable'; Reason = 'Network'; RetryAfterUtc = ''; Cause = 'Transient' }; RetryAfterUtc = ''; Types = @(); ProbeFailures = @(); EstimatedRuns = 0; Request = $Rq } }
+    $wm = $null; $null = Invoke-Win32ToolkitSiblingCapture -ProjectPath $proj -Plan (& $rs ([pscustomobject]@{ SiblingInstallerType = [string[]]@(); SiblingVersion = [string[]]@(); VersionsBack = 0; Coverage = 2; IncludeReportOnly = $true })) -Backend HyperV -WarningVariable wm -WarningAction SilentlyContinue 6>$null
+    $cov = "$($wm[0])"
+    $wm = $null; $null = Invoke-Win32ToolkitSiblingCapture -ProjectPath $proj -Plan (& $rs ([pscustomobject]@{ SiblingInstallerType = [string[]]@(); SiblingVersion = [string[]]@(); VersionsBack = 3; Coverage = 0; IncludeReportOnly = $false })) -Backend HyperV -WarningVariable wm -WarningAction SilentlyContinue 6>$null
+    $back = "$($wm[0])"
+    # A deep (OneDrive) BasePath: the path is longer than a version's 128 and is echoed whole (1024).
+    $odd = "C:\Users\first.last\OneDrive - Contoso Ltd\Documents\Packaging\Win32Apps\Projects\Contoso-Standard-Template-2026\Bob$([char]0x2019)s;calc;#_Microsoft.VisualStudio.2022.BuildTools_x64_17.11.35327.3"
+    if ($odd.Length -le 128) { Bad "precondition: the long path is $($odd.Length) characters" }
+    $longV = '1.' + ('2' * 98)
+    $wm = $null; $null = Invoke-Win32ToolkitSiblingCapture -ProjectPath $odd -Plan (& $rs ([pscustomobject]@{ SiblingInstallerType = [string[]]@(); SiblingVersion = [string[]]@($longV); VersionsBack = 0; Coverage = 0; IncludeReportOnly = $false })) -Backend HyperV -WarningVariable wm -WarningAction SilentlyContinue 6>$null
+    $cmd = ("$($wm[0])" -replace '^.*Capture again later: ', '') -replace '\.$', ''
+    $tokens = $null; $perr = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($cmd, [ref]$tokens, [ref]$perr)
+    $cmdAst = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)
+    $pathArg = if ($cmdAst) { $i = [array]::IndexOf(@($cmdAst.CommandElements | ForEach-Object { if ($_ -is [System.Management.Automation.Language.CommandParameterAst]) { $_.ParameterName } else { '' } }), 'ProjectPath'); if ($i -ge 0) { $cmdAst.CommandElements[$i + 1].SafeGetValue() } }
+    $verArg = if ($cmdAst) { $i = [array]::IndexOf(@($cmdAst.CommandElements | ForEach-Object { if ($_ -is [System.Management.Automation.Language.CommandParameterAst]) { $_.ParameterName } else { '' } }), 'SiblingVersion'); if ($i -ge 0) { $cmdAst.CommandElements[$i + 1].SafeGetValue() } }
+    if ($cov -match '-Scenario SiblingCapture -IncludeReportOnly -SiblingCaptureCoverage 2\.$' -and $back -match '-Scenario SiblingCapture -SiblingCaptureVersionsBack 3\.$' -and
+        @($perr).Count -eq 0 -and @($ast.EndBlock.Statements).Count -eq 1 -and $pathArg -ceq $odd -and $verArg -ceq $longV) {
+        Ok "the command keeps -IncludeReportOnly (requested) with -SiblingCaptureCoverage 2, or -SiblingCaptureVersionsBack 3; a $($odd.Length)-character project path with U+2019 and ';' parses as ONE command with that exact path; a 100-character version is echoed whole"
+    } else { Bad "scope/quoting: [$cov] [$back] [$cmd] errors $(@($perr).Count) statements $(@($ast.EndBlock.Statements).Count) path [$pathArg] version [$verArg]" }
+    # The values are neutralised before they are quoted: an ESC sequence in a version and a bidi override in the path read
+    # '?', and a version longer than the probe's 128 is cut.
+    $wm = $null; $null = Invoke-Win32ToolkitSiblingCapture -ProjectPath "C:\W32T\Projects\T\App$([char]0x202E)gpj_x64_1.0" -Plan (& $rs ([pscustomobject]@{ SiblingInstallerType = [string[]]@(); SiblingVersion = [string[]]@("2.0$([char]27)[2J", ('1.' + ('2' * 198))); VersionsBack = 0; Coverage = 0; IncludeReportOnly = $false })) -Backend HyperV -WarningVariable wm -WarningAction SilentlyContinue 6>$null
+    $qw = "$($wm[0])"
+    if ($qw -notmatch '[\x1b\u202e]' -and $qw -match "-ProjectPath 'C:\\W32T\\Projects\\T\\App\?gpj_x64_1\.0'" -and $qw -match "-SiblingVersion '2\.0\?\[2J','1\.2{123}\.\.\.'") {
+        Ok 'the retry command neutralises before it quotes: ESC in a version and U+202E in the path read ?, a 200-character version is cut at 128'
+    } else { Bad "quote safe-text: [$qw]" }
+
+    # Live rows DEMOTE, INNO, ASSISTED: the warning of an Unverified capture names the cause the guest's detail gives.
+    $script:offered = @('nullsoft-8.9.8')
+    $script:noiseQ = { param($k) @{ "SiblingCapture_$k.json" = [ordered]@{ SchemaVersion = '1.0'; Candidates = @((Cand)); NewRoots = @('C:\Program Files\Notepad++'); NoiseControl = 'Unverified'
+                NoiseDetail = @('before the install: wuauserv Running/Manual', 'wuauserv Running/Manual'); PfroCount = 0; ProvisionalPrimary = 'Notepad++'; ProvisionalView = 'Native' } } }
+    $warnOut = @(Invoke-Win32ToolkitSiblingCapture -ProjectPath $proj -Plan $plan -Backend HyperV -MaxExtra 0 6>$null 3>&1 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { "$_" })
+    $script:noiseQ = $null
+    if (@($warnOut | Where-Object { $_ -match 'the guest noise control was not verified \(before the install: wuauserv Running/Manual; wuauserv Running/Manual\): the update services and tasks could not be held still before the install, so the proposals of this identity are Block-only\.$' }).Count -eq 1 -and
+        @($warnOut | Where-Object { $_ -match 'Windows Update installed something' }).Count -eq 0) { Ok 'an Unverified capture whose check before the install failed: the warning says so (not "Windows Update installed something")' } else { Bad "noise warning: $($warnOut -join ' | ')" }
 
     $script:offered = @('nullsoft-8.9.8'); $script:tamper = $true
     $before = @(Get-ChildItem -LiteralPath (Join-Path $proj 'Documentation\SiblingCapture') -File).Count
@@ -225,8 +387,6 @@ try {
         @{ L = 'an unsupported shape'; S = { $script:shape = [pscustomobject]@{ Support = 'Supported'; RemovePriorRevision = 0; PriorCheckFirst = $true } }; Code = 'W32T.PriorInstallSlotsMissing'; Rx = 'no place for prior-install rules' }
         @{ L = 'a manual app'; S = { $script:src = [pscustomobject]@{ WingetId = ''; Architecture = 'x64' } }; Code = 'W32T.SiblingCaptureUnsupported'; Rx = 'manual apps have no winget siblings' }
         @{ L = 'an ARM64 package'; S = { $script:src = [pscustomobject]@{ WingetId = 'A.B'; Architecture = 'arm64' } }; Code = 'W32T.SiblingCaptureUnsupported'; Rx = 'ARM64' }
-        @{ L = 'a Hyper-V VM that is not ready'; S = { $script:ready = @('no guest credential') }; Code = 'W32T.SiblingCaptureUnsupported'; Rx = 'Hyper-V is not ready \(no guest credential\)' }
-        @{ L = 'the Sandbox backend'; S = { $script:backendCfg = 'Sandbox' }; Code = 'W32T.SiblingCaptureUnsupported'; Rx = 'Hyper-V test VM only' }
     )
     foreach ($c in $cases) {
         $script:shape = [pscustomobject]@{ Support = 'Supported'; RemovePriorRevision = [int](Get-Win32ToolkitDeployScriptBlock -Name RemovePriorRevision); PriorCheckFirst = $true }; $script:src = [pscustomobject]@{ WingetId = 'Notepad++.Notepad++'; Architecture = 'x64' }; $script:ready = @(); $script:backendCfg = 'HyperV'

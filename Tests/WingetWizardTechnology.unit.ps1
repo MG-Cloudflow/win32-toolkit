@@ -203,7 +203,7 @@ try {
     if (-not @($labels | Where-Object { $_ -match '(?i)let winget' }).Count) { Ok 'no "Let winget choose" choice' } else { Bad 'a "Let winget choose" choice exists' }
     if ((HasType $a) -and $a['InstallerType'] -eq 'nullsoft') { Ok 'nullsoft chosen -> Invoke-Win32Toolkit -InstallerType nullsoft (PinnedBy parameter, L3)' } else { Bad "invoke InstallerType=[$($a['InstallerType'])]" }
     if (& $grey 'two registrations; pick the one your devices already have') { Ok 'grey hint about two registrations' } else { Bad "host lines: $($script:hostLines -join ' || ')" }
-    if (($script:panels -join "`n") -match 'Installer tech : nullsoft \(your choice\)') { Ok "summary row 'Installer tech : nullsoft (your choice)'" } else { Bad "panels: $($script:panels -join ' || ')" }
+    if (($script:panels -join "`n") -match 'Installer    : nullsoft \(your choice\)') { Ok "summary row 'Installer    : nullsoft (your choice)'" } else { Bad "panels: $($script:panels -join ' || ')" }
     $a = Invoke-Wizard -App $npp -Probe $probeNpp -Anchor $null -Pick 0
     if ((HasType $a) -and $a['InstallerType'] -eq 'wix') { Ok "choosing winget's default (wix) still pins it: -InstallerType wix" } else { Bad "invoke InstallerType=[$($a['InstallerType'])]" }
 
@@ -234,7 +234,7 @@ try {
     if ($a -and -not (HasType $a)) { Ok 'Keep -> NO -InstallerType (the resolver pins the self-anchor, so the label is true)' } else { Bad "invoke InstallerType=[$($a['InstallerType'])]" }
     $wouldBeDir = Join-Path $BASE 'Projects\Contoso\Notepad++_x64_8.9.8.1'
     if ($script:selfCalls -eq 1 -and $script:selfArgs['ProjectPath'] -eq $wouldBeDir -and $script:selfArgs['TenantId'] -eq 'tenant-1' -and $script:lookupCalls -eq 0) { Ok 'the self-anchor is read for the would-be project with the template tenant; no predecessor lookup then' } else { Bad "self calls=$script:selfCalls args=$(($script:selfArgs.Keys | ForEach-Object { "$_=$($script:selfArgs[$_])" }) -join '; ') lookups=$script:lookupCalls" }
-    if (($script:panels -join "`n") -match [regex]::Escape('Installer tech : keeps wix (Notepad++_x64_8.9.8.1 is published; rebuilding it)')) { Ok "summary row 'keeps wix (... is published; rebuilding it)'" } else { Bad "panels: $($script:panels -join ' || ')" }
+    if (($script:panels -join "`n") -match [regex]::Escape('Installer    : keeps wix (Notepad++_x64_8.9.8.1 is published; rebuilding it)')) { Ok "summary row 'keeps wix (... is published; rebuilding it)'" } else { Bad "panels: $($script:panels -join ' || ')" }
     $a = Invoke-Wizard -App $npp -Probe $probeNpp -Anchor (New-Anchor 'nullsoft' 'published' 'Notepad++_x64_8.9.7') -Self $selfWix -Pick 1
     if ((HasType $a) -and $a['InstallerType'] -eq 'nullsoft') { Ok 'Switch to nullsoft -> -InstallerType nullsoft' } else { Bad "invoke InstallerType=[$($a['InstallerType'])]" }
     $a = Invoke-Wizard -App $npp -Probe $probeWix -Anchor $null -Self $selfWix
@@ -260,9 +260,9 @@ try {
 
     Write-Host '[2d] a pinnable self-anchor and a switch -> the summary compares with the rebuilt version' -ForegroundColor Cyan
     $null = Invoke-Wizard -App $npp -Probe $probeNpp -Anchor $null -Self $selfWix -Pick 1
-    if (($script:panels -join "`n") -match [regex]::Escape('Installer tech : nullsoft (your choice; the rebuilt version is wix)')) { Ok "summary row 'nullsoft (your choice; the rebuilt version is wix)'" } else { Bad "panels: $($script:panels -join ' || ')" }
+    if (($script:panels -join "`n") -match [regex]::Escape('Installer    : nullsoft (your choice; the rebuilt version is wix)')) { Ok "summary row 'nullsoft (your choice; the rebuilt version is wix)'" } else { Bad "panels: $($script:panels -join ' || ')" }
     $null = Invoke-Wizard -App $npp -Probe $probeNpp -Anchor (New-Anchor 'nullsoft') -Pick 1
-    if (($script:panels -join "`n") -match [regex]::Escape('Installer tech : wix (your choice; the earlier version is nullsoft)')) { Ok "a predecessor anchor keeps 'the earlier version is nullsoft'" } else { Bad "panels: $($script:panels -join ' || ')" }
+    if (($script:panels -join "`n") -match [regex]::Escape('Installer    : wix (your choice; the earlier version is nullsoft)')) { Ok "a predecessor anchor keeps 'the earlier version is nullsoft'" } else { Bad "panels: $($script:panels -join ' || ')" }
 
     # == [3] anchor + one family / probe unavailable =======================================================
     Write-Host '[3] anchor + one family or no probe answer -> not asked, grey keeps line' -ForegroundColor Cyan
@@ -283,7 +283,7 @@ try {
     if ($script:techAsked -eq 1 -and $labels.Count -eq 3 -and $labels[0] -eq $skipC -and $labels[1] -eq 'Switch to wix (MSI)' -and $labels[2] -eq $keepNs) { Ok "asked once: '$($labels -join "' / '")'" } else { Bad "asked=$script:techAsked choices=[$($labels -join ' | ')]" }
     if (-not @($labels | Where-Object { $_ -match '^Keep .*recommended' }).Count) { Ok "Keep is not offered as 'recommended'" } else { Bad "choices=[$($labels -join ' | ')]" }
     if ((HasType $a) -and $a['InstallerType'] -eq 'wix') { Ok "'Switch to wix (MSI)' -> -InstallerType wix" } else { Bad "invoke InstallerType=[$($a['InstallerType'])]" }
-    if (($script:panels -join "`n") -match [regex]::Escape('Installer tech : wix (your choice; the earlier version is nullsoft)')) { Ok "summary row 'Installer tech : wix (your choice; the earlier version is nullsoft)'" } else { Bad "panels: $($script:panels -join ' || ')" }
+    if (($script:panels -join "`n") -match [regex]::Escape('Installer    : wix (your choice; the earlier version is nullsoft)')) { Ok "summary row 'Installer    : wix (your choice; the earlier version is nullsoft)'" } else { Bad "panels: $($script:panels -join ' || ')" }
     $a = Invoke-Wizard -App $npp -Probe $probeWix -Anchor (New-Anchor 'nullsoft') -Pick 2
     if ($a -and -not (HasType $a) -and ($script:panels -join "`n") -match [regex]::Escape('keeps nullsoft (Notepad++_x64_8.8.9 is published; not offered for this version: the build will stop)')) { Ok 'Keep anyway -> NO -InstallerType; the summary says the build will stop' } else { Bad "type=[$($a['InstallerType'])] panels: $($script:panels -join ' || ')" }
     $a = Invoke-Wizard -App $npp -Probe $probeWix -Anchor (New-Anchor 'nullsoft') -Pick 0
@@ -342,7 +342,7 @@ try {
     if ($script:selfCalls -eq 1 -and $script:selfArgs['ProjectPath'] -eq (Join-Path $BASE 'Projects\Contoso\Git_x64_Unknown') -and $script:probeCalls -eq 0 -and $script:lookupCalls -eq 0 -and $script:techAsked -eq 0 -and (& $grey $want6b)) {
         Ok "the self-anchor is read for 'Git_x64_Unknown'; one grey 'keeps inno (... rebuilding it); ... (version unknown)' line; no probe, no lookup, no question"
     } else { Bad "self=$script:selfCalls probe=$script:probeCalls lookup=$script:lookupCalls lines: $($script:hostLines -join ' || ')" }
-    if (($script:panels -join "`n") -match [regex]::Escape('Installer tech : keeps inno (Git_x64_Unknown is published; rebuilding it; not checked: version unknown)') -and $a -and -not (HasType $a)) { Ok "summary row 'keeps inno (Git_x64_Unknown is published; rebuilding it; not checked: version unknown)'; no -InstallerType" } else { Bad "panels: $($script:panels -join ' || ')" }
+    if (($script:panels -join "`n") -match [regex]::Escape('Installer    : keeps inno (Git_x64_Unknown is published; rebuilding it; not checked: version unknown)') -and $a -and -not (HasType $a)) { Ok "summary row 'keeps inno (Git_x64_Unknown is published; rebuilding it; not checked: version unknown)'; no -InstallerType" } else { Bad "panels: $($script:panels -join ' || ')" }
     $null = Invoke-Wizard -App (App 'Git' 'Git.Git' 'Unknown') -Probe $probeGit -Anchor $null -Self $selfPortable
     if (& $grey '^\[grey\]Installer technology: not checked \(version unknown\)') { Ok "version 'Unknown' + an unpinnable self-anchor -> today's 'not checked (version unknown)' line" } else { Bad "lines: $($script:hostLines -join ' || ')" }
 
@@ -361,7 +361,7 @@ try {
     $evil = App 'Evil[red]App' 'Evil.App' '2.0'
     $null = Invoke-Wizard -App $evil -Probe $probeNpp -Anchor (New-Anchor 'nullsoft' 'published' 'Evil[blink]_x64_1.0') -Pick 0
     if ($script:techMessage -eq 'Installer technology for Evil[[red]]App in this tenant' -and $script:techChoices[0] -eq 'Keep nullsoft (vendor EXE, NSIS) (recommended: Evil[[blink]]_x64_1.0 is published)') { Ok 'hostile app and project names are escaped in the question and the choices' } else { Bad "message=[$script:techMessage] choices=[$($script:techChoices -join ' | ')]" }
-    if (($script:panels -join "`n") -match [regex]::Escape('Installer tech : keeps nullsoft (Evil[[blink]]_x64_1.0 is published)')) { Ok 'the summary row is escaped with the rest of the review panel' } else { Bad "panels: $($script:panels -join ' || ')" }
+    if (($script:panels -join "`n") -match [regex]::Escape('Installer    : keeps nullsoft (Evil[[blink]]_x64_1.0 is published)')) { Ok 'the summary row is escaped with the rest of the review panel' } else { Bad "panels: $($script:panels -join ' || ')" }
 
     # == [8] source hygiene ==============================================================================
     Write-Host '[8] the wizard: every new catch starts with the C-2 line; Get-Content passes -Encoding' -ForegroundColor Cyan
@@ -405,7 +405,7 @@ try {
     $script:captureConfirms.Clear(); $script:captureYes = $false; $script:reviewCalls.Clear(); $script:exportCalls.Clear()
     $a = Invoke-Wizard -App $npp -Probe $probeNpp -Anchor $null -Pick 0
     $cc = @($script:captureConfirms)
-    if ($cc.Count -eq 1 -and $cc[0].Message -match '^Also capture the other installer technologies \(nullsoft\) so the package can remove them before installing\? About 2 capture runs now \(about 10-18 min\) and 1 proof run per identity\.$' -and $cc[0].Default -eq 'n' -and -not $a.ContainsKey('CaptureSiblingTechnologies') -and $script:reviewCalls.Count -eq 0) {
+    if ($cc.Count -eq 1 -and $cc[0].Message -match '^Also capture the other installer technologies \(nullsoft\) so the package can remove them before installing\? About 2 capture runs now \(about 6-10 min\) and 1 proof run per identity\.$' -and $cc[0].Default -eq 'n' -and -not $a.ContainsKey('CaptureSiblingTechnologies') -and $script:reviewCalls.Count -eq 0) {
         Ok 'a RemovableNow sibling (nullsoft of a WiX package) -> one question, default No; No -> no capture switch'
     } else { Bad "question: $($cc | ConvertTo-Json -Compress) args=$(@($a.Keys) -join ',')" }
     $script:captureConfirms.Clear()
@@ -414,7 +414,8 @@ try {
     $script:captureConfirms.Clear(); $script:hvNotReady = @('the test VM win32tk-golden does not exist')
     $null = Invoke-Wizard -App $npp -Probe $probeNpp -Anchor $null -Pick 0
     $script:hvNotReady = @()
-    if ($script:captureConfirms.Count -eq 0 -and (& $grey 'nullsoft\) cannot be captured on this PC: Hyper-V is not ready \(the test VM win32tk-golden does not exist\)')) { Ok 'Hyper-V not ready -> no question; a grey line says why' } else { Bad "not ready: $($script:hostLines -join ' || ')" }
+    $sbLine = @($script:hostLines | Where-Object { $_ -like '`[yellow`]*' -and $_ -match 'Hyper-V is not ready \(the test VM win32tk-golden does not exist\): the capture would run in Windows Sandbox as a user and can only give Block-only proposals' })
+    if ($script:captureConfirms.Count -eq 1 -and $script:captureConfirms[0].Default -eq 'n' -and $sbLine.Count -eq 1) { Ok 'Hyper-V not ready -> the Block-only Windows Sandbox line, then the question (No cancels; SV28)' } else { Bad "not ready: $($script:hostLines -join ' || ')" }
     $script:captureYes = $true; $script:multiPattern = 'Package*'
     $script:invokeResult = [pscustomobject]@{ PSTypeName = 'Win32Toolkit.RunResult'; Command = 'Invoke-Win32Toolkit'; Status = 'Succeeded'; ProjectPath = 'C:\x\Projects\Contoso\Notepad++_x64_8.9.8.1'; ProjectName = 'Notepad++_x64_8.9.8.1'
         Mode = 'Winget'; Capture = 'Done'; Tests = @(); IntuneWinPath = ''; Published = @(); Problems = @() }

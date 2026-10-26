@@ -18,9 +18,14 @@ function Show-Win32ToolkitSiblingCaptureReview {
         the proof, the acknowledgements Export needs are asked for, each with its reason: DATA-LOSS when the vendor
         uninstaller deletes data (the card says so), SIGNER-MISMATCH when the sibling's signer differs from the package's
         (the SignerMismatch flag)); Report; Widen (one more capture of an older version of that technology,
-        then the card again); Skip. A proposal that is already a rule says so.
+        then the card again - after a key press when the capture recorded nothing, so its warnings can be read; without
+        a ready Hyper-V test VM, Read-Win32ToolkitSiblingCaptureBackend first says that it
+        would run in Windows Sandbox, names what a Sandbox record would make Block-only and offers to cancel, SV28); Skip.
+        A proposal that is already a rule says so. The card also shows the removal probe, noise-control and stability
+        results.
         CoInstalled, Unattributed, ReportOnly, NotCapturable and Failed are listed below the cards without choices.
-        Every captured string passes Get-SpectreEscapedText. Errors are shown in a panel (the TUI is the display sink).
+        Every captured string passes Get-SpectreEscapedText. Errors are shown in a panel (the TUI is the display sink);
+        an error decides nothing: the card comes back, unless its rule was already written.
     .PARAMETER ProjectPath
         The PSADT project folder.
     #>
@@ -61,6 +66,13 @@ function Show-Win32ToolkitSiblingCaptureReview {
         $lines.Add("Not covered  : devices with a version below $($p.VersionMin) keep it next to this package (left as it is); devices above $($p.VersionMax) fail with 69102.")
         $lines.Add("Removal      : $removal (constant switches; the captured ones are never used)")
         $lines.Add("Captures     : $(@($p.CaptureIds) -join ', ')")
+        # The probe, noise-control and stability results (spec 2.18), read from the proposal's flags.
+        $checks = @(
+            $(if (@($p.Flags) -contains 'ProbeNotClean') { 'removal probe NOT clean' } else { 'removal probe clean' })
+            $(if (@($p.Flags) -contains 'NoiseUnverified') { 'noise control NOT verified' } else { 'noise control verified' })
+            "$(if ($p.Stability -eq 'Unstable') { 'unstable' } else { 'stable' }) over $(@($p.CaptureIds).Count) captures"
+        )
+        $lines.Add("Checks       : $($checks -join ', ')")
         $lines.Add("Flags        : $(if (@($p.Flags).Count) { @($p.Flags | ForEach-Object { "$_ ($($p.FlagText[$_]))" }) -join '; ' } else { 'none' })")
         if ($p.DataLoss) { $lines.Add('Data loss    : its uninstaller deleted configuration files in its own folder in the capture''s probe: an Enforce rule needs a DATA-LOSS acknowledgement before it is packaged.') }
         if (-not $p.EnforceEligible) { $lines.Add("Enforce      : not offered ($(@($p.IneligibleReasons) -join '; '))") }
@@ -87,8 +99,9 @@ function Show-Win32ToolkitSiblingCaptureReview {
                     # No at the second confirmation shows the same card again (Block still first): declining Enforce never
                     # skips the proposal silently.
                     if (Read-SpectreConfirm -Message (& $esc "Remove $($p.Key) as SYSTEM on every device before installing? One approval for this proposal is recorded.") -DefaultAnswer 'n') {
-                        $handled[$p.ProposalHash] = $true
+                        # Handled once the rule is written: a refused write shows the card again (Block still first).
                         $null = Set-Win32ToolkitPriorInstall -ProjectPath $ProjectPath -FromSiblingCapture -Mode Enforce -ProposalId $p.ProposalId -Confirm:$false
+                        $handled[$p.ProposalHash] = $true
                         $ready = @(Test-Win32ToolkitHyperVReady).Count -eq 0
                         if ($ready) { Write-SpectreHost '[grey]Proving it on the Hyper-V test VM (an Update test from the floor capture)...[/]' }
                         $eid = @(@((Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath).PriorInstalls.Entries) | Where-Object { $null -ne $_ -and (Get-Win32ToolkitPriorInstallHash -Kind Tuple -Entry $_) -ceq $p.ProposalHash } | ForEach-Object { [string]$_.Id }) | Select-Object -First 1
@@ -121,15 +134,26 @@ function Show-Win32ToolkitSiblingCaptureReview {
                     }
                 }
                 'Widen' {
-                    $v = Read-SpectreText -Message (& $esc "An older $($p.SiblingType) version to capture (the floor now is $($p.FloorVersion))")
+                    # Widen never decides the proposal: its card comes back after the capture (also after an error). Without a
+                    # ready VM the capture would run in Windows Sandbox: said first, with the offer to cancel (SV28).
+                    $backend = Read-Win32ToolkitSiblingCaptureBackend -ProjectPath $ProjectPath -SiblingType $p.SiblingType
+                    $v = if ($backend) { Read-SpectreText -Message (& $esc "An older $($p.SiblingType) version to capture (the floor now is $($p.FloorVersion))") } else { '' }
                     if (-not [string]::IsNullOrWhiteSpace($v)) {
-                        $null = Test-Win32ToolkitProject -ProjectPath $ProjectPath -Scenario SiblingCapture -Backend HyperV -SiblingInstallerType $p.SiblingType -SiblingVersion ([string]$v).Trim()
+                        $done = Test-Win32ToolkitProject -ProjectPath $ProjectPath -Scenario SiblingCapture -Backend $backend -SiblingInstallerType $p.SiblingType -SiblingVersion ([string]$v).Trim()
+                        # Only a capture that recorded something goes straight back to the card; otherwise its warnings (every
+                        # capture failed, the version is unknown, or GitHub limits this computer: live rows RAISE, INNO) stay
+                        # on screen until a key is pressed, as on the Prior installs screen.
+                        if ($done -ne $true) { Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null }
                     }
+                    elseif (-not $backend) { Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null }
                 }
                 default { $handled[$p.ProposalHash] = $true }
             }
         }
-        catch { & $showError $_; Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null; $handled[$p.ProposalHash] = $true }
+        catch {
+            # An error decides nothing: the card comes back (Block still first), unless its rule was already written.
+            & $showError $_; Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+        }
     }
 
     # ---- what was not proposed ----

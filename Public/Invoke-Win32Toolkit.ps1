@@ -105,8 +105,10 @@ function Invoke-Win32Toolkit {
     the vendor NSIS setup of an app packaged as MSI) on the Hyper-V test VM, record what it registered and
     turn it into prior-install proposals: rules that make this package refuse (Block) or remove (Enforce)
     that other install before it installs. About 3-5 minutes per capture; a host whose Hyper-V test VM is not
-    ready is told before the download and captures nothing. A refused or failed capture is reported and the
-    pipeline goes on. Review and approve the proposals with Set-Win32ToolkitPriorInstall (or the menu).
+    ready is told before the download and captures in Windows Sandbox (Block-only proposals), except a project
+    whose earlier captures already allow an Enforce rule: a Sandbox capture would make them Block-only, so it is
+    skipped. A refused, skipped or failed capture is reported and the pipeline goes on. Review and approve the
+    proposals with Set-Win32ToolkitPriorInstall (or the menu).
 .PARAMETER ApplySiblingCapture
     With -CaptureSiblingTechnologies: None (default: the proposals are listed with the command that applies
     each one) or Block (every High-confidence proposal without flags whose identity is not a rule yet becomes
@@ -282,7 +284,7 @@ function Invoke-Win32Toolkit {
                 Write-Host 'Sibling capture: after the install capture, each other installer technology of this app is installed on the Hyper-V test VM (about 3-5 minutes each) and proposed as a prior-install rule.' -ForegroundColor Cyan
             }
             else {
-                Write-Warning ('Sibling capture: Hyper-V is not ready (' + ($siblingNotReady -join '; ') + '): the other installer technologies cannot be captured in this run (this version captures on the Hyper-V test VM only).')
+                Write-Warning ('Sibling capture: Hyper-V is not ready (' + ($siblingNotReady -join '; ') + '): the other installer technologies are captured in Windows Sandbox as a user and can only give Block-only proposals; a project whose earlier captures allow an Enforce rule is not captured there (that would make them Block-only).')
             }
         }
         elseif ($ApplySiblingCapture -ne 'None') {
