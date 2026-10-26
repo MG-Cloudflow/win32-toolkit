@@ -179,6 +179,15 @@ function Test-Win32ToolkitProject {
     installer and the catalog version). Only a Hyper-V Unattended pass with the requirement checked proves an Enforce rule.
     A project with prior-install rules (or sibling-capture records) is never tested in a watched Windows Sandbox
     (W32T.PriorInstallRefused), and a run that changed a project file outside Sandbox\ stops with W32T.GuestTamper.
+.PARAMETER SiblingProof
+    Update scenario only, for rules from a sibling capture: Floor (default) proves them from the floor capture's installer;
+    FloorAndNewest also runs the Update test from the NEWEST capture of the same identity right after it: the capture
+    that observed the rule's VersionMax with the same key, publisher, name and removal data (a capture that registered
+    another identity under the same key never counts). That second run never proves anything (only the floor installer
+    does), but a failure there revokes the proof, so a rule is proven only when the removal works from both ends of its
+    window. Nothing more runs when the floor is the newest capture, or when the floor run failed (the rule is not
+    proven then). Both old versions come from the captures, so -SpecificVersion, -VersionsBack, -BaselineInstallerType
+    and a baseline project are refused with it.
 .PARAMETER SiblingInstallerType
     SiblingCapture scenario only: capture only these installer types (nullsoft, inno, exe, burn, msi, wix, msix). By
     default every type that can be captured is (NSIS, Inno Setup and generic EXE; MSI, WiX, Burn and MSIX only with
@@ -343,8 +352,36 @@ function Test-Win32ToolkitProject {
         [string]$SiblingArchitecture,
 
         [Parameter(Mandatory = $false)]
-        [switch]$Assisted
+        [switch]$Assisted,
+
+        # Update scenario only (installer-identity PR 3b, X3): also a run from the newest capture of a captured rule.
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Floor', 'FloorAndNewest')]
+        [string]$SiblingProof = 'Floor'
     )
+
+    # The other end of a captured rule's window (X3): the capture of the SAME identity (the rule's Tuple, as the window rule
+    # Get-Win32ToolkitPriorInstallWindow reads the records) that observed the rule's VersionMax - the highest winget version
+    # when several did. A capture of another identity under the same key (a drift: another publisher or name) is never
+    # it. Returns @{ Record; Why }: Record $null with Why naming the reason (not a rule from a sibling capture, a window of
+    # one version - the floor is the newest capture -, or no record of the identity observed VersionMax).
+    $newestCaptureOf = {
+        param([string[]]$Ids)
+        $cfgN = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
+        $first = @(@($cfgN.PriorInstalls.Entries) | Where-Object { $null -ne $_ -and @($Ids) -ccontains [string]$_.Id }) | Select-Object -First 1
+        if (-not $first -or -not [string]$first.CaptureId) { return @{ Record = $null; Why = "$(@($Ids) -join ', ') did not come from a sibling capture: there is no newest capture to run from" } }
+        $minN = ConvertTo-Win32ToolkitPriorVersion -Text ([string]$first.VersionMin)
+        $maxN = ConvertTo-Win32ToolkitPriorVersion -Text ([string]$first.VersionMax)
+        if ($null -eq $maxN -or ($null -ne $minN -and $minN -ge $maxN)) { return @{ Record = $null; Why = 'the floor is the newest capture of this identity; nothing more to run' } }
+        $tupleN = Get-Win32ToolkitPriorInstallHash -Kind Tuple -Entry $first
+        $atMax = @(@((ConvertTo-Win32ToolkitSiblingProposal -ProjectPath $ProjectPath).Captures) | Where-Object {
+                $vN = ConvertTo-Win32ToolkitPriorVersion -Text ([string]$_.ObservedVersion)
+                [string]$_.Tuple -ceq $tupleN -and [string]$_.CaptureId -cne [string]$first.CaptureId -and $null -ne $vN -and $vN -eq $maxN
+            } | Sort-Object -Property @{ Expression = { $sN = ConvertTo-Win32ToolkitPriorVersion -Text ([string]$_.SiblingVersion); if ($sN) { $sN } else { [version]'0.0' } } }, @{ Expression = { [string]$_.CaptureId } })
+        $rec = if ($atMax.Count -gt 0) { @(Get-Win32ToolkitSiblingCaptureRecord -ProjectPath $ProjectPath -CaptureId ([string]$atMax[-1].CaptureId)) | Select-Object -First 1 } else { $null }
+        if (-not $rec) { return @{ Record = $null; Why = "no capture record of this identity observed its VersionMax $([string]$first.VersionMax): capture the other installer technologies again (Test-Win32ToolkitProject -Scenario SiblingCapture)" } }
+        return @{ Record = $rec; Why = '' }
+    }
 
     # The optional per-project lease (speed-up PR 3, TestProjectLease): $null unless taken below; released in the finally.
     $projectLease = $null
@@ -402,7 +439,7 @@ function Test-Win32ToolkitProject {
         # ignore them under InstallUninstall (so the user thinks they configured an update-from-baseline test
         # but got a plain install/uninstall), reject the mismatch up front.
         if ($Scenario -ne 'Update') {
-            $updateOnly = @('BaselineProject', 'BaselineProjectPath', 'VersionsBack', 'SpecificVersion', 'BaselineInstallerType', 'ProofEntryId') |
+            $updateOnly = @('BaselineProject', 'BaselineProjectPath', 'VersionsBack', 'SpecificVersion', 'BaselineInstallerType', 'ProofEntryId', 'SiblingProof') |
                 Where-Object { $PSBoundParameters.ContainsKey($_) }
             if ($updateOnly) {
                 throw "$(@($updateOnly | ForEach-Object { "-$_" }) -join ', ') $(if (@($updateOnly).Count -eq 1) { 'applies' } else { 'apply' }) only to -Scenario Update (got '$Scenario')."
@@ -416,8 +453,46 @@ function Test-Win32ToolkitProject {
             }
         }
 
-        # Sibling capture (installer-identity PR 3b, spec 2.14): its own isolated runs on the Hyper-V test VM (no PSADT
-        # dialog, so no Intune-parity pre-check, and no requirement step), under the per-project lease taken above.
+        # -SiblingProof FloorAndNewest (installer-identity PR 3b, X3): the floor run proves; a second run from the newest
+        # capture of the same identity can only revoke (its baseline is not the floor installer). Both are ordinary
+        # Update runs of this command; the second one is told which baseline to use through the leg context.
+        if ($Scenario -eq 'Update' -and $SiblingProof -eq 'FloorAndNewest' -and $null -eq $script:W32TSiblingProofLeg) {
+            # Both old versions come from the captures: with a baseline option both runs would install the same old version.
+            $baselineOpts = @(@('SpecificVersion', 'VersionsBack', 'BaselineProject', 'BaselineProjectPath') | Where-Object { $PSBoundParameters.ContainsKey($_) })
+            if ($PSBoundParameters.ContainsKey('BaselineInstallerType') -and $BaselineInstallerType -ne 'Auto') { $baselineOpts += 'BaselineInstallerType' }
+            if ($baselineOpts.Count -gt 0) {
+                throw "-SiblingProof FloorAndNewest takes both old versions from the captures (the floor capture, then the newest capture of the same identity): it cannot be combined with $(@($baselineOpts | ForEach-Object { "-$_" }) -join ', '). Nothing was run."
+            }
+            $legArgs = @{}
+            foreach ($k in $PSBoundParameters.Keys) { if ($k -ne 'SiblingProof') { $legArgs[$k] = $PSBoundParameters[$k] } }
+            # A project or scenario chosen from the menus above is no bound parameter: both runs get them as values.
+            $legArgs['ProjectPath'] = $ProjectPath
+            $legArgs['Scenario'] = 'Update'
+            $floorVerdict = Test-Win32ToolkitProject @legArgs
+            # A failed floor run leaves the rule unproven (the failure revokes every earlier pass): a run from the newest
+            # capture could only revoke too, so it is not started.
+            if ($floorVerdict -eq $false) {
+                Write-Host 'Sibling proof     : the run from the floor capture failed, so the rule is not proven; the run from the newest capture is skipped.' -ForegroundColor Yellow
+                return $false
+            }
+            $legIds = if ($ProofEntryId) { [string[]]$ProofEntryId } else { [string[]]@(@(Get-Win32ToolkitPriorProofGroup -ProjectPath $ProjectPath) | Select-Object -First 1 | ForEach-Object { $_.EntryIds }) }
+            $newestPick = & $newestCaptureOf $legIds
+            $newest = $newestPick.Record
+            if (-not $newest) {
+                Write-Host "Sibling proof     : $($newestPick.Why)." -ForegroundColor Gray
+                return $floorVerdict
+            }
+            Write-Host "Sibling proof     : now from the newest capture $([string]$newest.CaptureId) (version $(ConvertTo-Win32ToolkitSafeText -Text ([string]$newest.Sibling.Version) -MaxLength 64)); this run can only revoke the proof." -ForegroundColor Cyan
+            $script:W32TSiblingProofLeg = @{ Leg = 'Newest'; CaptureId = [string]$newest.CaptureId }
+            try { $newestVerdict = Test-Win32ToolkitProject @legArgs }
+            finally { $script:W32TSiblingProofLeg = $null }
+            if ($floorVerdict -eq $false -or $newestVerdict -eq $false) { return $false }
+            if ($null -eq $floorVerdict -or $null -eq $newestVerdict) { return $null }
+            return $true
+        }
+
+        # Sibling capture (installer-identity PR 3b, spec 2.14): its own isolated runs on the Hyper-V test VM or in Windows
+        # Sandbox (no PSADT dialog, so no Intune-parity pre-check, and no requirement step), under the per-project lease above.
         if ($Scenario -eq 'SiblingCapture') {
             $pre = Test-Win32ToolkitSiblingCapturePreflight -ProjectPath $ProjectPath -Backend $(if ($Backend) { $Backend } else { '' }) -Assisted:$Assisted
             if (-not $pre.Ok) {
@@ -1187,6 +1262,10 @@ function Test-Win32ToolkitProject {
                 $siblingData = $null
                 if ($proofGroup -and [string]$proofGroup.Lineage -eq 'Capture' -and -not $useBaselineProject) {
                     $floorRecord = @(Get-Win32ToolkitSiblingCaptureRecord -ProjectPath $ProjectPath -CaptureId ([string]$proofGroup.CaptureId)) | Select-Object -First 1
+                    # X3: the second run of -SiblingProof FloorAndNewest starts from the newest capture instead (it can only revoke).
+                    if ($floorRecord -and $script:W32TSiblingProofLeg -is [hashtable] -and $script:W32TSiblingProofLeg.Leg -eq 'Newest') {
+                        $floorRecord = @(Get-Win32ToolkitSiblingCaptureRecord -ProjectPath $ProjectPath -CaptureId ([string]$script:W32TSiblingProofLeg.CaptureId)) | Select-Object -First 1
+                    }
                     if (-not $floorRecord) {
                         Write-Warning "The floor capture record of $($proofEntryIds -join ', ') ('$([string]$proofGroup.CaptureId)') is missing or was changed: this run checks the rules but cannot prove them. Capture the other installer technologies again (Test-Win32ToolkitProject -Scenario SiblingCapture)."
                     }

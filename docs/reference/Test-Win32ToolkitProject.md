@@ -12,7 +12,8 @@ Test-Win32ToolkitProject [[-ProjectPath] <String>] [[-BasePath] <String>] [[-Sce
  [[-Backend] <String>] [-Unattended] [[-TestMode] <String>] [[-ProofEntryId] <String[]>]
  [[-SiblingInstallerType] <String[]>] [[-SiblingVersion] <String[]>] [[-SiblingCaptureVersionsBack] <Int32>]
  [-IncludeReportOnly] [[-SiblingCaptureCoverage] <Int32>] [[-SiblingCaptureMaxExtra] <Int32>]
- [[-SiblingArchitecture] <String>] [-Assisted] [-ProgressAction <ActionPreference>] [<CommonParameters>]
+ [[-SiblingArchitecture] <String>] [-Assisted] [[-SiblingProof] <String>] [-ProgressAction <ActionPreference>]
+ [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -610,6 +611,31 @@ Aliases:
 Required: False
 Position: Named
 Default value: False
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -SiblingProof
+Update scenario only, for rules from a sibling capture: Floor (default) proves them from the floor capture's installer;
+FloorAndNewest also runs the Update test from the NEWEST capture of the same identity right after it: the capture
+that observed the rule's VersionMax with the same key, publisher, name and removal data (a capture that registered
+another identity under the same key never counts).
+That second run never proves anything (only the floor installer
+does), but a failure there revokes the proof, so a rule is proven only when the removal works from both ends of its
+window.
+Nothing more runs when the floor is the newest capture, or when the floor run failed (the rule is not
+proven then).
+Both old versions come from the captures, so -SpecificVersion, -VersionsBack, -BaselineInstallerType
+and a baseline project are refused with it.
+
+```yaml
+Type: String
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: 18
+Default value: Floor
 Accept pipeline input: False
 Accept wildcard characters: False
 ```

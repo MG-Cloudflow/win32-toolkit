@@ -1135,7 +1135,8 @@ Remove-Item -LiteralPath $f -Force
     else { Bad "K5/K6: $($dlCatches.Count) catch(es)" }
     $c2 = "if (`$_.FullyQualifiedErrorId -like 'W32T.*') { throw }"
     $newCatches = @(& $triesOf @('Get-Win32ToolkitTechnologySwitch', 'Add-Win32ToolkitTestResult', 'Test-Win32ToolkitProject') | ForEach-Object { $_.CatchClauses })
-    if ($newCatches.Count -eq 4 -and @($newCatches | Where-Object { ($_.Body.Statements[0].Extent.Text -replace '\s+', ' ') -eq $c2 }).Count -eq 4) { Ok 'the four other new catches (technology switch, Unavailable record, Both leg, not-run record) start with the C-2 line' }
+    # Five since installer-identity PR 3b (X3): the -SiblingProof FloorAndNewest floor leg runs inside the command's outer try.
+    if ($newCatches.Count -eq 5 -and @($newCatches | Where-Object { ($_.Body.Statements[0].Extent.Text -replace '\s+', ' ') -eq $c2 }).Count -eq 5) { Ok 'the five other new catches (technology switch, Unavailable record, Both leg, not-run record, the outer catch around the X3 floor leg) start with the C-2 line' }
     else { Bad "new catches: $($newCatches.Count)" }
     $tpSrc = Get-Content -LiteralPath $tpFile -Raw -Encoding UTF8
     if ($tpSrc -match '(?s)\$dl = @\{[^}]*FamilyPin\s*=\s*\$true' -and $tpSrc -notmatch "\`$dl\['Locale'\]") { Ok 'the baseline download is always family-pinned and never passes -Locale' } else { Bad 'download hashtable not family-pinned' }

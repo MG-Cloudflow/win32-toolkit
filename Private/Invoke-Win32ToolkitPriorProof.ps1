@@ -11,7 +11,7 @@ function Invoke-Win32ToolkitPriorProof {
             Test-Win32ToolkitProject -ProjectPath <p> -Scenario Update -Backend HyperV -TestMode Unattended -ProofEntryId <group>
 
         and nothing else: Test-Win32ToolkitProject derives the group's baseline itself (the floor capture's installer
-        for a captured group). Always Hyper-V Unattended, whatever HyperVTestMode says (SV28). Hyper-V not ready -> no
+        for a captured group); -SiblingProof FloorAndNewest adds -SiblingProof FloorAndNewest for a captured group (X3). Always Hyper-V Unattended, whatever HyperVTestMode says (SV28). Hyper-V not ready -> no
         run; every such rule is reported "not proven: Hyper-V is not ready". A run that throws a W32T.* error (a guest
         that changed project files, a lease timeout) stops here; any other failure of a run gives one warning and the
         next group runs.
@@ -19,6 +19,9 @@ function Invoke-Win32ToolkitPriorProof {
         The PSADT project folder.
     .PARAMETER EntryId
         Prove only the groups that hold these rules (default: every group with an unproven Enforce rule).
+    .PARAMETER SiblingProof
+        FloorAndNewest: a group of captured rules also runs from its newest capture (Test-Win32ToolkitProject
+        -SiblingProof FloorAndNewest; a failure there revokes the proof). Floor (default): the floor run only.
     .OUTPUTS
         [pscustomobject[]] the proof state of every rule after the runs (Get-Win32ToolkitPriorProofState), with Reason
         'not proven: Hyper-V is not ready (...)' for the rules that could not run.
@@ -33,7 +36,10 @@ function Invoke-Win32ToolkitPriorProof {
         [string]$ProjectPath,
 
         [AllowEmptyCollection()]
-        [string[]]$EntryId = @()
+        [string[]]$EntryId = @(),
+
+        [ValidateSet('Floor', 'FloorAndNewest')]
+        [string]$SiblingProof = 'Floor'
     )
 
     $safe = { param($Value, [int]$Max = 256) ConvertTo-Win32ToolkitSafeText -Text ([string]$Value) -MaxLength $Max }
@@ -59,7 +65,8 @@ function Invoke-Win32ToolkitPriorProof {
         $what = if ($g.Lineage -eq 'Capture') { "the floor capture $($g.CaptureId)" } else { "$($g.UninstallerType) [$($g.View)]" }
         Write-Host "Proof run for the prior-install rule(s) $($ids -join ', ') ($what): Update test on Hyper-V, unattended." -ForegroundColor Cyan
         try {
-            $null = Test-Win32ToolkitProject -ProjectPath $ProjectPath -Scenario Update -Backend HyperV -TestMode Unattended -ProofEntryId $ids
+            if ($SiblingProof -eq 'FloorAndNewest' -and $g.Lineage -eq 'Capture') { $null = Test-Win32ToolkitProject -ProjectPath $ProjectPath -Scenario Update -Backend HyperV -TestMode Unattended -ProofEntryId $ids -SiblingProof FloorAndNewest }
+            else { $null = Test-Win32ToolkitProject -ProjectPath $ProjectPath -Scenario Update -Backend HyperV -TestMode Unattended -ProofEntryId $ids }
         }
         catch {
             if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }

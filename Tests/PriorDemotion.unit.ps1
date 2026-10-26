@@ -15,6 +15,8 @@
           proof runs here), so Export has no PRIOR-PROOF.
       [5] the bound: min(1 + captured Enforce rules, -MaxRounds) proof rounds; the survivor the last round's demotion
           un-proved is demoted too (spec Dv13; L37: Export does not refuse it as unproven); -MaxRounds above 4 is refused.
+      [6] X3: -SiblingProof FloorAndNewest - the captured group (only) also runs from its newest capture; a newest pass
+          keeps the floor proof, a newest failure revokes it.
       [7] a next version (spec 2.15.4): the failed carried rule and the one its removal un-proved are both demoted, Export
           has no PRIOR-PROOF but one ID-PRIOR-DROPPED per demoted carried rule; approved and proven again, or the drop
           acknowledged, clears its row.
@@ -54,7 +56,7 @@ $script:failIds = @()
 $script:failFirstGroup = $false
 function Test-Win32ToolkitProject {
     [CmdletBinding()]
-    param([string]$ProjectPath, [string]$Scenario, [string]$Backend, [string]$TestMode, [string[]]$ProofEntryId,
+    param([string]$ProjectPath, [string]$Scenario, [string]$Backend, [string]$TestMode, [string[]]$ProofEntryId, [string]$SiblingProof,
         [Parameter(ValueFromRemainingArguments)]$Rest)
     $script:calls.Add([pscustomobject]@{ Keys = (@($PSBoundParameters.Keys | Sort-Object) -join ','); Scenario = $Scenario; Backend = $Backend; TestMode = $TestMode; Ids = (@($ProofEntryId) -join ',') })
     $b = Get-Win32ToolkitPriorProofBinding -ProjectPath $ProjectPath
@@ -79,9 +81,18 @@ function Test-Win32ToolkitProject {
             BaselineInstallerSha256 = $sha; CatalogVersion = $b.CatalogVersion; EntryIds = $ids; CaptureIds = @(); RequirementChecked = $true; ObservedVersions = $obs; DataLoss = @() } }
     $file = Join-Path $ProjectPath 'Documentation\TestResults.json'
     $all = @(if (Test-Path -LiteralPath $file) { @(Get-Content -LiteralPath $file -Raw | ConvertFrom-Json) }) + @([pscustomobject]$rec)
+    # X3: -SiblingProof FloorAndNewest adds a run from the newest capture (another baseline hash: it cannot prove, a failure revokes).
+    if ($SiblingProof -eq 'FloorAndNewest') {
+        $n = ConvertFrom-Json -InputObject (ConvertTo-Json -InputObject $rec -Depth 8)
+        $n.Proof.BaselineInstallerSha256 = ('E' * 64)
+        $n.TimestampUtc = (Get-Date).ToUniversalTime().AddSeconds($script:calls.Count + 30).ToString('o')
+        if ($script:newestFails) { $n.Verdict = 'Failed'; foreach ($a in $n.Assertions) { if ($a.Name -like 'PriorAbsent-PostUpdate.*') { $a.Result = 'FAIL' } } }
+        $all += @($n)
+    }
     [IO.File]::WriteAllText($file, (ConvertTo-Json -InputObject @($all) -Depth 8), $utf8)
     $failNames.Count -eq 0
 }
+$script:newestFails = $false
 
 function New-DProject([string]$Name, [string]$Version = '8.9.9', [string]$Template = 'T') {
     if (-not $script:generated) {
@@ -251,6 +262,27 @@ try {
     $threw = $null
     try { $null = Invoke-Win32ToolkitPriorDemotion -ProjectPath $p -MaxRounds 5 -WarningAction SilentlyContinue 6>$null } catch { $threw = $_.FullyQualifiedErrorId }
     if ($threw -like 'ParameterArgumentValidationError*') { Ok '-MaxRounds 5 is refused: never more than four rounds (L37)' } else { Bad "maxrounds 5: $threw" }
+
+    # == [6] X3: -SiblingProof FloorAndNewest ===================================================================
+    Write-Host '[6] X3: a run from the newest capture too; a failure there revokes' -ForegroundColor Cyan
+    $p = New-DProject 'newest'
+    Add-Captured $p 'nsis' -Apply
+    $cfg = Get-Cfg $p
+    $cfg.PriorInstalls.Entries = @($cfg.PriorInstalls.Entries) + @([pscustomobject][ordered]@{ Id = 'op-a'; Kind = 'ArpKey'; Mode = 'Enforce'; Key = 'OpA'; View = 'Native'; Publisher = 'Op'; DisplayName = 'OpA'; DisplayNameTemplate = ''
+            VersionMin = '1.0'; VersionMax = '2.0'; UninstallerType = 'inno'; UninstallerFileName = 'u.exe'; UninstallerSigner = ''; InstallDir = '%ProgramFiles%\Op'; MainExe = 'op.exe'; ProcessNames = @('op'); Source = 'Operator'; Track = 'Current'; AddedOn = '2026-10-25' })
+    [IO.File]::WriteAllText((Join-Path $p 'SupportFiles\AppConfig.json'), ($cfg | ConvertTo-Json -Depth 8), $utf8)
+    Reset-Calls
+    $st = @(Invoke-Win32ToolkitPriorProof -ProjectPath $p -SiblingProof FloorAndNewest 6>$null)
+    $nsisCall = @($script:calls | Where-Object Ids -eq 'nsis-x64')[0]; $opCall = @($script:calls | Where-Object Ids -eq 'op-a')[0]
+    if ($nsisCall.Keys -match 'SiblingProof' -and $opCall.Keys -notmatch 'SiblingProof' -and @($st | Where-Object { $_.Id -eq 'nsis-x64' -and $_.State -eq 'Proven' }).Count -eq 1) { Ok 'the captured group runs with -SiblingProof FloorAndNewest (the operator group does not); a passing newest run keeps the floor proof' } else { Bad "x3 calls: $($script:calls | ConvertTo-Json -Compress)" }
+    $p2 = New-DProject 'newestfail'
+    Add-Captured $p2 'nsis' -Apply
+    Reset-Calls
+    $script:newestFails = $true
+    $st = @(Invoke-Win32ToolkitPriorProof -ProjectPath $p2 -SiblingProof FloorAndNewest 6>$null)
+    $script:newestFails = $false
+    $ns = @($st | Where-Object Id -eq 'nsis-x64')[0]
+    if ($ns.State -eq 'NotProven' -and $ns.Reason -match 'the newest proof run failed \(PriorAbsent-PostUpdate\.nsis-x64\)') { Ok 'the floor run passed, the newest one failed -> not proven (the failure revokes)' } else { Bad "revoke: $($ns | ConvertTo-Json -Compress)" }
 
     # == [7] a next version: a demoted carried rule ==============================================================
     Write-Host '[7] a next version: a demoted carried rule meets ID-PRIOR-DROPPED at Export' -ForegroundColor Cyan

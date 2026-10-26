@@ -25,6 +25,17 @@
           W32T.GuestTamper and no record; a Sandbox guest that forges Documentation\TestResults.json AFTER the waiter
           returned but before its sandbox closed -> W32T.GuestTamper, no record; a sandbox that cannot be confirmed closed
           -> W32T.GuestTamper with that reason; an untouched unattended Sandbox run -> recorded (Backend Sandbox).
+      [5] PR 3b, C2: a group of captured rules is proven from its FLOOR capture (-ExactType, the floor version, architecture
+          and scope); the downloaded installer's SHA-256 must be the floor record's; Sibling.<id> in the data file; an
+          explicit baseline that is not the floor checks the group with one 'cannot prove' warning; X2: the Wow6432 rule
+          of an x86 capture is proven from its x86 floor installer.
+      [6] PR 3b, X3: -SiblingProof FloorAndNewest runs the floor, then the newest capture of the SAME identity (the record
+          that observed the rule's VersionMax; never another publisher under the same key, never an x86 capture of the
+          same key and version, never a same-identity capture above a VersionMax that was not raised; its facts in the
+          data file); no second run after a failed floor run; baseline options refused (-SpecificVersion, -VersionsBack,
+          -BaselineInstallerType, -BaselineProjectPath, -BaselineProject); the project and scenario picked from the
+          menus reach both runs; one run when the floor is the newest or the rule is not from a capture; refused outside
+          the Update scenario.
 
     Nothing is installed or started; projects under %TEMP%. Run:  pwsh -File Tests\UpdateProofRun.unit.ps1
 #>
@@ -589,6 +600,105 @@ $l = Run 'PostUpdate'; "F3|" + ($l -join '|')
     if ($v -eq $true -and $d0['ExactType'] -and $d0['InstallerType'] -eq 'nullsoft' -and $d0['Version'] -eq '8.8.9' -and $d0['Architecture'] -eq 'x86' -and $o.HasProof -and (@($o.Proof.CaptureIds) -join ',') -eq $cid86 -and (@($o.Proof.EntryIds) -join ',') -eq 'nsis-x86' -and @($w | Where-Object { "$_" -match 'cannot prove' }).Count -eq 0) {
         Ok 'an x86 capture''s Wow6432 rule: the floor baseline is the x86 installer (-ExactType nullsoft 8.8.9 -Architecture x86), its Proof names the floor capture'
     } else { Bad "x86 floor: $($d0 | ConvertTo-Json -Compress) proof $($o.Proof | ConvertTo-Json -Compress) warnings $($w -join ' | ')" }
+
+    # == [6] -SiblingProof FloorAndNewest (installer-identity PR 3b, X3) ======================================
+    Write-Host '[6] -SiblingProof FloorAndNewest: the floor run, then a run from the newest capture' -ForegroundColor Cyan
+    . (Join-Path $repo 'Tests\Fixtures\sibling-proposal\SiblingFixture.ps1')
+    # Capture records in the frozen shape (the fixture: the nullsoft Notepad++ sibling), each with the baseline installer's
+    # hash; the rule is built from the proposal they give, so its identity (Tuple) is the records' own.
+    $writeCap = {
+        param([string]$P, [string]$Version, [string]$Role, [string]$Publisher = 'Notepad++ Team', [string]$View = 'Native')
+        $rec = New-TestSiblingRecord -Version $Version -Role $Role -Publisher $Publisher -View $View
+        $rec.Sibling.InstallerSha256 = $bsha
+        Write-TestSiblingRecord -ProjectPath $P -Record $rec
+    }
+    $newCaptured = {
+        param([string]$Name, [scriptblock]$Records, [string]$VersionMax = '')
+        $pc0 = New-ProofProject $Name $null
+        & $Records $pc0
+        $pp0 = @((ConvertTo-Win32ToolkitSiblingProposal -ProjectPath $pc0).Proposals | Where-Object { $_.ProposalId -eq 'nsis-x64' })[0]
+        $over = @{ Source = 'SiblingCapture'; CaptureId = $pp0.FloorCaptureId; Key = $pp0.Key; Publisher = $pp0.Publisher; DisplayName = $pp0.DisplayName; DisplayNameTemplate = $pp0.DisplayNameTemplate
+            UninstallerType = $pp0.UninstallerType; UninstallerFileName = $pp0.UninstallerFileName; UninstallerSigner = $pp0.UninstallerSigner; InstallDir = $pp0.InstallDir; MainExe = $pp0.MainExe
+            ProcessNames = @($pp0.ProcessNames); VersionMin = $pp0.VersionMin; VersionMax = $(if ($VersionMax) { $VersionMax } else { $pp0.VersionMax }) }
+        New-ProofProject $Name @((Entry 'nsis-x64' 'Enforce' $over))
+    }
+    # The floor 8.8.9 and 8.9.5 register one identity; 8.9.8 registers the same key with another publisher (a drift): the
+    # rule's window is 8.8.9..8.9.5, so the run from the newest capture installs 8.9.5, never 8.9.8.
+    $pn = & $newCaptured 'newest' { param($P) $null = & $writeCap $P '8.8.9' 'Floor'; $null = & $writeCap $P '8.9.5' 'Newest'; $null = & $writeCap $P '8.9.8' 'Newest' 'Don Ho' }
+    Reset-Run
+    $v = Test-Win32ToolkitProject -ProjectPath $pn -Scenario Update -ProofEntryId 'nsis-x64' -SiblingProof FloorAndNewest -WarningAction SilentlyContinue 6>$null
+    $vers = (@($script:dl) | ForEach-Object { "$($_['Version'])/$([bool]$_['ExactType'])" }) -join ','
+    if ($v -eq $true -and $vers -eq '8.8.9/True,8.9.5/True' -and $script:outcomes.Count -eq 2 -and @($script:outcomes | Where-Object { -not $_.HasProof }).Count -eq 0 -and (@($script:outcomes[1].Proof.EntryIds) -join ',') -eq 'nsis-x64') {
+        Ok 'two Update runs: the floor capture (8.8.9), then the newest capture of the SAME identity (8.9.5, the rule''s VersionMax; never 8.9.8, another publisher under the same key), each with -ExactType and a Proof of the group'
+    } else { Bad "floor+newest: v=$v downloads=$vers outcomes=$($script:outcomes.Count)" }
+    $data = Get-Content -LiteralPath (Join-Path $pn 'Sandbox\UpdateAssertionData.json') -Raw | ConvertFrom-Json
+    if ($data.Sibling.'nsis-x64'.ObservedVersion -eq '8.9.5' -and $null -eq $script:W32TSiblingProofLeg) { Ok 'the second run gets the newest capture''s facts (observed version 8.9.5); the leg context is cleared' } else { Bad "newest data: $($data.Sibling | ConvertTo-Json -Compress)" }
+    # Each filter of the pick on its own. (a) The SAME identity: an x86 capture of the same key at the same version (X2)
+    # registers View Wow6432, another Tuple; its CaptureId sorting after the x64 record's (the tie-break) never makes it
+    # the newest capture of the Native rule (an x86 install against a Native rule would fail and revoke a valid proof).
+    $pt = & $newCaptured 'newest-x86' {
+        param($P)
+        $null = & $writeCap $P '8.8.9' 'Floor'
+        $id64 = & $writeCap $P '8.9.5' 'Newest'
+        for ($n = 0; $n -lt 200; $n++) {
+            $id86 = & $writeCap $P '8.9.5' 'Newest' 'Notepad++ Team' 'Wow6432'
+            if ([string]::CompareOrdinal($id86, $id64) -gt 0) { break }
+            Remove-Item -LiteralPath (Join-Path $P "Documentation\SiblingCapture\$id86.json")
+        }
+    }
+    $caps = @((ConvertTo-Win32ToolkitSiblingProposal -ProjectPath $pt).Captures | Where-Object { $_.SiblingVersion -eq '8.9.5' } | Sort-Object -Property CaptureId)
+    Reset-Run
+    $v = Test-Win32ToolkitProject -ProjectPath $pt -Scenario Update -ProofEntryId 'nsis-x64' -SiblingProof FloorAndNewest -WarningAction SilentlyContinue 6>$null
+    $legs = (@($script:dl) | ForEach-Object { "$($_['Version'])/$($_['Architecture'])" }) -join ','
+    if (($caps | ForEach-Object { $_.View }) -join ',' -ceq 'Native,Wow6432' -and $v -eq $true -and $legs -eq '8.8.9/x64,8.9.5/x64' -and $script:outcomes.Count -eq 2) {
+        Ok 'an x86 capture of the same key and version (View Wow6432, its CaptureId sorting last) -> the second run is still x64 at VersionMax 8.9.5 (the rule''s own identity only)'
+    } else { Bad "x86 at VersionMax: v=$v downloads=$legs views=$(($caps | ForEach-Object { $_.View }) -join ',')" }
+    # (b) At VersionMax: a capture of the same identity above a VersionMax that was never raised (the raise after a
+    # capture is fail-open) lies outside the rule's window; a run from it would install a newer prior (69102) and revoke.
+    $pu = & $newCaptured 'newest-unraised' { param($P) $null = & $writeCap $P '8.8.9' 'Floor'; $null = & $writeCap $P '8.9.5' 'Newest'; $null = & $writeCap $P '8.9.8' 'Newest' } '8.9.5'
+    Reset-Run
+    $v = Test-Win32ToolkitProject -ProjectPath $pu -Scenario Update -ProofEntryId 'nsis-x64' -SiblingProof FloorAndNewest -WarningAction SilentlyContinue 6>$null
+    $legs = (@($script:dl) | ForEach-Object { "$($_['Version'])/$($_['Architecture'])" }) -join ','
+    $ruleMax = [string]@((Get-Content -LiteralPath (Join-Path $pu 'SupportFiles\AppConfig.json') -Raw | ConvertFrom-Json).PriorInstalls.Entries)[0].VersionMax
+    if ($ruleMax -eq '8.9.5' -and $v -eq $true -and $legs -eq '8.8.9/x64,8.9.5/x64' -and $script:outcomes.Count -eq 2) {
+        Ok 'a same-identity capture (8.9.8) above a VersionMax that was never raised (8.9.5) -> the second run is from the VersionMax capture 8.9.5, never 8.9.8'
+    } else { Bad "unraised VersionMax: v=$v max=$ruleMax downloads=$legs" }
+    # A floor run that fails: the rule is not proven, so the run from the newest capture (it could only revoke) is skipped.
+    ${function:Wait-Win32ToolkitUpdateAssertion} = { $false }
+    Reset-Run
+    $out = @(Test-Win32ToolkitProject -ProjectPath $pn -Scenario Update -ProofEntryId 'nsis-x64' -SiblingProof FloorAndNewest -WarningAction SilentlyContinue 6>&1 | ForEach-Object { if ($_ -is [bool]) { $_ } else { "$_" } })
+    ${function:Wait-Win32ToolkitUpdateAssertion} = { $true }
+    if ($out[-1] -eq $false -and $script:dl.Count -eq 1 -and $script:outcomes.Count -eq 1 -and @($out | Where-Object { "$_" -match 'the run from the floor capture failed, so the rule is not proven; the run from the newest capture is skipped' }).Count -eq 1) {
+        Ok 'a failed floor run -> $false, no run from the newest capture'
+    } else { Bad "floor failed: last=$($out[-1]) dl=$($script:dl.Count) outcomes=$($script:outcomes.Count)" }
+    # Both old versions come from the captures: a baseline option is refused before anything runs.
+    $baseDir = Join-Path $root 'baseline-project'
+    $null = New-Item -ItemType Directory -Path $baseDir -Force
+    foreach ($bo in @(@{ SpecificVersion = '8.8.9' }, @{ VersionsBack = 1 }, @{ BaselineInstallerType = 'nullsoft' }, @{ BaselineProjectPath = $baseDir }, @{ BaselineProject = 'T\X' })) {
+        Reset-Run
+        $boName = @($bo.Keys)[0]
+        $r = try { $null = Test-Win32ToolkitProject -ProjectPath $pn -Scenario Update -ProofEntryId 'nsis-x64' -SiblingProof FloorAndNewest @bo -ErrorAction Stop 6>$null; '' } catch { $_.Exception.Message }
+        if ($r -match "-SiblingProof FloorAndNewest takes both old versions from the captures .* cannot be combined with -$boName\. Nothing was run\." -and $script:dl.Count -eq 0 -and $script:hvRuns -eq 0 -and $script:outcomes.Count -eq 0) { Ok "-SiblingProof FloorAndNewest -$boName -> refused, nothing downloaded or run" } else { Bad "$boName with FloorAndNewest: '$r' dl=$($script:dl.Count) runs=$($script:hvRuns)" }
+    }
+    # The project and the scenario chosen from the menus reach both runs (no second menu).
+    $script:menus = [System.Collections.Generic.List[string]]::new()
+    function Show-ScenarioSelection { $script:menus.Add('scenario'); 'Update' }
+    function Get-Win32ToolkitBasePath { param($BasePath, [switch]$NonInteractive) $null = $BasePath, $NonInteractive; $root }
+    function Get-PSADTProjects { param($BasePath) $null = $BasePath; @([pscustomobject]@{ Path = $pn; Name = 'newest' }) }
+    function Show-ProjectSelection { param($Projects) $script:menus.Add('project'); $Projects[0] }
+    Reset-Run
+    $v = Test-Win32ToolkitProject -ProofEntryId 'nsis-x64' -SiblingProof FloorAndNewest -WarningAction SilentlyContinue 6>$null
+    if ($v -eq $true -and ($script:menus -join ',') -eq 'scenario,project' -and $script:dl.Count -eq 2 -and $script:outcomes.Count -eq 2) { Ok 'the project and the scenario picked from the menus reach both runs (each menu shown once)' } else { Bad "menus: v=$v menus=$($script:menus -join ',') dl=$($script:dl.Count)" }
+    # A window of one version: nothing more to run; a rule that is not from a sibling capture: no newest capture.
+    $p1 = & $newCaptured 'onlyfloor' { param($P) $null = & $writeCap $P '8.8.9' 'Floor'; $null = & $writeCap $P '8.8.9' 'Repeat' }
+    Reset-Run
+    $out = @(Test-Win32ToolkitProject -ProjectPath $p1 -Scenario Update -ProofEntryId 'nsis-x64' -SiblingProof FloorAndNewest -WarningAction SilentlyContinue 6>&1 | ForEach-Object { "$_" })
+    if ($script:dl.Count -eq 1 -and $script:outcomes.Count -eq 1 -and @($out | Where-Object { $_ -match 'the floor is the newest capture of this identity; nothing more to run' }).Count -eq 1) { Ok 'the floor is the newest capture -> one run only' } else { Bad "only floor: $($script:dl.Count) $($script:outcomes.Count)" }
+    Reset-Run
+    $out = @(Test-Win32ToolkitProject -ProjectPath $pp -Scenario Update -ProofEntryId 'nsis-x64' -SiblingProof FloorAndNewest -WarningAction SilentlyContinue 6>&1 | ForEach-Object { "$_" })
+    if ($script:dl.Count -eq 1 -and @($out | Where-Object { $_ -match 'nsis-x64 did not come from a sibling capture: there is no newest capture to run from' }).Count -eq 1) { Ok 'an operator rule -> one run, "did not come from a sibling capture"' } else { Bad "operator: dl=$($script:dl.Count) $($out -join ' | ')" }
+    $r = try { $null = Test-Win32ToolkitProject -ProjectPath $p1 -Scenario InstallUninstall -SiblingProof FloorAndNewest 6>$null; '' } catch { $_.Exception.Message }
+    if ($r -match '-SiblingProof applies only to -Scenario Update') { Ok '-SiblingProof outside the Update scenario -> refused' } else { Bad "guard: $r" }
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
