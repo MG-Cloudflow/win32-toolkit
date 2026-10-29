@@ -302,6 +302,7 @@ function Test-Win32ToolkitProject {
 
     # The optional per-project lease (speed-up PR 3, TestProjectLease): $null unless taken below; released in the finally.
     $projectLease = $null
+    $ownsHyperVTestTarget = $false
     try {
         # Per-run test mode (TUI audit G3): passed to every Get-Win32ToolkitTestMode call below.
         if ($Unattended -and $TestMode -eq 'Interactive') {
@@ -555,6 +556,19 @@ function Test-Win32ToolkitProject {
         $resolvedBackend = if ($Backend) { Get-Win32ToolkitTestBackend -Backend $Backend } else { Get-Win32ToolkitTestBackend }
         Write-Host "Backend          : $resolvedBackend" -ForegroundColor Cyan
 
+        # One test VM and checkpoint for the whole call (menu selectors D13): resolved once here and passed by name to the
+        # Intune-parity pre-check and to every Hyper-V run below, so a change of the saved test VM (the menu, another
+        # window) can never split a pre-check from its run. The legs of an Update 'Both' run (inner calls) use the outer
+        # call's; the outer call clears it in its finally.
+        $hvTargetArgs = @{}
+        if ($resolvedBackend -eq 'HyperV') {
+            if ($null -eq $script:W32THyperVTestTarget) {
+                $script:W32THyperVTestTarget = Get-Win32ToolkitHyperVTarget
+                $ownsHyperVTestTarget = $true
+            }
+            $hvTargetArgs = @{ VMName = [string]$script:W32THyperVTestTarget.VMName; CheckpointName = [string]$script:W32THyperVTestTarget.CheckpointName }
+        }
+
         # Prior-install state (installer-identity PR 3, L18): rules, decisions or sibling-capture records. The guest runs of
         # such a project are checked by the tripwire (no project file outside Sandbox\ may change), and a WATCHED Windows
         # Sandbox run is refused before anything is written: that sandbox stays open with the project mapped read-write, so
@@ -660,7 +674,7 @@ function Test-Win32ToolkitProject {
         $parityPre = $null
         if ($resolvedBackend -eq 'HyperV' -and $null -eq $script:W32TUpdateLegContext -and
             (Get-Win32ToolkitTestMode -Backend HyperV @modeArgs -WarningAction SilentlyContinue) -eq 'Unattended') {
-            $parityPre = Invoke-Win32ToolkitParityPrecheck -ProjectPath $ProjectPath -Scenario $Scenario
+            $parityPre = Invoke-Win32ToolkitParityPrecheck -ProjectPath $ProjectPath -Scenario $Scenario @hvTargetArgs
             if ($parityPre -and $parityPre.Blocked) {
                 Write-Warning $parityPre.Message
                 & $recordNotRun $Scenario $parityPre
@@ -936,7 +950,7 @@ function Test-Win32ToolkitProject {
                     $runInfo = @{}
                     # Tripwire (installer-identity PR 3, L18): taken after every host write of the preparation.
                     $iuTrip = if ($priorState) { Get-Win32ToolkitProjectTripwire -ProjectPath $ProjectPath } else { $null }
-                    $ran = Invoke-Win32ToolkitHyperVRun -ProjectPath $ProjectPath -Phase $phases -Output @('Sandbox\Logs\*') -ParityExitNote $parityExitNotes -RunInfo $runInfo
+                    $ran = Invoke-Win32ToolkitHyperVRun -ProjectPath $ProjectPath -Phase $phases -Output @('Sandbox\Logs\*') -ParityExitNote $parityExitNotes -RunInfo $runInfo @hvTargetArgs
                     # The project was copied in (never mapped): the guest can no longer write. Checked before any host write.
                     if ($priorState) { Assert-Win32ToolkitProjectTripwire -ProjectPath $ProjectPath -Before $iuTrip -Scenario 'InstallUninstall' }
                     if ($ran) {
@@ -1754,7 +1768,7 @@ function Test-Win32ToolkitProject {
                     $parityExitNotes = [System.Collections.Generic.List[string]]::new()
                     # The run's Timing and Lane for the record (speed-up PR 1, D12).
                     $runInfo = @{}
-                    $hvArgs = @{ ProjectPath = $ProjectPath; Phase = $phases; Output = @('Sandbox\Logs\*'); ParityExitNote = $parityExitNotes; RunInfo = $runInfo }
+                    $hvArgs = @{ ProjectPath = $ProjectPath; Phase = $phases; Output = @('Sandbox\Logs\*'); ParityExitNote = $parityExitNotes; RunInfo = $runInfo } + $hvTargetArgs
                     if ($useBaselineProject) { $hvArgs['BaselineProjectPath'] = $BaselineProjectPath }
 
                     if ($interactive) { Write-Host "`nRunning an INTERACTIVE Update test in the Hyper-V VM (verify the old install in the vmconnect window, then press Enter)..." -ForegroundColor Cyan }
@@ -1907,5 +1921,7 @@ function Test-Win32ToolkitProject {
     finally {
         # The per-project lease (speed-up PR 3), whatever happened above; nothing to release by default.
         if ($null -ne $projectLease) { $null = Exit-Win32ToolkitHyperVLease -Lease $projectLease }
+        # The call's test VM (menu selectors D13): only the call that resolved it clears it.
+        if ($ownsHyperVTestTarget) { $script:W32THyperVTestTarget = $null }
     }
 }

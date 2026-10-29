@@ -64,6 +64,7 @@ function Initialize-Win32ToolkitDependencyStaging { param($ProjectPath) 0 }
 ${function:New-Win32ToolkitPackageRunnerScript} = { param($ProjectPath) Join-Path $ProjectPath 'Sandbox\Invoke-PsadtPackage.ps1' }
 function Get-Win32ToolkitTestBackend { param($Backend) 'HyperV' }
 function Get-Win32ToolkitConfigValue { param($Name, $Default) 'Interactive' }
+function Get-Win32ToolkitHyperVTarget { param([switch]$NoThrow) [pscustomobject]@{ VMName = 'win32tk-golden'; CheckpointName = 'clean-base'; Source = 'Default'; CheckpointSource = 'Default'; Pinned = $false; Problem = $null } }   # C-9: menu selectors D13 resolves once per call
 function New-LogCollectorScript { param($ProjectPath) 'fake' }
 function Get-Win32ToolkitAppConfig { param($ProjectPath) [pscustomobject]@{ App = [pscustomobject]@{ Version = '1.0'; DisplayName = 'App' } } }
 function Get-Win32ToolkitRequirementRule { param($ProjectPath) 'rule' }

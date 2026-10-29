@@ -562,6 +562,7 @@ Remove-Item -LiteralPath $f -Force
     $script:testBackend = 'HyperV'; $script:testModeCfg = 'Unattended'
     function Get-Win32ToolkitTestBackend { $script:testBackend }
     function Get-Win32ToolkitConfigValue { $script:testModeCfg }
+    function Get-Win32ToolkitHyperVTarget { param([switch]$NoThrow) [pscustomobject]@{ VMName = 'win32tk-golden'; CheckpointName = 'clean-base'; Source = 'Default'; CheckpointSource = 'Default'; Pinned = $false; Problem = $null } }   # C-9: menu selectors D13 resolves once per call
     ${function:New-Win32ToolkitPackageRunnerScript} = { 'runner' }
     function Initialize-Win32ToolkitDependencyStaging { 0 }
     ${function:New-LogCollectorScript} = { 'collector' }

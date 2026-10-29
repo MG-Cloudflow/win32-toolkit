@@ -579,6 +579,21 @@ try {
     }
     & $reset3b
 
+    # ============================== [3e] menu selectors D13 ==============================
+    Write-Host '[3e] the caller''s VM and checkpoint (Test-Win32ToolkitProject resolves once): used as given, the resolver is not asked' -ForegroundColor Cyan
+    $script:guest = $nobody; $script:log.Clear()
+    # An invalid pin would make the resolver throw W32T.HyperVTargetNotReady: no throw proves it was not asked.
+    $env:W32T_HYPERV_VM = "bad`tpin"
+    $r = $null; $threw = $null
+    try { $r = Invoke-Win32ToolkitParityPrecheck -ProjectPath $pAtRisk -Scenario 'InstallUninstall' -VMName 'vm-lane' -CheckpointName 'clean-lane' -ErrorAction Stop 3>$null 6>$null } catch { $threw = $_ }
+    Remove-Item Env:\W32T_HYPERV_VM
+    $seq = $script:log -join ' > '
+    if (-not $threw -and $r -and -not $r.Blocked -and $seq -like 'get-vm:vm-lane > open:vm-lane:clean-lane > query:SESSION > remove:SESSION:vm-lane:clean-lane:revert=True*') { Ok "the given names are opened and reverted: $seq" } else { Bad "D13: threw=$threw log=$seq" }
+    $script:log.Clear(); $threw = $null
+    try { $null = Invoke-Win32ToolkitParityPrecheck -ProjectPath $pAtRisk -Scenario 'InstallUninstall' -ErrorAction Stop 3>$null 6>$null } catch { $threw = $_ }
+    if (-not $threw -and ($script:log -join ' > ') -like 'get-vm:vm-test > open:vm-test:clean-base*') { Ok 'without names: the resolver, as before (vm-test / clean-base)' } else { Bad "no names: threw=$threw log=$($script:log -join ' > ')" }
+    & $reset3b
+
     # ============================== [4] file hygiene ==============================
     Write-Host '[4] the pre-check files: ASCII, one function, every catch starts with the C-2 line' -ForegroundColor Cyan
     $c2 = "if (`$_.FullyQualifiedErrorId -like 'W32T.*') { throw }"

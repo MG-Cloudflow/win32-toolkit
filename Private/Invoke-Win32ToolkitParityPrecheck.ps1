@@ -56,7 +56,13 @@ function Invoke-Win32ToolkitParityPrecheck {
 
         [Parameter(Mandatory)]
         [ValidateSet('InstallUninstall', 'Update')]
-        [string]$Scenario
+        [string]$Scenario,
+
+        # Menu selectors D13: the test VM and checkpoint the caller's run uses (Test-Win32ToolkitProject resolves them once
+        # and passes the same names to the run). Both omitted: the resolver, as before.
+        [string]$VMName,
+
+        [string]$CheckpointName
     )
 
     $blocked = $false; $guest = $null; $message = ''; $notes = ''; $notRun = $null
@@ -68,9 +74,12 @@ function Invoke-Win32ToolkitParityPrecheck {
         # The run's effective base checkpoint (L18): the same expressions as Invoke-Win32ToolkitHyperVRun, so
         # both revert and query the same checkpoint and the clean marker stamped below matches the run.
         # Speed-up PR 3 (D11): the one resolver (a W32T_HYPERV_VM / W32T_HYPERV_CHECKPOINT pin first); an invalid pin throws.
-        $target = Get-Win32ToolkitHyperVTarget
-        $vm   = $target.VMName
-        $cp   = $target.CheckpointName
+        if ($VMName -and $CheckpointName) { $vm = $VMName; $cp = $CheckpointName }
+        else {
+            $target = Get-Win32ToolkitHyperVTarget
+            $vm   = $target.VMName
+            $cp   = $target.CheckpointName
+        }
         $cred = Get-Win32ToolkitGuestCredential
         if (-not $cred) {
             Write-Verbose 'Intune-parity pre-check skipped: no Hyper-V guest credential is configured.'

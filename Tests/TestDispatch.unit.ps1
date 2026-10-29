@@ -69,6 +69,7 @@ function Get-Process { param($Name, $ErrorAction) return $script:procs }
 function Test-Win32ToolkitSandboxRunning { return (@($script:procs).Count -gt 0) }
 function New-LogCollectorScript { param($ProjectPath) return 'fake' }
 function Get-Win32ToolkitConfigValue { param($Name, $Default) return $script:testMode }
+function Get-Win32ToolkitHyperVTarget { param([switch]$NoThrow) [pscustomobject]@{ VMName = 'win32tk-golden'; CheckpointName = 'clean-base'; Source = 'Default'; CheckpointSource = 'Default'; Pinned = $false; Problem = $null } }   # C-9: menu selectors D13 resolves once per call
 function Invoke-Win32ToolkitHyperVRun { param($ProjectPath, $Phase, $Output) $script:hvCalled++; $script:order += 'hvrun'; $script:hvPhase = $Phase; $script:hvOutput = $Output; return $true }
 function Start-Process { param($FilePath, $ArgumentList) $script:launched++ }
 # C-9 (installer-identity PR 2): a Hyper-V UNATTENDED run asks the Intune-parity pre-check first. By default it does not
@@ -1074,6 +1075,44 @@ finally {
     ${function:Invoke-Win32ToolkitHyperVRun} = ${function:Invoke-Win32ToolkitHyperVRun_Saved20}
     Remove-Item Function:\Get-Win32ToolkitTestBackend_Saved20, Function:\Invoke-Win32ToolkitHyperVRun_Saved20, Function:\Enter-Win32ToolkitHyperVLease, Function:\Exit-Win32ToolkitHyperVLease, Function:\Test-Win32ToolkitElevated
     function Get-Win32ToolkitConfigValue { param($Name, $Default) return $script:testMode }
+}
+
+# Menu selectors D13: one test VM and checkpoint per call. The outer call resolves them once, passes them by name to the
+# run, and clears them at the end; an inner Update leg uses the outer call's and leaves them.
+Write-Host '[21] one test VM per call: resolved once, passed by name to the run, cleared by the call that resolved it' -ForegroundColor Cyan
+$script:target21Calls = 0
+${function:Get-Win32ToolkitHyperVTarget_Saved21} = ${function:Get-Win32ToolkitHyperVTarget}
+function Get-Win32ToolkitHyperVTarget { param([switch]$NoThrow) $script:target21Calls++; [pscustomobject]@{ VMName = "vm-$($script:target21Calls)"; CheckpointName = 'cp-a'; Source = 'Registry'; CheckpointSource = 'Registry'; Pinned = $false; Problem = $null } }
+${function:Invoke-Win32ToolkitHyperVRun_Saved21} = ${function:Invoke-Win32ToolkitHyperVRun}
+$script:run21 = [System.Collections.Generic.List[string]]::new()
+function Invoke-Win32ToolkitHyperVRun { param($ProjectPath, $Phase, $Output, $VMName, $CheckpointName)
+    $script:run21.Add("${VMName}/$CheckpointName")
+    $ld = Join-Path $ProjectPath 'Sandbox\Logs'
+    New-Item -ItemType Directory -Path $ld -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $ld 'InstallAssertions.log') -Value '[t] ASSERT InstallDetected-PostInstall = PASS', '[t] RESULT COMPLETE'
+    $true }
+$script:backend = 'HyperV'; $script:procs = @(); $script:depCount = 0; $script:preBlocked = $false; $script:testMode = 'Interactive'
+try {
+    $script:W32THyperVTestTarget = $null
+    $null = Test-Win32ToolkitProject -ProjectPath $proj -Scenario InstallUninstall -Unattended 3>$null 6>$null
+    if ($script:target21Calls -eq 1 -and ($script:run21 -join ',') -eq 'vm-1/cp-a' -and $null -eq $script:W32THyperVTestTarget) { Ok 'outer call: one resolve, the run gets vm-1/cp-a by name, cleared at the end' } else { Bad "outer: calls=$($script:target21Calls) runs=$($script:run21 -join ',') left=$($script:W32THyperVTestTarget)" }
+    $script:target21Calls = 0; $script:run21.Clear()
+    $outer = [pscustomobject]@{ VMName = 'vm-outer'; CheckpointName = 'cp-outer'; Source = 'Registry'; CheckpointSource = 'Registry'; Pinned = $false; Problem = $null }
+    $script:W32THyperVTestTarget = $outer
+    $script:W32TUpdateLegContext = @{ Mode = 'Both'; Origin = 'Packaged'; Label = 'leg'; Index = 1; Count = 2 }
+    $null = Test-Win32ToolkitProject -ProjectPath $proj -Scenario InstallUninstall -Unattended 3>$null 6>$null
+    $script:W32TUpdateLegContext = $null
+    if ($script:target21Calls -eq 0 -and ($script:run21 -join ',') -eq 'vm-outer/cp-outer' -and [object]::ReferenceEquals($script:W32THyperVTestTarget, $outer)) { Ok "an inner leg: no resolve, the outer call's VM, left for the outer call to clear" } else { Bad "leg: calls=$($script:target21Calls) runs=$($script:run21 -join ',')" }
+    $script:W32THyperVTestTarget = $null
+    $script:backend = 'Sandbox'; $script:target21Calls = 0
+    $null = Test-Win32ToolkitProject -ProjectPath $proj -Scenario InstallUninstall -Unattended 3>$null 6>$null
+    if ($script:target21Calls -eq 0 -and $null -eq $script:W32THyperVTestTarget) { Ok 'Windows Sandbox: no resolve' } else { Bad "sandbox: calls=$($script:target21Calls)" }
+}
+finally {
+    $script:W32TUpdateLegContext = $null; $script:W32THyperVTestTarget = $null
+    ${function:Get-Win32ToolkitHyperVTarget} = ${function:Get-Win32ToolkitHyperVTarget_Saved21}
+    ${function:Invoke-Win32ToolkitHyperVRun} = ${function:Invoke-Win32ToolkitHyperVRun_Saved21}
+    Remove-Item Function:\Get-Win32ToolkitHyperVTarget_Saved21, Function:\Invoke-Win32ToolkitHyperVRun_Saved21
 }
 
 Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
