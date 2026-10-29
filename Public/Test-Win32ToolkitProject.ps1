@@ -1,253 +1,170 @@
 function Test-Win32ToolkitProject {
 <#
 .SYNOPSIS
-    Tests a PSADT project in a disposable guest: Windows Sandbox or the Hyper-V test VM.
+    Tests a project in Windows Sandbox or the Hyper-V test VM and records the result.
 .DESCRIPTION
-    Runs a chosen test scenario against a PSADT V4 project in the configured test backend:
-    Windows Sandbox (default) or the local Hyper-V test VM (see New-Win32ToolkitTestVM). If no
-    ProjectPath is supplied, an interactive menu lists all PSADT projects found under BasePath.
+    Test-Win32ToolkitProject installs the package of a project in a test machine (Windows Sandbox
+    or the Hyper-V test VM), runs automatic checks and records the result. The dependencies of the
+    app are installed first, and a failed dependency makes the test fail.
 
-    Tests run WATCHED by default (a countdown/pause gives you a verification window) or
-    UNATTENDED via -Unattended or -TestMode Unattended, or the SandboxTestMode & HyperVTestMode config
-    values (back-to-back, no operator needed: under Sandbox PSADT runs -DeployMode Silent and the guest
-    shuts itself down afterwards so chained runs proceed; under Hyper-V the install, uninstall and update
-    run as the Intune-parity phase). Watched runs use PSADT's Auto mode: on PSADT 4.2 the dialogs appear only
-    when one of the app's listed processes is running (otherwise the run is silent); on 4.1.x Auto
-    shows PSADT's dialogs. (The watched Hyper-V GUI phases force -DeployMode Interactive.)
-    -TestMode Interactive runs one test watched although the config value says Unattended (a host that
-    cannot prompt still runs it unattended).
+    InstallUninstall installs the app, checks it and uninstalls it. Update installs an older version
+    first, then your package over it. SiblingCapture is a sibling capture: it installs the other
+    installer technologies of the app and records what they register, for prior-install rules.
 
-    Before a test runs, it warns once when the project's uninstall cleanup paths fail the check
-    Export-Win32ToolkitIntuneWin enforces, with Export's own findings, and then runs anyway: Export is
-    the only command that refuses such a project.
+    Run a test before you publish. In the menu: Work with an existing project > choose your project
+    > Run a test. The menu always asks for the test machine. For a sibling capture: Work with an
+    existing project > choose your project > Prior installs > Capture the other installer
+    technologies.
 
-    Process isolation: every PSADT package runs in its OWN Windows PowerShell process (PSADT 4.2
-    refuses a second copy of its module in one process, and 4.1 and 4.2 cannot share one). Each
-    declared 'project:' dependency is started by Sandbox\InstallDependencies.ps1, which stops at the
-    first failing dependency and exits with its exit code. A failed dependency stops the test and it
-    reports Failed (assertion DependenciesInstalled): the app is not installed, as Intune would not
-    install it either. The app, an Update baseline project and the
-    update run through the guest runner Sandbox\Invoke-PsadtPackage.ps1, which appends the exact exit
-    code of each of its runs to Sandbox\Logs\PsadtExitCodes.log; those codes are printed after the run.
+    By default you run an interactive test: it pauses so that you can check the app. An unattended
+    test has no pause and, on the Hyper-V test VM, runs the package the way Intune does.
 
-    Run logs: every run, and each run of -BaselineInstallerType Both, keeps its own copy of its logs (the
-    assertion log, the Add/Remove Programs snapshots, its PsadtExitCodes.log lines and the PSADT and MSI
-    logs) in a folder under Sandbox\Logs\Runs named after its start time, its scenario and, for an Update
-    run, the old version's installer family, for example Sandbox\Logs\Runs\20261020-221500_Update_exe.
-    Its Documentation\TestResults.json record names that folder (LogFolder). The files directly in
-    Sandbox\Logs gather the logs of every run: each run overwrites the files it writes (and first clears
-    its own scenario's assertion log), while files that only another run wrote stay there, for example
-    UpdateAssertions.log after an InstallUninstall run, or the log of a dependency or an earlier version.
-    A run's exact set of logs is its folder under Sandbox\Logs\Runs.
+    Before an unattended test on the Hyper-V test VM, the Intune-parity pre-check runs. A
+    PSAppDeployToolkit (PSADT) 4.1 package with no processes to close and a welcome dialog that can
+    be deferred would wait 25 minutes. The toolkit does not start such a test and records it as
+    not run. Run it as an interactive test, or add the app's process to ProcessesToClose.
 
-    The function is scenario-driven: new test types can be added as additional switch cases
-    without changing the overall structure.
+    The result goes to Documentation\TestResults.json in the project, and the logs of each run to a
+    folder under Sandbox\Logs\Runs. These folders never go into the package. The command changes
+    nothing in Intune. A failed test only warns. It does not stop packaging or publishing.
+
+    It stops with an error whose ID starts with W32T. when a test must not start or cannot be
+    trusted. W32T.PriorInstallRefused means that a project with prior-install rules or
+    sibling-capture records cannot have an interactive test in Windows Sandbox. Use -Backend HyperV
+    or -TestMode Unattended. W32T.GuestTamper means that the test machine changed the project:
+    re-create it.
 .PARAMETER ProjectPath
-    Full path to the PSADT project folder (the folder that contains
-    Invoke-AppDeployToolkit.ps1). If omitted, a numbered selection menu is shown.
+    The project folder: <base folder>\Projects\<template>\<project>. Without it, the command shows
+    a list of your projects.
 .PARAMETER BasePath
-    Root folder to scan for PSADT projects when ProjectPath is not provided. If omitted, the
-    registry-saved value is used (see Invoke-Win32Toolkit).
+    The base folder for this command only, to list projects and to find -BaselineProject. Default:
+    your saved base folder.
 .PARAMETER Scenario
-    The test scenario to execute. If omitted, an interactive menu is shown.
-    - InstallUninstall : Install → 2-minute countdown → Uninstall
-    - Update           : Install an older baseline → assert the update-app requirement rule detects
-                         it → 2-minute countdown → run the PSADT update → assert the requirement is
-                         still met and the install tattoo holds the new version. Assertion results
-                         stream back to the host (Sandbox\Logs\UpdateAssertions.log) and the command
-                         reports a real PASS/FAIL verdict.
-    - SiblingCapture   : Install each OTHER installer technology winget ships for the app (for example the
-                         vendor's NSIS setup next to a WiX package) in the Hyper-V test VM, one isolated run per
-                         capture, and record what it registered (Documentation\SiblingCapture\<id>.json) for
-                         prior-install rules. Nothing of the project enters the guest but the sibling
-                         installer and the capture script; its output comes back into a quarantine through an
-                         allow-list. It never writes a new rule: approve the proposals with Set-Win32ToolkitPriorInstall
-                         (at the end it names every proposal that is not a rule yet, with the command that applies it).
-                         After a capture that recorded something, the rules that came from earlier captures follow
-                         it: a newer version with the same identity raises their VersionMax, another identity
-                         freezes them (Track Frozen; review the new proposal).
-                         Returns $true (at least one record), $false (every capture failed, or the winget manifests
-                         could not be read, for example while GitHub rate-limits this computer: a warning says when
-                         to capture again) or $null (nothing to capture). Refused (W32T.SiblingCaptureUnsupported / W32T.PriorInstallSlotsMissing) for a
-                         manual app, a project without its own identity (run the install capture first), an ARM64
-                         package or a project created before this version. Without a ready Hyper-V test VM it runs
-                         in Windows Sandbox (said up front): there the sibling installs as a user and every
-                         proposal is Block-only; a sandbox that cannot be confirmed closed after its capture stops
-                         the run with W32T.GuestTamper (its output folder could still change; rebuild the project).
-                         A Sandbox record also joins the records of the identity it sees
-                         and makes that identity Block-only for good (a later capture on Hyper-V does not take
-                         that back), so when the project's captures already allow an Enforce rule (an
-                         Enforce-eligible proposal or a captured Enforce rule of the types to capture) a capture
-                         without a ready VM is refused instead (W32T.SiblingCaptureUnsupported, before any
-                         download), with or without -Backend HyperV. Only -Backend Sandbox captures in Windows
-                         Sandbox on purpose.
+    The test to run. Without it, the command asks you to choose InstallUninstall or Update.
+    SiblingCapture needs a winget project whose install capture has run.
 .PARAMETER VersionsBack
-    Update scenario only. Automatically selects the version that is X positions older
-    than the currently packaged version (e.g. 1 = the immediately previous release).
-    Mutually exclusive intent with SpecificVersion; SpecificVersion takes priority.
-    When neither is given, an interactive run shows a list of older versions to pick from; an unattended
-    run (-Unattended, -TestMode Unattended, or the SandboxTestMode / HyperVTestMode config value when
-    -TestMode is not given) or a host that cannot prompt
-    (a service, redirected input, or a console started with pwsh -NonInteractive) uses the previous
-    version (as -VersionsBack 1) and says so in a warning.
+    Update test only: installs the winget version that is this many versions before your package
+    (1 is the previous one). Without it or -SpecificVersion, you choose from a list. A test that
+    cannot ask uses 1, with a warning.
 .PARAMETER SpecificVersion
-    Update scenario only. Installs this exact version as the baseline. Overrides
-    VersionsBack if both are supplied.
+    Update test only: the exact older winget version to install, for example '2.52.0'. It wins over
+    -VersionsBack.
 .PARAMETER SkipRequirementCheck
-    Update scenario only. Skip generating/running the update-app requirement script in the sandbox
-    (its assertions report SKIP); the tattoo/detection assertion still runs. Use when the project
-    has no usable requirement rule yet or you only want the plain install-over-old check.
+    Update test only: skips the check that the update app would find the old install. A test with
+    this switch never proves an Enforce rule.
 .PARAMETER BaselineProjectPath
-    Update scenario only. Install a PREVIOUS toolkit package (this folder) as the baseline instead of
-    downloading the old vendor installer — exercises the tattoo-overwrite path (old tattoo → new
-    tattoo) and works for manual (non-winget) projects. Mutually exclusive with -VersionsBack /
-    -SpecificVersion. The baseline project is mapped READ-ONLY (its raw copy is never modified).
+    Update test only: the full path of an older project that the toolkit built. The test installs
+    it as the old version instead of a winget download, and never changes it. Use it for an app not
+    in winget.
 .PARAMETER BaselineProject
-    Update scenario only. Same as -BaselineProjectPath but by FRIENDLY reference: '<Template>\<Name>'
-    (or 'project:<Template>\<Name>'), resolved to <BasePath>\Projects\<Template>\<Name> — exactly how a
-    'project:' dependency is referenced, so you don't type the full path. Mutually exclusive with
-    -BaselineProjectPath / -VersionsBack / -SpecificVersion.
+    The same as -BaselineProjectPath, given as '<template>\<project>' under <base folder>\Projects,
+    for example 'Contoso\Git_x64_2.52.0'.
 .PARAMETER BaselineInstallerType
-    Update scenario, winget baseline only: the installer technology the old-version baseline must use.
-    The baseline download always pins an installer type (never an unpinned retry) and never a locale.
-    The resolved technology is printed as 'Baseline technology : ...' before the version is picked.
-    - Auto (default): the other installer technology winget ships for this app, when there is one (read
-      from Documentation\IdentityDelta.json, written on first use), so an MSI package is tested over the
-      vendor EXE install that devices may already have; otherwise the packaged one. A project with Enforce
-      prior-install rules uses the technology and registry view of the proof group the run checks (-ProofEntryId).
-      When the chosen version does not ship that technology, the run falls back to the packaged one with a
-      warning and records UsedFallback (such a run cannot show a technology switch).
-    - Both: one Update run per technology (the packaged one, then each other one winget ships) at the same
-      version, each with its own verdict and TestResults.json record.
-      Returns $false when a run failed, $null when a run had no verdict, else $true.
-    - Packaged: the packaged installer technology only.
-    - msi, wix, burn, nullsoft, inno, exe, msix: exactly that technology family, no fallback.
-    A pinned scope (machine or user) is only a preference: when the version has no installer of that
-    scope, winget's choice of scope is used and ScopeRelaxed is recorded.
-    When the version has no installer of the required technology, the run records an Inconclusive result
-    (Baseline.Unavailable) and returns $null.
-    When an old install of ANOTHER technology is still registered after the update, an ID-TECH-SWITCH
-    warning names it.
-    Not valid with -BaselineProject / -BaselineProjectPath (that package has its own technology).
+    Update test from winget only: the installer technology of the old version. Default: Auto, the
+    other technology that winget offers (or your package's technology if there is none). Both runs
+    one test for each technology. Packaged uses only your package's technology, and a type such as
+    nullsoft uses only its installer family: an old version without it gives no result.
 .PARAMETER Backend
-    Which test backend to use for this run: 'Sandbox' (Windows Sandbox) or 'HyperV' (the local
-    Hyper-V test VM over PowerShell Direct). Omit to use the configured default (the TestBackend
-    config value — Sandbox unless HyperV is configured AND ready; an unready HyperV falls back to
-    Sandbox with a warning).
+    The test machine for this run. Default: your TestBackend setting (Sandbox until you change it).
+    If the Hyper-V test VM is not ready, the test warns and uses Windows Sandbox, or stops if
+    W32T_HYPERV_VM is set. A sibling capture uses the test VM whenever it is ready, else Windows
+    Sandbox, where its proposals can only become Block or Report rules.
 .PARAMETER Unattended
-    Run back-to-back on either backend with no countdown or pause; under Sandbox the guest shuts
-    itself down afterwards (and, after a completed run, a window Windows Sandbox leaves open after
-    that is closed before the command returns), so chained runs proceed unaided. The default is
-    watched/interactive. Overrides the SandboxTestMode / HyperVTestMode config values and -TestMode; on a
-    non-interactive host Unattended is auto-selected with a warning. Note the context difference:
-    Sandbox-unattended runs the package -DeployMode Silent as the sandbox admin user, while
-    HyperV-unattended runs an INTUNE-PARITY phase for install, uninstall and update: the exact
-    published command line (Invoke-AppDeployToolkit.exe -DeploymentType Install|Uninstall, no
-    -DeployMode) from a 32-bit cmd.exe parent, as SYSTEM, in the package folder - the way the Intune
-    Management Extension launches it - with the exit code checked (0, 1707, 3010, 1641 = success).
-    Their results are not equivalent evidence.
-    The Intune-parity uninstall may run 35 minutes, longer than the device's 30-minute limit for an
-    EXE uninstaller, so a hung uninstaller ends with exit code 69113 as on a device.
-    The run's TestResults.json record says how each Intune-parity phase that failed ended: its Notes
-    name the phase and its exit code, and say what 69113 (the app's own uninstaller was still running
-    at the device's 30-minute limit and was stopped) and 1460 (the test's own limit for the phase was
-    reached) mean.
-    A HyperV-unattended run of a PSADT 4.1 package with no processes to close and a deferrable welcome
-    is not started while a user is signed in to the VM, which the toolkit's VM always is (it would wait
-    on the dialog until the 25-minute limit): it is recorded as Inconclusive (not run) with the reason.
-    Run it watched (-TestMode Interactive, or Interactive as the Hyper-V run mode in the menu), or list the
-    app's process in ProcessesToClose.
+    Runs the test with no pause, whatever your test mode settings say. In Windows Sandbox, PSADT
+    runs silently. On the Hyper-V test VM, the package runs as Intune runs it: as SYSTEM, from a
+    32-bit program.
 .PARAMETER TestMode
-    This run's test mode, on either backend: Interactive (watched) or Unattended (the same as -Unattended). It takes
-    precedence over the SandboxTestMode / HyperVTestMode config value for this run only, so -TestMode Interactive runs
-    one test watched while the config value says Unattended (for example after the Intune-parity pre-check did not
-    start an unattended Hyper-V test). A host that cannot prompt (a service, redirected input, or a console started
-    with pwsh -NonInteractive) still runs Unattended, with a warning. -Unattended together with -TestMode Interactive
-    is refused before any prompt. Omit it to use -Unattended or the config value.
+    The test mode for this run only: it wins over the SandboxTestMode and HyperVTestMode settings.
+    The command refuses Interactive together with -Unattended. A console that cannot answer prompts
+    always runs unattended.
 .PARAMETER ProofEntryId
-    Update scenario only: the Enforce prior-install entries (AppConfig PriorInstalls, see Set-Win32ToolkitPriorInstall) this
-    run proves. They must form ONE proof group: the same UninstallerType and registry View (or, for entries from a sibling
-    capture, the same floor capture); anything else, also on a project without prior-install rules, is refused before
-    anything runs. Without it, a project with Enforce entries checks its first group (in Id order). Unless you choose the
-    old version's technology (-BaselineInstallerType <type>, Packaged or Both) or a baseline project, the old version is
-    pinned to the group's uninstaller technology and to an architecture that writes the group's registry view (x86 for a
-    Wow6432 entry, a 64-bit installer for a Native one); -SpecificVersion and -VersionsBack choose only its version. With
-    -BaselineInstallerType <type> or Packaged, the run checks the group of that technology whose registry view the old
-    version writes (the packaged installer's architecture: x86 writes the 32-bit view, x64 the 64-bit one). The run asserts PriorPresent-PreUpdate.<id> (the deploy script plans
-    the removal), PriorAbsent-PostUpdate.<id> and NewAppIntact-PostUpdate, and asserts the other entries absent; the record
-    gets a Proof (what was tested: the hashes of the rules, the deploy script, Files\ and SupportFiles\, the baseline
-    installer and the catalog version). Only a Hyper-V Unattended pass with the requirement checked proves an Enforce rule.
-    A project with prior-install rules (or sibling-capture records) is never tested in a watched Windows Sandbox
-    (W32T.PriorInstallRefused), and a run that changed a project file outside Sandbox\ stops with W32T.GuestTamper.
+    Update test only: the IDs of the Enforce prior-install rules that this run checks, for example
+    nsis-x64. They must be in one proof group: rules that one run can prove together. Default: the
+    first group.
 .PARAMETER SiblingProof
-    Update scenario only, for rules from a sibling capture: Floor (default) proves them from the floor capture's installer;
-    FloorAndNewest also runs the Update test from the NEWEST capture of the same identity right after it: the capture
-    that observed the rule's VersionMax with the same key, publisher, name and removal data (a capture that registered
-    another identity under the same key never counts). That second run never proves anything (only the floor installer
-    does), but a failure there revokes the proof, so a rule is proven only when the removal works from both ends of its
-    window. Nothing more runs when the floor is the newest capture, or when the floor run failed (the rule is not
-    proven then). Both old versions come from the captures, so -SpecificVersion, -VersionsBack, -BaselineInstallerType
-    and a baseline project are refused with it.
+    Update test only, for rules from a sibling capture: Floor tests the update from the oldest
+    captured version. FloorAndNewest also tests it from the newest captured version: that run never
+    proves a rule, but its failure takes the proof away. The menu always uses Floor.
 .PARAMETER SiblingInstallerType
-    SiblingCapture scenario only: capture only these installer types (nullsoft, inno, exe, burn, msi, wix, msix). By
-    default every type that can be captured is (NSIS, Inno Setup and generic EXE; MSI, WiX, Burn and MSIX only with
-    -IncludeReportOnly; portable, zip-wrapped and ARM64 installers never).
+    Sibling capture only: captures only these installer technologies. Default: nullsoft, inno and
+    exe (the others need -IncludeReportOnly). Command line only: the menu does not offer this.
 .PARAMETER SiblingVersion
-    SiblingCapture scenario only: capture exactly these versions (one version is captured twice: an identity needs two
-    captures). By default the newest version that offers the type, and the oldest one released in the last 12 months
-    (or the 5th one before the newest when release dates are missing).
+    Sibling capture only: captures exactly these versions. Without it, the toolkit normally takes
+    the newest version and the oldest one from the last 12 months. In the menu, Widen on a review
+    card captures one older version.
 .PARAMETER SiblingCaptureVersionsBack
-    SiblingCapture scenario only: the second capture is the n-th version before the newest one that offers the type (1-20).
+    Sibling capture only: the older capture is this many versions before the newest one (1 to 20).
+    Command line only: the menu does not offer this.
 .PARAMETER IncludeReportOnly
-    SiblingCapture scenario only: also capture the types whose removal is not supported yet (MSI, WiX, Burn, MSIX); their
-    records are listed, never proposed.
+    Sibling capture only: also captures msi, wix, burn and msix, which the toolkit cannot remove
+    yet. They never become proposals. Command line only: the menu does not offer this.
 .PARAMETER SiblingCaptureCoverage
-    SiblingCapture scenario only: capture the newest version and the newest version of each of the last n major.minor
-    lines that offer the type (1-10), so a rule covers more of the versions devices may have.
+    Sibling capture only: captures the newest version of each recent version line, such as 8.9 and
+    8.8. The value is how many lines (1 to 10). A rule then covers more of the versions that devices
+    may have. Command line only: the menu does not offer this.
 .PARAMETER SiblingCaptureMaxExtra
-    SiblingCapture scenario only: when a technology registers differently between two captured versions (a drift),
-    capture up to n more versions between them to find where it changed (0-10, default 4).
+    Sibling capture only: the highest number of extra captures (0 to 10). The toolkit runs them
+    only when a technology changed how it registers, to find the version where it changed.
+    Default: 4. Command line only: the menu does not offer this.
 .PARAMETER SiblingArchitecture
-    SiblingCapture scenario only: x86 captures the 32-bit installers of a 64-bit app (their rules use the WOW6432Node
-    view); default the package's architecture.
+    Sibling capture only: x86 captures the 32-bit installers of a 64-bit app. Default: the
+    architecture of your package. Command line only: the menu does not offer this.
 .PARAMETER Assisted
-    SiblingCapture scenario only: on the Hyper-V test VM, you install each sibling yourself in the VM window when the
-    run pauses (for an installer that cannot run silently). Needs a console that can answer a prompt; its proposals
-    are Block-only.
+    Sibling capture only: you install each other technology yourself in the VM window, for an
+    installer that cannot run silently. It needs the Hyper-V test VM and a console that can answer
+    prompts, and its proposals can only become Block or Report rules. Command line only: the menu
+    does not offer this.
 .EXAMPLE
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario Update -VersionsBack 1 -SkipRequirementCheck
+    $project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+    Test-Win32ToolkitProject -ProjectPath $project -Scenario InstallUninstall
+
+    This installs and uninstalls Git on your default test machine. By default it pauses so that you
+    can check the app.
 .EXAMPLE
-    # Baseline with a previous toolkit package (tattoo-overwrite test), by full path
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.55.0' -Scenario Update -BaselineProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'
+    $project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+    Test-Win32ToolkitProject -ProjectPath $project -Scenario Update -SpecificVersion '2.52.0'
+
+    This installs Git 2.52.0 from winget, then updates it with your package.
 .EXAMPLE
-    # Same, by friendly reference (resolved under BasePath\Projects\)
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.55.0' -Scenario Update -BaselineProject 'Contoso\Git_x64_2.53.0'
+    $project = 'C:\Win32Apps\Projects\Contoso\Contoso_Reader_x64_3.2.0'   # your project folder
+    $older = 'Contoso\Contoso_Reader_x64_3.1.0'   # the older project
+    Test-Win32ToolkitProject -ProjectPath $project -Scenario Update -BaselineProject $older
+
+    This tests the update of an app that is not in winget, from your older project.
 .EXAMPLE
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'
+    $project = 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1'   # your project folder
+    Test-Win32ToolkitProject -ProjectPath $project -Scenario SiblingCapture
+
+    This captures the other installer technologies of Notepad++. It writes proposals, never rules:
+    you approve them with Set-Win32ToolkitPriorInstall.
 .EXAMPLE
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario InstallUninstall
+    $project = 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1'   # your project folder
+    Test-Win32ToolkitProject -ProjectPath $project -Scenario Update -Backend HyperV -Unattended
+
+    This is the proof run for Enforce prior-install rules: only a passed unattended Update test on
+    the Hyper-V test VM proves them. A later change to the package or a newer failed Update test
+    takes the proof away.
 .EXAMPLE
-    # Unattended Intune-parity run (published command line, 32-bit parent, SYSTEM), no operator needed — ideal for automation
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario InstallUninstall -Backend HyperV -Unattended
-.EXAMPLE
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario Update -SpecificVersion '2.47.0'
-.EXAMPLE
-    Test-Win32ToolkitProject -BasePath 'D:\Packaging' -Scenario Update
-.EXAMPLE
-    # One Update run per installer technology winget ships (e.g. the vendor EXE and the MSI), each recorded separately
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario Update -VersionsBack 1 -BaselineInstallerType Both
-.EXAMPLE
-    # Pin the old version to the vendor EXE (NSIS) technology
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario Update -SpecificVersion '8.8.9' -BaselineInstallerType nullsoft
-.EXAMPLE
-    # Run one test watched although HyperVTestMode is Unattended (for example after the Intune-parity pre-check did not start it)
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario InstallUninstall -Backend HyperV -TestMode Interactive
-.EXAMPLE
-    # Capture the other installer technologies of a WiX package (the vendor's NSIS setup) on the Hyper-V test VM
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario SiblingCapture -Backend HyperV
-.EXAMPLE
-    # Capture in Windows Sandbox on purpose: Block-only proposals, and every identity it sees becomes Block-only
-    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario SiblingCapture -Backend Sandbox
+    $project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+    $ok = Test-Win32ToolkitProject -ProjectPath $project -Scenario InstallUninstall -Unattended
+
+    This is the form for scripts. A failed test is not an error, so check $ok: it is $true, $false,
+    or $null when the test gave no result.
+.OUTPUTS
+    $true if the test passed, $false if it failed, else $null.
+    A sibling capture: $true if it recorded something, $false if no capture worked, else $null.
+    A W32T error stops the command, and other errors start with "Test-Win32ToolkitProject failed:".
+.NOTES
+    Needs: Windows Sandbox turned on, or the Hyper-V test VM and an administrator session. Only one
+    PowerShell window at a time can use the test VM. Time: an unattended install and uninstall test
+    takes about 2 minutes in Windows Sandbox. On the Hyper-V test VM it takes about 4 to 5 minutes
+    (depends on your PC).
+.LINK
+    https://win32toolkit.com/reference/Test-Win32ToolkitProject/
+.LINK
+    https://win32toolkit.com/testing/
+.LINK
+    https://win32toolkit.com/prior-installs/
 #>
     [CmdletBinding()]
     param(

@@ -1,49 +1,70 @@
 function Set-Win32ToolkitTestVMResource {
 <#
 .SYNOPSIS
-    Changes the CPU count and/or startup memory of the Hyper-V test VM and re-freezes its clean-base checkpoint.
+    Changes the processors and memory of the Hyper-V test VM and takes a new clean checkpoint.
 .DESCRIPTION
-    Reconfigures an EXISTING test VM's hardware in place — it does NOT rebuild from ISO, so the installed
-    golden guest and its disk are preserved (minutes, not the ~hour a full re-provision costs).
+    Set-Win32ToolkitTestVMResource changes the processors, the memory, or both, of the Hyper-V
+    test VM. It turns the VM off and deletes all its checkpoints, including the ones you made
+    yourself. Then it changes the hardware and starts the VM. At the signed-in desktop, it takes a
+    new clean-base checkpoint: the saved state for every test.
 
-    Why this is more than a one-liner: the VM uses a STANDARD (memory-state) 'clean-base' checkpoint. Changing
-    static memory / vCPU count requires the VM to be powered OFF, and the existing checkpoint encodes the OLD
-    memory state — so a change would be silently reverted by the next Reset-Win32ToolkitTestVM unless the
-    checkpoint is recreated. This command therefore:
+    Use it when tests are slow or an installer needs more memory. Reset the VM first with
+    Reset-Win32ToolkitTestVM: the new checkpoint keeps every disk change since the last reset. In
+    the menu: Settings > Hyper-V test VM > Change VM resources.
 
-        Stop-VM -TurnOff  ->  automatic checkpoints off  ->  remove checkpoints  ->  Set-VMProcessor / Set-VMMemory
-        ->  Start-VM  ->  wait for the AutoLogon desktop  ->  re-take the Standard 'clean-base' checkpoint  ->  persist
+    It does not ask for confirmation and changes nothing in Intune. It saves the new values as
+    the defaults for New-Win32ToolkitTestVM (not for a VM pinned with W32T_HYPERV_VM).
 
-    Hyper-V automatic checkpoints are turned off before the VM starts, and the checkpoint is re-taken with them
-    off: with them on, every start from Off adds an 'Automatic Checkpoint', and the checkpoint would bring the
-    setting back with every restore.
-
-    The chosen values are saved (HyperVProcessorCount / HyperVMemoryStartupBytes) and become the defaults for the
-    next New-Win32ToolkitTestVM, except for the VM this PowerShell session pins with the W32T_HYPERV_VM environment
-    variable (a pin is for the session only: nothing is saved, and one line says so). Requested CPU/RAM above the
-    host's capacity is REFUSED.
-
-    The change holds the test VM's lease, the lock every win32-toolkit process takes before it changes the VM:
-    while another PowerShell session uses the VM it waits, up to HyperVLeaseWaitMinutes (default 60), and then
-    stops with the error W32T.HyperVLeaseTimeout before anything changes.
+    It stops before any change when a value is outside its limits, or when it has no VM password.
+    If the desktop does not appear within 10 minutes, the VM has no clean-base checkpoint. Repair
+    it in the menu: Configure guest AutoLogon + re-checkpoint. W32T.HyperVLeaseTimeout means that
+    another PowerShell window kept the VM too long.
 .PARAMETER ProcessorCount
-    New virtual processor count (1-64). Omit to leave CPU unchanged.
+    The new number of virtual processors, from 1 to 64 and not more than your PC has. Without it,
+    the processors stay as they are. Give -ProcessorCount, -MemoryStartupBytes or both.
 .PARAMETER MemoryStartupBytes
-    New static startup memory in bytes (accepts PowerShell size literals, e.g. 6GB). Omit to leave RAM unchanged.
+    The new memory of the VM, for example 8GB. It must be at least 2 GB, and at most the memory of
+    your PC minus 2 GB. Without it, the memory stays as it is.
 .PARAMETER Name
-    VM name. Defaults to the session's test VM: W32T_HYPERV_VM, else the configured HyperVVMName, else 'win32tk-golden'.
+    The VM to change. Default: the VM in the W32T_HYPERV_VM environment variable if it is set,
+    else your saved test VM (win32tk-golden unless you chose another name).
 .PARAMETER CheckpointName
-    Clean-base checkpoint name to recreate. Defaults to W32T_HYPERV_CHECKPOINT, else the configured HyperVCheckpoint,
-    else 'clean-base'.
+    The name of the new clean checkpoint. Default: the name in the W32T_HYPERV_CHECKPOINT
+    environment variable if it is set, else your saved checkpoint name (clean-base unless you
+    chose another name).
 .PARAMETER Credential
-    Guest admin credential (to confirm the desktop is up before the warm checkpoint). Defaults to the stored
-    DPAPI-protected guest credential.
+    The user name and password of the administrator account in the VM. The command uses them to
+    check the desktop before the new checkpoint. Default: the password that the toolkit saved for
+    the VM. Use it when no password is saved.
 .EXAMPLE
     Set-Win32ToolkitTestVMResource -ProcessorCount 4 -MemoryStartupBytes 8GB
+
+    This gives the test VM 4 processors and 8 GB of memory. It deletes the checkpoints of the VM
+    and takes a new clean-base checkpoint.
 .EXAMPLE
-    Set-Win32ToolkitTestVMResource -MemoryStartupBytes 6GB   # RAM only; CPU unchanged
+    Set-Win32ToolkitTestVMResource -MemoryStartupBytes 6GB
+
+    This changes only the memory. The number of processors stays the same.
+.EXAMPLE
+    Reset-Win32ToolkitTestVM; Set-Win32ToolkitTestVMResource -MemoryStartupBytes 8GB
+
+    This puts the VM back to its clean checkpoint first, then gives it 8 GB of memory. The new
+    checkpoint keeps no changes from earlier tests or from your own work.
+.EXAMPLE
+    Set-Win32ToolkitTestVMResource -ProcessorCount 4 -WhatIf
+
+    This shows the current and the new size of the VM, and changes nothing.
 .OUTPUTS
-    The reconfigured VM (Get-VM), or nothing under -WhatIf.
+    The VM object from Hyper-V, as Get-VM shows it.
+    If the VM already has the values you give, the command says so and returns the VM unchanged.
+    Otherwise -WhatIf returns nothing.
+.NOTES
+    Needs: PowerShell 7 run as administrator. Time: a few minutes. Only one PowerShell window at a
+    time can use the test VM.
+.LINK
+    https://win32toolkit.com/reference/Set-Win32ToolkitTestVMResource/
+.LINK
+    https://win32toolkit.com/hyperv-vm-care/
 #>
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType('Microsoft.HyperV.PowerShell.VirtualMachine')]

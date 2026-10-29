@@ -1,625 +1,387 @@
 ---
-description: "Prove a Win32 package installs and detects correctly in a disposable Windows sandbox or Hyper-V test VM before you publish."
+description: "Install and uninstall the package in a clean test machine, read the result, and test an update from an older version."
 ---
 
-# Testing packages
+# Test the package
 
-Before a package ever reaches a device, you can prove it installs, uninstalls, and updates cleanly, in a
-disposable Windows guest, with real pass/fail assertions. The command that does this is
-[Test-Win32ToolkitProject](reference/Test-Win32ToolkitProject.md); it can run standalone against any
-existing project, or be chained onto a packaging run with `Invoke-Win32Toolkit -RunTest`.
+A test installs your package in a clean [test machine](glossary.md#test-machine): a copy of
+Windows with nothing else installed. win32-toolkit then runs automatic [checks](glossary.md#check)
+and records a [result](glossary.md#result): Passed, Failed or Inconclusive.
 
-Every test run ends with a recorded **PASS / FAIL / inconclusive** verdict in the project's
-`Documentation\TestResults.json`, the same history the generated customer documentation reports.
+A failed test only warns. It does not stop packaging or publishing. So read every result.
 
-## Test backends: Windows Sandbox vs Hyper-V VM
+## Before you start
 
-Tests run in one of two guest environments:
+Step 4 of 7.
 
-| | **Windows Sandbox** (default) | **Hyper-V test VM** (opt-in) |
-|---|---|---|
-| Setup needed | None (Windows feature) | One-time VM build (see [Hyper-V test VM](hyperv-vm.md)) |
-| Guest lifetime | Disposable: a fresh guest cold-boots for every run | Persistent VM, reverted to a warm checkpoint per run (no cold boot; each run restores the checkpoint twice, which costs seconds to about a minute each depending on the host) |
-| Concurrency | One sandbox at a time (the toolkit waits up to 90 s for a previous one to close) | One test at a time per VM: a second PowerShell session waits for it (up to `HyperVLeaseWaitMinutes`, then a `W32T.HyperVLeaseTimeout` error) |
-| Unattended runs execute as | The sandbox's built-in admin user, `-DeployMode Silent` | **SYSTEM**, with the published Intune command line from a 32-bit parent (Intune parity) |
+- You packaged an app in [step 3](packaging.md). This page tests the [project](glossary.md#project)
+  `C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0`: the folder of one app version. Your version will differ.
+- [Windows Sandbox](glossary.md#windows-sandbox) is turned on. It is a clean, temporary copy of
+  Windows that comes with Windows. See [Turn on Windows Sandbox](install.md#turn-on-windows-sandbox).
+- Or you have a ready [Hyper-V test VM](glossary.md#hyper-v-test-vm): a virtual machine (VM) that goes
+  back to a clean state before each test. See [Set up the Hyper-V test VM](hyperv-vm.md).
+- Time: less than a minute to start a test, then about 2 minutes of waiting in Windows Sandbox. A test you watch adds
+  a 2-minute pause. Testing an update takes longer, because it downloads and installs the old version first.
 
-To make Hyper-V the default backend, set the `TestBackend` config value (stored in the toolkit's
-per-user registry key):
+## Run an install and uninstall test
 
-```powershell
-Set-ItemProperty -Path 'HKCU:\Software\CloudFlow\win32-toolkit' -Name TestBackend -Value 'HyperV'
-```
+This test checks that the package installs, that Intune would detect the app, and that the package uninstalls it. Run
+it for every app.
 
-You can also pick a backend for a single run with the `-Backend` parameter. Either way, if Hyper-V is
-selected but not ready (not elevated, VM or checkpoint missing, no guest credential saved), the run
-**falls back to Windows Sandbox with a warning** instead of failing. Documentation capture follows the
-same backend choice.
+=== "Menu"
 
-## Watched vs unattended
+    Start the menu ([`Show-Win32Toolkit`](reference/Show-Win32Toolkit.md)).
 
-Both backends run **watched** (interactive) by default: you get a verification window (a 2-minute
-countdown dialog in the Sandbox, or a host-side pause on Hyper-V) to click around in the freshly
-installed app before the test continues. In the Sandbox the guest window stays open afterwards for
-manual inspection. Which PSADT dialogs you see differs per backend:
+    1. In the main menu, choose **Work with an existing project**.
+    2. At **Select a project**, choose `Contoso / Git_x64_2.53.0`. You can type to filter the list.
+    3. Choose **Run a test**.
+    4. At **Which test backend?**, choose **Windows Sandbox**. The menu asks this every time.
+    5. At **Test scenario**, choose **Install then uninstall**.
 
-- **Sandbox** runs the package in PSADT's **Auto** mode, like Intune does. On PSADT 4.2 the dialogs
-  appear only when one of the app's processes-to-close is running; otherwise the run is silent. On
-  4.1 an app with an empty processes-to-close list still shows them. (See
-  [when dialogs appear](org-templates.md#when-dialogs-appear).)
-- **Hyper-V** watched runs force `-DeployMode Interactive`, so the dialogs always show.
+=== "Command line"
 
-Pass `-Unattended` for back-to-back automation:
+    Run [`Test-Win32ToolkitProject`](reference/Test-Win32ToolkitProject.md) with your project folder and the scenario.
 
-- No countdown, no pauses.
-- **Sandbox**: PSADT runs with `-DeployMode Silent`, and the guest **shuts itself down** after
-  collecting logs, so a chained run (for example `-RunTest InstallUninstall, Update`) proceeds without
-  anyone closing windows.
-- **Hyper-V**: the install, the uninstall and the update run as an **Intune-parity** phase: the exact
-  published command line (`Invoke-AppDeployToolkit.exe -DeploymentType Install` or `Uninstall`, no
-  deploy mode) started from a 32-bit `cmd.exe`, as SYSTEM, in the package folder, the way the Intune
-  Management Extension starts it. Its exit code is checked against Intune's success codes (0, 1707,
-  3010, 1641).
+    ```powershell
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario InstallUninstall
+    ```
 
-To make unattended the default per backend, set the `SandboxTestMode` and/or `HyperVTestMode` config
-value to `Unattended` in the same registry key. An explicit `-Unattended` switch always overrides the
-config. `-TestMode Interactive` runs one test watched although the config value says `Unattended`;
-`-TestMode Unattended` is the same as `-Unattended`. On a **non-interactive host** (CI pipeline,
-redirected stdin), the toolkit auto-selects Unattended and prints a loud warning, also over
-`-TestMode Interactive`. Interactive mode would block forever on prompts nobody can see.
-In the menu, **Run a test** asks the Hyper-V run mode and passes it as `-TestMode`; the mode `HyperVTestMode`
-sets is the first choice, so pressing Enter keeps it. A Sandbox test follows `SandboxTestMode`. The screen
-shows the mode before the run starts, and the packaging wizards' Review panel shows it when you tick the test.
+    Without options, the command asks for the scenario, then for the project.
 
-> **Context caveat.** A Sandbox-unattended run executes as the sandbox's interactive admin user, while a
-> HyperV-unattended run executes as **SYSTEM, with the same launcher, bitness and command line Intune
-> uses on a real device**. The two verdicts are therefore *not equivalent evidence*: an app that behaves
-> differently under SYSTEM (per-user shortcuts, HKCU writes, user profile paths) can pass in the Sandbox
-> and still fail via Intune. The recorded outcome includes the backend and mode so you can tell them
-> apart later. For the closest-to-Intune signal, use the Hyper-V backend unattended.
+    For every option, see [Test-Win32ToolkitProject](reference/Test-Win32ToolkitProject.md).
 
-**PSADT 4.1 dialogs in an unattended Hyper-V run.** The toolkit's test VM always restores to a signed-in
-desktop: its checkpoint is taken at an AutoLogon desktop. PSADT's Auto mode shows its dialogs to a
-signed-in user, and PSADT 4.1 shows its welcome dialog whenever the user may defer, even when the app has
-no processes to close. So before an unattended Hyper-V test of a PSADT 4.1 package with **no processes to
-close** and a **welcome dialog that lets the user defer** (the org template's welcome with `AllowDefer`,
-or a deferrable welcome in the deploy script), the toolkit checks the VM over PowerShell Direct. A
-Zero-Config MSI package (an empty app name, an MSI in `Files`) is not such a package when its MSI's File table
-holds a program: PSADT adds those programs to the processes to close and runs silently while none of them is
-running. When a
-user is signed in, which the toolkit's VM always is, the test is **not started**: nobody would answer the
-dialog, so the run would wait 25 minutes and then fail with exit code 1460. A warning says so before
-anything runs (nothing is written, cleared or downloaded for the test: the logs of the previous run stay
-in place), and the test is recorded as Inconclusive with the reason (the customer documentation shows it
-as "Not run (Intune-parity pre-check)"). To test such a package:
+## What happens during the test
 
-- run the test **watched** and answer the dialog in the VM window:
-  `Test-Win32ToolkitProject ... -Backend HyperV -TestMode Interactive` (it overrides `HyperVTestMode` for that
-  run, see [Configuration](configuration.md#test-modes-sandboxtestmode-hypervtestmode)), or **Interactive** as
-  the Hyper-V run mode under **Run a test** in the menu, from an interactive console (a host that cannot
-  prompt always runs unattended); or
-- list the app's process in `ProcessesToClose`, so that PSADT 4.1 asks only while the app is running
-  (on devices too).
+1. The test installs the app's [dependencies](glossary.md#dependency) first: other apps that your app
+   needs.
+2. The package installs the app.
+3. The test checks that the app is installed, the way Intune checks it.
+4. An [interactive test](glossary.md#interactive-test) is a test you watch. It pauses here, so you can
+   try the app.
+5. The package uninstalls the app.
+6. The test checks that the app is gone.
+7. The toolkit copies the logs of the test into the project.
 
-Devices with a signed-in user show the same dialog. Signing the user out of the VM is not a remedy:
-watched and unattended runs restore the same checkpoint, a watched run needs the signed-in desktop (a run
-that lands on the sign-in screen restarts the VM to sign in again), and changing the VM's resources or
-repairing its checkpoint takes a signed-in checkpoint again. The check runs only for such packages and
-can take a few minutes, with one line on the console while it runs: it restores the VM's checkpoint before
-and after it looks (a test that then starts skips its own first restore). The answer is kept per checkpoint
-(`HyperVPrecheckCache`, [Configuration](configuration.md#hypervprecheckcache-default-on)): later tests on the same
-checkpoint skip the check and its restores. When it cannot reach the VM or read its
-sessions, it warns and the test starts as usual. PSADT 4.2 packages are not checked: PSADT 4.2 resolves
-Auto mode to Silent when no listed process is running.
+To find the app, the test reads the [install tattoo](glossary.md#install-tattoo): a registry value that
+the package writes after a good install. Intune uses the same value.
 
-**Exit code 1460.** The guest runner stops a package that is still running after 25 minutes (35 for the
-Intune-parity uninstall, see below; 55 for the install and the update of a package with Enforce
-[prior-install rules](packaging.md#prior-installs-remove-another-installer-technology-before-installing), watched or unattended, which may first run the prior's
-uninstaller for up to 30 minutes) and records exit code 1460. For an Intune-parity phase the warning
-names the likely cause:
+If a dependency does not install, the test stops and the result is Failed (see
+[Dependencies in tests](dependencies.md#dependencies-in-tests)).
 
-- **Install or update phase**: a PSADT dialog waiting for the user signed in to the VM (for example
-  because a listed process to close was running, or, on PSADT 4.1, a welcome dialog), or an installer that
-  did not finish. Run the test watched to see it (`-TestMode Interactive`, see above).
-- **Uninstall phase**: the package was still running after 35 minutes, longer than the 30-minute limit
-  the uninstall of a project created with this version puts on an EXE uninstaller: a project created
-  before that limit (re-create it), or a step the limit does not cover, for example an MSI uninstall.
-
-The PSADT log under `Sandbox\Logs` shows where the package stopped.
-
-**Test-run limits and the device limit.** On a device, the uninstall of a project created with this
-version stops an EXE uninstaller that is still running after 30 minutes and fails with exit code 69113.
-The Intune-parity uninstall of an unattended Hyper-V test may run 35 minutes (40 for the whole phase), so
-it ends the same way: exit code 69113 (the warning says so), and the uninstall assertions fail because the
-detection tattoo stays, as on a device. The other limits stay below the device limit: 25 minutes in the
-guest runner for the install, the update and the watched uninstall (30 for the Hyper-V phase around it;
-55 and 60 for the install and the update of a package with Enforce prior-install rules: 30 for the removal of the
-prior, 25 for the install), and 10 minutes for the Sandbox install/uninstall wait. A hung uninstaller shows there as exit code 1460
-(watched Hyper-V) or as an Inconclusive run (Sandbox).
-
-The `Documentation\TestResults.json` record of an unattended Hyper-V run says how each Intune-parity phase
-that failed ended: its `Notes` give one sentence per phase with the exit code, and say what 69113 (the
-app's own uninstaller was still running at the device's 30-minute limit and was stopped) and 1460 (the
-test's own limit for the phase was reached) mean, and, for a project with prior-install rules, what the
-prior-install exit codes 69101-69112 and 1618 mean (the same meanings as in
-[Packages that remove a prior install](publishing.md#packages-that-remove-a-prior-install)); the Update
-test's warning names them too. The customer documentation does not show `Notes`.
-
-The record of a Hyper-V run also keeps `Timing` (seconds per step: opening the VM, copying the project in,
-each phase that ran, the teardown, the whole run, and whether the run could skip its first checkpoint
-restore) and `Lane` (the VM and its checkpoint: names, Ids, the checkpoint's age, the VM's processors and
-memory, and a one-time check of the checkpoint's sign-in and Defender state). The customer documentation
-does not show them.
-
-**Checkpoint warnings.** What an unattended Hyper-V test proves depends on the checkpoint it restores. Once per
-checkpoint (the answer is stored, see `HyperVCheckpointAttestation` in [Configuration](configuration.md)), an
-unattended run checks in the guest that a user is signed in, that Defender real-time protection is on, that
-Defender has no exclusions and how old its signatures are. A checkpoint older than 35 days, nobody signed in,
-real-time protection off, an exclusion, or signatures older than 35 days (or never updated) each print one
-warning, once per PowerShell session, and add one sentence to the record's `Notes`; the test still runs. Re-take
-the checkpoint as [Hyper-V test VM](hyperv-vm.md) describes.
-
-### One package, one process
-
-Every PSADT package in a test (each `project:` dependency, an Update baseline project, and the app
-itself) runs in its **own** Windows PowerShell process: PSAppDeployToolkit 4.2 refuses to load a second
-copy of itself into one process, and 4.1 and 4.2 packages cannot share one. The app, the baseline and
-the update are started by the guest runner `Sandbox\Invoke-PsadtPackage.ps1`, which records the exact
-exit code of each run in `Sandbox\Logs\PsadtExitCodes.log`, for example:
-
-```text
-[2026-10-16 10:12:03Z] app Install parent=x86-cmd exit=0 result=Success
-```
-
-`parent=x86-cmd` marks an Intune-parity run, `parent=x64-direct` a direct run. An Update test from a vendor
-installer (a winget version, not a toolkit project) records that baseline install too, as
-`baseline Install parent=vendor exit=<code> result=<class>`; each declared dependency adds a `dep:<name>` line. `parent=native-cmd` means the
-guest had no 32-bit `cmd.exe` (no `SysWOW64`), so no 32-bit parent ran and that run is not true Intune parity. Each test run starts its
-lines with a `-- test run <name> --` line. The times in this log and in the assertion logs are UTC (the
-trailing `Z`), so the guest's lines and the host's run line read in order whatever time zone the VM or
-Sandbox uses; the run folder names below use the host's local time. The host prints the lines of the run that just ended, and the
-Sandbox countdown banner reports the real install result of the current run (green on success, red with
-the exit code on failure) instead of always claiming success. The file is emptied when a test command
-starts, so after a `-BaselineInstallerType Both` test it holds the lines of every run.
-
-### Each run keeps its own logs
-
-The guest writes its logs to `Sandbox\Logs\`, and the next run overwrites them. So after every run (and
-every run of a `-BaselineInstallerType Both` test) the toolkit copies the files that run wrote or changed
-into a folder of its own:
-
-```text
-Sandbox\Logs\Runs\20261020-221500_InstallUninstall\
-Sandbox\Logs\Runs\20261020-222900_Update_msi\
-Sandbox\Logs\Runs\20261020-224100_Update_exe\
-```
-
-The folder name is the start time, the scenario and, for an Update run, the old version's installer family.
-The documentation capture that `Invoke-Win32Toolkit`, `New-Win32ToolkitManualApp -Continue` and
-`Complete-Win32ToolkitManualApp` run first keeps its logs the same way, in `Sandbox\Logs\Runs\<time>_Capture\`
-(printed as `Capture logs : <folder>`), so the first test run cannot overwrite the capture's PSADT and MSI logs.
-It holds the assertion log, the Add/Remove Programs snapshots, the run's own `PsadtExitCodes.log` lines and
-the PSADT and MSI logs. The host prints it as `Run logs : <folder>`, and the run's record in
-`Documentation\TestResults.json` names it in `LogFolder`. The files directly in `Sandbox\Logs\` gather the
-logs of every run: each run overwrites the files it writes, but a file only an earlier run wrote stays there
-(for example `UpdateAssertions.log` after an InstallUninstall run, or the log of a dependency or an earlier
-version), so only the run folder holds exactly one run's logs. In Windows Sandbox, the toolkit waits up to 60
-seconds after the verdict for the guest to finish copying its logs; a Hyper-V run copies them back before the
-verdict. The run folders stay on the host:
-a Hyper-V run neither copies them into the VM nor brings them back. Like the rest of `Sandbox\`,
-these folders are never packaged.
-
-## The InstallUninstall scenario
-
-To run it:
-
-```powershell
-Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario InstallUninstall
-```
-
-What happens inside the guest, in order:
-
-1. **Dependencies install first**: any winget or `project:` dependencies the project declares are
-   staged into `Sandbox\Dependencies\` and installed silently before the app, the same order Intune
-   uses on a real device. The dependency step stops at the first failing dependency and reports its
-   exit code.
-2. **Install**. The project's package runs in its own process (see
-   [Watched vs unattended](#watched-vs-unattended) for the mode).
-3. **Assert: installed**. The guest checks that the app is *detected* using the same signal Intune's
-   detection rule uses: the **install tattoo** (the registry key the package writes on success). If the
-   install "succeeded" but the tattoo is missing, the test fails, exactly as Intune would report a
-   failed install. For an MSI it also checks that Windows Installer registered the MSI's product code.
-4. **Countdown / verification window** (watched mode only): a 2-minute WinForms countdown with a Skip
-   button (Sandbox), or the PSADT GUI plus a host pause (Hyper-V). Use it to launch the app and check it
-   actually works.
-5. **Uninstall**: the same package with `-DeploymentType Uninstall`, again in its own process.
-6. **Assert: uninstalled**. The detection signal (and, for an MSI, the product code) must now be
-   *gone*. For an EXE app (from winget or a manual app), the app's own Add/Remove Programs entries must
-   be gone too (`AppArpGone-PostUninstall`): the machine-wide entries the install capture identified as
-   the app's own, recorded in `SupportFiles\AppConfig.json` as `Uninstall.PrimaryKeys` (key name and 32-
-   or 64-bit registry view). An entry of a product the installer put next to the app (for example a
-   maintenance service) is never checked, and neither is a per-user entry: the capture runs as the
-   Sandbox user, an install on a device runs as SYSTEM, so an app that registers itself only per user
-   gets no such check. Both assertion steps log each recorded entry as `present=[True]` or
-   `present=[False]`; an entry that was not there after the install proves nothing when it is gone after
-   the uninstall. The check needs the uninstall of a project created with this version: a project created
-   before it, even when its capture was run again later, keeps the detection check only (its uninstall
-   can return before the uninstaller has finished); re-create it to get the check.
-7. **Log collection**. PSADT and MSI logs are copied back to the project's `Sandbox\Logs\` folder for
-   troubleshooting, whatever the outcome, and kept in the run's own folder
-   (see [Each run keeps its own logs](#each-run-keeps-its-own-logs)).
-
-The host waits for the in-guest assertion log (`Sandbox\Logs\InstallAssertions.log`), prints a
-**PASS/FAIL verdict**, and appends the outcome (scenario, backend, mode, verdict, timestamp) to
-`Documentation\TestResults.json`. In watched Sandbox mode the guest stays open; closing it early before
-the uninstall assertion leaves the verdict inconclusive. A Hyper-V run copies the log back when it ends, so
-the host reads it once, without waiting: a failed assertion makes the test fail even when the run stopped
-early (for example a phase that did not finish), and a run that did not complete is never a pass (its
-assertions may all have passed; the verdict is then inconclusive, with a warning). The host deletes the
-previous run's log before the run starts. If it cannot (for example a log viewer has the file open), the
-Hyper-V verdict is inconclusive, with a warning and a note in the record, because that run's lines and this
-run's are in the same file: close the file and run the test again.
-
-In the menu (**Run a test**), the result is a panel: PASSED, FAILED (each failed check with its reason,
-and the run's own log folder) or Inconclusive.
-The latest result is also shown before you package or publish, as a warning that names the run and its
-failed checks (`The latest install/uninstall test (...) FAILED: ...`) or says the run gave no verdict. In
-[Warnings before you publish](publishing.md#warnings-before-you-publish) these are `INSTALL-FAILED` and
-`INSTALL-INCONCLUSIVE`; the warning text itself does not print the code. They only warn and never stop a
-package or a publish.
-
-**Cleanup paths packaging refuses.** When the project's uninstall cleanup paths fail the check packaging
-enforces (see [the package check](packaging.md#the-package-check)), every test first prints one warning
-with packaging's own findings and then runs anyway: only packaging stops such a project. In the guest, the
-uninstall of a project created with this version checks every cleanup path again and leaves a refused one
-in place; the uninstall of an older project deletes them there (the Sandbox is discarded afterwards, and
-the next Hyper-V run restores the VM's checkpoint).
+In Windows Sandbox, the pause is a 2-minute countdown window. Choose **Skip Wait** to end it sooner. The first line of
+the window shows the real install result: `INSTALLATION COMPLETED SUCCESSFULLY!` in green, or
+`INSTALLATION FAILED (exit ...)` in red. The uninstall still runs after a failed install.
 
 <!-- SCREENSHOT: Windows Sandbox during an InstallUninstall run, with the 2-minute countdown dialog visible over the freshly installed app -->
 
-## The Update scenario
+On the Hyper-V test VM, the VM window opens instead. The console waits with
+`Test the app in the VM window - press Enter to continue`. Press <kbd>Enter</kbd> when you are done.
 
-The Update scenario proves the package can upgrade a machine that already has an **older version**
-installed: the situation your update app meets in the field.
+## Interactive or unattended
 
-```powershell
-Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario Update -VersionsBack 1
-```
+An interactive test lets you watch the install and try the app. An [unattended test](glossary.md#unattended-test) runs from start to end without a person and without a pause.
 
-### Choosing the old-version baseline
-
-| Baseline source | How | Best for |
+| Question | Interactive test | Unattended test |
 |---|---|---|
-| **winget** (default) | The toolkit reads the package ID from the project's YAML, lists older winget versions, and downloads one to `Sandbox\OldVersion\`, picked interactively, or via `-VersionsBack` / `-SpecificVersion`. An unattended run, or a host that cannot prompt (a service, redirected input, or a console started with `pwsh -NonInteractive`), that names no version uses the previous one (as `-VersionsBack 1`) and says so in a warning. In the `Show-Win32Toolkit` menu you always choose the version from the list. Silent install switches are composed the way winget composes them: the downloaded manifest's `Silent` switches, or, when none are published, winget's default for the installer type (NSIS `/S` · Inno `/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART` · WiX/Burn `/quiet /norestart` · MSI `/qn /norestart`), followed by the manifest's `Custom` switches (for example Inno Setup's `/ALLUSERS` for KeePass and WinSCP). Only for an **unknown/typeless installer**, where `/S` is a guess, a warning tells you to watch the run. | winget-sourced apps |
-| **A local packaged project** | `-BaselineProject 'Contoso\Git_x64_2.52.0'` (a friendly `<Template>\<Name>` reference under `Projects\`) or `-BaselineProjectPath` (full path). The baseline package is mapped **read-only** into the guest at `C:\PSADTOld` (its raw `Projects\` copy is never modified) and installed via *its own* PSADT script, in its own process, so the baseline and the update may use different PSADT versions. | Manual (non-winget) apps, which have no winget version history. Also for proving the **tattoo-overwrite** path: the old package writes its tattoo, and the new one must replace it |
+| What you see | The install and the pause. Windows Sandbox stays open after the test. | Nothing. Windows Sandbox closes itself. |
+| How long | Adds a 2-minute pause in Windows Sandbox. On the test VM, it waits until you press <kbd>Enter</kbd>. | About 2 minutes in Windows Sandbox. About 4 to 5 minutes on the test VM (depends on your PC). |
+| When to use it | To try the app, or to see a dialog that stops the install. | Scripts, several tests in a row, and tests as Intune runs them. |
 
-#### Which installer technology the old version uses
+Interactive is the default. Choose the mode like this:
 
-Many apps ship the same version as more than one installer technology, for example a vendor EXE (NSIS)
-and an MSI. Devices that installed the EXE outside Intune are exactly the ones your MSI update meets, and an
-MSI never removes an EXE install: the device ends up with two registrations over one folder. So for a
-winget baseline, `-BaselineInstallerType` decides the technology of the old version, and the default
-looks for the other one:
+- **For one test:** add `-TestMode Unattended` (short form `-Unattended`) or `-TestMode Interactive`. Do not combine
+  `-Unattended` with `-TestMode Interactive`.
+- **As your default:** set `SandboxTestMode` or `HyperVTestMode` to `Unattended`, see [Tests](settings.md#tests).
+- **In the menu:** a test in Windows Sandbox follows `SandboxTestMode`. A test on the test VM asks
+  **Hyper-V run mode**: choose **Interactive** or **Unattended**. Your default is first, so <kbd>Enter</kbd> keeps it.
 
-| Value | Old version installed as |
-|---|---|
-| `Auto` (default) | The **other** installer technology winget ships for this app, when there is one (for example the NSIS EXE under a WiX MSI package); otherwise the packaged technology. The other technologies come from `Documentation\IdentityDelta.json`, which the test writes on first use (one lookup of the app's winget-pkgs manifest). When that lookup could not run (offline, rate-limited), the test looks again on the next run; until it succeeds, the packaged technology is used and the line under `Baseline technology` says the other technologies could not be checked. |
-| `Both` | One Update run **per technology**, at the same version: the packaged one, then each other one winget ships. Each run has its own verdict, its own `TestResults.json` record and its own log folder; the command returns `$false` when any run failed, `$null` when any run had no verdict, otherwise `$true`. |
-| `Packaged` | The packaged technology only. |
-| `msi`, `wix`, `burn`, `nullsoft`, `inno`, `exe`, `msix` | Exactly that technology family. |
+!!! warning "Do not close Windows Sandbox early"
+    If you close an interactive Windows Sandbox before the test ends, the test does not stop. The toolkit waits up to
+    10 minutes (30 when you test an update), then records Inconclusive. If Windows Sandbox does not start by itself,
+    an install and uninstall test is Inconclusive, even when you start it by hand.
 
-The technology is printed as `Baseline technology : ...` **before** you pick the version, so you know what
-the old version has to ship.
+## Read the result
 
-```powershell
-# Test the update over every technology winget ships for the previous release
-Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario Update -VersionsBack 1 -BaselineInstallerType Both
+### In the menu and the console
+
+In the menu, the result is a panel:
+
+- **INSTALL/UNINSTALL TEST PASSED** (green): all install and uninstall checks passed.
+- **INSTALL/UNINSTALL TEST FAILED** (red): each failed check with its reason, and the path of the log.
+- **Inconclusive** (yellow): no clear result. Read the messages above the panel.
+
+<!-- SCREENSHOT: The green INSTALL/UNINSTALL TEST PASSED panel in the menu after a Windows Sandbox test of Git_x64_2.53.0 -->
+
+Above the panel, and on the command line, the console prints each check and the result.
+
+```text title="What you see at the end of the test"
+...
+  ASSERT InstallDetected-PostInstall = PASS
+  ASSERT UninstallClean-PostUninstall = PASS
+  ASSERT AppArpGone-PostUninstall = PASS
+
+✓ INSTALL/UNINSTALL TEST PASSED - 3 assertion(s) passed.
+PSADT exit codes (Sandbox\Logs\PsadtExitCodes.log):
+  [2026-10-29 10:16:03Z] app Install parent=x64-direct exit=0 result=Success
+  [2026-10-29 10:18:41Z] app Uninstall parent=x64-direct exit=0 result=Success
+Run logs         : C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0\Sandbox\Logs\Runs\20261029-111500_InstallUninstall
 ```
 
-The download rules:
+### What the checks mean
 
-- **The installer type is always pinned.** The types of its family are tried in winget's order (for
-  `nullsoft`: `nullsoft`, `burn`, `inno`, `exe`). There is **no unpinned retry** any more, so the baseline
-  can never silently be another technology than the one printed. After each `No applicable installer found`
-  line from winget, one line names the attempt that comes next.
-- **A scope is only a preference.** When the pinned type comes with an explicit scope (the packaged
-  manifest's `machine` or `user`), it is tried first; when that version has no installer of that scope, the
-  same type is downloaded without a scope, with a warning, and `ScopeRelaxed` is recorded. A scope never
-  makes the test fail to download. The installer locale is never pinned.
-- **`Auto` falls back loudly.** When the chosen version does not ship the other technology, the run falls
-  back to the packaged technology (still pinned) with a warning and records `UsedFallback`. Such a run cannot
-  show a technology switch, so [Export keeps warning](publishing.md#warnings-before-you-publish) until a run
-  with the other technology passes: pick a version that ships it (`-SpecificVersion`) or pass that type to
-  `-BaselineInstallerType`.
-- **An explicit type, `Packaged` and each `Both` run never fall back.** When the version has no installer of
-  that technology, the run has **no verdict**: it prints a warning, records an `Inconclusive` entry marked
-  `Baseline.Unavailable` in `TestResults.json` (listed in the documentation, never treated as a test result)
-  and returns `$null`. `Sandbox\OldVersion\` keeps the previous old version: it is replaced only when a
-  download succeeds.
-- **Windows Sandbox in watched mode** keeps each sandbox open for verification, and only one may run: with
-  `Both`, close the previous run's sandbox when the console asks (`Close the Windows Sandbox of the previous
-  leg ...`). The next run waits up to 10 minutes, then has no verdict. Unattended runs and Hyper-V runs one
-  after the other without help.
+The logs call the checks assertions. Each check ends with `PASS`, `FAIL` or `SKIP` (nothing to check). Apps with an
+[MSI](glossary.md#msi) installer get two extra checks.
 
-`-BaselineInstallerType` applies to a winget baseline only; with `-BaselineProject` /
-`-BaselineProjectPath` the baseline package has its own technology.
-
-#### Technology switch warning
-
-When the old install of **another** technology is still registered after the update (the `OldArpGone`
-assertion failed and the baseline's family differs from the package's), the test prints:
-
-```text
-WARNING: Technology switch: the vendor nullsoft install of v8.8.9 (Notepad++ (64-bit x64), ARP key 'Notepad++') was still registered after the wix package installed. Devices that have the vendor EXE install get two registrations over one folder. Do not publish this package to them; see docs/packaging.md, Installer technology.
-```
-
-Treat it as a real problem for the devices that have the other install: rebuild the package with the
-[technology they already have](packaging.md#installer-technology), or plan how those devices move from one
-technology to the other.
-
-### What the run does
-
-```mermaid
-sequenceDiagram
-    participant H as Host (Test-Win32ToolkitProject)
-    participant G as Guest (Sandbox or Hyper-V VM)
-    H->>G: Stage project (C:\PSADT), optional baseline (C:\PSADTOld, read-only)
-    G->>G: Install dependencies (before the baseline snapshot)
-    G->>G: Snapshot existing Add/Remove Programs entries
-    G->>G: Install the OLD baseline (silent vendor installer, or the baseline package's PSADT)
-    G->>G: Assert PreUpdate: update-app requirement rule detects the old install
-    Note over G: Watched mode: countdown / pause, verify the old version works
-    G->>G: Run the project's PSADT package (the update)
-    G->>G: Assert PostUpdate: requirement still met, tattoo = NEW version, old ARP entry gone
-    G-->>H: Sandbox\Logs\UpdateAssertions.log (+ PSADT/MSI logs)
-    H->>H: Print PASS/FAIL, keep the run's logs under Sandbox\Logs\Runs, append to Documentation\TestResults.json
-```
-
-The **requirement-rule assertion** is the key extra: before the update runs, the guest executes the same
-requirement script the update app will ship with, and asserts it *detects the real old install*. After
-the update it asserts the rule is still met and the install tattoo now holds the **new** version (the
-Intune detection rule). If the project has no usable requirement rule yet, pass
-`-SkipRequirementCheck`. Those assertions report SKIP while the tattoo assertion still runs.
-
-Assertion results stream back to `Sandbox\Logs\UpdateAssertions.log`; the command reports the verdict
-and records it in `TestResults.json`, like the InstallUninstall scenario. An Update record also says which
-old version was installed and how, so every verdict can be read with its baseline variant:
-
-| Field | Meaning |
+| Check as printed | What it means |
 |---|---|
-| `Baseline.Version` | The old version that was installed. |
-| `Baseline.Source` | `winget` (vendor installer) or `project` (a local packaged project, named in `Baseline.ProjectName`). |
-| `Baseline.Mode`, `Baseline.Origin` | The `-BaselineInstallerType` value (`Both` for each run of a `Both` test) and where the technology came from (`Sibling`, `Packaged`, `Explicit`, `Project`). |
-| `Baseline.RequestedInstallerType`, `Baseline.InstallerType`, `Baseline.Family` | The type asked for, the type winget delivered and its family (`msi`, `exe`, `msix`). |
-| `Baseline.UsedFallback`, `Baseline.FallbackReason` | `Auto` fell back to the packaged technology because the version did not ship the other one. |
-| `Baseline.RequestedScope`, `Baseline.Scope`, `Baseline.ScopeRelaxed` | The scope asked for, the scope of the delivered installer, and whether the scope preference was dropped. |
-| `Baseline.Unavailable` | No installer of that technology at that version: the record has no verdict and is never judged. |
-| `OldArpSurvivors` | When `OldArpGone` failed: the old Add/Remove Programs entries still registered (name, key, registry view). |
-| `LogFolder` | The run's own log folder, `Sandbox\Logs\Runs\<run>` (every scenario). When an Update test fails, the console, Export and Publish name the `UpdateAssertions.log` in this folder. |
+| `InstallDetected-PostInstall` | After the install, the install tattoo holds the app version. Intune would detect the app. |
+| `MsiProductInstalled-PostInstall` | MSI apps only. Windows Installer lists the app after the install. |
+| `UninstallClean-PostUninstall` | After the uninstall, the install tattoo is gone. |
+| `MsiProductRemoved-PostUninstall` | MSI apps only. Windows Installer no longer lists the app. |
+| `AppArpGone-PostUninstall` | The app's own entries in the list of installed apps are gone. Older projects do not get this check. |
+| `DependenciesInstalled` | Printed only when a dependency did not install. The app was then not installed. |
 
-Records written by older versions of the toolkit have no `Baseline` or `LogFolder`; they are kept as they are.
+### Passed, Failed, Inconclusive
 
-### Prior installs: the proof run
+| Result | What it means | What to do |
+|---|---|---|
+| Passed | Every check passed. Some checks can be skipped. | Build the package. |
+| Failed | At least one check failed, even if the test stopped early. | Read the log that the result names. Fix the project and test again. |
+| Inconclusive | No clear result. | Read the warnings above the result. Fix the cause and test again. |
 
-A package with **prior-install rules** (another installer technology of the app that the package refuses, or removes
-before it installs; see [Packaging](packaging.md#prior-installs-remove-another-installer-technology-before-installing))
-uses the Update test as their proof. The run checks one **proof group**: the Enforce rules that share an uninstaller
-technology and registry view (or, for rules from a [sibling capture](#capture-other-installer-technologies), the same floor capture). Pick one with
-`-ProofEntryId` (an id that is not an Enforce rule of one group is refused before anything runs); without it the first
-group (in Id order) is checked. Unless you choose the old version's technology (`-BaselineInstallerType <type>`,
-`Packaged` or `Both`), the old version is pinned to the group's technology and to an architecture that writes the
-group's registry view (an x86 installer for a rule in the 32-bit registry view, a 64-bit one for a rule in the 64-bit
-view); `-SpecificVersion` and `-VersionsBack` choose only its version. When you choose the technology
-(`-BaselineInstallerType <type>` or `Packaged`), the run checks the group of that technology whose registry view the old
-version writes: the packaged installer's architecture (an x86 package's old version writes the 32-bit view).
+A test is Inconclusive in these cases:
 
-The guest then also asserts, with the deploy script's own prior-install code:
+- Windows Sandbox was closed early or did not start.
+- The test stopped early, ran out of time or lost lines of its log.
+- Every check was skipped. [Re-create the project](projects.md#re-create-a-project).
+- The toolkit did not start the test, see [When a test is not started](#when-a-test-is-not-started).
 
-| Assertion | Meaning |
-|---|---|
-| `PriorPresent-PreUpdate.<id>` | The baseline produced the prior install, and the package would remove it (identity, version window, uninstaller path, permissions). |
-| `SiblingIdentityStable-PreUpdate.<id>` | Rules from a sibling capture: the baseline shows the version its floor capture saw. |
-| `OtherPriorAbsent-PreUpdate.<id>`, `-PostUpdate.<id>` | Rules of another technology or view are not present (this baseline must not produce them). |
-| `PriorAbsent-PostUpdate.<id>` | After the update the prior install is gone. |
-| `PriorResidue-PostUpdate.<id>` | Rules from a sibling capture: no service of the prior install is left. |
-| `NewAppIntact-PostUpdate` | The package's own program files (from its install capture) are in place, and its own MSI is registered (an MSIX package: provisioned). |
+Some errors stop a test before it starts. Then the toolkit records no result, for example when another Windows
+Sandbox is still open.
 
-User data is reported, never judged: the guest seeds a file in the prior's folder and writes
-`DATA UserDataKept-PostUpdate.<id> = KEPT` or `= LOST`. A deleted file never fails the test; Export asks for a
-`DATA-LOSS` acknowledgement instead. For a rule from a sibling capture, the capture's removal probe is a second signal: it
-seeds configuration files too (`config.xml`), and when the uninstaller deleted one, Export asks for the same
-acknowledgement even if this run kept its file (an uninstaller may delete a `config.xml` and keep other files).
+### Where the results are kept
 
-The record gets a `Proof`: the hashes of what the device reads (the rules and the package's own identity, the deploy
-script, every file under `Files\` and `SupportFiles\` - the org hooks included -, the baseline installer, the prior-install
-code version), the checked rules, whether the update requirement carried the prior-install signal, the versions the guest
-observed and the rules that lost user data. **Only a passing Hyper-V Unattended run proves an Enforce rule**, and only
-while none of those hashes changed; a newer failed run (any backend or mode, also one that ends with a retry code such as
-1618 or 69107) takes the proof back, and a watched or Windows Sandbox run says so before it starts.
+Each test adds one record to `Documentation\TestResults.json` in the project: scenario, test machine, mode, time,
+result and every check. Each test also keeps its logs in a run folder of its own, for example
+`Sandbox\Logs\Runs\20261029-111500_InstallUninstall\` (local start time and scenario).
 
-Two safety rules apply to every Update and InstallUninstall run of a project with prior-install rules, decisions, lost
-rules (`Documentation\PriorInstallDropped.json`, after a `GUEST-TAMPER` re-creation) or sibling-capture records:
+The file `Sandbox\Logs\PsadtExitCodes.log` has one line for each install and uninstall. Each line shows the [exit code](glossary.md#exit-code): the number that a program returns when it ends. `parent=x86-cmd` instead
+of `parent=x64-direct` means that the test started the package the way Intune does. Times in this file are UTC, see
+[Exit codes and logs](exit-codes.md#where-to-find-logs).
 
-- a **watched Windows Sandbox** run is refused (`W32T.PriorInstallRefused`): that sandbox stays open with the project
-  mapped read-write. Use `-Backend HyperV`, or `-TestMode Unattended`;
-- the project is hashed before the guest starts and compared once the guest can no longer write (Hyper-V: when the run
-  returns; Windows Sandbox: once its sandbox is closed). A changed, new or missing file outside `Sandbox\` stops the test
-  with `W32T.GuestTamper`, writes `Documentation\GuestTamper.json` and records nothing: re-create the project.
+When you build or publish the package, the toolkit shows a Failed or Inconclusive result again. It does not stop
+you.
+
+## Test an update from an older version
+
+Run an [update test](glossary.md#update-test) before you publish a new version or an [update app](glossary.md#update-app). An update app is a second Intune app that reaches only devices with an older
+version. The test installs an [old version](glossary.md#baseline) first, then your package over it.
+The console calls the old version the baseline.
+
+=== "Menu"
+
+    1. In the main menu, choose **Work with an existing project** > your project > **Run a test**.
+    2. At **Which test backend?**, choose **Windows Sandbox**.
+    3. At **Test scenario**, choose **Update from an older version**.
+    4. At **Old-version baseline source**, choose **Download an older version from winget**.
+    5. If the menu asks **Baseline installer technology**, choose **Auto** (see below).
+    6. At **Baseline version**, choose the version to update from. The newest is first.
+    7. At **Also verify the update-app requirement rule during the test?**, answer `y`. (The default is Yes.)
+
+    The packaging wizards do not offer this test.
+
+=== "Command line"
+
+    Add `-Scenario Update`. `-VersionsBack 1` takes the version before the packaged one.
+
+    ```powershell
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario Update -VersionsBack 1
+    ```
+
+    Use `-SpecificVersion '2.52.0'` for an exact version. Without either option, the command shows a list. An
+    unattended test cannot ask, so it takes the version before the packaged one.
+
+    For every option, see [Test-Win32ToolkitProject](reference/Test-Win32ToolkitProject.md).
+
+These are the main checks of the update test:
+
+- Before the update, the requirement rule of the update app finds the old install (`Requirement-PreUpdate`). This
+  rule decides which devices get the update app.
+- After the update, the install tattoo shows the new version (`Tattoo-PostUpdate`).
+- The old version is no longer in the list of installed apps (`OldArpGone-PostUpdate`).
+- The files of the new version are in place (`NewAppIntact-PostUpdate`).
+- The update itself ended with a success exit code (`UpdateExitCode-PostUpdate`).
+
+The console lists these checks at the end of the test. In the menu, the result is the **UPDATE TEST PASSED** or
+**UPDATE TEST FAILED** panel, or **Inconclusive**.
 
 <!-- SCREENSHOT: Host console showing the Update test verdict block (PASS with the requirement and tattoo assertions listed) -->
 
-## Capture other installer technologies
+In an interactive Windows Sandbox test, the countdown says that the uninstallation begins in 2 minutes. In fact the
+update comes next. The first line shows the install result of the old version.
 
-Many apps are on winget in more than one installer technology: Notepad++ ships a WiX MSI and the vendor's NSIS
-setup, and devices may already have either one. The **sibling capture** installs each *other* technology of the app in
-a clean guest, records what it registered, and turns that into prior-install **proposals**: rules that make your
-package refuse (Block) or remove (Enforce) that other install before it installs. A capture never writes a rule; you
-review and approve the proposals (see [Packaging](packaging.md#from-a-sibling-capture-to-an-enforce-rule)).
+### Choose the installer technology of the old version
 
-```powershell
-# Capture the other installer technologies of a packaged project
-Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1' -Scenario SiblingCapture
-```
+Many apps ship more than one [installer technology](glossary.md#installer-technology), for example an
+MSI and a vendor EXE. An MSI never removes an EXE install. So a device with the EXE gets two installs of the app in
+one folder.
 
-The same capture runs inside the packaging pipeline with `Invoke-Win32Toolkit -CaptureSiblingTechnologies`, and from
-the menu (the winget wizard asks once, default No, when the app has a technology the package can remove; a project's
-**Prior installs** screen offers it too).
-
-**Before anything is downloaded** the capture checks the project: its deploy script has the prior-install code (a
-project created before this version must be re-created), it is a winget app (manual apps have no siblings), the install
-capture recorded its own identity, and it is not an ARM64 package. Then it prints the **plan**:
-
-| Technology | Class | What happens |
+| Menu choice | Command line | The old version is installed as |
 |---|---|---|
-| `nullsoft` (NSIS), `inno` (Inno Setup) | removable | captured; the proposals can become Enforce rules |
-| `exe` | removable | captured; Block-only unless the uninstaller turns out to be NSIS or Inno Setup |
-| `msi`, `wix`, `burn`, `msix` | report only | listed; captured only with `-IncludeReportOnly` (their removal comes in a later version) |
-| portable, zip-wrapped, ARM64 | not capturable | listed with the reason |
+| **Auto** | `-BaselineInstallerType Auto` (the default) | The other technology that winget ships for this app, else the technology of your package. |
+| **Test both technologies** | `-BaselineInstallerType Both` | Each technology, in one update test each. |
+| **Only the packaged technology** | `-BaselineInstallerType Packaged` | The technology of your package. |
+| Not in the menu | `-BaselineInstallerType nullsoft`, or `msi`, `wix`, `burn`, `inno`, `exe`, `msix` | That installer type, else another type of the same technology. |
 
-Each technology is captured **twice**: at the newest version that offers it (at most the package version) and at the
-**floor**, the oldest version released in the last 12 months (or the 5th one before the newest when release dates are
-missing). A rule needs an identity seen in two captures; when only one version offers it, that version is captured
-twice. Plan about 3-5 minutes per capture (measured: about 2.5 minutes per capture run on a Hyper-V test VM).
+The menu asks only when winget ships another technology. If the chosen version does not ship it, **Auto** warns you
+and uses the technology of your package.
 
-| Parameter | What it changes |
-|---|---|
-| `-SiblingInstallerType nullsoft,inno` | only these technologies |
-| `-SiblingVersion 8.7.9,8.9.8` | exactly these versions (one version is captured twice) |
-| `-SiblingCaptureVersionsBack n` | the floor is the n-th version before the newest |
-| `-SiblingCaptureCoverage n` | the newest version of each of the last n major.minor lines, so a rule covers more versions |
-| `-SiblingCaptureMaxExtra n` | when a technology registers differently between two captured versions (a drift), up to n more captures at the middle version until the change is found (default 4) |
-| `-SiblingArchitecture x86` | the 32-bit installers of a 64-bit app (their rules use the 32-bit registry view) |
-| `-Assisted` | you install each sibling yourself in the VM window when the run pauses, for an installer that cannot run silently (Hyper-V and an interactive console only) |
-| `-IncludeReportOnly` | also capture the report-only technologies |
+With **Only the packaged technology** or an installer type, the test never uses another technology. If the old
+version does not ship it, the console prints `Update test: NO VERDICT` and the test records Inconclusive.
 
-### What one capture does
+If the old install of the other technology is still there after the update, the test fails. The console prints a
+warning that starts with `Technology switch:`, and the menu shows a red **TECHNOLOGY SWITCH** panel. Read
+[Installer technology](packaging.md#installer-technology) before you publish.
 
-Each capture is an isolated run that sees **nothing of your project**: a work folder
-`Sandbox\SiblingRuns\<capture>-<time>\` holds the capture script, its data file and the downloaded installer (exactly
-that installer type and version, recorded with its SHA-256). The guest snapshots the machine (uninstall entries,
-Program Files and ProgramData folders, services, shortcuts, scheduled tasks, Store packages), installs the sibling
-silently (the switches winget would use), snapshots again, and then **probes** the removal: it runs the uninstaller with
-the same constant switches a device would (`/S _?=<folder>` for NSIS, `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` for
-Inno Setup) and checks that the entry and the program are gone. Edge, Windows Update and Store updates are held still
-during the run, so their changes are not mistaken for the app's. Windows 11 restarts its Windows Update service by itself,
-seconds after the test VM was restored or a few minutes later; that still counts as held still, before and after the
-install, when Windows Update installed nothing during the capture (Microsoft Defender's own updates aside). When it did,
-or an Edge updater could not be stopped before the install or ran during it, the capture warns with what it found and why
-(the state of each service and task, `before the install:` for what could not be held still before the install, and
-what Windows Update installed or that its log could not be read; `Documentation\SiblingCapture.json` keeps it for that
-run) and the proposals of that identity are Block-only (a record keeps that: a later capture does not take it back).
+### Apps that are not in winget
 
-What the guest writes comes back into a **quarantine** folder only, through an allow-list of file names and size caps;
-the copied uninstaller and main program are read on the host (signature, NSIS marker), never run, then deleted. Every
-string is checked before use. The project is hashed before the run and compared after it: a change stops the capture
-(`W32T.GuestTamper`). The result is a **capture record**, `Documentation\SiblingCapture\<id>.json`, named after the
-SHA-256 of its own bytes: a record changed afterwards is ignored. `Documentation\SiblingCapture.json` summarises the run
-(records, failures, report-only and not-capturable technologies, drift gaps).
-
-**Hyper-V or Windows Sandbox.** The capture runs on the [Hyper-V test VM](hyperv-vm.md) when it is ready. Otherwise it
-runs in Windows Sandbox, and says so before the first download: the sandbox maps only the work folder (read-only) and
-the quarantine (read-write), and the sibling installs as the sandbox's user, so **every proposal from a Sandbox capture
-is Block-only**. Windows allows one sandbox: when another one is open, the capture is refused before anything is
-downloaded (`W32T.SandboxBusy`); close it and capture again. An assisted capture (`-Assisted`) is Block-only too: it
-records the user signed in to the VM's console, who installs, and that user's per-user entries; it names, before it runs,
-the identities it makes Block-only (as below), and a run in which you install nothing (or cancel the setup) records
-nothing. A Sandbox record also joins the records of the identity it sees:
-a capture in Windows Sandbox of an identity your Hyper-V captures already made Enforce-eligible makes it Block-only (an
-Enforce rule of it is then refused at Export), and a later capture on Hyper-V does not take that back. So without a
-ready VM the pipeline does not capture a project whose captures already allow an Enforce rule (one problem in the run's
-result names them), `Test-Win32ToolkitProject -Scenario SiblingCapture` refuses it before any download
-(`W32T.SiblingCaptureUnsupported`, also with `-Backend HyperV`; only the technologies you capture count, so
-`-SiblingInstallerType` can leave them out), and the menu says it first and asks before it captures in Windows Sandbox
-(default No). `-Backend Sandbox` captures there on purpose.
-
-### From records to proposals
-
-The proposals are re-derived from the verified records every time you look at them (in the menu's review, by
-`Set-Win32ToolkitPriorInstall`, at Export), never trusted from a file. For each capture the **primary** entry is the
-one the sibling installer itself registered (its ProductCode or its Apps and Features name and publisher from the winget
-manifest); entries installed alongside it (a maintenance service, a runtime) are listed but never proposed, and an entry
-registered for the user only, or under the package's own uninstall key, gives no proposal. A proposal is
-**Enforce-eligible** only when every capture of its identity agrees, the removal probe was clean, the uninstaller is a
-proven NSIS or Inno Setup uninstaller inside the install folder under Program Files, its permissions let only SYSTEM,
-Administrators and TrustedInstaller change it, it has a main program, its versions follow the winget versions, and the
-captures ran unattended on Hyper-V. Otherwise it is Block-only, and the review says why (an Electron app's NSIS setup,
-built with electron-builder, usually ends here: its own uninstall needs switches the constant ones lack, and the probe
-leaves it installed). The window of a captured rule
-is never typed: it runs from the version the floor capture saw to the newest version a capture with the same identity
-saw.
-
-### Proving captured rules
-
-A captured Enforce rule is proven like any other (see [the proof run](#prior-installs-the-proof-run)), with one
-difference: its baseline is **exactly the floor capture's installer** (type, version, architecture, and the same
-SHA-256; a changed installer on winget stops the run before the guest: capture again). `-SiblingProof FloorAndNewest`
-adds a second run from the newest capture: it cannot prove anything, but a failure there takes the proof back.
-
-In the pipeline, `-RunTest Update` with unproven Enforce rules runs these proof runs **instead of** the generic Update
-test, one per group. A captured rule that cannot be proven is **demoted**: it is removed (it becomes a proposal again),
-its approval is marked demoted, and a warning names the failing checks; the rules left are proven again, because the
-proof covers the whole rule set (at most four rounds). Without Update in `-RunTest` (or without a ready Hyper-V VM),
-unproven captured rules are demoted without a proof run. When no proof round is left, a captured rule whose proof also
-covered a demoted rule is demoted too, with a warning that names that rule, so Export never refuses a captured rule as
-unproven only because another one failed. In a next version of the app, a demoted rule that the version before it
-carried still stops Export (`ID-PRIOR-DROPPED`) until you approve and prove it again, or acknowledge the drop. Rules you
-typed yourself are never demoted: Export refuses them until they are proven or waived.
-
-**Next versions.** A new version of the app carries the captured rules, their records and their approvals unchanged.
-Only a new capture moves them: when the newest capture sees the same identity at a higher version, the rule's
-`VersionMax` follows it (and it needs a new proof); when the identity changed, the old rule is frozen and the new
-identity is a new proposal to review.
-
-<!-- SCREENSHOT: The review screen of a sibling capture: the Notepad++ NSIS card with Block preselected -->
-
-## What is "the update app"?
-
-The toolkit publishes each packaged version to Intune **twice**:
-
-1. The **install app**, assigned normally; its detection rule is the install tattoo at the exact
-   version.
-2. The **update app**: the *same* `.intunewin`, published as a second app whose **requirement rule** is
-   a presence check: it is only *applicable* on devices where the app is **already installed** (any
-   version). Devices without the app ignore it; devices with an older version see the requirement met
-   and the detection rule (exact new version) unmet, so they update.
-
-The requirement rule deliberately checks *presence*, not *version*: the detection rule already pins the
-exact version, and a "version ≥ new" requirement would make the update applicable only once it is
-already up to date. Presence is established from exact, version-stable signals (the install tattoo key,
-the MSI UpgradeCode or product code, or an exact Add/Remove-Programs name), and publishing refuses to
-create an update app when no reliable signal exists (it would otherwise target every device).
-
-The Update test scenario above is precisely a rehearsal of this app: it proves the requirement rule
-detects a genuine old install and that the update leaves the device in the detected, new-version state.
-See [Publish-Win32ToolkitIntuneApp](reference/Publish-Win32ToolkitIntuneApp.md) for publishing it.
-
-## Chaining tests onto a packaging run
-
-You don't have to test as a separate step. [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md)
-accepts `-RunTest` with one or both scenarios, executed right after the project is built:
+These apps have no older versions to download. Package the older version as a project first, for example
+`Contoso_Reader_x64_3.1.0`. In the menu, **Baseline project** then lists your other projects: choose the older one.
+On the command line, use `-BaselineProject`:
 
 ```powershell
-# Package, then run both scenarios back-to-back (unattended config recommended)
-Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall, Update -UpdateVersionsBack 1
+Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Contoso_Reader_x64_3.2.0' -Scenario Update -BaselineProject 'Contoso\Contoso_Reader_x64_3.1.0'
 ```
 
-For the chained Update scenario, `-UpdateVersionsBack` picks the baseline N releases back and
-`-UpdateSpecificVersion` pins an exact one (it wins when both are given); omit both to pick
-interactively. When the test runs unattended (the `SandboxTestMode` / `HyperVTestMode` config value) or
-the host cannot prompt (a service, redirected input, or `pwsh -NonInteractive`), omitting both uses the
-previous version, with a warning, instead of stopping at a prompt nobody answers. Chained runs benefit from the single-instance handling: the toolkit waits up to 90 s for
-a previous sandbox to close before starting the next one, and unattended sandboxes shut themselves down,
-so `InstallUninstall, Update` completes hands-off.
+`-RunTest Update` on [New-Win32ToolkitManualApp](reference/New-Win32ToolkitManualApp.md) or
+[Complete-Win32ToolkitManualApp](reference/Complete-Win32ToolkitManualApp.md) gives no result for these apps. See
+[Test an update of a manual app](manual-apps.md#test-an-update-of-a-manual-app).
 
-Windows Sandbox 0.8 can leave its window open on *The remote environment is shutting down* after the
-sandbox itself is gone. When the Windows Sandbox command line (`wsb`) is installed, the toolkit asks it:
-if `wsb list` reports no running sandbox for 20 seconds while the same window (at least 20 seconds old,
-in your Windows session) is the only one left, the toolkit asks `wsb` once more, closes the window, says
-so in one line, and starts the next run. A sandbox that `wsb` still lists, such as a watched one you are
-checking, is never closed, and neither is a window that appears meanwhile (a sandbox that is starting) or
-another user's sandbox. Without `wsb`, or when the window cannot be closed, the toolkit waits for the window
-as before.
-An unattended Sandbox test that completed does the same for its own sandbox before it returns: once
-`wsb` reports that the sandbox has shut itself down, a window Windows Sandbox left open is closed after the
-same 20 seconds, so the next run, or another tool, finds no sandbox running. It waits up to 90 seconds for
-this, looks only at this session's Windows Sandbox windows, and never closes anything while `wsb` still
-lists the sandbox; without `wsb`, or after an inconclusive run, it leaves the window to the next run's wait.
+## Choose where the test runs
+
+Windows Sandbox is the default test machine. It needs no extra setup. The Hyper-V test VM needs a one-time setup (see
+[Set up the Hyper-V test VM](hyperv-vm.md)), but it can test the package as Intune runs it.
+
+- **For one test:** answer **Which test backend?** in the menu, or add `-Backend HyperV` on the command line.
+- **As your default:** in the main menu, choose **Settings** > **Hyper-V test VM** >
+  **Set the default test backend**. See [Make the test VM your default](hyperv-vm.md#make-the-test-vm-your-default).
+  The default applies to the commands and to tests while you build. **Run a test** still asks every time.
+
+The toolkit uses the test VM only when it is ready. If it is not, the test runs in Windows Sandbox. A warning gives the
+reason, for example that PowerShell does not run as administrator.
+
+Results can differ. In Windows Sandbox, the package runs as the Windows Sandbox user. On the test VM, it runs as the
+[SYSTEM account](glossary.md#system-account): the Windows account that Intune uses to install apps. So
+a package can pass in Windows Sandbox and still behave differently on devices.
+
+## Test as Intune does
+
+On the Hyper-V test VM, an unattended test runs the package the way Intune does on a device:
+
+- It runs as the SYSTEM account.
+- It uses the same command line as Intune: `Invoke-AppDeployToolkit.exe -DeploymentType Install` (or `Uninstall`).
+- A 32-bit program starts it, like the Intune program on devices.
+- The exit codes 0, 1707, 3010 and 1641 count as success.
+
+It takes about 4 to 5 minutes (depends on your PC). Start PowerShell 7 as administrator first.
+
+=== "Menu"
+
+    After **Run a test**, choose **Hyper-V VM** at **Which test backend?** and **Install then uninstall** at
+    **Test scenario**. At **Hyper-V run mode**, choose **Unattended**.
+
+=== "Command line"
+
+    Add `-Backend HyperV` and `-TestMode Unattended` to the test command.
+
+    ```powershell
+    Test-Win32ToolkitProject -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0' -Scenario InstallUninstall -Backend HyperV -TestMode Unattended
+    ```
+
+    For every option, see [Test-Win32ToolkitProject](reference/Test-Win32ToolkitProject.md).
+
+### When a test is not started
+
+Before an unattended test on the test VM, the toolkit runs the [Intune-parity pre-check](glossary.md#intune-parity-pre-check). It finds a test that would only wait for a dialog nobody answers.
+The first Intune-parity pre-check on the test VM can take a few minutes. A test waits for such a dialog when all of
+these are true:
+
+- The package uses [PSAppDeployToolkit (PSADT)](glossary.md#psadt) 4.1, not 4.2. PSADT is the free
+  PowerShell tool inside every package.
+- Its list of [processes to close](glossary.md#processes-to-close) is empty. These are the programs
+  that PSADT asks people to close before the install. For an MSI, PSADT also adds the programs inside the MSI to this
+  list.
+- Its welcome dialog lets the signed-in person postpone the install.
+- A user is signed in to the test VM. The toolkit's test VM always has one.
+
+PSADT 4.1 then shows its welcome dialog. The test would wait 25 minutes and fail with exit code 1460. So the toolkit
+does not start it. A warning explains why, and the console prints this line:
+
+```text
+Install/uninstall test: NOT RUN (Intune-parity pre-check).
+```
+
+The toolkit records the result as Inconclusive and changes nothing else in the project. Devices with a signed-in user
+show the same dialog. To test such a package, do one of these:
+
+- Run an interactive test and answer the dialog in the VM window. Use `-TestMode Interactive`, or **Interactive** at
+  **Hyper-V run mode**.
+- Add the app's program to the processes to close, see [Change a project by hand](projects.md#change-a-project-by-hand).
+  PSADT 4.1 then asks only while the app runs, on devices too.
+
+## Test while you build
+
+You can run tests as part of packaging.
+
+=== "Menu"
+
+    In the winget wizard, at **After building, also…**, tick **Run an install/uninstall test in Windows Sandbox**
+    with <kbd>Space</kbd>. The wizard for apps that are not in winget has the same choice.
+
+=== "Command line"
+
+    Add `-RunTest InstallUninstall` to [`Invoke-Win32Toolkit`](reference/Invoke-Win32Toolkit.md). `-RunTest Update`
+    also works.
+
+    ```powershell
+    Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -TemplateName 'Contoso' -RunTest InstallUninstall
+    ```
+
+    For every option, see [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md).
+
+The toolkit first runs the [install capture](glossary.md#install-capture): it installs the app once to
+learn how to detect and remove it. Then come your tests, then the package if you asked for it. The tests use your
+default test machine and test mode. After a failed test, packaging continues with a warning.
+
+!!! tip "Chain tests as unattended tests"
+    Run several tests in a row only as unattended tests. An interactive Windows Sandbox stays open after the first
+    test. The second test waits 90 seconds for it to close, then gives no result. Set `SandboxTestMode` to
+    `Unattended` for such runs, see [Tests](settings.md#tests).
+
+## What you have now
+
+- A new record in `Documentation\TestResults.json` and the logs in `Sandbox\Logs\Runs\` in your project.
+- The app is not installed on your PC. It was installed only in the test machine.
+- After an interactive test, Windows Sandbox is still open. Close it when you are done. The next test or install
+  capture cannot start while it is open.
+- Nothing in Intune. The `Sandbox\` and `Documentation\` folders never go into the package.
+
+## If something goes wrong
+
+| Message starts with | What to do |
+|---|---|
+| `Another Windows Sandbox is still running after waiting 90 s` | Close the other Windows Sandbox, for example from an interactive test. Also close a window that still shows `The remote environment is shutting down`. Test again. |
+| `The sandbox did NOT auto-launch` | The result is Inconclusive. Check that Windows Sandbox opens, then test again. |
+| `ASSERT InstallDetected-PostInstall = FAIL` | The install wrote no install tattoo with this version. Read the install log in the run folder. |
+| `ASSERT DependenciesInstalled = FAIL` | A dependency did not install, so the app was not installed. Fix or remove the dependency. |
+| `Hyper-V test backend requested but not ready` | The test ran in Windows Sandbox. Fix the reason in the brackets. |
+| `Guest phase '...' exited with code 1460` | A step in the test VM reached its time limit, often at a dialog. Run an interactive test to see it. |
+| `This project has prior-install rules or sibling-capture records` | Your project has rules or captures for other installs. Use the test VM or an unattended test. See [Devices that already have the app](prior-installs.md). |
+
+More messages and fixes are in [Tests](troubleshooting.md#tests).
+
+## Next step
+
+Build the `.intunewin` package from your tested project.
+
+[Next: build the package](build-intunewin.md){ .md-button .md-button--primary }

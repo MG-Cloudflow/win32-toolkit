@@ -1,341 +1,373 @@
 ---
-description: "Publish your Win32 app to Microsoft Intune through the Graph beta API, with detection rules, requirements, and assignments."
+description: "Upload the package to Intune as a new Win32 app, check what was created, and finish in the Intune admin center."
 ---
 
-# Publishing to Intune
+# Publish to Intune
 
-This page covers getting a packaged `.intunewin` into your tenant with
-[Publish-Win32ToolkitIntuneApp](reference/Publish-Win32ToolkitIntuneApp.md), whether you call it
-directly, or let `-PublishIntune` on [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md) or
-[Export-Win32ToolkitIntuneWin](reference/Export-Win32ToolkitIntuneWin.md) call it for you. For
-producing the `.intunewin` itself, see [Packaging](packaging.md).
+In this step, win32-toolkit uploads your [package](glossary.md#package), the `.intunewin` file, to
+Microsoft Intune. Intune then has a new [Win32 app](glossary.md#win32-app), the Intune app type for
+classic Windows programs.
 
-## Authentication
+Every publish creates a new app in Intune. Publishing again does not change the old app. win32-toolkit never assigns an
+app. You assign it in the Intune admin center.
 
-The toolkit signs in to Microsoft Graph with the **Microsoft.Graph.Authentication** module. If the
-module is missing, the publisher offers to install it from the PowerShell Gallery (answer `Y` at
-the prompt); in a non-interactive session it stops with the exact `Install-Module` command to run.
+## Before you start
 
-Only one delegated scope is requested: **`DeviceManagementApps.ReadWrite.All`**. Sign-in is
-interactive: a browser window opens for you to pick an account.
+Step 7 of 7.
 
-**Admin-consent reality:** in most tenants this scope requires admin consent for the *Microsoft
-Graph Command Line Tools* app. The first sign-in either shows a consent prompt you can accept
-(if you are allowed to consent) or fails with a "need admin approval" error. In that case a Global
-Administrator must grant consent once, and every later sign-in works silently.
+- You have a [project](glossary.md#project): the folder of one app version. This page uses the project
+  `Git_x64_2.53.0` of the [org template](glossary.md#org-template) `Contoso`. An org template holds your
+  settings for one customer. Your version will differ.
+- You tested the package in [step 4](testing.md) and read the result. You built it in [step 5](build-intunewin.md).
+- You connected to your [tenant](glossary.md#tenant), the space of your organization in Intune, in
+  [step 6](intune-connection.md). Your account has the rights in
+  [What your account needs](intune-connection.md#what-your-account-needs).
+- Time: usually a few minutes, longer for big packages.
 
-**Pre-connect pattern:** if a Graph session with the right scope already exists, the publisher
-reuses it and does not prompt again. Connect first when you want to control which account is used:
+## Publish your app
 
-```powershell
-# Sign in once with the account you want
-Connect-MgGraph -Scopes 'DeviceManagementApps.ReadWrite.All'
+You publish the [install app](glossary.md#install-app): the normal app that you assign to devices.
 
-# The uploader detects the existing connection and skips re-auth
-Publish-Win32ToolkitIntuneApp `
-    -IntuneWinPath 'C:\Win32Apps\IntuneWin\Contoso\Git_x64_2.53.0.intunewin' `
-    -ProjectPath   'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'
+=== "Menu"
+
+    Start the menu ([`Show-Win32Toolkit`](reference/Show-Win32Toolkit.md)). The menu builds the package again before
+    the upload, so the package always matches the project.
+
+    1. In the main menu, choose **Work with an existing project**.
+    2. At **Select a project**, choose `Contoso / Git_x64_2.53.0`. You can type a few letters to filter the list.
+    3. Choose **Publish to Intune**.
+    4. Read the yellow **About to PUBLISH to Intune** panel. Check the application, the version and the publisher.
+    5. If a warnings panel appears, read every line.
+    6. At **Publish which app?**, choose **Install app**.
+        <!-- SCREENSHOT: The Publish which app? choice for Git_x64_2.53.0, with Install app highlighted -->
+    7. At **Package and upload now?**, type `y` and press <kbd>Enter</kbd>. (The default is No.)
+    8. If a browser window opens, sign in with your Intune account.
+    9. Wait for the green **Done** panel, then press any key.
+
+    The red **Review before you publish** panel shows serious warnings, for example a failed test. The yellow
+    **Check before you publish** panel shows other warnings. If a red line says `Packaging refuses this project`, the
+    publish stops. Do what the line says, then publish again.
+
+    Two other choices at **Publish which app?** publish an [update app](glossary.md#update-app), a
+    second app for devices that already have the app. See
+    [Install app, update app, or both](new-version.md#install-app-update-app-or-both).
+
+=== "Command line"
+
+    [`Export-Win32ToolkitIntuneWin`](reference/Export-Win32ToolkitIntuneWin.md) builds the package again and
+    publishes the install app. So the package always matches the project.
+
+    ```powershell
+    $project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+    Export-Win32ToolkitIntuneWin -ProjectPath $project -PublishIntune
+    ```
+
+    To publish a package that you built earlier, use
+    [`Publish-Win32ToolkitIntuneApp`](reference/Publish-Win32ToolkitIntuneApp.md) with both paths. `-ProjectPath` is
+    the project under `Projects\`, never the copy under `Staging\`. The command does not check that the package was
+    built from this project.
+
+    ```powershell
+    $package = 'C:\Win32Apps\IntuneWin\Contoso\Git_x64_2.53.0.intunewin'   # your package
+    Publish-Win32ToolkitIntuneApp -IntuneWinPath $package -ProjectPath $project
+    ```
+
+    Without `-PublishIntune`, `Export-Win32ToolkitIntuneWin` asks `Upload to Microsoft Intune now? (Y/N)`. The answer
+    `Y` publishes the install app.
+
+    For every option, see [Export-Win32ToolkitIntuneWin](reference/Export-Win32ToolkitIntuneWin.md) and
+    [Publish-Win32ToolkitIntuneApp](reference/Publish-Win32ToolkitIntuneApp.md).
+
+## What you see during the upload
+
+In the menu, the messages of the package build come first.
+
+```text title="What you see"
+Intune App Upload
+=================
+  App name     : Git
+  Publisher    : The Git Development Community
+  Architecture : x64
+  Tenant       : Contoso (11111111-2222-3333-4444-555555555555)
+  ✓ Unencrypted : <size> MB
+  ✓ Encrypted  : <size> MB
+  Icon         : Assets\AppIcon.png (<size> KB)
+  ✓ App created: <app ID>
+...
+  ✓ Upload complete.
+  ✓ Commit successful.
+
+✓ App published successfully!
+  App ID : <app ID>
+  Name   : Git
+
+  View in Intune portal:
+  https://intune.microsoft.com/#view/Microsoft_Intune_Apps/SettingsMenu/~/0/appId/<app ID>
 ```
 
-## What gets created
+Read the `Tenant` line. It names the tenant that gets the app.
 
-One Win32 app, with metadata (name, publisher, version, description, info URL) read from the
-project's `AppConfig.json` (winget manifest as fallback). Shell defaults:
+A project can carry the tenant ID of its org template. Then the toolkit refuses any other tenant before it creates the
+app. Without a tenant ID, it only warns. See
+[Pin the tenant on your org template](intune-connection.md#pin-the-tenant-on-your-org-template).
 
-| Property | Value |
-|---|---|
-| Install command line | `Invoke-AppDeployToolkit.exe -DeploymentType Install` |
-| Uninstall command line | `Invoke-AppDeployToolkit.exe -DeploymentType Uninstall` |
-| Install behavior | **System** context, restart suppressed, 60-minute max run time (keep it above 30 minutes, see below) |
-| Return codes | 0 and 1707 success · 3010 soft reboot · 1641 hard reboot · 1618 retry |
-| Minimum OS | Windows 10 1607 |
+A [prior-install rule](glossary.md#prior-install-rule) tells the package what to do with another
+install of the app on a device. A package with such rules shows more warnings. See
+[Build and publish a project with rules](prior-installs.md#build-and-publish-a-project-with-rules).
 
-Everything above can be adjusted in the Intune portal after upload. The org template can change the
-restart behavior, the maximum run time and the minimum OS for every app it publishes (see
-[Org templates](org-templates.md#intune-publish-defaults)). Keep the maximum run time above 30 minutes
-(default 60): the uninstall stops an EXE uninstaller at 30 minutes, and a lower Intune limit would stop it
-first, without the toolkit's exit code. Publish, and its `-WhatIf` dry run, warns when the maximum run time
-is 30 minutes or less; it never stops the publish.
+## Try it first with a dry run
 
-**Why `Invoke-AppDeployToolkit.exe`.** The Intune Management Extension is a 32-bit process, so a bare
-`powershell.exe` in the command line starts the **32-bit** Windows PowerShell on a 64-bit device.
-PSAppDeployToolkit 4.2 refuses to run there and exits **60008** before anything installs; 4.1 runs,
-but writes the install tattoo to the 32-bit registry view (`HKLM\SOFTWARE\WOW6432Node\...`), where
-the 64-bit detection rule never finds it. PSADT's own launcher, `Invoke-AppDeployToolkit.exe`, is in
-every package (PSADT's project template ships it next to `Invoke-AppDeployToolkit.ps1`) and always
-starts the **64-bit** Windows PowerShell. No `-DeployMode` is passed, so PSADT picks the mode itself
-(Auto): dialogs appear only when the user has to close one of the app's processes, otherwise the
-deployment runs silently (on PSADT 4.1 an app with an empty processes-to-close list still shows them;
-see [When dialogs appear](org-templates.md#when-dialogs-appear)). Never add `-DeployMode Interactive`
-to the command line: with nobody signed in, PSADT then exits 1602.
+A [dry run](glossary.md#dry-run) runs the same checks as a real publish up to the sign-in, then stops. It
+shows the same warnings. It also refuses what a real publish refuses before sign-in, for example an app that Intune
+could not detect. It does not sign in, and it writes nothing to Intune.
 
-**Codes Intune reports as failed.** Any exit code not in the return-code list is a failure in Intune.
-The ones you will meet from a win32-toolkit package:
+The menu has no dry run. Use [`Publish-Win32ToolkitIntuneApp`](reference/Publish-Win32ToolkitIntuneApp.md) with
+`-WhatIf`. The package file must exist already.
 
-| Exit code | Meaning |
-|---|---|
-| 60001 | An error inside the deploy script (for example the installer failed, or an org hook threw). The PSADT log on the device names it. |
-| 60008 | PSADT could not start its session: a 32-bit launch of a PSADT 4.2 package (the old command line, see below), or a config value PSADT refuses (see the [text rules](org-templates.md#text-rules)). |
-| 69113 | Uninstall only: an EXE uninstaller the package runs was still running after 30 minutes and was stopped, together with the processes it started. The detection tattoo stays, so Intune keeps reporting the app as installed. The PSADT log on the device names the uninstaller. (When only a process the uninstaller started is still running at 30 minutes, that process is stopped and the uninstaller's own exit code counts.) See [how the uninstall is guarded on the device](concepts.md#how-detection-uninstall-are-generated). |
-| 1602 | The user deferred the installation (org template deferral), or a forced interactive mode found nobody signed in. Deliberately not mapped, so Intune reports it as failed. |
+```powershell
+$project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+$package = 'C:\Win32Apps\IntuneWin\Contoso\Git_x64_2.53.0.intunewin'   # your package
+Publish-Win32ToolkitIntuneApp -IntuneWinPath $package -ProjectPath $project -WhatIf
+```
 
-With PSAppDeployToolkit 4.2 the generated deploy script also sets `ExitWithMsiCodes`, so any restart
-request is returned as 3010 (soft reboot); 4.1 ignores that setting.
+```text title="What you see at the end"
+...
+What if: Performing the operation "Publish Win32 app to Intune (version 2.53.0)" on target "Git".
+WhatIf: would connect to Microsoft Graph and publish 'Git' v2.53.0 to Intune (create app shell, upload content, commit).
+```
 
-**Detection rule:** one rule is created, by priority:
+`Export-Win32ToolkitIntuneWin -PublishIntune -WhatIf` checks less. It does not run the checks of the publish. For the
+publish, it only prints a line that starts with `WhatIf: would publish to Intune after packaging`.
 
-1. **Install tattoo (preferred):** the generated deploy script writes
-   `HKLM\SOFTWARE\<Author>\<Vendor>\<App>\Version` at install time (64-bit registry view), so the
-   rule checks that registry value **equals the packaged version**, so Intune confirms both presence
-   *and* version.
-2. **Capture fallback:** projects without a tattoo fall back to the **newest**
-   `InstallationChanges_*.json` sandbox capture: a registry key (Uninstall keys preferred) or a
-   machine-wide file path (`Program Files` locations ranked first; per-user profile paths are
-   never used, since Intune detects as SYSTEM). The newest capture is used even when its install
-   failed, so after a failed capture re-run it successfully (or remove the failed file from the
-   project's `Documentation\` folder) before publishing.
-3. **None:** the publish **stops** with a `W32T.NoDetectionRule` error before you are asked to sign
-   in and before anything uploads: an app Intune cannot detect reports a failure on every device, or
-   reinstalls forever. Re-create the project with an org template (for the tattoo) or run the install
-   capture, then publish again. For an app nothing can describe (a per-user install, some MSIX
-   packages), pass `-AllowNoDetectionRule` to create it without a rule, then add one in the portal
-   before you assign it.
+## What the app looks like in Intune
 
-**App icon:** `Assets\AppIcon.png` (from winget, a manual `-IconPath`, or captured during the
-install run) is normalized to a genuine PNG and attached as the app tile icon (`largeIcon`).
-When none of those sources produced an icon, the file still contains the **PSADT default logo**
-from the project scaffold, and that is what appears as the Intune tile. To use your own, drop a
-PNG at `Assets\AppIcon.png` before publishing.
+The table shows the fields of the new app. [Return codes](glossary.md#return-code) tell Intune what each exit code of the install means. A [detection rule](glossary.md#detection-rule) tells Intune how to check that the app is on a device. [Supersedence](glossary.md#supersedence) is the Intune setting that says a new app replaces an older app.
+
+| Field in Intune | Value | Where it comes from |
+|---|---|---|
+| Name | The app name, for example `Git` | The project or the winget manifest |
+| Publisher | The vendor, or `Unknown` | The project or the winget manifest |
+| App version | The packaged version, for example `2.53.0` | The project or the winget manifest |
+| Description | The app description, then the standard text of your org template | The project, the winget manifest and the org template |
+| Information URL | The web page of the app | The project or the winget manifest |
+| Privacy URL | Your privacy page, or empty | The org template |
+| Notes | `win32-toolkit; Git.Git` | The toolkit |
+| Install and uninstall commands | `Invoke-AppDeployToolkit.exe` with `-DeploymentType Install` or `-DeploymentType Uninstall` | Always the same |
+| Install behavior | System | Always the same |
+| Device restart behavior | No specific action (`suppress`) by default | The org template |
+| Maximum run time | 60 minutes by default | The org template |
+| Architecture | x86, x64 or arm64 | The project |
+| Minimum operating system | Windows 10 1607 by default. MSIX and APPX packages get at least 1809. | The org template |
+| Return codes | 0 and 1707 Success, 3010 Soft reboot, 1641 Hard reboot, 1618 Retry. 69101, 69102 and 69105 to 69112 Failed. | The toolkit |
+| Detection rule | One rule | See [How Intune detects the app](#how-intune-detects-the-app) |
+| Logo | `Assets\AppIcon.png` of the project, else the generic Intune tile | See [Where the app icon comes from](org-template-files.md#where-the-app-icon-comes-from) |
+| Assignments, supersedence, categories, scope tags | None | You set them in the Intune admin center |
 
 <!-- SCREENSHOT: the published app in the Intune portal showing tile icon, detection rule, and shell defaults -->
 
-## What happens during upload
+The toolkit copies the org template values into the project when you create it. Changes to an org template reach new
+projects only. Re-create a project to apply them.
 
-The app shell is created first, then the encrypted content is uploaded to Azure Storage in chunks,
-committed, and linked to the app. The two waits (storage URI, commit) poll with exponential
-back-off up to the timeout. When it finishes you get the app id and a direct portal link.
-The wire protocol is deliberately not documented here: it is an implementation detail.
+Every app gets the prior-install codes, even without prior-install rules. See
+[Prior-install codes](exit-codes.md#prior-install-codes).
 
-## Publishing updates
+Keep the maximum run time above 30 minutes. The uninstall stops an EXE uninstaller after 30 minutes. With a limit of
+30 minutes or less, Intune stops first and reports a timeout instead. The publish warns you about it.
 
-To publish the same package a second time as an **update app** (one that only applies to devices
-that already have the app installed), pass `-AsUpdate` to `Publish-Win32ToolkitIntuneApp`, or
-`-PublishUpdate` to `Invoke-Win32Toolkit` / `Export-Win32ToolkitIntuneWin`. The update app gets
-`(Update)` appended to its display name (configurable) and a **requirement rule** (a PowerShell
-presence check) that gates it to machines where the app already exists. Detection stays the
-version-aware tattoo rule, so older installs get updated and detect once they reach this version.
-If no requirement rule can be built, the publish fails fast rather than creating an app that would
-apply to every device.
-For a package with Enforce prior-install rules, the update app also applies to devices that have a prior install
-one of those rules would remove (see [Packages that remove a prior install](#packages-that-remove-a-prior-install)).
+## How Intune detects the app
 
-**Re-publish behavior:** every publish creates a **new** app. Intune has no overwrite. To retire
-an old version, delete it or configure supersedence in the portal.
+The toolkit adds exactly one detection rule. It uses the first source that works:
 
-The update app's requirement rule checks the install tattoo in **both** registry views (the native
-64-bit key and `HKLM\SOFTWARE\WOW6432Node\...`), so devices installed by a package published before
-this version (see below) still count as "already installed".
+1. The [install tattoo](glossary.md#install-tattoo): a registry value that the package writes when it
+   installs. The rule checks the value `Version` under
+   `HKEY_LOCAL_MACHINE\SOFTWARE\<app script author>\<publisher>\<app name>`, so Intune sees the exact version.
+2. The newest [install capture](glossary.md#install-capture), the record of what the installer changed
+   on a clean copy of Windows. The rule checks that one registry key or one file exists. It does not check the version.
+3. None. The publish stops with `No detection rule for`. Nothing is published.
 
-## Warnings before you publish
+The install tattoo is the normal case. It needs an org template. The org template gives the [app script author](glossary.md#app-script-author), the name at the start of the key.
 
-Packaging and publishing look at the project's test results and identity checks once more and
-**warn**. They never stop a package or a publish, so read them before you assign the app. Each warning is
-a sentence that starts with the project folder's name (`Publishing '<app>':` when you publish); the codes
-below name the kinds of warning in these docs, and the warning text does not print them:
+!!! warning "Capture again after a failed install"
 
-| Warning | Meaning | What to do |
-|---|---|---|
-| `INSTALL-FAILED` | The latest install/uninstall test failed (for example the app's own uninstall entry stayed: `AppArpGone-PostUninstall`). The warning names the failed checks. | Read the `InstallAssertions.log` it names, fix the package, run the test again. |
-| `INSTALL-INCONCLUSIVE` | The latest install/uninstall test gave no verdict (closed early, timed out). | Run it again. |
-| `UPDATE-FAILED` | The latest Update test from that installer technology failed. The warning names the failed assertions (for example `OldArpGone-PostUpdate`) and, when the update itself failed, its exit code and what it means. After the refusal of a Block prior-install rule (69101) it is a note: that outcome is intended (its `Requirement-PreUpdate` failure is by design: the update app's requirement detects only installs an Enforce rule names). A retry code (1618, 69107) means the run judged nothing; the warning names that code's causes. | Read the `UpdateAssertions.log` the warning names (in the failed run's own folder, `Sandbox\Logs\Runs\<run>\`, or `Sandbox\Logs\` for a run recorded before those folders existed) before you assign the app. |
-| `ID-TECH-SWITCH` | An Update test saw the vendor's other installer technology (for example its NSIS EXE) stay registered after this package installed. | **Do not publish this package to devices that have the other technology:** they would get two registrations over one folder. Package the technology your devices already have (see [Installer technology](packaging.md#installer-technology)). |
-| `ID-SIBLING-UNTESTED` | winget also ships another installer technology for this app, and the latest Update test from it did not pass (or none ran). | Run `Test-Win32ToolkitProject -Scenario Update -BaselineInstallerType Both`. Once the latest test from that technology passes, the warning goes away. The advice follows the failed run: after a Block rule's refusal (69101) it is a note (make the rule Enforce and prove it to remove that install); after a retry code, run it again; after 69102, widen the rule's version window (the warning prints the command, which keeps the rule's mode and lowest version) or test from an old version inside it; after 69111, remove what switches removal off on the test VM; when the rule's identity did not match the install on the test VM, replace the rule from that test's candidate (the warning prints the command); with a Report rule, that install stays next to the package by design (make it Enforce); when the run left a prior-install candidate, declare it (Block first), or, in a project created by an earlier win32-toolkit version, re-create the project and run the Update test again first. |
-| `UNSAFE-CLEANUP` (publish only) | The project's uninstall cleanup paths fail the check that packaging enforces, so a package exported before this check deletes folders outside the app's own install folder. | Re-run the install capture, re-export, then publish. |
-| `PRIOR-BLOCK-FLEET` | A **Block** prior-install rule: devices with that other installer technology fail this install (69101) until the rule is Enforce. | Assign the app to a pilot group first. |
-| `PRIOR-NO-WELCOME` | An Enforce rule, but the org template turns the welcome dialog off: nothing closes the prior app before its removal, so devices where it runs retry (1618). | Turn the welcome dialog on in the org template, or accept the retries. |
-| `PRIOR-PREDECESSOR-PUBLISHED` | An Enforce rule, and an earlier version of the app is published from this template. | Unassign the earlier app before you assign this one. |
-| `PRIOR-ENFORCE-PILOT` | The package removes another install of the app as SYSTEM. | Pilot first; the warning names the kill switch (see [Packages that remove a prior install](#packages-that-remove-a-prior-install)). |
-| `ID-PRIOR-OWN`, `PRIOR-CLASS-E` | A rule of the previous version was dropped because it names this package's own uninstall key; or the app belongs to a family whose versions install side by side (Python, .NET, ...). | Check that the right install is removed. |
-| `ID-SIBLING-UNAPPLIED` | A [sibling capture](testing.md#capture-other-installer-technologies) proposed a rule that is not applied: devices with that install keep it next to this package. The warning prints the command that applies it as Block. | Review the proposal (Block it, or approve it as Enforce). |
-| Other `ID-SIBLING-...` codes | What the sibling capture could not turn into a rule: a per-user install, the package's own uninstall key, a technology of the package's own family at its version, a new technology since the rules were made, a report-only or not-capturable technology, a drift gap, a Sandbox or assisted capture (Block only). | See [Capture other installer technologies](testing.md#capture-other-installer-technologies). |
-| Other `ID-...` codes | The identity checks from packaging time (another technology, an earlier version of another technology, a changed detection key, a user-scope installer, ...), shown again. | See [Installer technology](packaging.md#installer-technology). |
+    A detection rule from the install capture uses the newest capture, even when that install failed. After a failed
+    capture, run the install capture again before you publish. In the menu, choose **Finalize / refresh**. See
+    [Run the install capture again](projects.md#run-the-install-capture-again).
 
-They are shown **once per action**: `Export-Win32ToolkitIntuneWin -PublishIntune -PublishUpdate` prints
-them once, not once per app, and a dry run (`-WhatIf`) prints them too. In the TUI, **Publish to
-Intune** shows them in a panel before you pick which app to publish: red when an install/uninstall test
-failed or gave no verdict, an Update test failed, a technology switch was seen, the cleanup paths are
-unsafe or a prior-install rule fails, retries or reinstalls on devices (`PRIOR-BLOCK-FLEET`, `PRIOR-NO-WELCOME`,
-`PRIOR-PREDECESSOR-PUBLISHED`) or a captured install is not covered (`ID-SIBLING-UNAPPLIED`), yellow for the other warnings.
-When the cleanup paths are unsafe, the menu stops before asking which app to publish: packaging refuses
-such a project until Finalize / refresh re-runs the capture (or, when `SupportFiles\AppConfig.json` cannot be
-read, until you fix the file or re-create the project).
-**Package and upload now?** still defaults to No.
+### Apps that cannot be detected automatically
 
-**Packages exported before this version:** re-export them before you publish. Packaging now refuses a
-project whose uninstall cleanup paths reach outside the app's own install folder, but an older
-`.intunewin` still carries them. Publish warns `UNSAFE-CLEANUP` when the project's cleanup paths fail
-the check, or cannot be checked because `SupportFiles\AppConfig.json` cannot be read (Windows
-PowerShell 5.1 on the device may still read it). It reads the project, not the package: a package
-exported before the project was re-captured is not detected, so re-export it anyway.
+Some apps leave nothing that the toolkit can use for a rule, for example per-user apps and some MSIX packages. First
+try a better fix: re-create the project with an org template, or run the install capture.
 
-## Packages that remove a prior install
+If that does not help, publish the app without a detection rule. Only `Publish-Win32ToolkitIntuneApp` can do this.
 
-A package with **prior-install rules** ([Set-Win32ToolkitPriorInstall](reference/Set-Win32ToolkitPriorInstall.md),
-see [Prior installs](packaging.md#prior-installs-remove-another-installer-technology-before-installing)) refuses
-(**Block**) or removes (**Enforce**) another installer technology of the app on the device before it installs.
-Publishing such a package adds a few steps.
+```powershell
+$project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+$package = 'C:\Win32Apps\IntuneWin\Contoso\Git_x64_2.53.0.intunewin'   # your package
+Publish-Win32ToolkitIntuneApp -IntuneWinPath $package -ProjectPath $project -AllowNoDetectionRule
+```
 
-**The package must carry the rules that were checked.** Packaging refuses an Enforce rule that no Hyper-V Unattended
-Update test proved, and every invalid rule. If you change a rule after packaging (a mode, a window, a re-run install
-capture), publishing refuses the old `.intunewin` with `W32T.PackageNotReady` ("the prior-install rules changed after
-Export"): package it again, then publish. A dry run (`-WhatIf`) checks this too, without signing in.
+The warning starts with `No detection rule could be built`. Add a detection rule in the Intune admin center before you
+assign the app. Without a rule, the app fails on every device, or it installs again and again.
 
-**Pilot first.** win32-toolkit never assigns an app. Assign a package with Enforce rules to a **pilot group** first,
-watch the results, then widen it. Publishing reminds you of this and names the kill switch. Keep the app's maximum run
-time at **60 minutes or more** (the default): one prior uninstaller may run up to 30 minutes before the install starts.
+## Why the install command is Invoke-AppDeployToolkit.exe
 
-**Apps that would fight the removal.** After the sign-in, for a package with Enforce rules, publishing reads the
-tenant's Win32 apps once and warns (it never stops) about:
+Every app gets the same two commands. Intune runs them through the [Intune Management Extension](glossary.md#intune-management-extension), the Intune agent on the device.
 
-- an app assigned **Required** whose detection rule looks for the prior install's uninstall key: that app reinstalls
-  what this package removes, and devices end in exit code 69110. Unassign or retire it first;
-- an earlier version of this app (recorded in the project folder of that version) that is still assigned
-  **Required**: unassign it before you assign this one, or the old app reinstalls.
+```text title="Install and uninstall commands"
+Invoke-AppDeployToolkit.exe -DeploymentType Install
+Invoke-AppDeployToolkit.exe -DeploymentType Uninstall
+```
 
-Only detection rules count: an app whose *requirement* rule looks for that key does not reinstall anything. If the
-tenant cannot be read, you get one "could not check" warning, and if the list of apps comes back without the detection
-rules of some Required apps, one "could not read the detection rules of N Required Win32 app(s)" warning that names
-them (display name and app id, the first 10, then "and N more"): check those apps by hand. The publish goes on either
-way.
+Never change them to `powershell.exe`. Never add `-DeployMode` either. [PSAppDeployToolkit (PSADT)](glossary.md#psadt), the free PowerShell tool in every package, chooses by itself when to show dialogs.
+With `-DeployMode Interactive` and nobody signed in, PSADT stops with exit code 1602.
 
-**Vendor updaters.** Some apps update themselves with their own updater (Notepad++ ships one, `GUP.exe` in its
-`updater` folder). If that updater installs the vendor's other installer technology again on a device where an Enforce
-package removed it, every later install there ends in 69110 (or 69102 when it installed a newer version). For an
-Enforce package, switch the app's own updater off on the devices that get it (the vendor documents how), keep the app
-updated by publishing new packages, and clear the `Removed` marker on the affected devices (see the
-[incident runbook](#incident-runbook)).
+??? note "Why?"
 
-### Exit codes
+    The Intune Management Extension is a 32-bit program. If it starts `powershell.exe`, a 64-bit device runs the
+    32-bit Windows PowerShell. There, PSADT 4.2 refuses to run (exit code 60008), and PSADT 4.1 writes the install
+    tattoo where the detection rule never looks. `Invoke-AppDeployToolkit.exe` is part of every package and always
+    starts the 64-bit Windows PowerShell.
 
-The app is published with these return codes. All of them are **failed**, except 1618, which Intune retries:
+Apps published by win32-toolkit 1.1.6 or older use `powershell.exe` until you fix them. See
+[Fix apps that are already in Intune](maintain-toolkit.md#fix-apps-that-are-already-in-intune).
 
-| Code | Meaning | What to do |
-|---|---|---|
-| 69101 | The prior install is present and its rule is **Block**. | Decide: prove it and set the rule to Enforce, or keep blocking. |
-| 69102 | A **newer** version of the prior install is present than the rule covers. | Package the next version (the rules are carried forward with a raised window). If the vendor's own updater keeps installing the prior technology, disable that updater for devices that get this package. |
-| 69105 | A rule cannot be applied safely on this device: invalid data, the prior installed in another folder than the rule names, an uninstaller or folder that accounts other than SYSTEM, Administrators or TrustedInstaller can change, a device marker that cannot be written, or a 32-bit host. | Fix the data and package again, fix the folder's permissions, or set the rule to Block. |
-| 69106 | This package's own product is already registered next to the prior install. | Clean the device up by hand: remove the other install (its own uninstaller, for example from Settings > Apps), then repair or reinstall this app. The next version of this package handles such a device itself when its MSI has a new ProductCode (a major upgrade, as Notepad++ ships): its own older product is no refusal there, so it removes the prior and upgrades. |
-| 69107 | A restart is pending, or the removal needs one. | Nothing: the install runs after the restart. |
-| 69108 | The prior's uninstaller failed, or ran longer than 30 minutes. | Check that uninstaller in the PSAppDeployToolkit log. |
-| 69109 | The prior's uninstall key or main program file is still there after its uninstaller. | As 69108. |
-| 69110 | The prior came back after this package removed it on this device. | Find what reinstalls it (a Required app, see above, or the vendor's updater), then clear the `Removed` marker (below). |
-| 69111 | Removal is switched off on this device (`RemovePriorDisabled`). | Intended during an incident. |
-| 69112 | The package's installer is missing or cannot be opened. | Package it again. |
-| 1618 | The prior app is still running after the close-apps dialog, Windows Installer is busy, or the prior install changed while the dialog was open. | Nothing: Intune retries. |
+## Finish in the Intune admin center
 
-A device whose prior install is not exactly the one a rule declares (another publisher, name or version) is left as it
-is: the install goes on and the device gets a `LastSeen` marker.
+The toolkit stops after the upload. A [pilot group](glossary.md#pilot-group) is a small group of test devices or users that gets a new app first.
 
-### Device markers
+1. Open the link that the toolkit printed under `View in Intune portal:`.
+2. Check the detection rule, the return codes, the maximum run time and the icon.
+3. If you published without a detection rule, add one now.
+4. Assign the app to a pilot group.
+5. Watch the results on the pilot devices.
+6. Assign the app to all devices or users that need it.
+7. If the app replaces an older app, set supersedence or retire the old app. See
+   [Replace the old app in Intune](new-version.md#replace-the-old-app-in-intune).
 
-Each device records what happened under `HKLM\SOFTWARE\<ScriptAuthor>\win32-toolkit` (`<ScriptAuthor>` is your org
-template's script author):
+Remediation or inventory scripts that read the registry values of the toolkit must run in 64-bit PowerShell. A 32-bit
+script reads another part of the registry.
 
-| Value | Meaning |
+## Give your customer a one-page summary
+
+A [customer document](glossary.md#customer-document) is a one-page summary of the app, for a customer or
+for change control. The toolkit writes it to `Documentation.md` in the project folder.
+
+=== "Menu"
+
+    1. In the main menu, choose **Work with an existing project**.
+    2. At **Select a project**, choose `Contoso / Git_x64_2.53.0`.
+    3. Choose **Generate customer documentation**.
+    4. At **Include the Intune app id + portal link?**, press <kbd>Enter</kbd>. (The default is No.)
+    5. Read the path of the file in the green **Done** panel.
+
+    Answer `y` at step 4 only when the customer owns the tenant.
+
+=== "Command line"
+
+    [`Export-Win32ToolkitDocumentation`](reference/Export-Win32ToolkitDocumentation.md) writes the document.
+
+    ```powershell
+    $project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+    Export-Win32ToolkitDocumentation -ProjectPath $project
+    ```
+
+    Add `-IncludeIntuneIds` only when the customer owns the tenant. It adds the Intune app ID and a link to the app.
+    For every option, see [Export-Win32ToolkitDocumentation](reference/Export-Win32ToolkitDocumentation.md).
+
+The customer document describes the app, the install and uninstall commands and how Intune detects the app. It counts
+the files, registry keys and services that the app installs. It also lists the tests that ran and how to uninstall the
+app. It ends with the footer of your org template, if it has one.
+
+By default, the document has no tenant ID and no Intune app ID. It never goes into the package. It takes seconds and
+needs no network.
+
+## Next time do it all in one run
+
+For an app you know well, you can build, test, package and publish in one run.
+
+=== "Menu"
+
+    In **Package an app from winget** or **Package a manual app**, the wizard asks **After building, also…**. Tick
+    the test, **Package to .intunewin** and **Publish to Intune** with <kbd>Space</kbd>, then press <kbd>Enter</kbd>.
+
+    After you confirm the build, the wizard asks **Publishing UPLOADS to your Intune tenant**. Type `y` and press
+    <kbd>Enter</kbd>. (The default is No.) The wizards publish the install app only.
+
+=== "Command line"
+
+    [`Invoke-Win32Toolkit`](reference/Invoke-Win32Toolkit.md) builds, tests, packages and publishes Git in one run.
+
+    ```powershell
+    Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -TemplateName 'Contoso' -RunTest InstallUninstall -PublishIntune
+    ```
+
+    `-PublishIntune` also builds the package. [`New-Win32ToolkitManualApp`](reference/New-Win32ToolkitManualApp.md)
+    and [`Complete-Win32ToolkitManualApp`](reference/Complete-Win32ToolkitManualApp.md) have the same switch. For
+    every option, see [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md).
+
+!!! warning "A failed test does not stop this"
+
+    A failed test only warns. It does not stop packaging or publishing. The run prints
+    `The InstallUninstall test FAILED its assertions` and then publishes. For production apps, test first, read the
+    result, then publish in a separate step.
+
+## If the publish fails
+
+Where the publish stopped decides what you do.
+
+- **Before** `✓ App created`: nothing was written to Intune. Fix the cause and publish again.
+- **After** `✓ App created`: an incomplete app stays in Intune. The toolkit does not remove it. Delete it in the Intune
+  admin center, fix the cause, then publish again.
+
+One case is different. If the message says `Intune refused the relationship write` or `Failed to attach dependencies`,
+the app is complete but has no dependency. Do not publish again. See
+[Publish an app with dependencies](dependencies.md#publish-an-app-with-dependencies).
+
+The toolkit writes `Intune\Publications.json` only after a successful upload. So a failed publish leaves no record.
+
+**The upload timed out.** The toolkit waits up to 300 seconds for each of two Intune steps, then stops with
+`Timed out after`. Delete the incomplete app. Then publish again with a longer wait.
+
+```powershell
+$project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+Export-Win32ToolkitIntuneWin -ProjectPath $project -PublishIntune -PublishTimeoutSeconds 900
+```
+
+`Publish-Win32ToolkitIntuneApp` has `-TimeoutSeconds` instead. The menu and `Invoke-Win32Toolkit` cannot change the
+wait.
+
+**A Graph API error with 403.** [Microsoft Graph](glossary.md#microsoft-graph) is the Microsoft web
+service that the toolkit talks to. A 403 usually means that your Intune role is missing a permission. Ask your Intune
+administrator to check your role.
+
+## What you have now
+
+- One new Win32 app in Intune, in the tenant of the `Tenant` line. It is not assigned.
+- The file `Intune\Publications.json` in the project folder. It keeps the app ID for each tenant and never goes into a
+  package.
+- The package in `IntuneWin\Contoso` under your [base folder](glossary.md#base-folder), the main
+  folder of the toolkit.
+- Your earlier apps in Intune, unchanged.
+
+## If something goes wrong
+
+Some messages start with `Publish-Win32ToolkitIntuneApp failed:` or `Export-Win32ToolkitIntuneWin failed:`. Read the
+text after it.
+
+| Message starts with | What to do |
 |---|---|
-| `LastRefusal` | `yyyy-MM-dd <code> <package version>` of the last refusal. |
-| `PriorInstalls\<View>\<Key>\LastSeen` | The prior install was seen but not removed (not the declared one, a Report rule, or a planned removal). |
-| `PriorInstalls\<View>\<Key>\Removed` (and `Version`) | This package removed that prior install on this date. |
-| `RemovePriorDisabled` | The kill switch (you set it, below). |
+| `REFUSING publish: this project is pinned to tenant` | Nothing was created. Connect to the pinned tenant as in [Connect](intune-connection.md#connect), then publish again. |
+| `'<project>' is marked not configured and cannot be` | The build of the project stopped halfway. Package the app again. This replaces the folder. |
+| `No detection rule for` | See [How Intune detects the app](#how-intune-detects-the-app). |
+| `Prior install: the prior-install rules changed after Export` | Build the package again, then publish the new file. |
+| `Graph API error` | Read the error that follows. See [If the publish fails](#if-the-publish-fails). |
+| `Timed out after` | Delete the incomplete app, then publish again with a longer wait. See [If the publish fails](#if-the-publish-fails). |
 
-Read them with an inventory or Remediations script for fleet visibility. **Run every such script as 64-bit**
-("Run script in 64-bit PowerShell" = Yes, or `reg.exe ... /reg:64`): a 32-bit script reads
-`HKLM\SOFTWARE\WOW6432Node\...` and does not see these values.
+More messages and fixes are in [Troubleshooting: Publishing](troubleshooting.md#publishing).
 
-### Incident runbook
+## Next step
 
-If removals go wrong on devices:
+You finished the journey. For apps that are not in winget, dependencies and devices that already have the app, see the
+**Special cases** tab. The next page shows how to ship a new version.
 
-1. **Unassign the app, or exclude the affected group.** This is the fastest stop.
-2. **Switch removal off** where the app stays assigned: a Remediations script that sets the DWORD
-   `RemovePriorDisabled = 1` under `HKLM\SOFTWARE\<ScriptAuthor>\win32-toolkit`. Devices then refuse with 69111 instead
-   of removing anything. The switch is read from both registry views, so a 32-bit script also works for this one value,
-   but prefer 64-bit.
-3. **Read** `LastRefusal`, the Intune Management Extension log and the PSAppDeployToolkit log of an affected device.
-4. **Fix** the rule, package again, run the Hyper-V proof again, then publish the new package (pilot first).
-
-To clear a `Removed` marker once the cause of a 69110 is fixed, delete the value
-`HKLM\SOFTWARE\<ScriptAuthor>\win32-toolkit\PriorInstalls\<View>\<Key>\Removed` with a **64-bit** remediation
-(`<View>` is `Native` or `Wow6432`, `<Key>` the prior's uninstall key name).
-
-If the cause was the vendor's own updater installing the prior again **over this package's own MSI install** (Notepad++'s
-updater does), clearing the marker is not enough for the same package version: the device then refuses with 69106 (its own
-product is registered next to the prior install). Clean that device up by hand (see 69106 above), or wait for the next
-version of the package.
-
-## Apps published before this version
-
-win32-toolkit 1.1.6 and older published every app with the command line
-`powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Install`
-(and `Uninstall`). Under the 32-bit Intune Management Extension that starts a 32-bit PowerShell: a
-PSAppDeployToolkit 4.2 package exits 60008 on every 64-bit device, and a 4.1 package writes its
-install tattoo to `HKLM\SOFTWARE\WOW6432Node\<Author>\<Vendor>\<App>`, where the detection rule does
-not look, so Intune reports "not detected" after a successful install. Publishing never edits an app
-that is already in Intune, so those apps keep the old command line until you act.
-
-**Recommended: rebuild, then republish.** Re-create the project with this version
-([Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md), or
-[New-Win32ToolkitManualApp](reference/New-Win32ToolkitManualApp.md) for a manual app: copy your
-Install code out of `Invoke-AppDeployToolkit.ps1` first, because re-creating a project deletes its
-folder), then publish it and retire the old app. Only a rebuilt project gets the new uninstall that
-also removes the legacy `WOW6432Node` tattoo written by the old 32-bit launch.
-
-**Stopgap: republish the existing project, or edit the command lines in the Intune portal.** Set the
-install and uninstall command lines to `Invoke-AppDeployToolkit.exe -DeploymentType Install` and
-`Invoke-AppDeployToolkit.exe -DeploymentType Uninstall` (the exe already ships in every `.intunewin`),
-or package and publish the existing project again. This fixes install and detection (Required
-assignments heal on their own), **not** the uninstall cleanup: the existing project's deploy script
-is packaged unchanged (it shows as `legacy` in **Browse projects**, and packaging prints one warning
-about it).
-
-!!! warning "Stopgap caveat: the stale WOW6432Node key"
-
-    After an uninstall by an existing (not rebuilt) project, the stale
-    `HKLM\SOFTWARE\WOW6432Node\<Author>\<Vendor>\<App>` key remains on devices the old 32-bit launch
-    installed. The update requirement checks both registry views, so it still matches there, and an
-    **Update** app for that title can reinstall it on devices where it was removed. Use the stopgap
-    only for titles without an Update app, or remove the key with a remediation script.
-
-## Dependencies at publish time
-
-Dependencies declared on the project (see [Dependencies](dependencies.md)) are resolved to real
-Intune app **ids** before anything uploads, so a missing dependency is reported up front, not after
-a 200 MB upload. Unresolvable ones are warned about and skipped; nothing is ever auto-published as
-a side effect. The relationship is attached **after** the upload completes (Intune only allows it
-then), and only to the install app, never to the `(Update)` app.
-
-## Customer-facing documentation
-
-To produce a one-page hand-over sheet (`Documentation.md`) for the packaged app, covering deployment
-settings, detection method in plain English, captured-change summary and test history, run
-[Export-Win32ToolkitDocumentation](reference/Export-Win32ToolkitDocumentation.md). The output is
-customer-safe by default: no tenant id, no Intune app id, no raw host paths. Pass
-`-IncludeIntuneIds` only for an **internal copy** (or when the customer owns the tenant) to add
-the app id and a portal deep-link. In the test history, each Update test names the installer
-technology and version it upgraded from (for example `Update (baseline: nullsoft exe, v8.8.9)`), and a
-failed one lists its failed assertions.
-
-## Troubleshooting
-
-| Symptom | Cause and fix |
-|---|---|
-| **403 when attaching a dependency** (app itself uploaded fine) | Your Intune RBAC role lacks the **Relate** permission on Mobile apps. A correct Graph scope is not enough. Ask an Intune admin to add Relate to your role, then re-attach in the portal. |
-| **"Need admin approval" at sign-in** | The `DeviceManagementApps.ReadWrite.All` scope needs tenant admin consent, see [Authentication](#authentication). |
-| **Timeout waiting for storage URI or commit** | Large packages take longer to server-side validate. Raise the wait: `-TimeoutSeconds` on the publisher, or `-PublishTimeoutSeconds 900` on `Export-Win32ToolkitIntuneWin` (default 300 s). |
-| **An older app fails with 60008 everywhere, or installs but is "not detected"** | It still has the `powershell.exe -File` command line of win32-toolkit 1.1.6 or older. See [Apps published before this version](#apps-published-before-this-version). |
-| **`W32T.NoDetectionRule`** | No install tattoo and no usable install capture. See the detection rule list in [What gets created](#what-gets-created). |
-| **`W32T.PackageNotReady`** while packaging | The deploy script failed the packaging check (every problem and its fix is listed in the message). See [Packaging](packaging.md#the-package-check). |
-| **`W32T.ProjectNotConfigured`** while packaging or publishing | The project's build stopped after its folder was created (a refused configuration, a failed download, no installer found), so it has no org template or installer configuration. There is no override: package the app again (`Invoke-Win32Toolkit` or `New-Win32ToolkitManualApp`, or the menu's Package an app), which replaces the folder. See [Packaging](packaging.md#the-package-check). |
-| **`UNSAFE-CLEANUP` warning** while publishing | The package was exported before the cleanup-path check. See [Warnings before you publish](#warnings-before-you-publish). |
-| **`W32T.PackageNotReady` "Prior install: the prior-install rules changed after Export"** while publishing | A prior-install rule (or the install capture) changed after the package was built. Package it again, then publish. See [Packages that remove a prior install](#packages-that-remove-a-prior-install). |
-| **Exit codes 69101-69112** on devices | See [Exit codes](#exit-codes). |
+[Next: ship a new version](new-version.md){ .md-button .md-button--primary }

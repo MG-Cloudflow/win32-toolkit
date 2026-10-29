@@ -1,118 +1,229 @@
 ---
-description: "Connect win32-toolkit to Microsoft Intune with Microsoft Graph authentication before you publish Win32 apps."
+description: "Sign in to the right Intune tenant on purpose, check the tenant banner, and keep customers apart with a tenant pin."
 ---
 
-# Connecting to Intune
+# Connect to Intune
 
-Publishing signs you in automatically, so for a single tenant you may never think about this page.
-It matters when you package for **more than one customer**, because then the question stops being
-*"am I signed in?"* and becomes *"whose Intune am I about to write to?"*
+This step signs you in to the right Microsoft Intune [tenant](glossary.md#tenant): one organization's
+own space in Microsoft 365 and Intune. You choose the tenant on purpose and check it before win32-toolkit writes
+anything.
 
-## Why the account name is not the answer
+## Before you start
 
-If you are a consultant, your sign-in looks the same everywhere. `mg@cloudflow.be` is `mg@cloudflow.be`
-whether you are a guest in Contoso's tenant or Fabrikam's. So an "signed in as ..." line tells you who
-you are and nothing about where the app is going.
+Step 6 of 7.
 
-**The tenant is the thing that decides.** That is why every connection banner leads with the tenant
-name, and why the toolkit wants you to pin one.
+- You need an account that can create apps in Intune. See [What your account needs](#what-your-account-needs).
+- You need an [org template](glossary.md#org-template), the settings file of one customer. See
+  [Create your org template](org-templates.md).
+- The org template holds the customer's [tenant ID](glossary.md#tenant-id). This is the fixed ID of a
+  tenant, a long code like `11111111-2222-3333-4444-555555555555`.
+- Time: a few minutes (longer if an admin must give consent first).
 
-## Pin the tenant on the org template
+## What your account needs
 
-An org template already carries everything else that is per-customer, so it carries the tenant too:
+The toolkit talks to Intune through [Microsoft Graph](glossary.md#microsoft-graph), Microsoft's web
+service for Intune data. It signs in as you and acts only in your name.
 
-```powershell
-Invoke-Win32Toolkit -NewTemplate -TemplateName 'Contoso'
-# ... Intune tenant (blank = unpinned): contoso.onmicrosoft.com
-```
+[Admin consent](glossary.md#admin-consent) is a one-time approval by a tenant administrator that lets
+an app use a permission. An **Intune role** is the set of Intune rights your account has.
 
-Once pinned, two things follow automatically:
-
-- **Connecting for that template goes to that tenant.** A session for a different customer is torn
-  down and re-established rather than reused.
-- **Publishing verifies it, and refuses on a mismatch.** Not a warning. An error, before anything is
-  uploaded.
-
-The pin is copied into the project when it is configured, so it still applies when you publish a
-project on its own later, with no template loaded.
-
-!!! warning "Unpinned templates cannot be checked"
-
-    If a template has no tenant, the toolkit does not know which one is correct. It will warn you and
-    continue, because silently doing nothing would be worse. Pin your templates.
-
-## Connecting
-
-From the TUI: **Microsoft Intune connection** on the main menu. It shows the current tenant, lets you
-connect per customer, and signs out.
-
-From the command line:
-
-```powershell
-# Connect to the tenant pinned on a template (recommended)
-Connect-Win32ToolkitIntune -Template 'Contoso'
-
-# Or a tenant directly
-Connect-Win32ToolkitIntune -TenantId 'contoso.onmicrosoft.com'
-
-# No browser on this host
-Connect-Win32ToolkitIntune -Template 'Contoso' -UseDeviceAuthentication
-```
-
-You get a banner like this before anything is written:
-
-```
-  Tenant    : Contoso NV
-  Domain    : contoso.onmicrosoft.com
-  Tenant ID : 9f32a42e-6782-4b96-a4d3-e0828a29be11
-  Account   : mg@cloudflow.be
-  Template  : Contoso (matches)
-  Scopes    : DeviceManagementApps.ReadWrite.All
-  Session   : Process / Delegated
-```
-
-If the tenant name shows as unavailable, that is fine: reading the organisation name needs a directory
-permission your account may not have, and the toolkit deliberately does not ask for more privilege than
-it needs to publish. You still get the tenant ID, and every guard still works.
-
-## Where the token lives
-
-| `-ContextScope` | Token lives | Use when |
-|---|---|---|
-| `Process` (default in the TUI) | This session only. Nothing on disk. | You work across several customers. A token that cannot outlive the session cannot be silently reused next week. |
-| `CurrentUser` | Cached on disk, survives restarts. | You only ever touch one tenant and want to sign in less. |
-
-## Signing out
-
-```powershell
-Disconnect-Win32ToolkitIntune
-```
-
-**Be clear about what this does.** It clears the token *this toolkit* holds, so the next publish must
-sign in again. It does **not** sign you out of Entra: your browser session is untouched, so the next
-connect may complete with no prompt and land straight back on the same tenant. That is the identity
-provider's behaviour, not something this command can revoke.
-
-So do not lean on disconnect to keep customers apart. The things that actually do that are:
-
-1. **Pinning the tenant** on the template, which publish then verifies and refuses to violate.
-2. **`-ContextScope Process`**, so no token outlives the session.
-
-Disconnect is a convenience. The pin is the control.
-
-## Permissions
-
-The toolkit requests the least it needs to do the job:
-
-| Scope | For |
+| You need | Why |
 |---|---|
-| `DeviceManagementApps.ReadWrite.All` | Create the Win32 app, upload its content, set detection rules, categories, and relationships. |
+| The Graph permission `DeviceManagementApps.ReadWrite.All` | The toolkit creates the app and uploads the package with it. It asks for no other permission. |
+| Admin consent for "Microsoft Graph Command Line Tools" | The Graph module signs in through this Microsoft app. |
+| An Intune role that may create and upload apps | The Graph permission alone is not enough. |
+| The Relate permission in your Intune role | Only if your apps have [dependencies](dependencies.md). It lets the toolkit link an app to the app it needs. |
+| Network access to Microsoft Graph, Microsoft sign-in and Azure Storage | The toolkit uploads the package to Azure Storage. |
 
-The tenant *name* in the banner comes from a read of `/organization`. If your account cannot read it,
-the banner shows the tenant ID instead and nothing else changes. Nothing here grants the toolkit any
-write access beyond apps.
+Consent and Intune roles are general Microsoft facts. Without consent, your first sign-in stops at a Microsoft page
+called "Need admin approval".
 
-## Next steps
+## Connect
 
-- [Publishing to Intune](publishing.md)
-- [Org templates](org-templates.md)
+Publishing signs you in by itself, but connect first. You then see the tenant before the toolkit writes anything to
+Intune.
+
+=== "Menu"
+
+    1. Start the menu ([`Show-Win32Toolkit`](reference/Show-Win32Toolkit.md)).
+    2. In the main menu, choose **Microsoft Intune connection**. The top of the screen shows your current connection.
+    3. Choose **Connect using an org template's tenant**.
+    4. At **Which customer?**, choose the line that starts with `Contoso`.
+    5. If a Microsoft sign-in window opens, sign in with your account.
+    6. Read the banner, then press any key.
+
+    Each line of **Which customer?** shows the tenant ID of the org template, or `not pinned`.
+
+    To connect without an org template, choose **Connect to a tenant by id or domain**. At **Tenant id or domain**,
+    type the tenant ID. A domain name does not work here, because the toolkit compares tenant IDs.
+
+=== "Command line"
+
+    [`Connect-Win32ToolkitIntune`](reference/Connect-Win32ToolkitIntune.md) connects to the tenant that the
+    `Contoso` org template pins.
+
+    ```powershell
+    Connect-Win32ToolkitIntune -Template 'Contoso'
+    ```
+
+    To connect without an org template, give the tenant ID.
+
+    ```powershell
+    Connect-Win32ToolkitIntune -TenantId '11111111-2222-3333-4444-555555555555'
+    ```
+
+    On a PC without a browser, add `-UseDeviceAuthentication`. This starts a [device code sign-in](glossary.md#device-code-sign-in). PowerShell shows a code and a web address. Open the address on
+    any device and enter the code.
+
+    For every option, see [Connect-Win32ToolkitIntune](reference/Connect-Win32ToolkitIntune.md).
+
+### Install the Graph module once
+
+The first time, the toolkit needs the [module](glossary.md#module) `Microsoft.Graph.Authentication`, a
+package of PowerShell commands. If it is missing, you see this question:
+
+```text title="What you see"
+WARNING: Microsoft.Graph.Authentication module not found.
+Install it now from PSGallery? (Y/N):
+```
+
+Type `Y` and press <kbd>Enter</kbd>. The default is No, and then the connect stops. The toolkit installs the module
+for your Windows account from the [PowerShell Gallery](glossary.md#powershell-gallery), Microsoft's
+public store of PowerShell modules.
+
+## Check the tenant banner
+
+After the sign-in, the toolkit shows a panel titled **Microsoft Intune connection**:
+
+```text title="The tenant banner"
+Tenant    : Contoso
+Domain    : contoso.onmicrosoft.com
+Tenant ID : 11111111-2222-3333-4444-555555555555
+Account   : admin@contoso.onmicrosoft.com
+Template  : Contoso (matches)
+Scopes    : DeviceManagementApps.ReadWrite.All
+Session   : Process / Delegated
+```
+
+<!-- SCREENSHOT: the Microsoft Intune connection banner after connecting with the Contoso org template, showing "Template  : Contoso (matches)" -->
+
+Read the Tenant line first. It names the customer whose Intune gets your apps. The Account line cannot tell you that,
+because a consultant's account looks the same in every customer tenant. The Template line appears only when you
+connect with an org template.
+
+| What you see | What it means |
+|---|---|
+| `Contoso (matches)` on the Template line | Your sign-in is in the tenant saved on the org template. |
+| `Contoso (not pinned)` on the Template line | The org template has no tenant ID. Nothing can check that this is the right customer. |
+| A red panel with `MISMATCH - template expects` | You are in another tenant than the org template expects. Connect again. |
+| `(name unavailable)` on the Tenant line | Your sign-in may not have the right to read the tenant name. This is harmless: every check still works. |
+
+## Pin the tenant on your org template
+
+A [tenant pin](glossary.md#pin) is the tenant ID saved on an org template. With a pin, the toolkit
+refuses to publish to any other tenant.
+
+!!! warning "Use the tenant ID"
+
+    Use the tenant ID, not a domain name. The template wizard and the menu also offer a domain such as
+    `contoso.onmicrosoft.com`. But the toolkit compares tenant IDs. A domain never matches, so connect and publish
+    are refused.
+
+You find the tenant ID in the Microsoft Entra admin center, on the Overview page (a general Microsoft fact). To pin
+the tenant on an existing org template:
+
+1. In the main menu, choose **Org templates** > **Edit a template**, then choose `Contoso`.
+2. Press <kbd>Enter</kbd> to keep each answer until the question **Intune tenant**.
+3. Type the tenant ID and press <kbd>Enter</kbd>. To remove a pin, type `-` instead.
+4. Press <kbd>Enter</kbd> for the other questions. The wizard then saves the template.
+
+To set the pin in a new template, see
+[Answer the questions that matter](org-templates.md#answer-the-questions-that-matter).
+
+Suppose you publish a pinned project while you are signed in to another tenant. The console shows `Switching tenant`
+and a new sign-in starts. If the tenant still differs from the pin, the toolkit refuses the publish before it creates
+anything in Intune.
+
+### What the pin does not cover
+
+A [project](glossary.md#project) is the folder of one app version. To [re-create](glossary.md#re-create) a project means to make it again from the start. See
+[Re-create a project](projects.md#re-create-a-project).
+
+- The toolkit copies the pin into a winget project when it creates it. Changes to an org template reach new projects
+  only. Re-create a project to apply them.
+- [Apps that are not in winget](manual-apps.md) do not store the pin. The toolkit checks the tenant only when you
+  publish in the same run that creates them. Later, connect with the org template first and read the banner.
+- Without a pin, a publish only warns: `This project's template does not pin a tenant`. It then uses the tenant you
+  are signed in to.
+
+## Work for several customers
+
+Do this for every customer:
+
+1. Pin every org template with the customer's tenant ID.
+2. Connect with the customer's org template, in the menu or with `Connect-Win32ToolkitIntune -Template`.
+3. Read the Tenant line of the banner.
+4. Publish.
+5. Sign out when you finish with this customer.
+
+Always connect first. By default, `Connect-Win32ToolkitIntune` keeps the sign-in in this PowerShell window only. A
+publish that signs you in by itself saves the sign-in on disk. Another PowerShell window can then use it too.
+
+Take care if you are a consultant and your customers added your own company account to their tenants. Suppose an org
+template has no pin and you publish without connecting first. Microsoft then usually signs you in to your own company's tenant (a general
+Microsoft fact). The app goes to your own tenant, with only a warning.
+
+Signing out is a convenience. The tenant pin is the safety control.
+
+## Sign out
+
+=== "Menu"
+
+    Choose **Microsoft Intune connection** > **Sign out**. The menu shows **Sign out** only when you are connected.
+
+=== "Command line"
+
+    [`Disconnect-Win32ToolkitIntune`](reference/Disconnect-Win32ToolkitIntune.md) ends the sign-in.
+
+    ```powershell
+    Disconnect-Win32ToolkitIntune
+    ```
+
+    For every option, see [Disconnect-Win32ToolkitIntune](reference/Disconnect-Win32ToolkitIntune.md).
+
+```text title="What you see"
+✓ Signed out of Contoso.
+  This cleared the toolkit's token. Your browser is still signed in to Entra, so the next connect may not prompt.
+```
+
+The toolkit forgets its [token](glossary.md#token), the proof of your sign-in. Your browser stays
+signed in to [Microsoft Entra ID](glossary.md#microsoft-entra-id), Microsoft's sign-in service. So the
+next connect may finish without a question, on the same tenant.
+
+## What you have now
+
+- A sign-in to the Contoso tenant, kept in this PowerShell window only. It ends when you sign out or close the window.
+- If you pinned the tenant: the tenant ID in the org template `Contoso`.
+- Nothing in Intune. No app was created or changed.
+
+## If something goes wrong
+
+When you connect, the toolkit puts `Connect failed:` in front of each error. Read the words after it.
+
+| Message starts with | What to do |
+|---|---|
+| "Need admin approval" (a Microsoft page) | Ask a Global Administrator to give admin consent once for Microsoft Graph Command Line Tools. |
+| `Connected to tenant '...' but '...' was requested` | You signed in to another tenant, so the toolkit signed you out again. Use the right account, or add `-UseDeviceAuthentication`. Pin the tenant ID, not a domain. |
+| `Microsoft.Graph.Authentication is required but this session is non-interactive` | Install the module first, or add `-Force` to `Connect-Win32ToolkitIntune` to install it without a question. |
+| `Template 'Contoso' not found. Creating it now...` | No org template has this name in your [base folder](glossary.md#base-folder). Press <kbd>Ctrl</kbd>+<kbd>C</kbd> to stop the template wizard, then check the name. |
+| `Template 'Contoso' does not pin a tenant` | [Pin the tenant on your org template](#pin-the-tenant-on-your-org-template). |
+
+In a script, a connect error does not stop the script: add `-ErrorAction Stop` to `Connect-Win32ToolkitIntune`.
+
+For more messages, see [Troubleshooting: sign-in and tenant](troubleshooting.md#sign-in-and-tenant).
+
+## Next step
+
+Publish the package to the tenant you checked.
+
+[Next: publish to Intune](publishing.md){ .md-button .md-button--primary }

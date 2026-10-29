@@ -49,7 +49,7 @@ Write-Host "`n[3] Show-Win32Toolkit guard and help" -ForegroundColor Cyan
 $tui = TextOf 'Public\Show-Win32Toolkit.ps1'
 if ($tui -match "\`$PSVersionTable\.PSVersion\s+-lt\s+\[version\]'7\.4'") { Ok "the guard compares with [version]'7.4'" } else { Bad 'the guard does not compare with [version]''7.4''' }
 if ($tui -match "Write-Warning\s+'Show-Win32Toolkit requires PowerShell 7\.4 or later\.'") { Ok 'the guard message says PowerShell 7.4' } else { Bad 'the guard message does not say PowerShell 7.4' }
-if ($tui -match 'PowerShell 7\.4\+ and an interactive console') { Ok 'the help says PowerShell 7.4+' } else { Bad 'the help does not say PowerShell 7.4+' }
+if ($tui -match 'PowerShell 7\.4 or later in an interactive console') { Ok 'the help says PowerShell 7.4 or later' } else { Bad 'the help does not say PowerShell 7.4 or later' }
 
 Write-Host "`n[4] health check row" -ForegroundColor Cyan
 $pre = TextOf 'Private\Test-Win32ToolkitPrerequisites.ps1'

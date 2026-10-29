@@ -1,138 +1,245 @@
-# App dependencies
+---
+description: "Make Intune and your tests install another app first, publish the dependency link, and change it later without a second app."
+---
 
-Some apps need something else installed **first**. Most commonly a **Visual C++ redistributable**, or
-another in-house app. Declare it, and the toolkit does two things:
+# Apps that need another app first
 
-1. **In Intune**: creates a real `mobileAppDependency` relationship, so the Intune Management Extension
-   installs the dependency **before** your app on the device.
-2. **In your test runs**: installs the dependency **inside the Sandbox / Hyper-V guest before the app**, so
-   your app is never captured or tested on a machine that is missing its runtime.
+Some apps work only when another app is already on the device, for example the Visual C++ runtime. In
+win32-toolkit you declare that other app as a [dependency](glossary.md#dependency): an app that
+Intune installs before your app. The toolkit also installs it first in your tests, and it links the two apps in
+Intune when you publish.
 
-That second part matters more than it sounds. The **documentation capture** installs your app on a clean
-machine to discover what it changes. Without the dependency present, the install can fail or half-succeed,
-and the detection rule, uninstall logic and processes-to-close would all be generated from a **broken
-install**, then shipped to every device.
+## When you need this
 
-## Declaring
+Declare a dependency when your app needs a runtime, such as Visual C++ or .NET, or your own base app.
+
+Intune checks the dependency with its own [detection rule](glossary.md#detection-rule): the check
+that tells Intune whether an app is installed. A device that already has the dependency does not install it again.
+
+To publish the links, your account needs one extra Intune permission (see
+[Publish an app with dependencies](#publish-an-app-with-dependencies)).
+
+## Three kinds of reference
+
+You name each dependency with a reference: a prefix, a colon and a value. Always write the prefix. Without it, the
+toolkit guesses the kind from the value.
+
+| Reference | Use it for | Installed in tests? | Found in Intune by |
+|---|---|---|---|
+| `winget:<winget ID>`, for example `winget:Microsoft.VCRedist.2015+.x64` | A public runtime or tool in [winget](glossary.md#winget), the Microsoft command-line app store | Yes, the newest version | An app that the toolkit published from winget with this winget ID |
+| `project:<template>\<project>`, for example `project:Contoso\Contoso_Reader_x64_3.2.0` | Your own app: another [project](glossary.md#project) that you packaged with the toolkit | Yes | The app this PC published from that project, else an app with exactly its name |
+| `intune:<app ID>` | An app that exists only in Intune | No | The app ID itself |
+
+In a `project:` reference, write the Template and Application names that the menu
+([`Show-Win32Toolkit`](reference/Show-Win32Toolkit.md)) shows in **Browse projects**, with a backslash between them.
+Never write a full path. An [app ID](glossary.md#app-id) is the code that Intune gives every app.
+Copy it from the Intune admin center.
+
+## Add a dependency when you create the app
+
+=== "Menu"
+
+    1. In the main menu, choose **Package an app from winget** or **Package a manual app**.
+    2. Answer the questions of the wizard until it asks about another app.
+    3. At **Does this app need another app installed FIRST**, answer `y`. (The default is No.)
+    4. Choose a source (see below). Repeat this for each dependency.
+    5. Choose **Done**.
+
+    - **Add a dependency from winget**: search by name, for example `VCRedist`.
+    - **Add a dependency from an already-packaged project**: choose one of your other projects.
+    - **Pick an app already published in Intune**: sign in and choose the app. It cannot be installed in tests.
+
+=== "Command line"
+
+    Add `-DependsOn` to [`Invoke-Win32Toolkit`](reference/Invoke-Win32Toolkit.md) or to
+    [`New-Win32ToolkitManualApp`](reference/New-Win32ToolkitManualApp.md). For several references, put each one in
+    quotes and separate them with commas.
+
+    ```powershell
+    Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -DependsOn 'winget:Microsoft.VCRedist.2015+.x64'
+    ```
+
+    For every option, see [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md).
+
+The toolkit checks every reference before it downloads or creates anything. A wrong reference stops the command.
+The toolkit saves the list in the project, in `SupportFiles\AppConfig.json`.
+
+## Change the dependencies of a project
+
+Changing the list changes only the project, not Intune.
+
+=== "Menu"
+
+    1. In the main menu, choose **Work with an existing project** and choose your project.
+    2. Choose **Dependencies**.
+        <!-- SCREENSHOT: the TUI project actions menu showing the Dependencies action -->
+    3. Add or remove dependencies. You get the same sources, plus **Remove a dependency**.
+    4. Choose **Done**. The **Done** panel starts with `Dependencies saved:`.
+
+    Ignore the panel's advice to "re-publish". See
+    [Change the dependencies of an app in Intune](#change-the-dependencies-of-an-app-in-intune).
+
+=== "Command line"
+
+    [`Set-Win32ToolkitAppDependency`](reference/Set-Win32ToolkitAppDependency.md) adds references to the list
+    that the project already has.
+
+    ```powershell
+    $project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+    Set-Win32ToolkitAppDependency -ProjectPath $project -DependsOn 'winget:Microsoft.VCRedist.2015+.x64'
+    ```
+
+    - `-Clear` with references replaces the whole list.
+    - `-Clear` alone removes all dependencies.
+    - There is no option to remove only one. Use `-Clear` and give the references you want to keep.
+
+    For every option, see [Set-Win32ToolkitAppDependency](reference/Set-Win32ToolkitAppDependency.md).
+
+After a change, run the [install capture](glossary.md#install-capture) again: the test install
+that records what your app changes. It must run with the new list. See
+[Run the install capture again](projects.md#run-the-install-capture-again).
+
+## Install it first or only check for it
+
+The type of a dependency tells Intune what to do when the device does not have it.
+
+| Type | What Intune does |
+|---|---|
+| `autoInstall` (the default) | Installs the dependency first, then your app. |
+| `detect` | Only checks for the dependency. If it is missing, Intune does not install your app at all. |
+
+`detect` is rarely the right choice, and the menu never offers it. Set it on the command line with
+`-DependencyType`:
 
 ```powershell
-# winget flow
-Invoke-Win32Toolkit -Id 'Contoso.App' -Architecture x64 -DependsOn 'winget:Microsoft.VCRedist.2015+.x64'
-
-# custom (non-winget) app
-New-Win32ToolkitManualApp -Name 'Qastor' -Version '10.0' -Architecture x64 -SourcePath 'C:\src\qastor.msi' `
-    -DependsOn 'winget:Microsoft.VCRedist.2015+.x64'
-
-# an existing project (add or change dependencies at any time)
-Set-Win32ToolkitAppDependency -ProjectPath 'C:\Win32Apps\Projects\Arxus\Qastor_x64_10.0' `
-    -DependsOn 'winget:Microsoft.VCRedist.2015+.x64'
+$project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+Set-Win32ToolkitAppDependency -ProjectPath $project -DependsOn 'winget:Microsoft.VCRedist.2015+.x64' -DependencyType detect
 ```
 
-Project paths always follow the `<BasePath>\Projects\<Template>\<App>` layout. The examples above assume a
-`C:\Win32Apps` base path and an `Arxus` template.
+The type applies to every reference in the command. For mixed types, run the command once per type.
 
-Every reference is checked **before anything is downloaded or created**. A `project:` reference must be
-exactly `<Template>\<ProjectName>` (no full path, no `..`, no third folder). An `intune:` reference must be an
-app id (a GUID). No reference may name the app itself. A reference that breaks a rule stops the command with
-the terminating error `W32T.InvalidDependencyReference`, which names the reference and the rule:
+!!! warning "The menu resets the type"
+    When you save in the **Dependencies** action of the menu, every dependency becomes `autoInstall` again. Set
+    `detect` again on the command line afterwards.
 
-- `Invoke-Win32Toolkit` stops before it downloads anything or creates a project folder.
-- `New-Win32ToolkitManualApp` stops before it creates a project folder. A malformed reference is refused even
-  before any prompt.
-- `Set-Win32ToolkitAppDependency` writes nothing.
+## Dependencies in tests
 
-Or in the **TUI**: both wizards ask *"Does this app need another app installed FIRST?"*, and every project
-has a **Dependencies** action. The picker never offers the project you are working on (an app cannot depend
-on itself).
+### What the test machine installs
 
-<!-- SCREENSHOT: the TUI project actions menu showing the Dependencies action -->
+The [test machine](glossary.md#test-machine) is Windows Sandbox or the Hyper-V test VM. In the
+install capture and in every test, the toolkit installs your dependencies there first, in the order you declared.
+The toolkit installs them before it records the "before" state, so they are never part of your app's capture results.
 
-See [Set-Win32ToolkitAppDependency](reference/Set-Win32ToolkitAppDependency.md) for the full parameter
-reference.
+- `winget:` gets the newest version in winget. It may differ from the build on devices.
+- `project:` installs the app from a copy of that project.
+- `intune:` cannot be installed in a test. The message starts with `Dependency 'intune:...' is an app id in the
+  tenant`. If your app needs it during tests, use `winget:` or `project:`.
+- The toolkit does not follow chains of dependencies in tests. If app A needs B and B needs C, declare C and then B
+  on A.
 
-## Three sources
+The toolkit reuses a dependency download for up to 6 hours while the list stays the same. It does this only when
+the setting `PipelineCache` is `On` (the default, see [General settings](settings.md#general)). Dependency installers
+never go into your package.
 
-| Reference | Meaning | Installed in the test run? |
-|---|---|---|
-| `winget:Microsoft.VCRedist.2015+.x64` | a winget package | ✅ downloaded and installed in the guest |
-| `project:Contoso\VCRedist_x64_14.38` | a project you already packaged | ✅ installed via its own PSADT, in its own process |
-| `intune:<app id>` | an app already published in Intune (pick it from the TUI) | ❌ no local package to install |
+### When a dependency fails
 
-`-DependencyType` defaults to `autoInstall` (install it first). `detect` **only detects** it, and if it is
-absent, Intune will not even attempt your app. Use it deliberately.
+Every installer ends with an [exit code](glossary.md#exit-code): a number that says how the install
+went. A dependency install succeeds with exit code 0, 1707, 3010 or 1641. Any other code stops the dependency step.
 
-## What happens during tests and capture
+If a dependency install runs longer than 25 minutes, the toolkit stops it. The exit code is then 1460.
 
-Before a Sandbox / Hyper-V run starts, every declared `winget:` and `project:` dependency is **staged into
-the guest** (under the project's `Sandbox\Dependencies\` folder) and **installed before your app**: the
-same order the Intune Management Extension uses on a real device. A `winget:` or `project:` dependency that
-**cannot be staged** (its download fails, the project or the base folder is missing, or it names the app
-itself) **stops the test or capture** with an error naming the dependency and the reason, instead of running
-without it. It is a terminating error (`W32T.DependencyNotStaged`): `Invoke-Win32Toolkit`,
-`New-Win32ToolkitManualApp -Continue` and `Complete-Win32ToolkitManualApp` stop as well, so nothing is
-tested, packaged or published. A `project:` dependency is looked up under the `-BasePath` of the command you
-ran (the configured base folder when you pass none), for the capture and for every test. An `intune:`
-dependency cannot be staged (the toolkit has no package for it); it is warned about and skipped in the guest,
-but the Intune relationship is still created at publish time.
+- **In a test**, your app is not installed, because Intune would not install it either. The result is **Failed**,
+  with the check `DependenciesInstalled = FAIL (exit <code>)`.
+- **In the install capture**, the toolkit warns with `The declared dependencies in the capture run failed`. It
+  takes no uninstall or other data from that capture. Fix the dependency and run the capture again before you
+  publish.
+- **If a dependency cannot be staged** (prepared for the test machine), the test or capture does not start. A
+  failed winget download is one cause. The whole run stops: nothing is tested, packaged or published.
 
-Each `project:` dependency runs its PSADT package in a **separate** Windows PowerShell process, as does
-your app: PSAppDeployToolkit 4.2 refuses to load a second copy of itself into one process, and a
-dependency built with PSADT 4.1 and an app built with 4.2 (or the other way round) could not share one.
-The dependency step stops at the **first** dependency that fails (any exit code other than 0, 1707,
-3010 or 1641) and reports its exit code. In a test run (InstallUninstall or Update), a failed dependency
-**stops the test before your app is installed**, as Intune would not install it either, and the test reports
-**Failed** with the assertion `DependenciesInstalled = FAIL (exit <code>)`. In a documentation capture, a failed dependency means no
-requirement script, uninstall or processes-to-close data is generated from that run: the toolkit warns
-and you re-run the capture once the dependency installs. A project without an install tattoo gets its
-detection rule from the newest capture at publish time, so re-run the capture successfully (or remove
-the failed `InstallationChanges_*.json` from `Documentation\`) before publishing.
+## Publish an app with dependencies
 
-Within a single pipeline run, the staging is **reused instead of re-downloaded**: the toolkit keeps a
-hash-validated record of what it staged, and as long as the declared set is unchanged, the staging is
-recent, and every staged file still matches its recorded SHA-256 hash, the next test or capture in the same
-pipeline reuses it. A `project:` dependency is only reused while its source is unchanged: the same base
-folder and the same files in its project folder (by size and last-write time; its own `Sandbox\` folder
-does not count). Rebuilding, fixing or deleting the dependency project, or running against another
-`-BasePath`, restages it (or stops the run when the project is gone). Any mismatch, or anything a guest run
-added or changed, triggers a full restage from scratch. Staged files never ship: they are stripped before
-packaging and are never part of the `.intunewin`.
+Package and publish the dependency first, as its own app (see [Package an app from winget](packaging.md)). Then
+publish your app. Intune can only link to an app that already exists in your tenant.
 
-## What happens at publish
+Before the upload, the toolkit looks up each dependency in your tenant, as the table in
+[Three kinds of reference](#three-kinds-of-reference) shows. Any version counts.
 
-The dependency must already exist in Intune as a published Win32 app. The toolkit resolves it (from its
-publication cache, or by searching the tenant), then attaches the relationship after the upload.
+A `winget:` reference never finds an app that the toolkit did not publish from winget, such as an app you added by
+hand. Use `intune:<app ID>` for such an app.
 
-**So publish the dependency FIRST, then the app that needs it.**
+If a dependency is not found, or several apps match, you get a warning. Your app still publishes without that
+link. The toolkit never publishes the dependency for you.
 
-```mermaid
-flowchart LR
-    A[Publish the dependency app] --> B[Publish your app]
-    B --> C[Toolkit resolves the dependency in the tenant]
-    C --> D[mobileAppDependency relationship attached]
+After the upload, the toolkit links the dependencies to the [install app](glossary.md#install-app),
+the app for new installs. The [update app](glossary.md#update-app) is the optional second app for
+devices with an older version. It never gets links, and a `winget:` or `project:` reference never finds it.
+
+Your account needs the **Relate** permission in the **Mobile apps** category of its Intune role. Without it, Intune
+refuses the links with a 403 error after the upload. The publish then ends with an error, but your app is in Intune
+without its dependencies. Get the permission, then run
+[`Sync-Win32ToolkitAppDependency`](reference/Sync-Win32ToolkitAppDependency.md) as shown in the next section.
+
+## Change the dependencies of an app in Intune
+
+!!! warning "Never publish again for this"
+    Every publish creates a new app in Intune. Publishing again does not change the old app. Your users would keep
+    the app without the links. Ignore the menu hint that says "re-publish".
+
+The menu has no action for this. Use the command line.
+
+1. Change the list of the project, as shown in [Change the dependencies of a project](#change-the-dependencies-of-a-project).
+2. Run `Sync-Win32ToolkitAppDependency` (Sync, for short) on the same project.
+
+```powershell
+$project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+Sync-Win32ToolkitAppDependency -ProjectPath $project
 ```
 
-**If the dependency isn't in your tenant yet, your app still publishes, with a warning.** Nothing is ever
-auto-published on your behalf.
+Sync signs you in, checks the tenant and shows the app as `Target app:`. Then it replaces the dependencies of that
+app with the list of the project. It keeps any [supersedence](glossary.md#supersedence): the Intune
+setting that says one app replaces another.
 
-> ⚠️ **Do NOT "just re-publish" the app to fix its dependencies.** `Publish-Win32ToolkitIntuneApp` always
-> creates a **new** app (it has no update path), so re-publishing produces a *duplicate* and leaves the
-> original (the one actually assigned to your users) still without its dependency.
->
-> To change the dependencies of an app that is **already live**, declare them and then run:
-> ```powershell
-> Sync-Win32ToolkitAppDependency -ProjectPath 'C:\Win32Apps\Projects\Arxus\Qastor_x64_10.0'
-> ```
-> It updates the existing app in place (its id comes from the project's publication cache), replacing its
-> dependency set. Removing a declaration really does remove the relationship. Supersedence is left
-> untouched. See [Sync-Win32ToolkitAppDependency](reference/Sync-Win32ToolkitAppDependency.md).
+```text title="What you see"
+✓ Attached 1 dependency(ies): winget:Microsoft.VCRedist.2015+.x64
+```
 
-If a reference matches **more than one** app in the tenant, it is skipped with a warning (never guessed) and
-the app publishes without it. Declare `intune:<app id>` to disambiguate.
+- Sync changes the app that this PC published from the project. If there are two, it changes the newest one.
+- Add `-AppId` with the app ID if you published from another PC or want an older copy. You also need it after you
+  re-create the project of an app that is not in winget.
+- Sync uses only the dependencies it can find now. For every other dependency, it warns and removes the link from
+  the app, if there is one. Fix the cause and run Sync again.
+- With `-WhatIf`, Sync still signs in and looks up the dependencies, but it changes nothing.
 
-You do **not** need a "skip if already installed" setting: Intune honours the *dependency app's own
-detection rule*, so a machine that already has the redistributable simply doesn't reinstall it.
+## Remove all dependencies
 
-> **Prerequisite:** your admin account needs the Intune RBAC **Relate** permission (Mobile apps). A correct
-> Graph scope is *not* enough: without it the relationship write fails with a 403 *after* the app uploads.
+Clear the list of the project, then run Sync.
 
-Uninstalling your app leaves the dependency in place (it is shared).
+```powershell
+$project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+Set-Win32ToolkitAppDependency -ProjectPath $project -Clear
+Sync-Win32ToolkitAppDependency -ProjectPath $project
+```
+
+The console then shows `✓ App now has no dependencies (existing supersedence was preserved).`
+
+Do this before you delete either app in Intune. Intune does not let you delete an app while a dependency link
+connects it to another app. When a device uninstalls your app, the dependency stays on the device. Other apps may
+still need it.
+
+## If something goes wrong
+
+| Message starts with | What to do |
+|---|---|
+| `Dependency reference '...' has no value` | Write a value after the prefix. |
+| `Dependency '...' could not be staged` | Fix the reason that the message names, or remove the dependency with `-Clear`. |
+| `Dependency '...' is NOT published in this Intune tenant` | Publish the dependency, then run `Sync-Win32ToolkitAppDependency` on your project. |
+| `Dependency '...' matched ... refusing to guess` | Declare the right app as `intune:<app ID>`. |
+| `Intune refused the relationship write (403)` | Your app is in Intune. Get the **Relate** permission, then run `Sync-Win32ToolkitAppDependency`. |
+| `This project has no recorded Intune publication` | Publish the project first, or run Sync with `-AppId`. |
+
+For more messages, see [Troubleshooting](troubleshooting.md#dependencies).
+
+## Next steps
+
+- [Test the package](testing.md)
+- [Publish to Intune](publishing.md)

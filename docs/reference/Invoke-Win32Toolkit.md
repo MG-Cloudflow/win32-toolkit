@@ -1,7 +1,7 @@
 # Invoke-Win32Toolkit
 
 ## SYNOPSIS
-End-to-end Win32 app packaging automation.
+Packages an app from winget, from the download to an optional test, build and publish.
 
 ## SYNTAX
 
@@ -11,90 +11,94 @@ Invoke-Win32Toolkit [[-SearchTerm] <String>] [[-Id] <String>] [[-TemplateName] <
  [[-UpdateVersionsBack] <Int32>] [[-UpdateSpecificVersion] <String>] [-PackageIntune] [-PublishIntune]
  [-PublishUpdate] [[-DependsOn] <String[]>] [[-DependencyType] <String>] [[-InstallerType] <String>]
  [[-UpdateBaselineInstallerType] <String>] [-CaptureSiblingTechnologies] [[-ApplySiblingCapture] <String>]
- [-NoPublishPrompt] [-ProgressAction <ActionPreference>] [<CommonParameters>]
+ [-NoPublishPrompt] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
-Searches Winget for an application, downloads it, creates a PSADT V4 project,
-configures the installer, generates Intune requirement scripts, and launches
-a Windows Sandbox session for targeted installation documentation.
+Invoke-Win32Toolkit downloads the newest winget version of an app and creates a project with
+PSAppDeployToolkit (PSADT) and your org template.
+Then the install capture installs the
+app on a test machine (Windows Sandbox or the Hyper-V test VM) and records what the package
+needs.
+It can also test, build and publish the .intunewin package.
 
-Fails closed: when the PSADT project cannot be created, when its deploy script uses a template
-layout this version does not support ("Unsupported PSADT template shape: ..."), when the
-configuration or the org template cannot be applied, or when the winget download fails
-(W32T.DownloadFailed; the warnings name every option that was skipped and the project folder is
-kept for a retry), the command stops with a terminating error and the project is NOT documented,
-tested, packaged or published.
-A project folder that was created but not configured (a refused
-configuration, a failed download, any error before the end of the configure step) is kept and marked
-not configured (Documentation\NotConfigured.json): Export-Win32ToolkitIntuneWin and
-Publish-Win32ToolkitIntuneApp refuse it (W32T.ProjectNotConfigured) until the app is packaged again.
+Use it in scripts, or for options the menu does not offer, such as the update test in the same
+run.
+In the menu: Package an app from winget (search).
 
-Returns a result object (Win32Toolkit.RunResult): Status (Succeeded, CompletedWithProblems or Failed),
-the capture state, the test verdicts, the .intunewin built, the apps published and one plain sentence
-per problem (a failed or inconclusive test, an incomplete capture, no package built, the update app
-skipped, or the error that stopped the run).
-A W32T.* error is thrown instead and no object is
-returned.
--NewTemplate returns nothing.
+The project is \<base folder\>\Projects\\\<template\>\\\<project\>.
+A new run for the same version
+deletes and re-creates the project folder: copy your own code out first.
+The capture also
+writes SupportFiles\RequirementScript.ps1, a reference file that nothing runs.
+win32-toolkit
+never assigns an app.
+You assign it in the Intune admin center.
+
+It stops with an error whose ID starts with W32T.
+when it cannot go on safely.
+For example,
+W32T.DownloadFailed means that the download failed.
+A run that stops during the project setup
+marks the project not configured.
+Package the app again before you build or publish it.
 
 ## EXAMPLES
 
 ### EXAMPLE 1
 ```
-Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force
+Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -TemplateName 'Contoso'
 ```
+
+This creates the project Git_x64_2.53.0 (your version will differ) with the Contoso org template
+and runs the install capture.
+It does not test, build or publish anything.
 
 ### EXAMPLE 2
 ```
-Invoke-Win32Toolkit -SearchTerm 'visual studio code' -BasePath 'D:\Packaging'
+Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -RunTest InstallUninstall -PublishIntune
 ```
 
+This creates the project, tests the install and uninstall, then builds the package and publishes
+the install app to Intune, even when the test fails.
+
 ### EXAMPLE 3
+```
+Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -InstallerType wix -CaptureSiblingTechnologies
+```
+
+This packages the WiX MSI of Notepad++ and keeps that technology for later versions.
+It then
+captures the vendor NSIS setup and lists the proposed prior-install rules, but writes no rule.
+
+### EXAMPLE 4
 ```
 Invoke-Win32Toolkit -NewTemplate -TemplateName 'Contoso'
 ```
 
-### EXAMPLE 4
-```
-Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -PackageIntune -PublishIntune
-```
+This starts the template wizard for the org template Contoso, saves it and stops.
 
 ### EXAMPLE 5
 ```
-# Fully scripted pipeline incl. both tests; the Update baseline is the previous release
-Invoke-Win32Toolkit -Id 'Mozilla.Firefox' -Architecture x64 -Force -RunTest InstallUninstall, Update -UpdateVersionsBack 1 -PackageIntune
-```
-
-### EXAMPLE 6
-```
-# Package the vendor EXE (NSIS) installer instead of winget's default MSI, and keep it for later versions
-Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -InstallerType nullsoft
-```
-
-### EXAMPLE 7
-```
-# Update test from each installer technology winget ships (one run and one test record per technology)
-Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -RunTest Update -UpdateVersionsBack 1 -UpdateBaselineInstallerType Both
-```
-
-### EXAMPLE 8
-```
-# Package the WiX MSI and capture the vendor NSIS setup too: Block it now, review it later
-Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -InstallerType wix -CaptureSiblingTechnologies -ApplySiblingCapture Block
-```
-
-### EXAMPLE 9
-```
-# Check what happened without reading the console
-$r = Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -Force -RunTest InstallUninstall -PackageIntune
+$run = @{ Id = 'Git.Git'; Architecture = 'x64'; TemplateName = 'Contoso'; Force = $true }
+$test = @{ RunTest = 'InstallUninstall', 'Update'; UpdateVersionsBack = 1 }
+$r = Invoke-Win32Toolkit @run @test -PackageIntune -NoPublishPrompt
 if ($r.Status -ne 'Succeeded') { $r.Problems }
 ```
+
+This is the form for scripts: the parameters answer the questions of the command.
+It runs both
+tests (the update test starts from the previous version), builds the package and prints any
+problems.
 
 ## PARAMETERS
 
 ### -SearchTerm
-Term to search for in the Winget repository.
+The text to search for in winget, for example 'git'.
+The command lists the results, without
+Microsoft Store apps, and asks which one to use.
+Without -SearchTerm and -Id, it asks for a
+search text.
 
 ```yaml
 Type: String
@@ -109,8 +113,11 @@ Accept wildcard characters: False
 ```
 
 ### -Id
-Winget package ID to use directly (skips search).
-Example: 'Git.Git'
+The exact winget ID of the app, for example 'Git.Git'.
+The command then shows no list to
+choose from, so use it in scripts.
+For an older version than the one winget lists now, use
+New-Win32ToolkitManualApp with your own installer.
 
 ```yaml
 Type: String
@@ -125,9 +132,13 @@ Accept wildcard characters: False
 ```
 
 ### -TemplateName
-Name of the org template to load/create.
-Skips the interactive template picker.
-If the template does not exist yet, the wizard is pre-filled with this name.
+The org template to use, for example 'Contoso'.
+If no template has this name, the template
+wizard starts and creates it.
+Without -TemplateName, the command uses your only template, asks
+when you have several, and starts the wizard when you have none.
+In scripts, give an existing
+name: a run that cannot ask stops with W32T.OrgTemplateChoiceNeeded.
 
 ```yaml
 Type: String
@@ -142,7 +153,11 @@ Accept wildcard characters: False
 ```
 
 ### -NewTemplate
-Run the org template wizard, save the template, and exit without packaging any app.
+Starts the template wizard, saves the org template and stops: it packages no app and returns
+nothing.
+If the -TemplateName template exists, the wizard starts from the default values and
+replaces it.
+To change a template, use Org templates \> Edit a template in the menu.
 
 ```yaml
 Type: SwitchParameter
@@ -157,8 +172,10 @@ Accept wildcard characters: False
 ```
 
 ### -Architecture
-Architecture to use for download and project creation (x64, x86, arm64).
-Skips the interactive architecture selection menu.
+The processor architecture of the package: x64, x86 or arm64.
+Without it, the command always
+asks.
+Set it in scripts.
 
 ```yaml
 Type: String
@@ -173,13 +190,10 @@ Accept wildcard characters: False
 ```
 
 ### -Force
-Skip the PSGallery update prompt and the project overwrite prompt.
-Useful for unattended / automated runs.
-PSAppDeployToolkit is only ever selected and installed inside the supported range (4.1.x and 4.2.x).
-With -Force an installed supported version is used without querying the gallery; without it, only
-newer STABLE versions inside that range are offered.
-When no supported version is installed, the
-newest stable supported version is installed (with or without -Force).
+Replaces an existing project of the same app, architecture and version without asking, and
+skips the offer of a newer PSADT version.
+The menu always does this.
+Use it in scripts.
 
 ```yaml
 Type: SwitchParameter
@@ -194,11 +208,10 @@ Accept wildcard characters: False
 ```
 
 ### -BasePath
-Base folder for all output (Templates, Projects, Staging, IntuneWin).
-If omitted, the value
-saved in the registry (HKCU:\Software\CloudFlow\win32-toolkit) is used; on first run you are
-prompted for it and the choice is saved.
-An explicit value overrides but is not persisted.
+The base folder for this command only.
+It is not saved.
+Default: your saved base folder (the
+first run asks for it).
 
 ```yaml
 Type: String
@@ -213,7 +226,10 @@ Accept wildcard characters: False
 ```
 
 ### -Reconfigure
-Re-prompt for the base folder and save the new value to the registry, ignoring any stored value.
+Asks for the base folder again and saves your answer for later runs.
+The toolkit does not move
+your templates or projects to the new folder.
+In the menu: Settings \> Change the base folder.
 
 ```yaml
 Type: SwitchParameter
@@ -228,12 +244,12 @@ Accept wildcard characters: False
 ```
 
 ### -RunTest
-Test scenario(s) to run right after the project is built and documented: 'InstallUninstall',
-'Update', or both (array - scenarios run in the order given).
-Each runs in the configured test
-backend (Windows Sandbox by default, Hyper-V when configured and ready).
-A failed scenario is
-reported with a warning but does not stop packaging/publishing.
+The tests to run after the install capture: InstallUninstall, Update or both, in the order you
+give.
+They run on your test machine: Windows Sandbox, or the Hyper-V test VM when you chose it
+in Settings and it is ready.
+The update test installs an old version first (the console calls
+it the baseline), then this package over it.
 
 ```yaml
 Type: String[]
@@ -248,10 +264,11 @@ Accept wildcard characters: False
 ```
 
 ### -UpdateVersionsBack
-For -RunTest Update: automatically use the version N releases older than the packaged one as the
-update baseline (1 = the immediately previous release), so a scripted pipeline never blocks on
-the interactive version picker.
-Ignored when -UpdateSpecificVersion is also supplied.
+For the update test: the old version, counted back from the packaged version (1 is the version
+before it).
+Use it in scripts, so that the run does not ask.
+If you also give
+-UpdateSpecificVersion, that one wins.
 
 ```yaml
 Type: Int32
@@ -260,19 +277,17 @@ Aliases:
 
 Required: False
 Position: 7
-Default value: 0
+Default value: None
 Accept pipeline input: False
 Accept wildcard characters: False
 ```
 
 ### -UpdateSpecificVersion
-For -RunTest Update: use this exact older version as the update baseline.
-Takes precedence over
--UpdateVersionsBack when both are supplied.
-Omit both to pick interactively; an unattended test run
-(the SandboxTestMode / HyperVTestMode config value) or a host that cannot prompt (a service,
-redirected input, or a console started with pwsh -NonInteractive) then uses the previous version,
-with a warning.
+For the update test: the exact old version, for example '2.52.0'.
+Without this and
+-UpdateVersionsBack, the command asks you to choose.
+An unattended test, or a window that
+cannot ask, uses the version before the packaged one, with a warning.
 
 ```yaml
 Type: String
@@ -287,7 +302,12 @@ Accept wildcard characters: False
 ```
 
 ### -PackageIntune
-After creating the project, package it into a .intunewin file using IntuneWinAppUtil.exe.
+Builds the .intunewin package in \<base folder\>\IntuneWin\\\<template\> after the capture and the
+tests.
+The command then asks 'Upload to Microsoft Intune now?
+(Y/N)', and Y publishes the
+install app only.
+Add -NoPublishPrompt to skip the question.
 
 ```yaml
 Type: SwitchParameter
@@ -302,9 +322,10 @@ Accept wildcard characters: False
 ```
 
 ### -PublishIntune
-After packaging, upload the .intunewin file to Microsoft Intune via Graph API.
-Implies -PackageIntune.
-Requires the Microsoft.Graph.Authentication module.
+Builds the package and publishes it to Intune as a new app, the install app.
+A failed test only
+warns.
+It does not stop packaging or publishing.
 
 ```yaml
 Type: SwitchParameter
@@ -319,9 +340,12 @@ Accept wildcard characters: False
 ```
 
 ### -PublishUpdate
-Also publish the UPDATE app: a second Intune app of the same version whose requirement rule makes
-it applicable only to devices that already have the app installed.
-Implies packaging.
+Builds the package and publishes the update app: a second Intune app of the same version, only
+for devices that already have the app.
+With -PublishIntune, the install app is published
+first.
+If the toolkit has no sure way to see that the app is installed, it skips the update app
+with a warning.
 
 ```yaml
 Type: SwitchParameter
@@ -336,14 +360,13 @@ Accept wildcard characters: False
 ```
 
 ### -DependsOn
-Dependencies to declare for this app before packaging: 'winget:\<Id\>', 'project:\<Template\>\\\<Name\>',
-or 'intune:\<AppGuid\>' references (array).
-Declared dependencies install first in the test guest
-and are related to the Intune app at publish time.
-The references are checked before anything is
-searched, downloaded or created: a 'project:' reference that is not exactly '\<Template\>\\\<Name\>', an
-'intune:' reference that is not a GUID, or a reference to the app being built stops the command
-with the terminating error W32T.InvalidDependencyReference.
+Apps that Intune must install before this app, for example
+'winget:Microsoft.VCRedist.2015+.x64', 'project:\<template\>\\\<project\>' or 'intune:\<app ID\>'.
+The
+toolkit installs them first in the capture and the tests, and links them to the app when you
+publish.
+A wrong reference stops the command before the download, with
+W32T.InvalidDependencyReference.
 
 ```yaml
 Type: String[]
@@ -358,8 +381,11 @@ Accept wildcard characters: False
 ```
 
 ### -DependencyType
-How Intune should treat the declared dependencies: 'autoInstall' (default) installs them
-automatically; 'detect' only requires their presence.
+How Intune handles the apps of -DependsOn.
+Default: autoInstall, so Intune installs them first.
+Use detect if Intune should only check that they are already installed.
+Command line only: the
+menu does not offer this.
 
 ```yaml
 Type: String
@@ -368,25 +394,19 @@ Aliases:
 
 Required: False
 Position: 10
-Default value: AutoInstall
+Default value: autoInstall
 Accept pipeline input: False
 Accept wildcard characters: False
 ```
 
 ### -InstallerType
-Pin the installer technology of the package: the winget installer type to download (msi, wix, burn,
-nullsoft, inno, exe or msix).
-winget may answer with another type of the same family (msi and wix are
-one family; burn, nullsoft, inno and exe are another) and says so.
-Without it, rebuilding a version
-that is itself published or pinned keeps its own technology; otherwise the technology of the
-highest earlier version of this app (same winget id) in the template folder that was published, or
-pinned with this parameter, is kept; otherwise winget chooses.
-When winget offers no installer of the
-pinned family for this version, the command stops with W32T.InstallerVariantUnavailable and nothing is
-downloaded.
-The choice and its reason are recorded in SupportFiles\AppConfig.json (Source); the
-identity checks after the download warn when the app ships another technology too.
+Pins the installer technology of the package, for example wix for a WiX MSI or nullsoft for an
+NSIS setup.
+Without it, the toolkit keeps the technology of an earlier version that you
+published or pinned, or winget chooses.
+If winget has no installer of the same kind (MSI, EXE
+or MSIX) for this version, the command stops with W32T.InstallerVariantUnavailable.
+More: https://win32toolkit.com/packaging/#installer-technology
 
 ```yaml
 Type: String
@@ -401,13 +421,12 @@ Accept wildcard characters: False
 ```
 
 ### -UpdateBaselineInstallerType
-For -RunTest Update: the installer technology of the old-version baseline (see
-Test-Win32ToolkitProject -BaselineInstallerType).
-Auto (the default when omitted) starts from the other
-technology winget ships for this app when there is one, and falls back to the packaged technology with
-a warning when the old version does not ship it; Both runs the Update test once per technology (one
-record each); Packaged uses the packaged technology only; a type (msi, wix, burn, nullsoft, inno, exe,
-msix) pins that technology.
+For the update test: the installer technology of the old version.
+Default: Auto, which uses the
+other technology that winget ships for this app, or the packaged one when there is no other.
+Both runs the test once for each technology, Packaged uses only the packaged one, and a type
+such as nullsoft uses only its installer family.
+More: https://win32toolkit.com/testing/#choose-the-installer-technology-of-the-old-version
 
 ```yaml
 Type: String
@@ -422,17 +441,13 @@ Accept wildcard characters: False
 ```
 
 ### -CaptureSiblingTechnologies
-After the install capture, install each OTHER installer technology winget ships for this app (for example
-the vendor NSIS setup of an app packaged as MSI) on the Hyper-V test VM, record what it registered and
-turn it into prior-install proposals: rules that make this package refuse (Block) or remove (Enforce)
-that other install before it installs.
-About 3-5 minutes per capture; a host whose Hyper-V test VM is not
-ready is told before the download and captures in Windows Sandbox (Block-only proposals), except a project
-whose earlier captures already allow an Enforce rule: a Sandbox capture would make them Block-only, so it is
-skipped.
-A refused, skipped or failed capture is reported and the pipeline goes on.
-Review and approve the
-proposals with Set-Win32ToolkitPriorInstall (or the menu).
+Also runs a sibling capture: it installs the other installer technologies of this app, such as
+an NSIS setup, and records what they register.
+It then proposes prior-install rules: what the
+package does on devices with that other install.
+Without a ready Hyper-V test VM, it runs in
+Windows Sandbox, and its proposals can only become Block or Report rules.
+More: https://win32toolkit.com/prior-installs/
 
 ```yaml
 Type: SwitchParameter
@@ -447,13 +462,14 @@ Accept wildcard characters: False
 ```
 
 ### -ApplySiblingCapture
-With -CaptureSiblingTechnologies: None (default: the proposals are listed with the command that applies
-each one) or Block (every High-confidence proposal without flags whose identity is not a rule yet becomes
-a Block rule: devices with that install FAIL this one until the rule is Enforce).
+Default: None, which only lists the proposals of -CaptureSiblingTechnologies, each with the
+command that applies it.
+Block turns each clean proposal (high confidence, no flags) into a
+Block rule, so the install fails on devices that have that other install.
 There is no Enforce
-value: removing another vendor's install as SYSTEM needs one approval per proposal and a Hyper-V proof
-(Set-Win32ToolkitPriorInstall -FromSiblingCapture -Mode Enforce -ProposalId \<id\>; -RunTest Update proves
-it, and demotes a captured rule that cannot be proven).
+value: each rule that removes the other install needs your own approval with
+Set-Win32ToolkitPriorInstall.
+More: https://win32toolkit.com/prior-installs/#apply-proposals-from-the-command-line
 
 ```yaml
 Type: String
@@ -468,10 +484,11 @@ Accept wildcard characters: False
 ```
 
 ### -NoPublishPrompt
-With -PackageIntune and neither -PublishIntune nor -PublishUpdate, do not ask 'Upload to Microsoft
-Intune now?
-(Y/N)' after packaging.
-The menu always passes it: it asks about publishing itself.
+Skips the question 'Upload to Microsoft Intune now?
+(Y/N)' after -PackageIntune, so the package
+is built but not published.
+Use it in scripts.
+The menu always skips this question.
 
 ```yaml
 Type: SwitchParameter
@@ -485,21 +502,6 @@ Accept pipeline input: False
 Accept wildcard characters: False
 ```
 
-### -ProgressAction
-{{ Fill ProgressAction Description }}
-
-```yaml
-Type: ActionPreference
-Parameter Sets: (All)
-Aliases: proga
-
-Required: False
-Position: Named
-Default value: None
-Accept pipeline input: False
-Accept wildcard characters: False
-```
-
 ### CommonParameters
 This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable, -InformationAction, -InformationVariable, -OutVariable, -OutBuffer, -PipelineVariable, -Verbose, -WarningAction, and -WarningVariable. For more information, see [about_CommonParameters](http://go.microsoft.com/fwlink/?LinkID=113216).
 
@@ -507,12 +509,22 @@ This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable
 
 ## OUTPUTS
 
-### Win32Toolkit.RunResult: Command, ProjectPath, ProjectName, Mode (Winget), Status (Succeeded,
-### CompletedWithProblems or Failed), Capture (Done, Problems or NotRun), Tests ({ Scenario; Verdict }
-### per -RunTest scenario), IntuneWinPath, Published (the objects Publish-Win32ToolkitIntuneApp returned)
-### and Problems. A W32T.* error is thrown instead and no object is returned. Check .Status, not whether an
-### object came back: a failed run that stopped on a non-W32T error returns an object with Status Failed
-### (and writes the error).
+### Win32Toolkit.RunResult. A W32T error stops the command and returns nothing.
+### Check Status: Succeeded, CompletedWithProblems or Failed. Problems has one sentence per problem.
+### Tests has one Verdict per test: Passed, Failed or Inconclusive. IntuneWinPath is the package.
+### Capture is Done, Problems or NotRun. Published lists the new Intune apps.
 ## NOTES
+Needs: winget, and Windows Sandbox or a ready Hyper-V test VM.
+Publishing also needs an Intune
+sign-in and the Microsoft.Graph.Authentication module, which the command offers to install.
+
+Time: the install capture usually takes 5 to 20 minutes.
+The toolkit stops waiting after 30
+minutes.
 
 ## RELATED LINKS
+
+[https://win32toolkit.com/reference/Invoke-Win32Toolkit/](https://win32toolkit.com/reference/Invoke-Win32Toolkit/)
+
+[https://win32toolkit.com/packaging/](https://win32toolkit.com/packaging/)
+

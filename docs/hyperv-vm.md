@@ -1,351 +1,376 @@
-# Set up and manage the Hyper-V test VM
+---
+description: "Decide if you need the Hyper-V test VM, build it once, make it your default, and keep its checkpoint fresh."
+---
 
-Windows Sandbox is the default test/capture backend. The Hyper-V test VM is an **opt-in, faster
-alternative**: you provision one persistent Windows 11 VM once, and every later test run reverts it
-to a warm checkpoint instead of cold-booting a fresh Sandbox.
+# Set up the Hyper-V test VM
 
-## Why Hyper-V instead of Sandbox
+win32-toolkit can test your packages in the [Hyper-V test VM](glossary.md#hyper-v-test-vm): a Windows
+11 virtual machine (VM) that you build once on your PC. Every test starts from its clean [checkpoint](glossary.md#checkpoint) `clean-base`, a saved state of the running VM.
 
-| | Windows Sandbox | Hyper-V test VM |
+The test VM is optional. [Windows Sandbox](glossary.md#windows-sandbox) stays the default. It is an empty
+Windows desktop that starts fresh for every test.
+
+## When you need the test VM
+
+| Topic | Windows Sandbox | Hyper-V test VM |
 |---|---|---|
-| Start of each run | Cold boot of a fresh sandbox, every time | **Revert to a memory-state ("Standard") checkpoint**. The VM resumes on an already running, logged-in desktop. A restore costs from seconds on a host with fast local disks to about a minute on a nested VM (for example a Windows 365 Cloud PC); see [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
-| Test context | Sandbox's built-in user | **Every phase runs as SYSTEM**, the account Intune uses on real devices. Unattended runs also start the package exactly as Intune does (the published command line from a 32-bit parent), so install/uninstall behavior matches deployment (see [Testing](testing.md#watched-vs-unattended)) |
-| Base image | Always the pristine Sandbox image | A **fully patched** Windows 11 you prepared once: patched when you took the checkpoint; it ages, so re-take it regularly ([below](#re-checkpoint-after-windows-updates)) |
-| Extras | None | Optional deps checkpoint that skips repeated dependency installs (see [Configuration](configuration.md)) |
+| Account that runs the install | The Windows Sandbox administrator | [SYSTEM](glossary.md#system-account), the account Intune uses on devices |
+| [Unattended tests](glossary.md#unattended-test), without pauses | Silent mode | The exact command line that Intune uses |
+| Enforce rules for prior installs | Not possible | Needed to capture and prove them |
+| Start of each test | A fresh, empty Windows | Your own updated Windows 11, running and signed in |
+| Time of an unattended test | About 2 minutes | About 4 to 5 minutes (depends on your PC) |
+| Setup | Nothing to build | A one-time build, admin rights, disk space and memory |
 
-The backend is resolved **per run**: if the VM, its checkpoint, or the stored guest credential is
-missing, or the session is not elevated, the toolkit warns and falls back to Sandbox automatically.
+Choose the test VM for tests that run like Intune. You also need it for [Enforce rules](prior-installs-enforce.md):
+they remove another install of the app. It also helps if you test many packages and want an updated Windows.
 
-## Prerequisites
+Stay on Windows Sandbox if you cannot run PowerShell as administrator. It is also the better choice for a PC with
+little disk space or memory. Turning on Hyper-V does not turn off Windows Sandbox.
 
-- The **Hyper-V feature and its PowerShell module** enabled on the host.
-- An **elevated (Administrator) PowerShell session**. Hyper-V and PowerShell Direct require it. Provisioning refuses to start without it.
-- A **Windows 11 x64 ISO**, or your own bootable Generation-2 VHDX.
+## Prepare your PC
 
-## Provision the VM (one time)
+win32-toolkit never turns on Windows features. You turn them on once.
 
-To provision from an ISO:
+- Windows 11 Pro, Enterprise or Education, with virtualization on in the firmware. [Hyper-V](glossary.md#hyper-v), the virtual machine software of Windows, does not exist on Home.
+- Hyper-V turned on: run the command below in PowerShell as administrator, then restart your PC.
+- PowerShell 7 started with **Run as administrator**, an [elevated](glossary.md#elevated) window. Use
+  it for every VM command and every test on the VM.
+- A Windows 11 x64 [ISO](glossary.md#iso), the file of a Windows installation disc. An Enterprise
+  evaluation ISO stops working properly after 90 days.
+- Internet on your PC. The VM uses it for Windows Update and for tests.
+- Optional: the app that shows the VM window (`vmconnect.exe`). Hyper-V usually installs it.
 
 ```powershell
-New-Win32ToolkitTestVM -IsoPath 'C:\iso\Win11_x64.iso'
+Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-All
 ```
 
-To attach a VHDX you already built (BYO):
+Plan about 60 to 80 GB of free disk space. The virtual disk grows to about 40 GB (at most 64 GB). Each checkpoint adds
+about 2 to 4 GB. A running test adds 2 to 10 GB, which the next restore removes.
 
-```powershell
-New-Win32ToolkitTestVM -VhdxPath 'D:\vm\win11-base.vhdx' -Credential (Get-Credential)
+The VM holds all its memory while it runs. The default is 4 GB. Give the VM 6 to 8 GB if your PC has the memory. With
+4 GB, some tests run much slower, and some installers refuse to install.
+
+## Build the VM
+
+You build the VM once. Time: about 30 to 60 minutes, plus Windows Update time.
+
+=== "Menu"
+
+    1. Open PowerShell 7 as administrator.
+    2. Start the menu ([`Show-Win32Toolkit`](reference/Show-Win32Toolkit.md)).
+    3. Choose **Settings** > **Hyper-V test VM** > **Provision the test VM from a Windows 11 ISO**.
+    4. At **Path to a Windows 11 x64 ISO**, type the path, for example `C:\ISO\Win11_x64.iso`, and press <kbd>Enter</kbd>.
+
+    The menu always uses the default name, Windows edition, processors and memory. To give the VM more memory, change
+    it after the build: see [Change processors or memory](hyperv-vm-care.md#change-processors-or-memory).
+
+    Many yellow lines that start with `VERBOSE:` appear. They are normal, even the ones that say `PowerShell Direct is
+    not ready yet`. PowerShell Direct is how the toolkit reaches Windows in the VM.
+
+    If a VM or its disk is left from an earlier build, the menu asks **Delete it and rebuild from scratch?** The default
+    is Yes. Answer `n` to keep your VM, and see [Rebuild the VM](hyperv-vm-care.md#rebuild-the-vm).
+
+=== "Command line"
+
+    Open PowerShell 7 as administrator and build the VM from your ISO:
+
+    ```powershell
+    New-Win32ToolkitTestVM -IsoPath 'C:\ISO\Win11_x64.iso'
+    ```
+
+    `-Edition` or `-ImageIndex` chooses the Windows edition. By default, the toolkit takes Windows 11 Pro, or
+    Enterprise when the ISO has no Pro. `-MemoryStartupBytes 8GB` gives the VM 8 GB. `-Unattended` is for automation
+    only: no preparation pause, no VM window, no internet check, and a checkpoint without updates.
+
+    For every option, see [New-Win32ToolkitTestVM](reference/New-Win32ToolkitTestVM.md).
+
+The toolkit then asks for the account of the VM:
+
+```text title="What you see"
+Guest local-admin credential for VM 'win32tk-golden' - enter the password twice; it must NOT be blank.
+  User name [w32admin]:
+  Password for w32admin:
+  Confirm password for w32admin:
 ```
 
-See [New-Win32ToolkitTestVM](reference/New-Win32ToolkitTestVM.md) for all options. Key behavior:
+Press <kbd>Enter</kbd> to keep the user name `w32admin`, the administrator inside the VM. Then type a password twice.
+It cannot be blank.
 
-- **Guest credential**: you are prompted for a guest local-admin credential (typed twice; a blank password is refused because it breaks PowerShell Direct and AutoLogon). When building from an ISO it is baked into the image; it is then stored DPAPI-protected on the host for later test runs.
-- **Edition selection (ISO builds)**: by default the toolkit picks **Windows 11 Pro first, Enterprise as a fallback**. Use `-Edition` (name substring, e.g. `'Enterprise'`) or an explicit `-ImageIndex` to override. Pro is the right choice for a consumer multi-edition ISO.
-- **Secure Boot + vTPM**: the VM is Generation 2 with Secure Boot on and a virtual TPM attached by default (Windows 11 requires both).
-- If a VM with the configured name and checkpoint already exists, provisioning **reuses it** and just refreshes the stored config and credential.
+Use a password for this lab only, because it is stored in clear text inside the VM. In the toolkit's messages, "guest"
+means the Windows inside the VM.
 
-### The manual prep step: do not skip it
+What the toolkit does next:
 
-After first boot, provisioning **pauses**: it opens the VM console (`vmconnect`), verifies the guest
-has working internet, and waits for you. In the VM window:
+1. It builds a virtual disk from the ISO in your [base folder](glossary.md#base-folder), under
+   `HyperV\Golden`.
+2. It creates the VM `win32tk-golden`, with Secure Boot and a virtual TPM, as Windows 11 needs.
+3. Windows installs by itself and signs in the VM account.
+4. The toolkit turns on [AutoLogon](glossary.md#autologon): Windows signs you in after each restart.
+5. It waits while you prepare Windows (next section).
+6. It takes the checkpoint `clean-base` and saves the VM name and password for later tests.
 
-1. Sign in (AutoLogon is configured as a safety net for reboots).
-2. Run **Windows Update until nothing is left**; install everything.
-3. Let **all reboots finish** and return to the desktop.
-4. Close any first-run app windows so the desktop is idle and clean.
+The command prints `✓ Warm 'clean-base' checkpoint taken.` The menu shows a green **Done** panel.
 
-Only when you press Enter does the toolkit freeze the **`clean-base` Standard checkpoint**. This
-matters because a Standard checkpoint captures the *live* state (memory and disk) and **every
-future test run reverts to exactly that moment**. A patched, logged-in, idle desktop means tests
-start instantly and never compete with Windows Update or first-run pop-ups. `-Unattended` skips the
-pause (CI/automation) and checkpoints the bare first-boot desktop instead.
+When you build from an ISO, the toolkit sets the language settings of Windows in the VM to English (United States).
+It also sets the UTC time zone and the computer name `GOLDENBASE`. The toolkit enters no product key. Activate
+Windows in the VM with your own license, or use an evaluation ISO.
 
-> **Closed the window during the pause?** The checkpoint and the stored guest credential are only
-> saved at the very end, so aborting here leaves the VM existing but the backend "not ready"
-> (*checkpoint not found; guest credential is not configured*). You do **not** need to rebuild:
-> run the TUI's **Configure guest AutoLogon + re-checkpoint** action — it asks for the guest
-> credential the image was built with (verifying it over PowerShell Direct before saving it),
-> boots the VM, and takes the missing `clean-base` checkpoint at the logged-in desktop.
+## Prepare Windows inside the VM
+
+When Windows is ready, the toolkit opens the VM window and checks the internet in the VM. If the check fails, the
+toolkit sets the public name servers (DNS) `1.1.1.1` and `8.8.8.8` in the VM and tries again. These name servers
+stay in the VM. Then the toolkit shows this yellow banner in PowerShell.
+
+```text title="What you see"
+──────────────────────────────────────────────────────────────────────────────
+  PREPARE THE VM, THEN CONFIRM - the checkpoint freezes whatever state is live
+──────────────────────────────────────────────────────────────────────────────
+  The VM 'win32tk-golden' IS created and running right now - this prompt is only waiting for you.
+  Guest internet: OK (DNS + outbound reachable) - Windows Update should work.
+  A console window opened for 'win32tk-golden'. In that window:
+    1. Sign in if you're not already (user: w32admin).
+    2. Run Windows Update until nothing is left; install everything.
+    3. Let ALL reboots finish and return to the desktop (AutoLogon signs back in).
+    4. Close first-run app windows so the desktop is idle and clean.
+
+  Every test run reverts to exactly this moment - make it a fully patched, idle desktop.
+
+  When the desktop is fully ready, press Enter to capture the clean-base checkpoint:
+```
 
 <!-- SCREENSHOT: the yellow "PREPARE THE VM, THEN CONFIRM" console banner during New-Win32ToolkitTestVM, next to the open VM console window -->
 
-## Enable the backend
+Do these steps in the VM window.
 
-Set the default backend to Hyper-V in the TUI (*Hyper-V test VM* screen, below), or pass
-`-Backend HyperV` for a single run of [Test-Win32ToolkitProject](reference/Test-Win32ToolkitProject.md).
+1. Sign in as `w32admin` if Windows shows the sign-in screen.
+2. Run Windows Update until nothing is left to install.
+3. Let every restart finish. AutoLogon signs you in again.
+4. Close first-run windows, so that the desktop is idle.
+5. Stay signed in at the desktop.
 
-## Day-2 management
+Tests also check Microsoft Defender in the checkpoint. Keep its real-time protection on, without exclusions. Update its
+signatures with `Update-MpSignature`. Also check that Windows is activated (`slmgr /dlv`).
 
-### Change CPU or memory
+Then press <kbd>Enter</kbd> in PowerShell. The toolkit checks the desktop again and takes the checkpoint. Every test
+starts from this moment.
 
-```powershell
-Set-Win32ToolkitTestVMResource -ProcessorCount 4 -MemoryStartupBytes 8GB
-```
+If the banner says `Guest internet: NOT confirmed`, Windows Update cannot download in the VM. Follow the hints under
+that line. If the VM window did not open, the banner lists other ways to open it.
 
-This reconfigures the **existing** VM in place (minutes), no ISO rebuild. It must turn the VM off
-(static memory/vCPU cannot change while running) and it **recreates the `clean-base` checkpoint**:
-the old Standard checkpoint encodes the old memory state, so keeping it would silently revert your
-hardware change on the next reset. Requests above the host's CPU/RAM are refused. Details:
-[Set-Win32ToolkitTestVMResource](reference/Set-Win32ToolkitTestVMResource.md).
+!!! warning "Do not close PowerShell now"
+    If you close PowerShell at this point, the VM has no checkpoint and no saved password. You do not need to rebuild
+    it. Use [Repair a broken VM](hyperv-vm-care.md#repair-a-broken-vm).
 
-Provisioning, the resource change and the checkpoint repair turn Hyper-V **automatic checkpoints** off
-before they start the VM, and take `clean-base` with them off. With them on, Hyper-V adds an
-`Automatic Checkpoint` every time the VM starts from Off, and a checkpoint keeps the setting, so every
-restore would bring it back. A test run whose checkpoint was taken with them on prints one warning and
-keeps the slower restore (see [Make Hyper-V tests faster](#make-hyper-v-tests-faster)).
+## Use your own virtual disk
 
-If the checkpoint cannot be taken (for example the host disk is full), provisioning, the resource change
-and the repair stop with Hyper-V's error: they print no success line and save no settings.
-
-### Reset, remove
-
-- [Reset-Win32ToolkitTestVM](reference/Reset-Win32ToolkitTestVM.md) manually reverts the VM to `clean-base` (test runs do this for you).
-- [Remove-Win32ToolkitTestVM](reference/Remove-Win32ToolkitTestVM.md) tears the VM down; add `-RemoveVhdx` to also delete its virtual disks.
-
-### Re-checkpoint after Windows Updates
-
-The frozen base ages. Periodically: reset the VM, open its console, run Windows Update in the guest,
-let reboots finish, then replace the checkpoint at the idle desktop:
+If you already keep a prepared Windows image, the toolkit can use it instead of an ISO. This works on the command line
+only. Give the path of your `.vhdx` file:
 
 ```powershell
-Get-VMCheckpoint -VMName 'win32tk-golden' | Remove-VMCheckpoint
-Set-VM -Name 'win32tk-golden' -CheckpointType Standard
-Set-VM -Name 'win32tk-golden' -AutomaticCheckpointsEnabled $false
-Checkpoint-VM -VMName 'win32tk-golden' -SnapshotName 'clean-base'
+New-Win32ToolkitTestVM -VhdxPath 'D:\VM\win11-base.vhdx' -Credential (Get-Credential)
 ```
 
-Turn automatic checkpoints off before `Checkpoint-VM`: a checkpoint keeps this setting, every restore
-brings it back, and a test run warns about a checkpoint taken with it on.
+The disk must start as a Generation 2 VM (UEFI), with Windows setup finished. `Get-Credential` asks for a local
+administrator account of that disk. The account must sign in automatically, or the build waits 15 minutes and stops.
+The same preparation pause and checkpoint follow.
 
-Re-take the checkpoint at least every 35 days: an unattended test run warns about an older checkpoint,
-about one restored with nobody signed in, and about Defender real-time protection off, Defender exclusions
-or old Defender signatures in it (see [Testing](testing.md)). Leave a user signed in to the desktop,
-Defender real-time protection on and no exclusions, and run `Update-MpSignature` in the guest first.
+!!! warning "The toolkit changes your file"
+    The VM runs on your file, not on a copy. The toolkit changes its sign-in and script settings. Copy the file
+    first if you need the original.
 
-### Make Hyper-V tests faster
+## Make the test VM your default
 
-**What a run costs.** Every Hyper-V test run restores the checkpoint twice: before the test, and after it
-to leave the VM clean. On a nested VM (a Windows 365 Cloud PC, measured on 2026-10-23) each restore took
-about 70 seconds, and most of that was Hyper-V saving the running VM's memory to disk only to throw it away.
-Your host's numbers are in the test record: `Documentation\TestResults.json` keeps a `Timing` object per
-Hyper-V run (`OpenSeconds`, `TeardownSeconds`, `RevertMode` and more).
+Building the VM does not change your default [test machine](glossary.md#test-machine), the place where
+tests run. You still have to choose the test VM.
 
-**Turn the VM off before a restore** (`HyperVRevertMode`, default `TurnOffFirst`). The toolkit turns the VM
-off, restores the checkpoint and starts the VM again, which resumes the checkpoint's memory state. Nothing is
-saved, and the guest of the last test stops at once. This needs a checkpoint taken with automatic checkpoints
-**off**: a checkpoint keeps that setting, and with it on Hyper-V can add an `Automatic Checkpoint` when the VM
-starts. To see the setting of every checkpoint on the host (read-only):
+=== "Menu"
+
+    1. In the main menu, choose **Settings** > **Hyper-V test VM** > **Set the default test backend**.
+    2. Choose **Hyper-V VM**.
+
+    The menu confirms with `Default backend set to HyperV.` From now on, tests and captures use the test VM.
+
+=== "Command line"
+
+    To use the test VM for one test only, add `-Backend HyperV` to
+    [Test-Win32ToolkitProject](reference/Test-Win32ToolkitProject.md):
+
+    ```powershell
+    $project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+    Test-Win32ToolkitProject -ProjectPath $project -Scenario InstallUninstall -Backend HyperV
+    ```
+
+    Other commands, such as [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md), use the default. To change it
+    without the menu, set `TestBackend`:
+
+    ```powershell
+    Set-ItemProperty -Path 'HKCU:\Software\CloudFlow\win32-toolkit' -Name TestBackend -Value 'HyperV'
+    ```
+
+    For every option, see [Test-Win32ToolkitProject](reference/Test-Win32ToolkitProject.md).
+
+## Check that the VM is ready
+
+In the main menu, choose **Settings** > **Hyper-V test VM**. The first lines show the state of the VM.
+
+```text title="What you see"
+Default test backend: HyperV
+Hyper-V backend is READY - VM, checkpoint and guest credential are configured.
+VM resources: 2 vCPU / 4 GB  (win32tk-golden)
+```
+
+<!-- SCREENSHOT: the TUI Hyper-V test VM screen showing "Hyper-V backend is READY" and the menu options -->
+
+The last line shows the virtual processors (vCPU) and the memory of the VM. If something is missing, the second line
+starts with `Hyper-V backend not ready:` and lists the reasons.
+
+| Reason | What to do |
+|---|---|
+| `host session is not elevated` | Start PowerShell 7 with Run as administrator. |
+| `Hyper-V PowerShell module is not installed` | Turn on Hyper-V and restart your PC. |
+| `VM 'win32tk-golden' not found` | Build the VM, or set the default back to Windows Sandbox. |
+| `checkpoint 'clean-base' not found on VM` | The build stopped early. [Repair the VM](hyperv-vm-care.md#repair-a-broken-vm). |
+| `guest credential is not configured` | No saved VM password. [Repair the VM](hyperv-vm-care.md#repair-a-broken-vm). |
+
+When the test VM is your default, the [system check](glossary.md#system-check) on the main screen also
+has a `Hyper-V test backend` row. It shows `ready`, or the same reasons as this table.
+
+A VM that is not ready does not stop your tests. They run in Windows Sandbox, with a warning. On the command line it
+starts with `Hyper-V test backend requested but not ready`. The menu wizards show `Hyper-V is selected but NOT ready`.
+
+"Ready" does not check that the saved password is right. A wrong password shows only in the next test, after a
+15-minute wait. "Ready" also does not check that the checkpoint shows a signed-in desktop.
+
+## Re-take the checkpoint
+
+The checkpoint gets old: every test goes back to the Windows updates of that day. Re-take it at least every 35 days,
+after you change Windows in the VM, and when a test prints one of the warnings below.
+
+There is no toolkit command for this. Do not use the repair item of the menu. It resets the VM first, so you lose
+your updates. Time: Windows Update time plus a minute or two.
+
+1. In PowerShell 7 as administrator, run [Reset-Win32ToolkitTestVM](reference/Reset-Win32ToolkitTestVM.md). It prints
+   nothing when it works.
+2. If the VM is not running now, run `Start-VM -Name 'win32tk-golden'`.
+3. Open the VM window: in Hyper-V Manager, choose **Connect**.
+4. In the VM, run Windows Update until nothing is left.
+5. Let every restart finish.
+6. Run `Update-MpSignature` in the VM.
+7. Leave the VM signed in at an idle desktop.
+8. On your PC, replace the checkpoint with these four Hyper-V commands.
 
 ```powershell
-Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_VirtualSystemSettingData -Filter "VirtualSystemType = 'Microsoft:Hyper-V:Snapshot:Realized'" | Select-Object ElementName, AutomaticSnapshotsEnabled
-```
-
-A checkpoint that reads `True` (or whose setting cannot be read) keeps the slower restore, and every
-PowerShell session warns once until you re-take it with automatic checkpoints off (the procedure below).
-To go back to the slower restore for every checkpoint, set `HyperVRevertMode` to `Legacy`
-([Configuration](configuration.md#hypervrevertmode-default-turnofffirst)).
-
-**Re-take the clean checkpoint, in this order:**
-
-1. `Reset-Win32ToolkitTestVM`. If the VM is not running afterwards (`Get-VM -Name 'win32tk-golden'` shows
-   `Saved`), start it with `Start-VM -Name 'win32tk-golden'`. Let the desktop settle for a few minutes, then
-   shut the VM down gracefully (`Stop-VM -Name 'win32tk-golden'`, not `-TurnOff`).
-2. With the VM off, turn automatic checkpoints off and, optionally, set the stop and start actions (see
-   *Stop and start actions* below):
-
-   ```powershell
-   Set-VM -Name 'win32tk-golden' -AutomaticCheckpointsEnabled $false
-   Set-VM -Name 'win32tk-golden' -AutomaticStopAction TurnOff -AutomaticStartAction Nothing   # optional
-   ```
-
-   Do this after the reset and before anything starts the VM again. A checkpoint taken with automatic
-   checkpoints on turns them back on when the reset restores it, and with them on Hyper-V adds an
-   `Automatic Checkpoint` when the VM starts from Off. Hyper-V refuses to change the stop action of a running
-   VM.
-3. Optional: change CPU or memory with `Set-Win32ToolkitTestVMResource` (it starts the VM and takes a
-   checkpoint you replace in step 6), then wait until Hyper-V has finished merging the disks of the removed
-   checkpoints (Hyper-V Manager shows the merge in the VM's status).
-4. Start the VM if it is off, then patch and quiet it (see *A quiet, fresh checkpoint* below).
-5. Check that a user is signed in to the desktop, that Defender real-time protection is on and that there
-   are no Defender exclusions.
-6. Re-take `clean-base` with the commands of [Re-checkpoint after Windows Updates](#re-checkpoint-after-windows-updates)
-   (with the `Set-VM -AutomaticCheckpointsEnabled $false` line). Do **not** use the TUI's repair action for
-   this: it restores the old checkpoint first and throws your preparation away.
-7. Check the result: `Get-VMCheckpoint -VMName 'win32tk-golden'` lists only `clean-base`, and the command above
-   shows `AutomaticSnapshotsEnabled` `False` for it.
-
-**Memory.** The toolkit's default for a new VM is 4 GB. A VM with more memory has more to save and restore;
-some installers check the memory and refuse to install with 4 GB, and memory pressure can stretch an install
-toward the test time limits. That gives false failures, never false passes. There is no recommended size yet.
-
-**A quiet, fresh checkpoint** (optional; guest commands run in Windows PowerShell 5.1 inside the VM):
-
-1. Check that Windows is activated (`slmgr /dlv`).
-2. Make sure Windows Update is on, install every update and let the reboots finish.
-3. Let the VM settle at the desktop.
-4. Turn off what would otherwise run during your tests: automatic installation of Windows updates, the
-   OneDrive updater task, Microsoft Store automatic updates and the Customer Experience Improvement Program
-   tasks. Check that each policy you use applies to your Windows edition (some are Enterprise or Education
-   only).
-5. Update the Defender signatures (`Update-MpSignature`).
-6. Keep Defender real-time and cloud-delivered protection **on** and add **no** exclusions: the tests should
-   see what a device sees.
-7. Re-take the checkpoint (the procedure above), and refresh it at least monthly: a test run warns when the
-   checkpoint is older than 35 days.
-
-**Stop and start actions.** `Set-VM -AutomaticStopAction TurnOff -AutomaticStartAction Nothing` before you
-re-take the checkpoint means a host shutdown does not write the VM's memory to disk (the next test restores
-the checkpoint anyway) and the VM does not start by itself with the host. Run it while the VM is off (step 2
-of the procedure above): Hyper-V refuses to change the stop action of a running VM.
-
-**Many tests in one PowerShell session.** A test run skips its first restore when the same PowerShell session
-restored the same VM and checkpoint at the end of the previous run less than 10 minutes ago, the VM has been
-running since then, no other PowerShell session used the VM in between (see the lease below), and that run was
-not a watched one. To restore before every test (for example a final check), start a new PowerShell session.
-
-**Optional, measured first.** These switches are `Off` until they are measured on your host; each is a registry value
-([Configuration](configuration.md#performance-switches)):
-
-- `HyperVAsyncTeardown`: the restore at the end of an unattended test finishes in the background while the next step
-  runs (processing the capture, packaging, the next test), which saves the end-of-run restore on the critical path.
-  Only the TUI and `Invoke-Win32Toolkit` do this, because they wait for the restore before they return: a direct
-  `Test-Win32ToolkitProject`, `New-` or `Complete-Win32ToolkitManualApp` call and every watched run keep restoring
-  before they return. The VM stays with your PowerShell session until the session next uses it, or until the TUI or
-  the `Invoke-Win32Toolkit` run ends, even when the restore finished long before: the next test in the session waits
-  for the restore, and another session waits for the lease. So a TUI left open at a menu keeps the VM from other
-  sessions until you use the VM again or leave the TUI. A restore that fails prints a warning and the next test
-  restores the VM first.
-- `HyperVTeardownPark` (`Running` or `Saved`): with `Saved`, the restore after an unattended test leaves the clean VM
-  `Saved`, so an idle VM holds no host memory, and the next test in the session only starts it. That test checks the
-  VM's last state change: a VM that another tool started, or started and saved again, after the toolkit parked it is
-  restored as usual. Needs `HyperVRevertMode` `TurnOffFirst`; a watched run never parks the VM.
-- `HyperVCapturePrewarm`: `Invoke-Win32Toolkit` (also the TUI's winget wizard) restores the VM in the background while
-  it searches, downloads and configures, so the documentation capture finds it ready. It holds the VM from then until the
-  capture is done, and waits first if another PowerShell session uses the VM. The head start is lost when the steps
-  before the capture take more than 10 minutes (the capture restores again).
-
-**One VM, one PowerShell session at a time.** Every test run, the Intune-parity pre-check (when it restores the
-VM) and every VM command (`Reset-`, `Set-Win32ToolkitTestVMResource`, `Remove-` and `New-Win32ToolkitTestVM`, and the
-TUI's repair action) first take the test VM's lease: a lock file under `%ProgramData%\win32-toolkit\locks` that
-only one process can hold. A second PowerShell session that wants the same VM waits for it and prints one line
-that names the holder:
-
-```
-Waiting for the test VM 'win32tk-golden': another process is using it (test run since 2026-10-24 09:15:30Z, process 4242); up to 60 minutes...
-```
-
-The line names only a holder whose process is still running: when the lock file still names an earlier
-holder (the new one writes its details just after it takes the lease), the line comes one try later, without the
-part in brackets if the holder still cannot be named.
-
-After `HyperVLeaseWaitMinutes` (default 60, from 1 to 240; [Configuration](configuration.md)) the waiting test
-stops with the error `W32T.HyperVLeaseTimeout`: it was not started and the VM was not restored. The lease is
-released when the run ends, and Windows releases it when the PowerShell process ends for any reason. The lock
-folder keeps the access rights of `%ProgramData%`, where any user can create files and folders. So the lease
-trusts only a lock folder (`%ProgramData%\win32-toolkit` and its `locks` folder) and lock files that are plain
-folders and files owned by Administrators or SYSTEM, and it never writes through a link (junction or symbolic
-link). Only an elevated session creates them that way, so a lease needs an elevated session (Hyper-V needs one
-anyway). If another account created the folder first, or a lock file or folder is a link, the test stops with
-the error `W32T.HyperVLeaseUnsafe` before it writes anything, and the message names the folder or file: delete it
-from an elevated session (it only ever holds lock files) and the next test creates it again.
-Hyper-V Manager and scripts that call the Hyper-V cmdlets directly do not take the lease: do not restore or start
-the test VM by hand while a test runs.
-
-**Pin a VM per session** (`W32T_HYPERV_VM`, `W32T_HYPERV_CHECKPOINT`). A PowerShell session can test on another VM
-than the one in the registry, without changing the registry:
-
-```powershell
-$env:W32T_HYPERV_VM = 'win32tk-lane2'       # this session (and the processes it starts) only
-$env:W32T_HYPERV_CHECKPOINT = 'clean-base'  # optional: else HyperVCheckpoint, else clean-base
-Test-Win32ToolkitProject -ProjectPath $proj -Scenario InstallUninstall -Backend HyperV -Unattended
-```
-
-Test runs, the Intune-parity pre-check, the readiness check and the defaults of `Reset-`, `Set-Win32ToolkitTestVMResource`,
-`Remove-Win32ToolkitTestVM` and the TUI's repair action then use the pinned VM and checkpoint. A pinned session fails
-closed: when the pinned VM is not ready, a test stops with the error `W32T.HyperVTargetNotReady` instead of falling
-back to Windows Sandbox, and so does an invalid value (blank, longer than 100 characters, or with a control
-character). The VM commands save no name, checkpoint, CPU or memory value for the pinned VM as your defaults (one line
-says so); only a missing guest credential is saved, and the pinned VM uses the same stored guest credential as the
-registry's. `New-Win32ToolkitTestVM` keeps its own default name (`win32tk-golden`): pass `-Name` to provision the pinned
-VM.
-
-### Tip: stop Edge and WebView2 from updating in the VM
-
-Microsoft Edge and the WebView2 runtime update themselves in the background. In the test VM that
-happens right after a checkpoint revert, during your test run, which:
-- adds unrelated files and registry changes to the install capture;
-- competes with the installer for CPU and network.
-
-Turn their updater off once, from an elevated PowerShell on the Hyper-V host. The VM must be
-running: start it with `Start-VM` if it is not.
-
-```powershell
-# Elevated PowerShell on the Hyper-V host
-Import-Module win32-toolkit
-$mod  = Get-Module win32-toolkit
-$vm   = & $mod { (Get-Win32ToolkitHyperVTarget).VMName }   # the session's test VM (W32T_HYPERV_VM, else the registry's)
-$cred = & $mod { Get-Win32ToolkitGuestCredential }
-
-Invoke-Command -VMName $vm -Credential $cred -ScriptBlock {
-    $p = 'HKLM:\SOFTWARE\Policies\Microsoft\EdgeUpdate'
-    New-Item $p -Force | Out-Null
-    Set-ItemProperty $p -Name AutoUpdateCheckPeriodMinutes -Type DWord -Value 0
-    Set-ItemProperty $p -Name UpdateDefault -Type DWord -Value 0
-    Set-ItemProperty $p -Name 'Update{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}' -Type DWord -Value 0  # Edge
-    Set-ItemProperty $p -Name 'Update{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -Type DWord -Value 0  # WebView2
-
-    'edgeupdate','edgeupdatem' | ForEach-Object {
-        Stop-Service $_ -Force -ErrorAction SilentlyContinue
-        Set-Service  $_ -StartupType Disabled -ErrorAction SilentlyContinue
-    }
-    Get-ScheduledTask -TaskName 'MicrosoftEdgeUpdate*' -ErrorAction SilentlyContinue | Disable-ScheduledTask
-}
-```
-
-**Then re-checkpoint.** Every test run reverts the VM to `clean-base`, so the change is lost unless
-you freeze it into the checkpoint, the same way as after Windows Updates (above):
-
-```powershell
+$vm = 'win32tk-golden'   # your VM name
 Get-VMCheckpoint -VMName $vm | Remove-VMCheckpoint
 Set-VM -Name $vm -CheckpointType Standard
 Set-VM -Name $vm -AutomaticCheckpointsEnabled $false
 Checkpoint-VM -VMName $vm -SnapshotName 'clean-base'
 ```
 
-As above, automatic checkpoints are turned off before `Checkpoint-VM`: a checkpoint keeps this setting.
+Removing the old checkpoint keeps the current state of the VM, so your updates stay. It also removes the other
+checkpoints of the VM. The toolkit creates the ones it needs again.
 
-Edge and WebView2 now stay at the version in the checkpoint. When you next update the VM (Windows
-Update, above), update them by hand as well if your apps depend on a recent WebView2.
+These warnings never stop a test, and each one shows once per PowerShell window. Fix the cause, then re-take the
+checkpoint.
 
-### The TUI screen
-
-`Show-Win32Toolkit` → **Hyper-V test VM** shows backend readiness and the VM's current CPU/RAM, and
-wraps everything above: set the default backend, provision from an ISO, change resources, reset,
-repair (AutoLogon + re-checkpoint), and remove the VM.
-
-The **Configure guest AutoLogon + re-checkpoint** action is the repair path whenever the backend
-banner says "not ready" but the VM exists. It fixes a checkpoint frozen at the login screen *and*
-the two leftovers of an interrupted provision: a missing `clean-base` checkpoint (it boots the VM
-and takes a fresh one at the logged-in desktop) and a missing stored guest credential (it prompts
-for the one the image was built with and saves it only after PowerShell Direct accepts it — so a
-typo is never stored).
-
-<!-- SCREENSHOT: the TUI Hyper-V test VM screen showing "Hyper-V backend is READY" and the menu options -->
-
-## Configuration keys involved
-
-| Key | Meaning |
+| Warning starts with | What to do |
 |---|---|
-| `TestBackend` | `Sandbox` (default) or `HyperV`: the default backend for test/capture runs |
-| `HyperVVMName` | VM name (default `win32tk-golden`) |
-| `HyperVCheckpoint` | Warm checkpoint name (default `clean-base`) |
-| `HyperVProcessorCount` / `HyperVMemoryStartupBytes` | Last chosen hardware, reused as defaults by the next provision |
-| `HyperVTestMode` | `Unattended` makes Hyper-V test runs non-interactive (Intune-parity) by default (`-TestMode` overrides it for one run; the menu's **Hyper-V run mode** lists it first) |
-| `HyperVDepsCheckpoint` | `On` freezes a `clean-base+deps-*` checkpoint after a successful dependency install so later runs of that project skip it. See [Configuration](configuration.md) |
-| `HyperVRevertMode` | `TurnOffFirst` (default) turns the VM off before each restore, `Legacy` keeps the plain restore. See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
-| `HyperVLeaseWaitMinutes` | How long (1-240 minutes, default 60) a test or a VM command waits while another PowerShell session uses the VM, then stops with `W32T.HyperVLeaseTimeout`. See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
-| `TestProjectLease` | `On` lets one PowerShell session at a time test a project (elevated sessions; default `Off`). See [Configuration](configuration.md) |
-| `HyperVAsyncTeardown` | `On` lets the end-of-test restore finish in the background inside the TUI and `Invoke-Win32Toolkit` (default `Off`). See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
-| `HyperVTeardownPark` | `Saved` leaves the clean VM Saved between unattended tests (default `Running`; needs `HyperVRevertMode` `TurnOffFirst`). See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
-| `HyperVCapturePrewarm` | `On` restores the VM in the background at the start of `Invoke-Win32Toolkit`, ready for the documentation capture (default `Off`). See [Make Hyper-V tests faster](#make-hyper-v-tests-faster) |
+| `The test VM's checkpoint 'clean-base' was taken with automatic checkpoints on` | Nothing more: the commands above turn them off. |
+| `The test VM's checkpoint 'clean-base' is <n> days old` | Run Windows Update in the VM. |
+| `The test VM's checkpoint 'clean-base' restores with nobody signed in` | Sign in at the desktop of the VM. |
+| `Defender real-time protection is off` | Turn it on in the VM. |
+| `The test VM's checkpoint 'clean-base' has <n> Defender exclusion(s)` | Remove the exclusions in the VM. |
+| `Defender signatures in the test VM's checkpoint` | Run `Update-MpSignature` in the VM. |
 
-All keys live in the toolkit's registry config; see [Configuration](configuration.md) for the full list.
+## Make Hyper-V tests faster
+
+Every Hyper-V test restores the checkpoint twice: before the test and after it. In one measurement on a Windows 365
+Cloud PC, one restore took about 30 seconds. Your own times are in `Documentation\TestResults.json` of your project,
+under `Timing`.
+
+- **A Standard checkpoint at a signed-in desktop**. It saves the memory as well as the disk, so the VM comes back
+  already running. If a test warns `VM 'win32tk-golden' was not Running after restoring`, re-take the checkpoint.
+- **Automatic checkpoints off**. With them on, Hyper-V adds a checkpoint at every start and each restore is slower.
+  Run `Set-VM -Name 'win32tk-golden' -AutomaticCheckpointsEnabled $false`, then re-take the checkpoint.
+- **Enough memory**. Give the VM 6 to 8 GB if your PC has the memory. See
+  [Change processors or memory](hyperv-vm-care.md#change-processors-or-memory).
+- **Several tests in one PowerShell window**. After an unattended test, the next test can skip its first restore.
+  This works within 10 minutes, if no other window used the VM.
+
+The restore mode `HyperVRevertMode` is `TurnOffFirst` by default: the toolkit turns the VM off, restores the
+checkpoint and starts the VM. It needs a checkpoint taken with automatic checkpoints off. Set `Legacy` only if
+`TurnOffFirst` causes problems on your PC. You can also set it if a new checkpoint does not stop the warning
+`The automatic-checkpoint setting of the test VM's checkpoint ...`.
+
+```powershell
+Set-ItemProperty -Path 'HKCU:\Software\CloudFlow\win32-toolkit' -Name HyperVRevertMode -Value 'Legacy'
+```
+
+Four more speed settings are off by default. Set them the same way. Measure your tests on your PC first, then change
+one setting at a time. See [Settings and folders](settings.md#hyper-v-test-vm).
+
+| Setting | Default | What the other value does |
+|---|---|---|
+| `HyperVAsyncTeardown` | `Off` | `On`: in the menu and `Invoke-Win32Toolkit`, the restore after an unattended test runs in the background. |
+| `HyperVCapturePrewarm` | `Off` | `On`: `Invoke-Win32Toolkit` restores the VM during the download. |
+| `HyperVDepsCheckpoint` | `Off` | `On`: a checkpoint with the apps the project needs first, so tests skip installing them. |
+| `HyperVTeardownPark` | `Running` | `Saved`: between unattended tests, the VM waits on disk and uses no memory. |
+
+With `HyperVAsyncTeardown` on, the menu keeps the test VM for itself after an unattended test. Other PowerShell
+windows wait until the menu uses the VM again or you leave the menu. `Invoke-Win32Toolkit` keeps the VM until its
+run ends. See [When another window is using the VM](hyperv-vm-care.md#when-another-window-is-using-the-vm).
+
+### Stop Edge and WebView2 updates in the VM
+
+Microsoft Edge and WebView2 update themselves after each restore. These updates add changes to captures that do not
+come from your app. They also slow the installer.
+Turn their updates off once, from PowerShell 7 as administrator on your PC, while the VM runs:
+
+```powershell
+$vm   = 'win32tk-golden'                      # your VM name
+$cred = Get-Credential -UserName 'w32admin'   # the VM account
+Invoke-Command -VMName $vm -Credential $cred -ScriptBlock {
+    $p = 'HKLM:\SOFTWARE\Policies\Microsoft\EdgeUpdate'
+    if (-not (Test-Path $p)) { New-Item -Path $p -Force | Out-Null }
+    Set-ItemProperty $p -Name AutoUpdateCheckPeriodMinutes -Type DWord -Value 0
+    Set-ItemProperty $p -Name UpdateDefault -Type DWord -Value 0
+    Set-ItemProperty $p -Name 'Update{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}' -Type DWord -Value 0   # Edge
+    Set-ItemProperty $p -Name 'Update{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -Type DWord -Value 0   # WebView2
+    'edgeupdate', 'edgeupdatem' | ForEach-Object {
+        Stop-Service $_ -Force -ErrorAction SilentlyContinue
+        Set-Service $_ -StartupType Disabled -ErrorAction SilentlyContinue
+    }
+    Get-ScheduledTask -TaskName 'MicrosoftEdgeUpdate*' -ErrorAction SilentlyContinue | Disable-ScheduledTask
+}
+```
+
+Then [re-take the checkpoint](#re-take-the-checkpoint). If your apps need a recent WebView2, update it by hand when
+you next update the VM.
+
+## Keep the VM safe
+
+- The VM password is in clear text inside the VM, in the Windows setup answer file and the AutoLogon settings. Use it
+  for this lab only.
+- On your PC, the password is encrypted, and only your Windows user can read it.
+- During the build and the repair, the VM downloads Microsoft Sysinternals Autologon from the internet.
+- The VM runs untrusted installers as SYSTEM, with internet access. Use it for nothing else.
+- Treat the whole `<base folder>\HyperV` folder as secret. The VM disk in `HyperV\Golden` holds the password. If you
+  use your own virtual disk, that file holds it too. Do not share these files.
+
+## If something goes wrong
+
+| Message starts with | What to do |
+|---|---|
+| `New-Win32ToolkitTestVM requires an elevated (Administrator) session` | Start PowerShell 7 with Run as administrator, then run the command again. |
+| `The Hyper-V PowerShell module is not installed` | Turn on Hyper-V and restart your PC. |
+| `VHDX already exists` | An earlier build left its disk file (VHDX). [Repair the VM](hyperv-vm-care.md#repair-a-broken-vm) if it exists, or [rebuild it](hyperv-vm-care.md#rebuild-the-vm). |
+| `PowerShell Direct did not become ready within 900 s` | Windows did not start, or nobody signed in. Often your own disk has no automatic sign-in, or the password is wrong. |
+| `No preferred edition` | The toolkit builds the first edition, often Home. Run the command again with `-Edition` or `-ImageIndex`, and `-Force`. |
+| `Stored Hyper-V guest credential could not be decrypted` | Another Windows user saved the VM password. See [Fix a wrong VM password](hyperv-vm-care.md#fix-a-wrong-vm-password). |
+
+For more messages, see [Troubleshooting](troubleshooting.md#hyper-v-test-vm).
+
+## Next steps
+
+- [Look after the Hyper-V test VM](hyperv-vm-care.md): change, reset, repair, rebuild or remove the VM.
+- [Test as Intune does](testing.md#test-as-intune-does): run an unattended test on the VM.

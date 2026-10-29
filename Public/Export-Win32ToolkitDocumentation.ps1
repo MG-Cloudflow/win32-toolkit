@@ -1,38 +1,59 @@
 function Export-Win32ToolkitDocumentation {
     <#
     .SYNOPSIS
-        Writes a clean, customer-facing one-page Documentation.md summarising a packaged project.
+        Writes a one-page summary of a packaged app for your customer.
     .DESCRIPTION
-        Gathers the read-only facts about a packaged PSADT/Intune project - its AppConfig, the Intune
-        detection method, declared dependencies, the newest install-change capture, and any recorded
-        automated test results - and renders them as a tight, skimmable Markdown one-pager aimed at a
-        human reviewer (an IT admin signing off on the package, or an end-customer deliverable).
+        Export-Win32ToolkitDocumentation writes a one-page summary of a project in a Markdown file.
+        It describes the app, how Intune installs and detects it, what it installs, the tests that
+        were run and the uninstall. If a part is missing, for example when no test was run, the
+        summary says so and the command continues.
 
-        Every gather is guarded: a missing piece degrades gracefully to a sensible line, never throws.
+        Use it when you give a package to your customer. In the menu: Work with an existing
+        project > Generate customer documentation. The menu then asks "Include the Intune app id +
+        portal link? (only if the customer owns the tenant)". The default is No.
 
-        By default NO tenant or app ids are read or printed, and the capture JSON's raw sandbox host paths
-        are summarised to COUNTS and program names only, never surfaced. Pass -IncludeIntuneIds to add an
-        Intune section with the published app id and portal link (only do this for internal documentation).
+        By default, the summary holds no tenant ID and no Intune app ID. From the install capture
+        (the record of what the installer changed), it shows only counts and the program name,
+        never file paths.
 
-        The rendered Markdown is deliberately ASCII-only (typographic characters use HTML entities), so the
-        file cannot mojibake regardless of how a viewer decodes it.
+        The command writes one file and replaces an older one. By default, this is Documentation.md
+        in the project folder. Documentation.md never goes into the package: the build leaves it
+        out.
     .PARAMETER ProjectPath
-        Full path to the PSADT project folder (the folder that contains Invoke-AppDeployToolkit.ps1).
+        The project folder: <base folder>\Projects\<template>\<project>.
     .PARAMETER OutputPath
-        Where to write the Markdown. Defaults to <ProjectPath>\Documentation.md.
+        The file to write. Default: Documentation.md in the project folder. The command creates the
+        folder if it does not exist. Use it to keep an internal copy apart from the customer's copy.
     .PARAMETER IncludeIntuneIds
-        Also read <ProjectPath>\Intune\Publications.json and add an "Intune" section with the app id and a
-        portal deep-link. Omitted by default so the one-pager carries no tenant-specific identifiers.
-    .OUTPUTS
-        [string] - the full path of the Markdown file that was written.
+        Adds an Intune section with the app ID and the link to the app in the Intune admin center.
+        It lists the app of every tenant that this project was published to. Use it only for your
+        own copy, or when the customer owns the tenant. A project that was never published gets no
+        Intune section.
     .EXAMPLE
         Export-Win32ToolkitDocumentation -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'
 
-        Writes Documentation.md next to the project with no Intune ids.
+        This writes Documentation.md in the project folder, without Intune IDs.
     .EXAMPLE
-        Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath 'C:\temp\Git.md' -IncludeIntuneIds
+        $project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+        Export-Win32ToolkitDocumentation -ProjectPath $project -IncludeIntuneIds
 
-        Writes an internal copy that also lists the published Intune app id and a portal link.
+        This adds the Intune app ID and the link to the app. Do this only when the customer owns
+        the tenant.
+    .EXAMPLE
+        $project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+        $copy = 'C:\Temp\Git_x64_2.53.0_internal.md'
+        Export-Win32ToolkitDocumentation -ProjectPath $project -OutputPath $copy -IncludeIntuneIds
+
+        This writes an internal copy with the Intune IDs to C:\Temp. The Documentation.md in the
+        project does not change.
+    .OUTPUTS
+        The full path of the file that was written.
+    .NOTES
+        Time: seconds. The command needs no sign-in and no network.
+    .LINK
+        https://win32toolkit.com/reference/Export-Win32ToolkitDocumentation/
+    .LINK
+        https://win32toolkit.com/publishing/
     #>
     [CmdletBinding()]
     [OutputType([string])]

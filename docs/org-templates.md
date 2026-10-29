@@ -1,291 +1,303 @@
 ---
-description: "Create and apply org templates to brand every packaged app consistently across your Intune Win32 deployments."
+description: "Create the org template that holds one customer's branding, dialogs, tenant and Intune defaults."
 ---
 
-# Org templates
+# Create your org template
 
-An **org template** captures everything that should be the same across every app you package for a
-customer: branding, PSADT dialog behaviour, deploy-time scripts, Intune publish defaults, and more.
-Every project you build gets the template applied automatically, so all of a customer's apps look
-and behave consistently with no per-app work.
+An [org template](glossary.md#org-template) holds what all apps of one customer share: company name,
+dialog style, logo, Intune defaults and tenant. win32-toolkit needs one before your first app. Creating it changes
+nothing in Intune.
 
-A template is two things on disk:
+## Before you start
 
-| Part | Path under BasePath | Holds |
-|---|---|---|
-| Definition | `Templates\<name>.json` | All the settings (created/edited by the wizard) |
-| Sidecar folder *(optional)* | `Templates\<name>\` | Files the template ships: `Hooks\`, `Assets\`, `PSAppDeployToolkit.<Org>\` |
+Step 2 of 7.
 
-Templates also **group your output**. The template name (sanitized) becomes a folder segment in
-every tier, so work for different customers stays separated:
+- Step 1 is done: see [Install the toolkit](install.md).
+- You know the company name that users should see in dialogs.
+- You know the customer's [tenant ID](glossary.md#tenant-id). It is the ID of the customer's [tenant](glossary.md#tenant): its own organization in the Microsoft cloud. You find it in the Microsoft Entra admin
+  center, on the **Overview** page (a general Microsoft fact).
+- Time: about 2 to 5 minutes.
 
-| Tier | Path under BasePath |
-|---|---|
-| Projects | `Projects\<Template>\<App>` |
-| Staging | `Staging\<Template>\<App>` |
-| IntuneWin | `IntuneWin\<Template>\<App>.intunewin` |
+## Create the template
 
-## Creating a template
+=== "Menu"
 
-To create a template without packaging anything:
+    1. Start the menu ([`Show-Win32Toolkit`](reference/Show-Win32Toolkit.md)).
+    2. Choose **Org templates** > **Create a new template**.
+    3. Answer the questions. Press <kbd>Enter</kbd> to keep the default in brackets.
 
-```powershell
-Invoke-Win32Toolkit -NewTemplate
-Invoke-Win32Toolkit -NewTemplate -TemplateName 'Contoso'
+    While you package an app, you can also choose **+ Create a new template…** at **Choose an org template**.
+
+=== "Command line"
+
+    This command starts the wizard, saves the template and stops. It packages nothing.
+
+    ```powershell
+    Invoke-Win32Toolkit -NewTemplate -TemplateName 'Contoso'
+    ```
+
+    Without a template, [`Invoke-Win32Toolkit`](reference/Invoke-Win32Toolkit.md) also starts the wizard by itself.
+
+    For every option, see [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md).
+
+The wizard asks plain questions in six sections, A to F.
+
+```text title="What you see"
+=== Organisation Template Wizard ===
+Press Enter on any prompt to keep the default value.
+
+--- A: Identity ---
+Template name [Default] :
 ```
-
-This opens the wizard, saves the JSON, and exits. If you never create one, the toolkit prompts you
-the first time you run the pipeline. You cannot package without a template.
-
-To **edit** an existing template, use the TUI (`Show-Win32Toolkit` → Org templates → Edit): the
-wizard is pre-filled with the current values, so Enter keeps each one, and typing `-` clears an
-optional value (the prompts that offer it say so). `Invoke-Win32Toolkit -NewTemplate` with the name
-of an existing template starts from the built-in defaults instead and overwrites the saved file.
 
 <!-- SCREENSHOT: the wizard running in a terminal, showing the Identity and Branding sections with bracketed defaults -->
 
-## The wizard, section by section
+Many answers decide how the [PSAppDeployToolkit (PSADT)](glossary.md#psadt) dialogs look on devices.
+PSADT is the free PowerShell tool that installs the app on each device. If an answer breaks a text rule, the wizard
+shows the rule and asks again. At the end, it prints `✓ Template 'Contoso' saved:` and the file path.
 
-Every prompt shows a default in brackets. Press **Enter** to accept it.
+## Answer the questions that matter
 
-| Section | Field | What it controls |
+Six questions need a real answer:
+
+| Question (as shown) | Default | What to enter |
 |---|---|---|
-| Identity | Template name / Company name / App script author | File+folder name, dialog subtitle, deploy-script author |
-| | **Intune tenant** | Pins this customer's tenant. Publishing then **refuses** to write to any other one. See [Connecting to Intune](intune-connection.md) |
-| Branding & dialog style | **Dialog style** | `Fluent` (modern) or `Classic` (v3-style, uses the Classic banner) |
-| | Fluent accent hex | Accent colour, e.g. `0xFF0078D7` (blank = PSADT default) |
-| | Log path | Where deploy scripts write logs (default `$envWinDir\Logs\Software`). Only the variables `$envName` (PSADT), `$env:Name` and `${env:Name}` are allowed |
-| | **Force dialog language** | Pin all dialogs to one language, e.g. `nl`, `fr-FR` (blank = auto-detect). Must be a language name |
-| Progress / Balloon | per-deployment-type text | Progress-dialog wording, and the completion balloon (shown only with the **Classic** dialog style, on PSADT 4.1 and 4.2) |
-| Welcome / Uninstall / Progress / Completion dialogs | enable, deferral, countdown (0 to 86400 s), persist, block, messages | PSADT dialog behaviour per phase (see [when dialogs appear](#when-dialogs-appear)) |
-| Org scripts & extension module | **Enable org hook scripts** + on-error policy | Runs your `.ps1` files in each deploy phase (see below) |
-| | **Ship an org PSADT extension module** | Copies `PSAppDeployToolkit.<Org>\` into every project |
-| | **Ship org branding assets** | Copies your logo/banner into every project |
-| Intune publish defaults | **Minimum Windows release / restart behavior / max run time** | The Intune install experience. Keep the maximum run time above 30 minutes (default 60): the uninstall stops an EXE uninstaller at 30 minutes, and a lower Intune limit would stop it first, without the toolkit's exit code; Publish warns when it is 30 minutes or less |
-| | **Description boilerplate / privacy URL** | Appended to every published app |
-| | **Customer-doc footer line** | Footer on the generated customer documentation |
+| `Template name` | `Default` | The customer's short name, such as `Contoso`. Also the folder name. |
+| `Company name (shown in dialog subtitles)` | `Your Organisation IT` | The name users see, such as `Contoso IT`. |
+| `App script author` | `IT Packaging Team` | Your team name. Choose it once and never change it. |
+| `Intune tenant (blank = unpinned)` | empty | The tenant ID, such as `11111111-2222-3333-4444-555555555555`. |
+| `Dialog style - Fluent or Classic` | `Fluent` | [Fluent](glossary.md#fluent-and-classic) is the modern look, **Classic** the older one. |
+| `Max run time (minutes)` | `60` | Keep `60`, never 30 or less. |
 
-The wizard also records the schema version and, for information only, the PSADT version new projects
-would use when the template was saved (you are not prompted for these). Each project's real PSADT
-version is the one bundled in the project.
+Press <kbd>Enter</kbd> for all other questions now. The full list is in
+[All questions and their defaults](#all-questions-and-their-defaults).
 
-Text the wizard cannot accept (see [Text rules](#text-rules)) is explained and asked again.
+### Choose the app script author once
 
-## When dialogs appear
+The [app script author](glossary.md#app-script-author) is your team name. It is part of the [install tattoo](glossary.md#install-tattoo): a registry value that tells Intune which version is installed. Its key is
+`HKLM\SOFTWARE\<app script author>\<publisher>\<app name>`. If you change the author, later updates miss the devices with
+the old key. See [The detection key](settings.md#the-detection-key).
 
-The Intune command line passes no deploy mode, so PSADT runs in **Auto** mode: the welcome
-(close apps, deferral), progress and completion dialogs appear only when the user has to close one of
-the app's processes. When none of them is running, the deployment runs silently on PSADT 4.1 and 4.2
-alike. One difference: an app with an **empty** processes-to-close list runs silently on PSADT 4.2,
-where 4.1 still showed the dialogs. The dialog *policy* (what is shown when a dialog does appear) is
-stored as data in each project's `SupportFiles\AppConfig.json` and read on the device.
+### Enter the tenant ID
 
-A deferral ends the deployment with exit code 1602, which Intune reports as failed (see
-[Publishing](publishing.md#what-gets-created)).
+With a tenant in the template, the toolkit refuses to publish this customer's apps to any other tenant. Without one, it
+only warns. Each project of a winget app gets a copy of the tenant. See
+[Pin the tenant on your org template](intune-connection.md#pin-the-tenant-on-your-org-template).
+
+!!! warning "A domain name never matches"
+    Use the tenant ID, not a domain name. The wizard also accepts a domain, such as `contoso.onmicrosoft.com`. But a
+    domain never matches your sign-in, so the publish stops.
+
+### Keep the maximum run time above 30 minutes
+
+Intune stops an install that runs longer than the maximum run time. At 30 minutes or less, Intune can stop the
+install before the package reports its own exit code, so the wizard warns. Keep 60 or more for apps with [prior-install rules](glossary.md#prior-install-rule): rules for another install of the app on the device. Removing the other
+install first can take up to 30 minutes.
+
+## When dialogs appear on devices
+
+Intune does not tell PSADT whether to show dialogs. So PSADT shows them only when one of the app's programs is
+running, because that program must be closed first. Otherwise the install runs silently.
+
+These programs are the [processes to close](glossary.md#processes-to-close). The toolkit usually finds
+them when it packages the app. When the list is empty, PSADT 4.2 stays silent. If the template allows a deferral,
+PSADT 4.1 can still show the welcome dialog to a signed-in user.
+
+A [deferral](glossary.md#deferral) lets users postpone the install, by default 3 times. The install
+then ends with exit code 1602. Intune reports it as failed and tries again later (a general Microsoft fact).
+
+Balloon texts, the short notices near the clock on the taskbar, show only with the Classic dialog style. The wizard
+does not say this. To see the dialogs before you publish, run an [interactive test](glossary.md#interactive-test), a test that you watch. See
+[Interactive or unattended](testing.md#interactive-or-unattended).
 
 ## Text rules
 
-PSADT expands the company name, the log path and the language as PowerShell strings when a
-deployment starts, and PSADT 4.2 also expands the dialog texts (progress, balloon, completion) every
-time a dialog command runs, even in a silent deployment. Text that looks like a variable or an expression would
-then fail every deployment built from the template (exit code 60001 or 60008). So the toolkit
-**rejects** such text instead of trying to escape it:
+PSADT reads some template text as PowerShell code on the device. A `$` or a backtick there can fail every deployment
+(exit code 60001 or 60008). It can also change the text without an error. So the toolkit refuses such text.
 
-| Rule | Applies to | Rejected |
-|---|---|---|
-| Dollar | Company name and every dialog text | a `$` followed by a letter, digit, `_`, `{`, `(`, `:`, `?`, `$` or `^` (`$$` and `$^` silently become empty text) (`US$ 5` and a trailing `$` are fine) |
-| Backtick | the same fields and the log path | any backtick |
-| Whitespace | company name and every dialog text | a value made of spaces only (leave the field empty instead) |
-| Log path | log path | any `$` that is not part of `$envName`, `$env:Name` or `${env:Name}` |
-| Countdown | the two close-apps countdowns | anything but a whole number from 0 (off) to 86400 seconds |
-| Language | dialog language | anything but a language name such as `nl`, `fr-FR` or `zh-Hans` (blank = auto-detect) |
-
-The wizard checks each answer as you type it. A template saved by an older toolkit version, or
-edited by hand, is checked every time it is loaded: if it breaks a rule, packaging stops with a
-`W32T.OrgTemplateInvalid` error that lists every problem and how to fix it (edit the template in
-the TUI). Signing in with `Connect-Win32ToolkitIntune -Template` is not blocked by it.
-
-## Branding: dialog style, language, logos
-
-- **Dialog style**: `Fluent` is the modern v4 look; `Classic` renders the older v3-style dialogs and
-  uses `Banner.Classic.png`. Some estates (kiosks, servers) prefer Classic.
-- **Language**: leave the language override blank and PSADT shows dialogs in the signed-in user's
-  language (this works correctly even though the package runs as SYSTEM). Set it (e.g. `nl`) to pin
-  every dialog to one of PSADT's 27 shipped languages.
-- **Logos & banner**: enable *Ship org branding assets*, then drop files in
-  `Templates\<name>\Assets\`:
-  - `AppIcon.png` brands PSADT dialogs/toasts **and** becomes the Intune tile when the app has no
-    icon of its own (see precedence below).
-  - `Banner.Classic.png` is the banner shown by Classic dialogs.
-
-  You don't touch any config: the project's `Config\config.psd1` always points the dialog logo and
-  banner at the project's `Assets\AppIcon.png` and `Assets\Banner.Classic.png` (on PSADT 4.2 the
-  built-in defaults are embedded images, so the files alone would not be used). The same
-  `AppIcon.png` serves light and dark mode.
-
-### App-icon precedence
-
-`AppIcon.png` serves both the on-device dialogs and the Intune tile. The toolkit picks the best
-available source, in this order:
-
-1. **winget** icon (downloaded from the package's manifest)
-2. **manual** icon (a `-IconPath` you passed for a manual app)
-3. **captured** icon (extracted from the app during the sandbox install run)
-4. **org template** logo (your `Assets\AppIcon.png`), the fallback
-5. PSADT's default logo (only if you ship none of the above)
-
-So your org logo is the floor: every app-specific icon wins over it, but when an app has no icon of
-its own, the tile shows **your** logo instead of the generic PSADT one.
-
-## Org hook scripts
-
-Enable *org hook scripts* and drop any of these in `Templates\<name>\Hooks\`:
-
-```
-PreInstall.ps1   PostInstall.ps1
-PreUninstall.ps1 PostUninstall.ps1
-PreRepair.ps1    PostRepair.ps1
-```
-
-Each file runs in the matching PSADT deploy phase of **every** app built from the template: map a
-drive, drop a shortcut, remove a legacy agent, write a tattoo key, once per customer instead of
-per app. Inside a hook you have the full `$adtSession` and every PSADT function available.
-
-Where a hook runs inside its phase (the same on PSADT 4.1 and 4.2):
-
-| Hook | Runs |
+| Rule | Example of what is refused |
 |---|---|
-| `PreInstall.ps1` | after the org welcome and progress dialogs, before the remove-prior step (which only acts when the package has prior-install rules, see [Packaging](packaging.md)) |
-| `PreUninstall.ps1`, `PreRepair.ps1` | **last** in the phase, after the org welcome and progress dialogs |
-| `PostInstall.ps1`, `PostUninstall.ps1`, `PostRepair.ps1` | **first** in the phase, before the detection tattoo is written (or removed) and before the completion prompt |
+| Dollar sign: no `$` before a letter, a digit or one of `_ { ( : ? $ ^` | `Contoso $Team` or `Save $5`. Allowed: `US$ 5`, or a `$` at the end. |
+| Backtick: none anywhere, also not in the log path | ``Contoso`IT`` |
+| Spaces only: no text made only of spaces | Three spaces (leave the field empty instead). |
+| Log path: only `$envName`, `$env:Name` or `${env:Name}` as variables | `$(Get-Date)\Logs`. Allowed: `$envWinDir\Logs\Software`. |
+| Countdown: whole seconds from 0 to 86400 | `90000` or `1.5` |
+| Language: a language name such as `nl`, `fr-FR` or `zh-Hans` | `Dutch` |
 
-Important:
+The wizard checks each answer as you type it. The toolkit checks a saved template again each time it loads it. So a
+template from an older toolkit, or one changed by hand, can stop packaging before anything is created.
 
-- **They run on the device under Windows PowerShell 5.1** (Intune runs PSADT there). Keep them
-  5.1-safe: no `?:` ternary, `??`, `?.`, or `&&`/`||`. The toolkit parse-checks each hook under real
-  5.1 when applying the template and warns about PS7-only syntax.
-- **Hooks are dot-sourced** into the phase. To fail, `throw`; never `return` (a `return` only ends
-  the hook early and the deployment carries on as if it succeeded). Never assign PSADT's own variable
-  names (`$Culture`, `$envTemp`, ...): they are read-only on PSADT 4.2 and the deployment fails.
-- **On error** you choose `Fail` (a throwing hook fails the deployment; this is the default, and the
-  safe choice for a setup step that must succeed) or `Continue` (log and carry on).
-- Because a post-install hook runs **before** the detection tattoo is written, a failing hook
-  correctly prevents the app being detected as installed.
-
-Your scripts are **copied** into the package (`SupportFiles\OrgHooks\`) and dot-sourced at runtime.
-Their contents are never spliced into generated code: the deploy script only gets a small, fixed
-block per phase that calls the file. Removing a hook file and building again removes its block. If
-the toolkit cannot place a hook block, building the project fails rather than shipping a package
-whose hook silently never runs.
-
-## Org PSADT extension module
-
-For functions shared across your hooks (or manual deploy-script edits), enable the extension module
-and place a module folder at `Templates\<name>\PSAppDeployToolkit.<YourOrg>\`. It's copied into every
-project's root, where PSADT v4 auto-imports it, so `Set-ContosoTattoo`, `Remove-ContosoLegacyAgent`,
-etc. are available everywhere. Use exit codes in the 70000-79999 range per PSADT guidance. The module
-runs on-device as 5.1 too, so the same syntax rule applies (the toolkit parse-checks it).
-
-The folder must have this layout, because PSADT 4.2 imports the extension through its manifest:
-
-```
-Templates\Contoso\PSAppDeployToolkit.Contoso\
-    PSAppDeployToolkit.Contoso.psd1    manifest, named exactly like the folder
-    PSAppDeployToolkit.Contoso.psm1    the manifest's RootModule, in the same folder
+```text title="What you see"
+Org template text rejected (template 'Contoso'): 1 problem(s) would make PSAppDeployToolkit fail every deployment that uses this template.
+  - CompanyName: 'Contoso $Team' contains '$Team', which PSAppDeployToolkit expands as a variable or expression - the deployment fails or the text changes.
+...
 ```
 
-A `.psm1`-only folder, or a `Save-Module` layout with a version subfolder (`1.0.0\`), fails every
-deployment on PSADT 4.2 (exit code 60001). The toolkit therefore checks the layout and the
-`RequiredModules` entry: the wizard warns when you enable the module (with the same text the error
-gives, and also when the entry pins a version or requires one above 4.1.0), and applying the template
-**stops** with a `W32T.OrgExtensionInvalid` error that names the fix. If the manifest declares
-`RequiredModules` for `PSAppDeployToolkit`, the
-PSADT bundled in each project must satisfy it, and win32-toolkit builds 4.1.x and 4.2.x projects side
-by side. So declare a minimum of `ModuleVersion = '4.1.0'` or leave the version out. Don't use
-`RequiredVersion` (an exact pin) or `MaximumVersion` (an upper bound): they fail every deployment of a
-project that bundles a different PSADT version. Applying the template stops with
-`W32T.OrgExtensionInvalid`, before it changes the project, when the bundled PSADT does not satisfy the
-entry or when the entry is not valid for Windows PowerShell 5.1 (for example a prerelease version such
-as `4.2.0-rc2`).
+To fix it, choose **Org templates** > **Edit a template**. Correct each value it names.
 
-## Intune publish defaults
+!!! note "Curly quotes are not checked"
+    Curly double quotes, such as “ and ”, can cut the text on the device. The toolkit does not check them yet, so type
+    straight quotes (`"`) instead.
 
-The template can set the Intune install experience and metadata for every app it publishes:
+## View, edit, copy or delete a template
 
-| Setting | Default | Notes |
+=== "Menu"
+
+    Choose **Org templates**, then an action, then the template at **Choose a template**.
+
+    | Action | What it does |
+    |---|---|
+    | **View a template's settings** | Shows the main settings. |
+    | **Edit a template** | Opens the wizard with your current values. |
+    | **Duplicate a template** | Asks for a new name, then copies the file and the template's folder. |
+    | **Delete a template** | Asks `Delete template 'Contoso'?` (the default is No), then deletes it. |
+
+    In the edit wizard, <kbd>Enter</kbd> keeps the current value. Type `-` to clear an optional value, for example at
+    `Intune tenant (Enter = keep, '-' = unpinned)`.
+
+=== "Command line"
+
+    There is no edit command. With two or more templates, `Invoke-Win32Toolkit` without `-TemplateName` shows a
+    numbered list. Type the number of `[Edit existing template]`, then the number of the template.
+
+    After the wizard saves, the command continues and asks which app to package. To stop there, press
+    <kbd>Ctrl</kbd>+<kbd>C</kbd>.
+
+    For every option, see [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md).
+
+!!! warning "Edits reach new projects only"
+    Changes to an org template reach new projects only. Re-create a project to apply them.
+
+To [re-create](glossary.md#re-create) a project is to make it again from the start. See
+[Re-create a project](projects.md#re-create-a-project). Also know these points:
+
+- `Invoke-Win32Toolkit -NewTemplate` with an existing name does not edit the template. It starts from the built-in
+  defaults and overwrites the file. You must enter the tenant and every other value again.
+- A new name in the edit wizard saves a new file and keeps the old one. New projects go to a new folder. There, new
+  versions do not find the [installer technology](packaging.md#installer-technology) of earlier versions.
+- A copy keeps the tenant of the original. Change it before you publish.
+- Deleting a template also deletes its folder with your logo and scripts. Projects and packages stay.
+
+## When the toolkit asks to update a template
+
+A template from an older toolkit lacks the newest questions. When the toolkit loads it, it asks:
+
+```text title="What you see"
+  Template 'Contoso' uses schema v3.0, current is v4.0.
+  New options are available. Would you like to update the template now?
+  Update template? (y/n) [y]:
+```
+
+The schema is the version of the template file format.
+
+- Press <kbd>Enter</kbd> or answer `y` (the default). The wizard opens with your values filled in. Answer the new
+  questions.
+- Answer `n` to use the defaults for the new questions in this run only. The file does not change, so the toolkit asks
+  again next time.
+
+A script cannot answer, so the toolkit takes the `n` path and prints a warning.
+
+## Work for several customers
+
+Create one org template per customer. Each one has its own tenant and its own folders. So the same app can exist for
+several customers side by side, for example `Projects\Contoso\Git_x64_2.53.0` and `Projects\Fabrikam\Git_x64_2.53.0`.
+Your version will differ.
+
+With two or more templates, the toolkit asks which one to use. In a script, pass `-TemplateName`. Projects of apps that
+are not in winget do not keep the tenant. Read [Work for several customers](intune-connection.md#work-for-several-customers)
+before you publish them.
+
+## All questions and their defaults
+
+Questions with a yes or no answer show `(y/n)`, then the default in brackets.
+
+### Identity questions
+
+| Question | Default |
+|---|---|
+| `Template name` | `Default` |
+| `Company name (shown in dialog subtitles)` | `Your Organisation IT` |
+| `App script author` | `IT Packaging Team` |
+| `Intune tenant (blank = unpinned)` | empty |
+
+### Branding and dialog style
+
+| Question | Default | Note |
 |---|---|---|
-| Minimum Windows release | `1607` | e.g. `22H2`; also shown in the customer documentation |
-| Device restart behavior | `suppress` | `suppress` / `allow` / `force` / `basedOnReturnCode` |
-| Max run time (minutes) | `60` | Keep it above your dialog timeout, and above 30 (the uninstall's limit for an EXE uninstaller); the wizard warns when you enter 30 or less |
-| Description boilerplate | *(none)* | Appended to every app's Intune description |
-| Privacy URL | *(none)* | Published as the app's privacy information URL |
+| `Dialog style - Fluent or Classic` | `Fluent` | Another answer becomes `Fluent`. |
+| `Fluent accent hex e.g. 0xFF0078D7 (blank=default)` | empty | Highlight color: `0xAARRGGBB`, `#RRGGBB` or `RRGGBB`. |
+| `Log path` | `$envWinDir\Logs\Software` | The PSADT log folder on the device. |
+| `Force dialog language e.g. nl / fr-FR (blank=auto-detect)` | empty | Empty: the language of the signed-in user. |
 
-These are stored in the project at configure time and read back when you publish, so
-`Publish-Win32ToolkitIntuneApp` honours them even when run on its own. A project built without a
-template publishes exactly as before.
+### Progress and balloon texts
 
-## Documentation branding
+| Question | Default |
+|---|---|
+| `Progress message - Install`, `- Repair`, `- Uninstall` | `Installation in progress. Please wait...` and similar |
+| `Progress detail - Install`, `- Repair`, `- Uninstall` | `This window will close automatically when the installation is complete.` and similar |
+| `Balloon complete - Install`, `- Repair`, `- Uninstall` | `Installation complete.` and similar (Classic style only) |
 
-`Export-Win32ToolkitDocumentation` picks up your **company name** and an optional **footer line** from
-the template, adding a *"Prepared by &lt;company&gt;"* credit and your footer to the generated customer
-docs. The doc's "Minimum OS" line reflects the template's minimum Windows release, so it always
-matches what you actually published.
+### Dialog questions
 
-## Managing templates
+| Dialog | Question | Default |
+|---|---|---|
+| Install | `Show Welcome dialog on install`, `Allow deferral`, `Persist prompt (user cannot ignore)`, `Block app re-launch during install` | Yes |
+| Install | `Max deferrals` | `3` |
+| Install | `Check disk space`, `Show custom text from strings.psd1` | No |
+| Install | `Auto-close countdown seconds (0=off, max 86400)` | `180` |
+| Uninstall | `Show Welcome dialog on uninstall` | Yes |
+| Uninstall | `Auto-close countdown seconds (0=off, max 86400)` | `60` |
+| Uninstall | `Persist prompt`, `Block app re-launch during uninstall` | No |
+| Progress | `Show Progress dialog` | Yes |
+| Progress | `Override status message (blank = use strings.psd1)`, `Override detail text, Fluent only (blank = use strings.psd1)` | empty |
+| Completion | `Show completion prompt after install` | No |
+| Completion | `Completion message`, `Button label` | `The installation has completed successfully.`, `OK` |
 
-The Templates screen (`Show-Win32Toolkit` → Org templates) lists your templates and offers:
+### Org scripts and extension module
 
-- **Create / Edit** opens the wizard (edit is pre-filled).
-- **View** shows the current settings at a glance.
-- **Duplicate** clones the JSON *and* the whole sidecar folder (hooks, module, assets) under a new
-  name. This is the natural way to spin up `Customer-B` from `Customer-A`.
-- **Delete** removes the template definition and its sidecar folder. It first checks whether the
-  template's segment still holds projects and, if so, warns you and asks for confirmation. But it
-  **never** deletes anything in `Projects\`, `Staging\`, or `IntuneWin\`; only the template itself.
+Section E asks about hook scripts, an extension module and your logo. Its yes or no questions are all No by default. See
+[Add a logo, hook scripts or an extension module](org-template-files.md).
 
-## Under the hood: data-driven config
+### Intune publish defaults
 
-Template settings that map to PSADT's `config.psd1` (company name, dialog style, accent, language,
-log path) are written as a **sparse** `config.psd1` containing only your overrides, plus the two asset
-paths (logo and banner) described under [Branding](#branding-dialog-style-language-logos). PSADT merges
-it over its own signed defaults, so anything you don't set keeps the PSADT default. There's no
-find-and-replace against the full config file, which means template application no longer breaks when
-a PSADT update reshuffles that file.
+| Question | Default | Note |
+|---|---|---|
+| `Minimum Windows release (e.g. 1607, 22H2)` | `1607` | Accepted values are below. |
+| `Device restart behavior (suppress/allow/force/basedOnReturnCode)` | `suppress` | Another answer becomes `suppress`. |
+| `Max run time (minutes)` | `60` | Keep it above 30. |
+| `Description boilerplate appended to every app (blank=none)` | empty | Added to every app description. |
+| `Privacy information URL (blank=none)` | empty | Set on every app. |
+| `Customer-doc footer line (blank=default)` | empty | A line at the end of the customer document (`Documentation.md`). |
 
-The dialog behaviour (welcome, deferral, countdowns, progress and completion) is not code either: it is
-written as data to each project's `SupportFiles\AppConfig.json`, and fixed toolkit blocks in the deploy
-script read it on the device. PSADT's own default dialog calls are removed from the deploy script, so
-only your template's dialogs appear.
+The minimum Windows release takes `1607`, `1703`, `1709`, `1803`, `1809`, `1903`, `1909`, `2004`, `20H2`, `21H1`,
+`21H2`, `22H2`, `Windows11_21H2`, `Windows11_22H2`, `Windows11_23H2` or `Windows11_24H2`. When the toolkit creates a
+project, it changes any other value to `1607` and shows a warning. For MSIX and APPX packages, publishing raises the
+minimum Windows release to at least `1809`.
 
-## Schema upgrades
+Each new project gets a copy of these values. To change them later, change the template and re-create the project, or
+change the app in the Intune admin center.
 
-Each template records a schema version. Loading a template from an older toolkit offers an upgrade:
-accept and the wizard reopens **pre-filled with your values** so you only answer the new prompts;
-decline and the toolkit fills the missing fields with safe defaults for that run (your JSON keeps
-working, and the offer repeats next time).
+## What you have now
 
-## Advanced: the PSADT policy layer
+- `C:\Win32Apps\Templates\Contoso.json`: your org template, named as you typed the name.
+- `C:\Win32Apps\Templates\Contoso\`: only if you turned on files in section E. Put your files there.
+- No project yet. Your first project goes to `C:\Win32Apps\Projects\Contoso\`.
+- Nothing in Intune.
 
-Independently of templates, PSADT reads machine policy from
-`HKLM\SOFTWARE\Policies\PSAppDeployToolkit\Config` on the device and **overrides** the packaged
-`config.psd1` with any values it finds there. You can deploy this key by GPO or an Intune settings
-policy to force a setting across the whole estate (for example, silencing balloon notifications
-everywhere) without repackaging anything.
+## If something goes wrong
 
-PSADT 4.2 adds **version-specific** keys, such as `HKLM\SOFTWARE\Policies\PSAppDeployToolkit\4.2\Config`.
-Precedence on a 4.2 package, lowest to highest: the packaged `config.psd1`, then the shared key, then
-each versioned key up to the package's PSADT version. A 4.1 package reads only the shared key.
+| Message starts with | What to do |
+|---|---|
+| `Org template text rejected` | Choose **Org templates** > **Edit a template** and fix each value it lists. |
+| `Update template? (y/n)` | Not an error. Press <kbd>Enter</kbd> to add the new questions. |
+| `W32T.OrgTemplateChoiceNeeded` (in a script) | The script cannot ask which template to use. Pass `-TemplateName` with the name of an existing template. |
+| `A maximum run time of` | Edit the template and enter `60` or more. Re-create the projects you made with the low value. |
+| `Connected to tenant` | If it names a domain, enter the tenant ID in the template and re-create the project. |
 
-Things to know:
+For more messages, see [Org templates in Troubleshooting](troubleshooting.md#org-templates).
 
-- It applies to `config.psd1` values only. Dialog **strings** are deliberately excluded.
-- It **silently wins over your template values.** If a device behaves differently from what a
-  template specifies, check for this policy key first; it's the usual culprit.
-- **Put Base64 image values (logo, banner) only in the `4.2` key.** win32-toolkit builds 4.1.x and
-  4.2.x packages side by side, and PSADT 4.1 treats a Base64 value in the shared key as a file path
-  that does not exist and throws.
+## Next step
 
-## Next steps
+Your org template is ready. Now package your first app with it.
 
-- Run the full pipeline with your template: [Packaging an app](packaging.md)
-- Command details: [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md)
+[Next: package an app from winget](packaging.md){ .md-button .md-button--primary }

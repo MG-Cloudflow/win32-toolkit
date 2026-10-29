@@ -1,16 +1,20 @@
-/* win32-toolkit — modern theme layer over Material.
-   Custom brand palette (primary: 'custom' in mkdocs.yml resolves to these variables). */
+/* win32-toolkit — theme layer over Zensical's theme (the 'modern' variant of the Material theme family).
+   Custom brand palette (primary: 'custom' in mkdocs.yml resolves to these variables).
+   The blues come from the logo (docs/assets/win32-toolkit-*.svg): #3370EF is its "toolkit" word,
+   #0751D5 / #137AFF / #46B1FF its gradients, #61B4FF the "toolkit" word of the dark logo. */
 
 :root {
-  --md-primary-fg-color:        #4f46e5;  /* indigo-600 */
-  --md-primary-fg-color--light: #6366f1;
-  --md-primary-fg-color--dark:  #3730a3;
-  --md-accent-fg-color:         #06b6d4;  /* cyan-500 */
+  --md-primary-fg-color:        #3370ef;
+  --md-primary-fg-color--light: #46b1ff;
+  --md-primary-fg-color--dark:  #0751d5;
+  --md-accent-fg-color:         #137aff;
+  --tk-brand-2:                 #137aff;  /* second gradient stop (was violet) */
 }
 
 [data-md-color-scheme="slate"] {
-  --md-primary-fg-color:        #6366f1;
-  --md-accent-fg-color:         #22d3ee;
+  --md-primary-fg-color:        #61b4ff;
+  --md-accent-fg-color:         #46b1ff;
+  --tk-brand-2:                 #46b1ff;
   --md-default-bg-color:        #0f1117;
   --md-code-bg-color:           #171923;
 }
@@ -29,12 +33,18 @@
   letter-spacing: -0.01em;
 }
 
-/* Gradient header bar */
-.md-header {
-  background: linear-gradient(90deg, var(--md-primary-fg-color--dark, #3730a3) 0%, var(--md-primary-fg-color) 55%, #7c3aed 100%);
+/* Header: Zensical's own (light, or dark in the dark scheme), so its dark or light text stays readable.
+   Do not paint it with a dark background: the modern variant keeps dark text on it. A thin line in the
+   logo blues keeps the brand colour at the top of every page. */
+.md-header::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: linear-gradient(90deg, #0751d5 0%, #3370ef 50%, #46b1ff 100%);
 }
-.md-tabs {
-  background: linear-gradient(90deg, var(--md-primary-fg-color--dark, #3730a3) 0%, var(--md-primary-fg-color) 55%, #7c3aed 100%);
+.md-header__button.md-logo img {
+  height: 1.6rem;
 }
 
 /* Rounded, elevated surfaces */
@@ -47,7 +57,7 @@
 .md-typeset .grid.cards > ol > li:hover,
 .md-typeset .grid.cards > ul > li:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(79, 70, 229, .12);
+  box-shadow: 0 8px 24px rgba(51, 112, 239, .12);
   border-color: var(--md-accent-fg-color);
 }
 
@@ -68,11 +78,12 @@
   font-weight: 600;
 }
 .md-typeset .md-button--primary {
-  background: linear-gradient(90deg, var(--md-primary-fg-color) 0%, #7c3aed 100%);
+  background: linear-gradient(90deg, var(--md-primary-fg-color--dark) 0%, var(--tk-brand-2) 100%);
   border: none;
+  color: #fff;
 }
 .md-typeset .md-button--primary:hover {
-  box-shadow: 0 6px 20px rgba(79, 70, 229, .35);
+  box-shadow: 0 6px 20px rgba(51, 112, 239, .35);
 }
 
 /* ── Home hero ────────────────────────────────────────────────────────────────
@@ -99,7 +110,7 @@
   margin: 0 0 0.7rem;
   /* Gradient wordmark, with a plain-colour fallback for anything that can't clip it. */
   color: var(--md-primary-fg-color);
-  background: linear-gradient(92deg, var(--md-primary-fg-color) 10%, #7c3aed 55%, var(--md-accent-fg-color) 100%);
+  background: linear-gradient(92deg, var(--md-primary-fg-color--dark) 10%, var(--md-primary-fg-color) 55%, var(--tk-brand-2) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -114,10 +125,41 @@
 }
 .md-typeset .tk-hero .md-button { margin: 0.2rem 0.25rem; }
 
+/* Hero logo. Material shows only the #only-light image in the light scheme and only the #only-dark one
+   in the dark scheme. The rules below only ever HIDE an image, so they never undo that: wide screens
+   hide the stacked light logo, narrow screens hide the wide light logo (the dark logo has no stacked
+   version and is shown at every width). */
+.md-typeset .tk-hero .tk-logo {
+  width: 100%;
+  max-width: 22rem;
+  height: auto;
+  margin-bottom: 1.2rem;
+}
+@media screen and (min-width: 45em) {
+  .md-typeset .tk-hero .tk-logo-stacked { display: none; }
+}
+
+/* The page's h1 repeats the name that the logo already shows: keep it for screen readers and search,
+   hide it on screen. Only the home page has an h1 directly followed by the hero. */
+.md-typeset h1:has(+ .tk-hero) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 @media screen and (max-width: 44.9em) {
   .md-typeset .tk-hero h1,
   .md-typeset .tk-hero h2 { font-size: 1.6rem; }
   .tk-hero { padding: 1.6rem 0.8rem 1.4rem; }
+  .md-typeset .tk-hero .tk-logo { max-width: 13rem; }
+  .md-typeset .tk-hero .tk-logo-stacked { max-width: 9rem; }
+  .md-typeset .tk-hero .tk-logo-wide { display: none; }
 }
 
 /* ── Mermaid diagrams ─────────────────────────────────────────────────────────

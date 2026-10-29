@@ -1,115 +1,116 @@
 function Publish-Win32ToolkitIntuneApp {
 <#
 .SYNOPSIS
-    Uploads a packaged Win32 app (.intunewin) to Microsoft Intune via the Graph API.
+    Uploads a .intunewin package to Intune as a new Win32 app.
 .DESCRIPTION
-    Authenticates to Microsoft Graph with the DeviceManagementApps.ReadWrite.All scope,
-    then executes the full Win32 Lob App upload sequence:
+    Publish-Win32ToolkitIntuneApp uploads a .intunewin package to Microsoft Intune as a new Win32
+    app. It takes the app name, version and settings from the project. Every publish creates a
+    new app and never changes an older one.
 
-    1. Reads app metadata (name, publisher, version, description, URL) from AppConfig.json (winget YAML fallback).
-    2. Builds a detection rule (install-tattoo version rule preferred; else from the NEWEST
-       InstallationChanges_*.json capture in Documentation\) BEFORE signing in to Graph. No rule at
-       all stops the publish with a W32T.NoDetectionRule error unless -AllowNoDetectionRule is given.
-       A project that bundles a prerelease PSAppDeployToolkit (e.g. 4.2.0-rc2) only gets a warning.
-    3. Extracts encryption metadata from the .intunewin archive (metadata.xml).
-    4. Creates the app shell in Intune.
-    5. Registers a content version and file entry.
-    6. Waits for the Azure Storage SAS URI.
-    7. Uploads the encrypted content using the Azure Block Blob API (6 MB chunks).
-    8. Commits the file and waits for confirmation.
-    9. Links the content version to the app.
+    Use it for a package that you built before. Export-Win32ToolkitIntuneWin -PublishIntune builds
+    and publishes in one step, so the package always matches the project. In the menu: Work with
+    an existing project > Publish to Intune. The menu builds the package again before it publishes.
 
-    Requires the Microsoft.Graph.Authentication module (installed automatically on prompt).
+    The command checks the project and shows warnings before it signs in. These warnings appear
+    once per action: Export-Win32ToolkitIntuneWin -PublishIntune -PublishUpdate prints them once.
+    A warning also comes on every publish when the maximum run time
+    (IntuneDefaults.MaxRuntimeMinutes in the org template) is 30 minutes or less. Keep it above 30
+    minutes: the uninstall stops an EXE uninstaller after 30 minutes.
 
-    A project marked not configured (its build stopped after the project folder was created: a refused
-    configuration, a failed download, no installer found) is refused with W32T.ProjectNotConfigured before
-    anything is read, warned about or signed in to, with no override: re-create it.
+    If you are not signed in, it signs you in and saves the sign-in on disk. Run
+    Connect-Win32ToolkitIntune first to keep the sign-in in this PowerShell window only. If the
+    project has the tenant ID of its org template, the command refuses any other tenant before it
+    creates the app. Without a tenant ID, it only warns.
 
-    Before the -WhatIf gate (so a dry run shows them too), Publish warns, and never stops, when the
-    latest install/uninstall test of the project failed or gave no verdict, the latest Update test
-    failed (naming the failed assertions), an Update test saw a
-    technology switch (the vendor's other installer stayed registered next to this package), or the
-    identity checks found something, for example winget also ships another installer technology for
-    this app that no Update test has covered. It also warns UNSAFE-CLEANUP when the project's
-    uninstall cleanup paths fail the check Export enforces: a package exported before that check still
-    carries them, so re-export packages built before this check, then publish them. The warnings are
-    shown once per action: Export-Win32ToolkitIntuneWin -PublishIntune -PublishUpdate prints them once.
-    Before the -WhatIf gate too, and on every publish (so twice for
-    Export-Win32ToolkitIntuneWin -PublishIntune -PublishUpdate, like the prerelease warning), it also
-    warns when the app's maximum run time (IntuneDefaults.MaxRuntimeMinutes from the org template) is
-    30 minutes or less: the uninstall stops an EXE uninstaller at 30 minutes (exit code 69113), and a
-    lower Intune limit stops the deployment first.
+    In the project, the command writes only Intune\Publications.json, the record of the install
+    app. With -AsUpdate, it writes SupportFiles\UpdateRequirement.ps1 instead. win32-toolkit never
+    assigns an app. You assign it in the Intune admin center.
 
-    Prior installs (Set-Win32ToolkitPriorInstall): a project with prior-install rules is published only when the
-    package carries exactly the rules Export checked - its Staging copy must exist and hold the same rules, own
-    identity and version (else W32T.PackageNotReady: re-export), checked before the -WhatIf gate. The app's return
-    codes add 69101, 69102 and 69105-69112 as failed (1618 stays retry; 69103 is only logged); a -WhatIf dry run of
-    a project with Block or Enforce rules lists them. For Enforce rules,
-    Publish warns before the -WhatIf gate to assign the app to a pilot group first and names the kill switch
-    (RemovePriorDisabled), and after the sign-in it warns about Required apps of the tenant that detect the prior
-    install, and about an earlier version of the app that is still assigned Required.
+    If an error stops the command after the line "App created", an incomplete app stays in
+    Intune. Delete it in the Intune admin center, fix the cause and publish again.
 
-    Command lines (from Get-Win32ToolkitIntuneCommandLine, the single source; the app runs as SYSTEM):
-
-        Install   : Invoke-AppDeployToolkit.exe -DeploymentType Install
-        Uninstall : Invoke-AppDeployToolkit.exe -DeploymentType Uninstall
-
-    The package is started through PSADT's launcher, not through 'powershell.exe -File'. The Intune
-    Management Extension is a 32-bit process, so a bare 'powershell.exe' resolves to the 32-bit
-    (SysWOW64) Windows PowerShell on 64-bit devices: PSADT 4.2 then refuses to run (exit 60008), and
-    PSADT 4.1 runs 32-bit and writes the install tattoo under HKLM\SOFTWARE\WOW6432Node, where the
-    64-bit tattoo detection rule never finds it. Invoke-AppDeployToolkit.exe is AnyCPU and always starts
-    the 64-bit Windows PowerShell. No -DeployMode is passed: PSADT chooses the mode itself.
-
-    Apps published by win32-toolkit 1.1.6 or older keep their old 'powershell.exe -File' command line:
-    this command always creates a NEW app and never edits an existing one. Republish those apps (and
-    retire the old ones), or edit their install and uninstall command lines in the Intune portal to the
-    two lines above. The update requirement (-AsUpdate) also accepts the WOW6432Node tattoo those
-    32-bit installs left behind.
-
-    With -AsUpdate the same .intunewin is published as a SECOND app of the same version whose
-    requirement rule (a PowerShell presence check, built by Get-Win32ToolkitRequirementRule) makes it
-    applicable only to devices that already have the app — the classic Intune "install app + update
-    app" pattern. Detection stays the version-aware tattoo rule, so the update installs on machines
-    with an older version and is detected once they reach this version. (Supersedence is separate.)
+    It stops with an error whose ID starts with W32T. when it cannot publish safely, before it
+    signs in. W32T.ProjectNotConfigured means that the project build stopped halfway: re-create
+    the project. W32T.PackageNotReady means that the package does not match the prior-install
+    rules of the project: build it again. W32T.NoDetectionRule means that no detection rule can
+    be built.
 .PARAMETER IntuneWinPath
-    Full path to the .intunewin file produced by Export-Win32ToolkitIntuneWin.
+    The package to upload: <base folder>\IntuneWin\<template>\<project>.intunewin. It must be
+    built from the project in -ProjectPath. Apart from prior-install rules, the command does not
+    check this. If the command says that Detection.xml is missing, the file is not a valid package.
 .PARAMETER ProjectPath
-    Full path to the raw PSADT project folder. Used for YAML metadata and detection rules.
+    The project that the package was built from: <base folder>\Projects\<template>\<project>.
+    Never give the Staging copy. It has no install capture (the record of what the installer
+    changed) and no test results.
 .PARAMETER AsUpdate
-    Publish the update variant: append -UpdateNameSuffix to the display name and attach the
-    "app already installed" requirement rule. Fails fast if no requirement rule can be built.
+    Publishes the update app: a second app of the same version, only for devices that already
+    have the app. Its name ends with " (Update)". The command stops if the project gives no sign
+    that the app is installed. Such a sign is the install tattoo (a registry value that the
+    package writes), the MSI UpgradeCode or the app name.
 .PARAMETER UpdateNameSuffix
-    Display-name suffix for the update app (default ' (Update)').
+    The text added to the name of the update app. Default: " (Update)", with a space first.
+    Command line only: the menu and Export-Win32ToolkitIntuneWin always use the default.
 .PARAMETER TimeoutSeconds
-    How long to wait for each of the two ASYNCHRONOUS Intune steps — the Azure Storage SAS URI (step 6)
-    and the file commit (step 8) — before giving up. Default 300 s.
-
-    Why 300 and not the old 60: both waits used to be a fixed 20 x 3 s loop, i.e. a hard 60-second
-    ceiling that could not be raised. Intune's commit does the server-side decrypt/validate of the whole
-    package, so it scales with package size; a 200 MB+ .intunewin (normal for a PSADT project with a
-    bundled installer) regularly needs more than a minute, and the timeout fired AFTER the blob had
-    already been uploaded — throwing away a publish that would have succeeded. 300 s covers the observed
-    worst case with headroom while still failing in a reasonable time when the tenant is genuinely stuck.
-
-    Polling backs off exponentially (2 s, doubling, capped at 15 s), so a slow tenant is polled patiently
-    rather than hammered.
+    How many seconds to wait for Intune at two points of the upload: for the upload address, and
+    for the check of the uploaded file. Default: 300 (from 5 to 7200). Raise it, for example to
+    900, for a very large package or a slow tenant. Command line only: the menu does not offer
+    this.
 .PARAMETER AllowNoDetectionRule
-    Publish even when no detection rule can be built (no install tattoo and no usable install capture).
-    The app is created with an empty detection-rule list and you must add a rule in the Intune portal
-    before assigning it - Intune cannot tell whether such an app installed. Meant for apps a capture
-    cannot describe (per-user installs, some MSIX packages). Without it the publish stops before any
-    Graph call with a W32T.NoDetectionRule error.
+    Publishes the app even if no detection rule can be built: the project has no install tattoo
+    and no usable install capture. Add a detection rule in the Intune admin center before you
+    assign the app. Use it only for per-user apps and some MSIX packages. Command line only: the
+    menu does not offer this.
 .EXAMPLE
-    Publish-Win32ToolkitIntuneApp `
-        -IntuneWinPath 'C:\Win32Apps\IntuneWin\Git_x64_2.53.0.intunewin' `
-        -ProjectPath   'C:\Win32Apps\Projects\Git_x64_2.53.0'
+    $file = 'C:\Win32Apps\IntuneWin\Contoso\Git_x64_2.53.0.intunewin'   # your package
+    $project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'           # its project folder
+    Publish-Win32ToolkitIntuneApp -IntuneWinPath $file -ProjectPath $project
+
+    This signs you in if needed and publishes the package as a new install app. At the end, it
+    prints the app ID and a link to the app in the Intune admin center.
 .EXAMPLE
-    # Publish the update app (2nd app, requirement-gated to devices that already have it)
-    Publish-Win32ToolkitIntuneApp -IntuneWinPath $win -ProjectPath $proj -AsUpdate
+    $file = 'C:\Win32Apps\IntuneWin\Contoso\Git_x64_2.53.0.intunewin'   # your package
+    $project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'           # its project folder
+    Publish-Win32ToolkitIntuneApp -IntuneWinPath $file -ProjectPath $project -WhatIf
+
+    This runs every check that needs no sign-in and shows the warnings. It does not sign in and
+    changes nothing.
 .EXAMPLE
-    # A per-user app with no detectable footprint: publish it, then add a detection rule in the portal
-    Publish-Win32ToolkitIntuneApp -IntuneWinPath $win -ProjectPath $proj -AllowNoDetectionRule
+    $file = 'C:\Win32Apps\IntuneWin\Contoso\Git_x64_2.53.0.intunewin'   # your package
+    $project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'           # its project folder
+    Publish-Win32ToolkitIntuneApp -IntuneWinPath $file -ProjectPath $project -AsUpdate
+
+    This publishes the update app, a second app whose name ends with " (Update)". Intune installs
+    it only on devices that already have the app.
+.EXAMPLE
+    $file = 'C:\Win32Apps\IntuneWin\Contoso\Git_x64_2.53.0.intunewin'   # your package
+    $project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'           # its project folder
+    Publish-Win32ToolkitIntuneApp -IntuneWinPath $file -ProjectPath $project -AllowNoDetectionRule
+
+    This publishes the app without a detection rule. Add a detection rule in the Intune admin
+    center before you assign the app.
+.EXAMPLE
+    Connect-Win32ToolkitIntune -Template 'Contoso' -Force -ErrorAction Stop
+    $file = 'C:\Win32Apps\IntuneWin\Contoso\Git_x64_2.53.0.intunewin'
+    $project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'
+    $app = Publish-Win32ToolkitIntuneApp -IntuneWinPath $file -ProjectPath $project
+    $app.PortalUri
+
+    This is the form for scripts. It signs in to the Contoso tenant first, so the sign-in stays in
+    this PowerShell window. $app holds the app ID and the link to the app.
+.OUTPUTS
+    An object with AppId, DisplayName, IsUpdateApp and PortalUri.
+    PortalUri is the link to the app in the Intune admin center.
+    With -WhatIf, or when an error stops the command, it returns nothing.
+.NOTES
+    Needs: the Microsoft.Graph.Authentication module and an account that may create apps in
+    Intune. In a script, run Connect-Win32ToolkitIntune -Force first to install the module. Time:
+    usually a few minutes, longer for big packages.
+.LINK
+    https://win32toolkit.com/reference/Publish-Win32ToolkitIntuneApp/
+.LINK
+    https://win32toolkit.com/publishing/
+.LINK
+    https://win32toolkit.com/intune-connection/
 #>
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType([pscustomobject])]   # { AppId; DisplayName; IsUpdateApp; PortalUri } — see the Summary block

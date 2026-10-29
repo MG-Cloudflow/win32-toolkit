@@ -1,283 +1,327 @@
 ---
-description: "Build a validated .intunewin package from your PSADT v4 project with IntuneWinAppUtil, ready to upload to Microsoft Intune."
+description: "Create a project for an app from winget, understand the install capture, and choose the installer technology on purpose."
 ---
 
-# Packaging a project into a `.intunewin`
+# Package an app from winget
 
-[Export-Win32ToolkitIntuneWin](reference/Export-Win32ToolkitIntuneWin.md) compiles a finished PSADT project into the `.intunewin` file that Intune's Win32 app model requires. It never touches your raw project: everything happens on a disposable **Staging** copy, and the output lands in its own **IntuneWin** tier.
+In this step, win32-toolkit builds a [project](glossary.md#project): the folder with the installer, the
+scripts and the settings for one app version. It gets the app from [winget](glossary.md#winget), the
+Windows Package Manager. The toolkit also installs the app once on a clean copy of Windows, to learn how to remove and
+detect it.
 
-To package a project:
+## Before you start
 
-```powershell
-# Interactive: pick a project from a numbered list
-Export-Win32ToolkitIntuneWin
+Step 3 of 7.
 
-# Direct: point at the raw project folder
-Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'
+- You installed the toolkit in [step 1](install.md). In [step 2](org-templates.md) you created an [org template](glossary.md#org-template): your saved settings for one customer. This guide uses the org template
+  `Contoso`.
+- winget works on your PC. It comes with the App Installer app from the Microsoft Store.
+- [Windows Sandbox](glossary.md#windows-sandbox) is turned on. It is a clean, temporary copy of Windows
+  where the toolkit tests apps. See [Turn on Windows Sandbox](install.md#turn-on-windows-sandbox). A ready Hyper-V test
+  virtual machine (VM) also works. See [Set up the Hyper-V test VM](hyperv-vm.md).
+- Your PC can download from the internet. The toolkit uses winget, GitHub and, the first time, the PowerShell Gallery.
+- Time: 2 to 5 minutes, then usually 5 to 20 minutes of waiting for the install capture.
+
+## Run the wizard
+
+The example app is Git for Windows. Its [winget ID](glossary.md#winget-id) is `Git.Git`: the exact,
+unique name of the app in winget. The [installer technology](glossary.md#installer-technology) is how
+the vendor built the setup program, for example as an MSI or as an EXE. Some apps ship more than one.
+
+=== "Menu"
+
+    Start the menu ([`Show-Win32Toolkit`](reference/Show-Win32Toolkit.md)) and answer the questions of the wizard.
+
+    1. In the main menu, choose **Package an app from winget**.
+    2. At **Search winget for**, type `git` and press <kbd>Enter</kbd>.
+    3. At **Select the application**, choose **Git (Git.Git)**.
+    4. If the wizard asks **Target architecture**, choose `x64`.
+    5. At **Choose an org template**, choose `Contoso`. Some apps then ask more questions: see after this list.
+    6. At **Does this app need another app installed FIRST**, answer `n`. (The default is No.)
+    7. At **After building, also…**, tick nothing and press <kbd>Enter</kbd>.
+    8. Read the **Review** panel. Check the app, the architecture and the template.
+        <!-- SCREENSHOT: The winget wizard Review panel for Git (Git.Git), x64, org template Contoso, right before the Build this now? question -->
+    9. At **Build this now?**, type `y` and press <kbd>Enter</kbd>. (The default is No.)
+
+    The search never shows Microsoft Store results. **Target architecture** appears only when there is a choice. Only
+    some apps get these extra questions after the org template:
+
+    - A question about the installer technology, when winget ships more than one. Read
+      [Installer technology](#installer-technology) before you answer.
+    - **Also capture the other installer technologies…?** Answer `n` for now (the default is No). This is for
+      [devices that already have the app](prior-installs.md).
+
+    Dependencies are explained in [Apps that need another app first](dependencies.md). **After building, also…**
+    offers a test, the package and the publish. In this guide you do each of these steps yourself.
+
+    !!! warning "The menu replaces existing projects"
+
+        If a project of the same app, architecture and version exists, the menu replaces it without asking.
+        Re-creating a project deletes its folder. Copy your own code out first.
+
+=== "Command line"
+
+    This command builds the same project for Git.
+
+    ```powershell
+    Invoke-Win32Toolkit -Id 'Git.Git' -Architecture x64 -TemplateName 'Contoso'
+    ```
+
+    [`Invoke-Win32Toolkit`](reference/Invoke-Win32Toolkit.md) runs the same steps as the wizard. It chooses the
+    installer technology itself, as described in [How the toolkit chooses](#how-the-toolkit-chooses). It does not
+    test, build the package or publish.
+
+    If the project exists already, the command asks `Do you want to overwrite it? (y/n)`. Any answer except `y`
+    stops the command and keeps the old project. The command can also ask
+    `Install PSAppDeployToolkit <version> now? (y/n)` when a newer version exists. In a script, add `-Force`: it
+    replaces the project and skips both questions.
+
+    For every option, see [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md).
+
+## What you see while it runs
+
+The build runs on its own. These are the most useful lines in the console.
+
+```text title="What you see"
+Installer technology: winget's choice
+✓ Downloaded: <installer file>
+✓ Org template 'Contoso' applied to project
+✓ PSADT project configured (data-driven)!
+Generating targeted installation documentation (Sandbox)...
+✓ Windows Sandbox launched successfully!
+Waiting for this run's capture: InstallationChanges_<time>.json
+...
+✓ Documentation processing completed successfully!
 ```
 
-If you started from [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md) with `-PackageIntune`, this step runs automatically at the end of the pipeline.
+The words `(data-driven)` mean that the app settings are in a data file, not in the script.
 
-## What happens, step by step
+After the download, the [install capture](glossary.md#install-capture) starts. It installs the app on a
+clean copy of Windows and records what changes. The console calls it "targeted documentation".
 
-```mermaid
-flowchart LR
-    A[Projects\ raw project<br/>never modified] -->|copy, excluding<br/>non-shipping folders| B[Staging\ lean copy]
-    B -->|optimizer safety net| B
-    B -->|IntuneWinAppUtil.exe| C[IntuneWin\ .intunewin]
-    C -->|optional| D[Publish to Intune]
+A Windows Sandbox window opens, with a PowerShell window that shows each step. Do not close Windows Sandbox: it closes
+itself after a countdown of up to 30 seconds.
+
+<!-- SCREENSHOT: Windows Sandbox window during a capture run, showing the targeted documentation script logging its pre/post snapshots -->
+
+On the Hyper-V test VM, no window opens. The console shows `Running documentation capture inside the Hyper-V VM...`
+instead.
+
+At the end, the menu shows a green **Done** panel or a red **Finished with problems** panel. The red panel lists one
+line for each problem. A red **Something went wrong** panel means that an error stopped the build. In scripts, see
+[Check the result](automation.md#check-the-result).
+
+## The install capture
+
+The install capture installs the app in a clean [test machine](glossary.md#test-machine) and compares
+the machine before and after. The test machine is Windows Sandbox, or the Hyper-V test VM if you
+[made it your default](hyperv-vm.md#make-the-test-vm-your-default) and it is ready. Because the test machine starts
+clean, every change comes from this installer.
+
+The capture records new files, registry keys, services and entries in the Windows list of installed apps. From these
+changes, the toolkit fills in your project:
+
+- The uninstall of an EXE app. MSI and MSIX packages uninstall without the capture.
+- The [processes to close](glossary.md#processes-to-close): the programs of the app that must not run
+  during an install or uninstall.
+- The package's own identity, so that rules about other installs never remove your own app.
+- The app icon, when winget has none, and a backup way for Intune to detect the app.
+- `SupportFiles\RequirementScript.ps1`, a reference script that nothing runs. Do not add it to an app in Intune as a
+  requirement, or new devices never get the app.
+
+An EXE needs [silent switches](glossary.md#silent-switches): options that install it with no window.
+The toolkit takes them from winget. If winget has none, the toolkit guesses `/S`. This guess is right for setups made
+with NSIS, a common setup tool, but wrong for others, such as Inno Setup.
+
+The install capture always runs. It usually takes 5 to 20 minutes, and the toolkit stops waiting after 30 minutes. To
+run it again, for example after you change the switches, see
+[Run the install capture again](projects.md#run-the-install-capture-again).
+
+## What you have now
+
+When the build ends, the menu shows the green **Done** panel.
+
+<!-- SCREENSHOT: The green Done panel after the winget build of Git, telling you to use Browse projects to find it -->
+
+If you kept the default folder in step 1, your project folder is `C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0\`. Your
+version number will differ: the toolkit packages the version that winget lists today.
+
+```text title="Your project"
+C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0\
+    Invoke-AppDeployToolkit.ps1     the deploy script
+    Files\                          the installer and the winget manifest
+    SupportFiles\AppConfig.json     the settings of the app
+    Documentation\                  the results of the install capture and the checks
+    Sandbox\                        test files and logs
+    PSAppDeployToolkit\             a copy of PSADT for this project
 ```
 
-1. **Resolve the project.** Without `-ProjectPath`, a numbered picker scans `BasePath\Projects\`. With `-ProjectPath` but no `-BasePath`, the base folder is derived from the path. The project must sit in the `<BasePath>\Projects\<Template>\<ProjectName>` layout, otherwise the command stops and asks you to pass `-BasePath` explicitly rather than creating `Staging\` and `IntuneWin\` somewhere unexpected. Then the deploy script must pass [the package check](#the-package-check), before anything is downloaded or copied.
-2. **Get the packaging tool.** See [IntuneWinAppUtil.exe](#intunewinapputilexe-auto-download-and-verification) below.
-3. **Copy the project to Staging.** Only shipping content is copied (see the next section).
-4. **Run the optimizer** on the Staging copy as a safety net.
-5. **Build the package** with `IntuneWinAppUtil.exe` and rename the output to `<ProjectName>.intunewin`.
-6. **Offer to publish** (see [Publishing straight after packaging](#publishing-straight-after-packaging)).
+The [deploy script](glossary.md#deploy-script) installs and removes the app on devices. It uses
+[PSAppDeployToolkit (PSADT)](glossary.md#psadt), a free PowerShell tool that adds dialogs, logs and
+exit codes around an installer.
 
-## The package check
-
-win32-toolkit refuses to package a deploy script it cannot vouch for. Every problem is collected and reported at once, each with its fix, in one `W32T.PackageNotReady` error; nothing is packaged or published.
-
-A project whose build stopped after its folder was created (a refused configuration, a failed download, no installer found) is kept in `Projects\` and marked not configured (`Documentation\NotConfigured.json`): packaging and publishing refuse it with `W32T.ProjectNotConfigured` until you package the app again. Finalize and the tests still run on it, and the marker is an ordinary file (an installer under test, or a person, can delete it): re-create such a project instead of finishing it.
-
-| Check | Result when it fails |
-|---|---|
-| `Invoke-AppDeployToolkit.ps1` exists and parses | error |
-| It also parses under Windows PowerShell 5.1, which Intune uses to run it | error |
-| `Invoke-AppDeployToolkit.exe` (the launcher Intune starts) sits next to it | error |
-| It carries the toolkit's AppConfig loader (it was generated by win32-toolkit) | error |
-| Its PSAppDeployToolkit template layout and version are supported (PSADT 4.1.x or 4.2.x) and match the PSADT module bundled in the project | error, starting with `Unsupported PSADT template shape:` |
-| The uninstall cleanup paths stay inside the app's own install folders (the uninstall deletes them as SYSTEM) | error, no override, starting with `Unsafe uninstall cleanup path:`. A `SupportFiles\AppConfig.json` that cannot be read is an error too: Windows PowerShell 5.1 on the device may still read it and delete paths nobody checked |
-| The prior-install rules can be applied: the deploy script has their code, the rules are valid, every Enforce rule is proven for this package (see [Prior installs](#prior-installs-remove-another-installer-technology-before-installing)) | error, starting with `Prior install:`; only the waiver or acknowledgement the line names overrides it |
-| It writes the install tattoo | warning: detection falls back to the install capture |
-| It was generated by win32-toolkit 1.1.6 or older | warning: still packaged as-is (its uninstall does not remove the legacy `WOW6432Node` tattoo, see [Apps published before this version](publishing.md#apps-published-before-this-version)) |
-| The PSAppDeployToolkit bundled in the project is a prerelease (for example `4.2.0-rc2`) | warning: still packaged; rebuild on a stable PSAppDeployToolkit before production. Publishing warns again |
-| Its uninstall is the hardened one (uninstall revision 2: time limit, child processes, NSIS in place, cleanup re-checked on the device) | warning: still packaged; re-create the project to get it |
-
-The same check (without the 5.1 parse, launcher, bundled-module and prerelease rows, the uninstall cleanup-path row and the hardened-uninstall row) also runs before a project is captured and tested by `Invoke-Win32Toolkit`, `New-Win32ToolkitManualApp` and `Complete-Win32ToolkitManualApp`. To package a hand-maintained deploy script that win32-toolkit never generated, pass `-AllowLegacyScript` to `Export-Win32ToolkitIntuneWin` (or `Complete-Win32ToolkitManualApp`): the loader, layout and bundled-module findings then become warnings. Parse errors, a missing launcher and an unsafe uninstall cleanup path still stop the export. `-AllowLegacyScript` is a command-line switch only: the menu does not offer it.
+To find the project later, choose **Browse projects** in the main menu. Every file and folder is explained in
+[Inside a project](settings.md#inside-a-project). Nothing changed in Intune, and there is no package yet. The app was
+installed only in the test machine, not on your PC.
 
 ## Installer technology
 
-Many apps on winget ship more than one installer for the same version: Notepad++, for example, offers a vendor EXE (NSIS) and an MSI. The two register differently in Windows (different uninstall entries, different product codes), so a device that already has one and then receives the other ends up with **two registrations over one folder**. Pick one technology per app and keep it from version to version.
+This section explains how to keep one installer technology for each app. Some toolkit messages link here.
 
-**Families.** win32-toolkit groups winget installer types into families that register the same way:
+### Why it matters
 
-| Family | winget installer types |
-|---|---|
-| MSIX | `msix`, `appx` (and `msstore`, which cannot be packaged) |
-| MSI | `msi`, `wix` |
-| EXE | `burn`, `nullsoft`, `inno`, `exe` |
+Many apps ship one version as two installer technologies. Notepad++, for example, ships a setup EXE made with NSIS and
+an MSI made with WiX. NSIS and WiX are common tools for building setup programs.
 
-When you do not pin a technology, winget picks one by its own order of preference (winget 1.29.280 and later: `msstore`, `msix`, `msi`, `wix`, `burn`, `nullsoft`, `inno`, `exe`, `portable`). That is why winget may hand you the MSI of an app you used to package as an EXE.
+The two register differently in Windows. A device that has one and then gets the other has two registrations. Its
+list of installed apps then shows two entries for one program folder. So choose one technology for each app when you
+package its first version, and keep it from version to version.
 
-**Pinning the technology.** Pass `-InstallerType` to [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md):
+### How the toolkit chooses
 
-```powershell
-# Package the vendor EXE (NSIS) instead of winget's default MSI
-Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -InstallerType nullsoft
+Your own choice always wins. To [pin](glossary.md#pin) a technology means to choose it yourself:
+with `-InstallerType` on the command line, or with your answer in the menu. Without a pin, the toolkit uses the first
+rule that fits.
+
+1. You re-create a version that you published or pinned. The toolkit keeps the technology of that version.
+2. An earlier version of the app in the same org template was published or pinned. The toolkit keeps the technology
+   of the highest one.
+3. Otherwise winget chooses.
+
+Published means that you published the version from this PC. A version that was only built does not count. A version
+that only kept the technology of an earlier version does not count either.
+
+The toolkit prints its decision before the download, in one of these forms.
+
+```text title="The decision before the download"
+Installer technology: wix (kept from Notepad++_x64_8.8.9 (published))
+Installer technology: wix (kept from Notepad++_x64_8.9.8.1 (published, rebuilt))
+Installer technology: wix (requested)
+Installer technology: winget's choice
 ```
 
-The pin covers the whole family: if the version you package does not offer that exact type, win32-toolkit tries the other types of the same family in order (for example `wix`, then `msi`) and warns which one it used. For each type that is not offered, winget prints `No applicable installer found; see logs for more details.` and the next line names the type win32-toolkit tries next. It never falls back to another family.
+`kept from` names the version whose technology the toolkit keeps. `rebuilt` means you re-create the same version.
+`(requested)` means that you chose it. `winget's choice` means that none of the three rules applied.
 
-**Continuity.** Without `-InstallerType`, win32-toolkit looks for an earlier version of the same winget id in the same template folder that was **published** (to the template's tenant when the template has one) or **pinned** with `-InstallerType`, and keeps that version's technology. An earlier version that was only built, never published or pinned, does not count. The run prints the decision before the download, for example `Installer technology: nullsoft (kept from Notepad++_x64_8.8.9 (published))`, or `Installer technology: winget's choice`.
+### Choose it in the menu
 
-**Rebuilding a version.** Re-creating a version that is itself published or pinned (running it again with `-Force`) keeps that version's own technology, ahead of any earlier version: `Installer technology: wix (kept from Notepad++_x64_8.9.8.1 (published, rebuilt))`. The project's `Intune\Publications.json` is kept across the re-creation, so the rebuilt version still anchors later versions; if it cannot be kept (the command warns), republish the rebuilt version. Passing `-InstallerType` of another family still wins, with a warning that devices which already have the version get a second registration.
+After the org template, the wizard checks on GitHub which technologies winget ships for this version. It then shows
+one of these lines or questions.
 
-**In the menu.** When you package an app from the menu (`Show-Win32Toolkit`), the wizard checks which technologies winget ships for the version and asks once when there is more than one you can package. With a published or pinned earlier version it offers `Keep <technology> (recommended)` first; when you rebuild a version that is itself published or pinned, that version is the one kept (`recommended: <project> is published; rebuilding it`). If the version no longer ships the earlier version's technology, the wizard says so before the build and asks once: skip this version (recommended, nothing is built), switch to a technology the version ships (devices that already have the earlier one get a second registration), or keep it anyway (the build then stops with `W32T.InstallerVariantUnavailable`). Technologies win32-toolkit cannot package (zip-wrapped installers, Microsoft Store only) are listed but cannot be chosen.
+| What the wizard shows | What to do |
+|---|---|
+| `Installer technology: winget ships ... nothing to choose.` | Nothing. The app ships one technology. |
+| `Devices that already have the other technology would get two registrations; ...` and the question **Installer technology for Notepad++** | Choose the technology your devices already have. The first entry is winget's default. |
+| The question **Installer technology for Notepad++ in this tenant**, with `Keep ... (recommended: ...)` first | An earlier version is published or pinned. Keep its technology, unless you plan the switch. |
+| `winget does not ship ...` in yellow | The new version dropped your technology. See [When a new version no longer ships it](#when-a-new-version-no-longer-ships-it). |
+| `winget also ships ... it cannot be packaged.` | Nothing. A zip file or a Microsoft Store app cannot be packaged. |
+| `Installer technology: winget's choice (the other technologies could not be checked: ...)` | The check could not reach GitHub. The checks after the download still run. |
 
-**What is recorded.** The project's `SupportFiles\AppConfig.json` gets a `Source` section: the winget id and version, the installer type and family that were packaged, the scope, architecture and locale from the winget manifest, the winget client version, how the technology was chosen (`PinnedBy`: `parameter`, `continuity` or `winget-default`) and, for an MSI, its ProductCode and UpgradeCode. It is data only (the deploy script does not read it) and holds no tenant id or user name.
+When you choose a technology at the question, the toolkit pins it. A **Keep** answer adds no new pin: the earlier
+version still decides.
 
-**When the pinned technology is not offered.** If winget has no installer of the pinned family for the version (for example a vendor dropped its MSI for one release), the command stops with a `W32T.InstallerVariantUnavailable` error and nothing is downloaded. The message lists the types that were tried. You have two options:
+### Pin it on the command line
 
-1. Skip this version and package the next one that ships the technology again. This is the recommended choice when a vendor drops a technology for one release.
-2. Switch technology on purpose with `-InstallerType <other type>`. Devices that already have the earlier technology then get a second registration.
+Add `-InstallerType` to pin the technology. This example pins the WiX MSI of Notepad++.
 
-**When the download fails.** `Invoke-Win32Toolkit` prints which of your options were skipped and stops with `W32T.DownloadFailed`; the project folder is kept for a retry (the menu shows the error in red). Re-run the same command for a transient error, or package an installer you supply with `New-Win32ToolkitManualApp`.
+```powershell
+Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -TemplateName 'Contoso' -InstallerType wix
+```
 
-**Identity checks after the download.** Once the installer is downloaded, win32-toolkit compares it with what winget ships and with the earlier versions in the template folder, prints warnings, and stores the result in `Documentation\IdentityDelta.json` (it never ships). None of them blocks packaging:
+The values are `msi`, `wix`, `nullsoft`, `inno`, `burn`, `exe` and `msix`. The pin covers the whole [installer family](glossary.md#installer-family): the types that register the same way in Windows. If the version
+does not offer the exact type, the toolkit tries the other types of the family. It never changes to another family.
 
-| Code | Meaning | What to do |
+| Family | winget installer types | Can be packaged |
 |---|---|---|
-| `ID-SIBLING-FAMILY` | winget also ships another technology you could package for this version | Keep one technology across your devices; to package the other one, use the `-InstallerType` the message names. To test the switch, run `Test-Win32ToolkitProject -Scenario Update -BaselineInstallerType Both` |
-| `ID-SIBLING-UNTESTABLE` (info) | winget also ships a technology win32-toolkit cannot package or test (zip-wrapped, Microsoft Store only) | Nothing to do |
-| `ID-NO-ANCHOR` | winget chose the technology, the app ships more than one, and no earlier version in this template was published or pinned | Pin it with `-InstallerType` (or choose it in the menu) so later versions keep it |
-| `ID-PROBE-UNAVAILABLE` | The list of technologies could not be read from the winget repository (offline, proxy, rate limit) | If the app ships both an EXE and an MSI, pin one with `-InstallerType` |
-| `ID-FAMILY` | The technology changed compared with the published or pinned earlier version | Rebuild with the `-InstallerType` the message names to keep the earlier technology |
-| `ID-TATTOO` | The detection key (template author, vendor, display name) changed compared with the earlier version | Devices with the earlier version keep it detected under the old key; check the template and app names |
-| `ID-SCOPE` | The winget manifest labels the installer user-scope | Intune installs as SYSTEM; check the install capture in `Documentation\InstallationChanges_*.json` |
-| `ID-PREDECESSOR-AMBIGUOUS` | Several winget ids in the template look like the same product | Check that the named earlier version is the right one |
-| `ID-VARIANT-SUBSTITUTE` (info) | The version did not offer the exact pinned type; another type of the same family was packaged | Nothing to do |
+| MSI | `msi`, `wix` | Yes |
+| EXE | `burn` (EXE bundle), `nullsoft` (NSIS), `inno` (Inno Setup), `exe` | Yes |
+| MSIX | `msix`, `appx`, `msstore` (Microsoft Store) | `msix` and `appx`: Yes. `msstore`: No. |
+| Portable | `portable` | No, because there is no installer. |
 
-**Warnings shown again at Export and Publish.** Packaging the project (`Export-Win32ToolkitIntuneWin`) and publishing it (`Publish-Win32ToolkitIntuneApp`, or **Publish to Intune** in the menu) show these identity checks again, together with what the project's tests found: `INSTALL-FAILED` (the latest [install/uninstall test](testing.md) failed), `INSTALL-INCONCLUSIVE` (the latest install/uninstall test gave no verdict), `UPDATE-FAILED` (the latest [Update test](testing.md#which-installer-technology-the-old-version-uses) from a technology failed), `ID-TECH-SWITCH` (an Update test saw the other technology's install stay registered after this package installed), `ID-SIBLING-UNTESTED` (winget ships another technology you could package, and no Update test from it has passed yet), `ID-SIBLING-UNTESTABLE` (information only, shown in the menu and with `-Verbose`: the other technology cannot be packaged or tested) and, when publishing, `UNSAFE-CLEANUP` (the project's uninstall cleanup paths fail [the package check](#the-package-check), so a package exported before that check deletes folders outside the app's own install folder). They only warn, once per action, and never stop a package or a publish. What each one means and what to do: [Warnings before you publish](publishing.md#warnings-before-you-publish).
+To pin an APPX package, use `msix`. For each missing type, winget prints `No applicable installer found`. This is
+normal: the next line names the type the toolkit tries next.
 
-Keep one technology per app across your devices where you can, and run the [Update test](testing.md#choosing-the-old-version-baseline) from the technology your devices already have. When devices already have the other technology and you switch anyway, a prior-install rule removes it first (next section).
+### When a new version no longer ships it
 
-## Prior installs: remove another installer technology before installing
+Sometimes a vendor drops a technology for one release. If the version does not ship the kept or pinned technology,
+the toolkit downloads nothing and stops. The error ID `W32T.InstallerVariantUnavailable` means that this technology is
+not available. The message lists the types the toolkit tried and gives two options.
 
-Some devices already have the app from **another installer technology**: for example the vendor's NSIS setup of Notepad++, while your package installs the WiX MSI. Installed next to it, the package leaves two registrations over one folder. A **prior-install rule** names that other install exactly, and says what the package does on a device that has it:
+1. Skip this version. Package the next version that ships your technology again. This is the recommended option.
+2. Switch on purpose with `-InstallerType` and another type. Devices that have the old technology then get a second
+   registration.
 
-| Mode | On a device with the prior install |
-|---|---|
-| `Block` | The install **fails** (exit code 69101) until the rule is Enforce. Nothing is removed. |
-| `Enforce` | The package runs that install's **own uninstaller** (NSIS: `/S _?=<its folder>`; Inno Setup: `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`) after the close-apps dialog, checks that it is gone, then installs. |
-| `Report` | The install goes on and nothing is removed. When the prior install is present and the rule is valid, the device gets a `LastSeen` marker (an invalid Report rule is only logged). |
+If you passed `-InstallerType` in this command, the message gives other options. Run the command without
+`-InstallerType`, or package a version that ships your technology.
 
-A rule is exact: the uninstall key under `HKLM\SOFTWARE\[WOW6432Node\]Microsoft\Windows\CurrentVersion\Uninstall`, the registry view, the publisher, the display name (or a template with `{v}` for the version) and a version window. An install that does not match all of it (another publisher, name or an older version) is **left as it is** and the install goes on; a **newer** one fails with 69102; one registered in another folder than the rule names fails with 69105. The rules are data in `SupportFiles\AppConfig.json` (`PriorInstalls`); the deploy script reads them when it runs. All exit codes and the device markers: [Publishing](publishing.md#packages-that-remove-a-prior-install).
+After this error, the project folder of this version stays. **Browse projects** shows it with `(not configured)`. If
+you skip this version, delete that folder. Packaging the version again with the same technology stops with the same
+error.
 
-**How a change reaches devices.** Adding, changing or removing a rule writes only that data, never the deploy script. Package the project again (`Export-Win32ToolkitIntuneWin`) and publish the new `.intunewin`; publishing refuses a package whose rules changed after it was exported. Nothing rewrites an existing deploy script: every project created by this win32-toolkit version already has the prior-install code (it does nothing while there are no rules), and a project created by an earlier version is re-created first (`Invoke-Win32Toolkit -Force` or `New-Win32ToolkitManualApp` over the folder; copy hand-written Install code out first). Re-creating the same version keeps its rules and decisions (**Next versions keep the rules**, below).
+In the menu, the wizard warns you in yellow before the build. It offers **Skip this version** (recommended), **Switch
+to** another technology, or **Keep**. Skip builds nothing, and Keep stops the build.
 
-### From an Update test to an Enforce rule
+### When a test reports a technology switch
 
-1. **See it fail.** Run the Update test from the other technology:
-   `Test-Win32ToolkitProject -ProjectPath <p> -Scenario Update -BaselineInstallerType nullsoft`.
-   When the old install stays registered (`OldArpGone-PostUpdate` fails), the test writes the surviving uninstall entries (never this package's own) to `Documentation\PriorInstallCandidates.json` and prints the next step; Export and Publish name that step too while the candidate is not a rule.
-2. **Declare it, Block first:** `Set-Win32ToolkitPriorInstall -ProjectPath <p> -FromUpdateTest -Mode Block`.
-   The rule's `VersionMin` is the version the test saw. You can also type a rule
-   (`-Mode Block -Key 'Notepad++' -View Native -Publisher 'Notepad++ Team' -DisplayName 'Notepad++ (64-bit x64)' -VersionMin 8.7.9 -VersionMax 8.9.8.1`).
-   Every write shows the rule and what a device does with it, and asks before it writes.
-3. **Switch it to Enforce:** `Set-Win32ToolkitPriorInstall -ProjectPath <p> -Id nsis-x64 -Mode Enforce`. An Enforce rule needs uninstall data (`-UninstallerType nullsoft|inno`, the uninstaller's file name, the install folder as `%ProgramFiles%\<folder>`, the main program); a rule from an Update test already has it.
-4. **Prove it** on the Hyper-V test VM:
-   `Test-Win32ToolkitProject -ProjectPath <p> -Scenario Update -Backend HyperV -TestMode Unattended`
-   (see [the proof run](testing.md#prior-installs-the-proof-run)). The proof covers this exact package: any change to the rules, the deploy script, `Files\` or `SupportFiles\` needs a new run.
-5. **Package and publish to a pilot group first** ([Publishing](publishing.md#packages-that-remove-a-prior-install)).
+In step 4 you can [test an update from an older version](testing.md#test-an-update-from-an-older-version). The console
+calls the old version the baseline. If the old version has another technology, the test can report a technology
+switch.
 
-### From a sibling capture to an Enforce rule
+The message starts with `Technology switch:` and names this page. In the menu, it is a red **TECHNOLOGY SWITCH**
+panel.
 
-Instead of waiting for an Update test to fail, let the toolkit learn the other technologies: a **sibling capture**
-installs each one in a clean guest and proposes a rule for it ([Testing](testing.md#capture-other-installer-technologies)).
+It means that the old install was still registered after your package installed. Devices with that old install would
+get two registrations over one folder. Do not publish this package to them. Choose one of these options instead.
 
-```powershell
-# Package the WiX MSI and capture the vendor's NSIS setup too; Block what the capture finds
-Invoke-Win32Toolkit -Id 'Notepad++.Notepad++' -Architecture x64 -Force -InstallerType wix `
-    -CaptureSiblingTechnologies -ApplySiblingCapture Block -RunTest Update
-```
+- Re-create the project with the technology your devices have, for example `-InstallerType nullsoft` for the NSIS
+  setup of Notepad++. See [Re-create a project](projects.md#re-create-a-project).
+- Add a [prior-install rule](glossary.md#prior-install-rule): a rule in the package that blocks or
+  removes the other install. See [Devices that already have the app](prior-installs.md).
 
-1. **Capture.** `-CaptureSiblingTechnologies` runs the capture after the install capture, before the tests (on the
-   Hyper-V test VM; without one, in Windows Sandbox with Block-only proposals, said before the download). On its own,
-   `Test-Win32ToolkitProject -ProjectPath <p> -Scenario SiblingCapture` does the same for an existing project. A capture
-   that cannot run (no own identity yet, an ARM64 package) is one problem in the run's result; the pipeline goes on.
-   Without a ready VM, a project whose captures already allow an Enforce rule (an Enforce-eligible proposal, or a
-   captured Enforce rule, for example carried from the version before) is not captured: a Windows Sandbox record would
-   make that identity Block-only, and a later capture on Hyper-V does not take that back
-   ([Testing](testing.md#what-one-capture-does)). The pipeline says so in the run's result; the command refuses it
-   (`W32T.SiblingCaptureUnsupported`) unless you add `-Backend Sandbox` on purpose.
-2. **Review.** `Set-Win32ToolkitPriorInstall -ProjectPath <p>` lists the proposals next to the rules: the identity, the
-   window, the confidence, whether it can become Enforce and why not. In the menu, **Work with an existing project →
-   Prior installs → Review the capture proposals** shows one card per proposal with what each choice does on a device.
-   Block is the first choice. Enforce (offered only when the Hyper-V test VM is ready, since it is proven there right
-   away) asks once more (No shows the card again), records the approval, runs the proof
-   and asks for the acknowledgements packaging needs, each with its reason: `DATA-LOSS` when the uninstaller deletes
-   data (the card says so), `SIGNER-MISMATCH` when the other technology is signed differently from your package.
-   **Widen** captures one more, older version of that technology and shows the card again; without a ready Hyper-V VM it
-   (like **Capture the other installer technologies** on the Prior installs screen) first says the capture would run in
-   Windows Sandbox, names what that would make Block-only, and asks (default No). An error never skips a card.
-3. **Block first.** `-ApplySiblingCapture Block` (or
-   `Set-Win32ToolkitPriorInstall -ProjectPath <p> -FromSiblingCapture -Mode Block`) turns every proposal of high
-   confidence without flags into a Block rule; a proposal that is already a rule is never changed this way. Name one
-   with `-ProposalId <id>` to apply it whatever its confidence.
-4. **Enforce by name.** `Set-Win32ToolkitPriorInstall -ProjectPath <p> -FromSiblingCapture -Mode Enforce -ProposalId nsis-x64`
-   asks once per proposal and records an **approval** of exactly that identity (kept on your computer). Only an
-   Enforce-eligible proposal can be approved; there is no `-ApplySiblingCapture Enforce`.
-5. **Prove it** with an Update test on Hyper-V (`-RunTest Update` in the pipeline, or
-   `Test-Win32ToolkitProject -ProjectPath <p> -Scenario Update -Backend HyperV -TestMode Unattended`): it starts from the
-   floor capture's installer. A captured rule that cannot be proven is demoted back to a proposal.
+## Warnings after the download
 
-The window, the uninstaller and the signer of a captured rule come from its records: a captured rule cannot be
-re-declared by hand (`W32T.PriorInstallRefused`), and a PROOF, VERSIONMIN or DISPLAYNAME waiver is never accepted for it.
+After the download, the toolkit compares the installer with the other technologies winget ships and with your earlier
+versions. These checks never stop the build. You see their warnings again when you build and publish the package.
 
-`Set-Win32ToolkitPriorInstall -ProjectPath <p>` alone lists the rules, their mode, where they came from, their proof state and what each one does on a device, and the proposals of the project's sibling captures. `-Remove <id>` removes a rule. In the menu, **Work with an existing project → Prior installs** shows the same and lets you review, capture, declare (Block first), change, remove and prove rules; choosing Enforce there asks once more (default No).
+Two warnings use special words. The [install tattoo](glossary.md#install-tattoo) is a registry value
+that the package writes on the device. Intune reads it to see which version is installed. The [SYSTEM account](glossary.md#system-account) is the built-in Windows account that Intune uses to install apps.
 
-**Requirements.** A rule needs the package's own identity, which the install capture records (`OwnIdentity` in `SupportFiles\AppConfig.json`): a rule never names the package's own uninstall entry. The process names of Block and Enforce rules are added to `ProcessesToClose`, so the close-apps dialog closes the prior app before it is removed (an org template that turns the welcome dialog off gets a warning: devices where the app runs retry with 1618). A project created by an earlier win32-toolkit version has no place for the rules in its deploy script: re-create it (copy hand-written Install code out first).
-
-**Packaging refuses** (one `Prior install: ` line each in the [package check](#the-package-check)):
-
-| Code | When | What to do |
+| Warning starts with | What it means | What to do |
 |---|---|---|
-| `PRIOR-NO-SLOTS`, `PRIOR-REVISION` | The deploy script has no prior-install code, an older version of it, or a dialog before it | Re-create the project |
-| `PRIOR-NO-OWNIDENTITY` | The install capture has not recorded the package's own identity | Run the install capture |
-| `PRIOR-INVALID` | A rule is invalid (the message names it) | Fix or remove it |
-| `PRIOR-PROOF` | An Enforce rule no passing Hyper-V Unattended Update test proved for this exact package | Run the proof, or record a waiver: `-Waive PROOF -Target <id> -Reason '<why>'` |
-| `PRIOR-VERSIONMIN` | An Enforce rule removes versions older than the oldest one a proof run removed | Raise `VersionMin`, prove the older version, or `-Waive VERSIONMIN` |
-| `PRIOR-DATA-LOSS` | The proof run saw the prior's uninstaller delete user data, or the capture's removal probe saw it delete configuration in its folder | `-Acknowledge DATA-LOSS -Target <id> -Reason '<why>'` if that is acceptable |
-| `ID-PRIOR-DROPPED` | A rule of the previous version of the app is missing, or a rule that was not kept because a test guest changed the project | Declare it again, or `-Acknowledge ID-PRIOR-DROPPED -Target <id> -Reason '<why>'` |
-| `PRIOR-CAPTURE-RECORD` | A rule from a sibling capture lost its capture record, or its records now give another identity or window (it was edited, or a newer capture raised the window) | Capture again, or apply its proposal again |
-| `PRIOR-APPROVAL` | A captured Enforce rule has no current approval of exactly its identity (missing, demoted, or the rule changed) | Approve its proposal again (`-FromSiblingCapture -Mode Enforce -ProposalId <id>`) |
-| `PRIOR-NOT-ELIGIBLE` | A captured Enforce rule whose capture evidence no longer allows removal (the review names why) | Set it to Block, or capture again |
-| `PRIOR-SIGNER` | The captured install is signed by someone else than your package's installer (a winget manifest may name another vendor's product) | Check it, then `-Acknowledge SIGNER-MISMATCH -Target <id> -Reason '<why>'` |
-| `GUEST-TAMPER` | A test guest changed the project's files | Re-create the project; its rules, decisions and capture records are not kept, and each rule is listed as `ID-PRIOR-DROPPED` until you declare it again or acknowledge it |
+| `winget also ships` | winget ships another technology for this version. Devices that have it would get two registrations. | Keep one technology. See [Devices that already have the app](prior-installs.md). |
+| `winget chose` | The app ships more than one technology, and no earlier version was published or pinned. Nothing keeps the technology stable. | Pin it now with the `-InstallerType` value in the message, or choose it in the menu. |
+| `The installer technology changed` | The earlier version you published or pinned has another technology. | Re-create the project with the `-InstallerType` value in the message. |
+| `The detection key changed` | The path of the install tattoo changed. Devices with the earlier version keep the old one. | Check the app script author of your org template, and the publisher and name of the app. |
+| `The winget manifest labels this installer user-scope` | Intune installs as SYSTEM. Users never see a per-user install made by SYSTEM. | Check the install capture. Look for another installer. |
+| `Could not check which installer technologies` | The check on GitHub failed. Apps from a private winget source always fail it. | If the app ships an EXE and an MSI, pin one with `-InstallerType`. |
+| `Several winget ids in this template look like the same product` | More than one winget ID in this org template seems to be this app. The toolkit compares with one earlier version only. | Check that the message names the right earlier version. Check that this package uses the winget ID your devices already have. |
 
-Waivers and acknowledgements are kept in `Documentation\PriorInstallDecisions.json` on your computer; they never ship.
+`The installer technology changed` and `The detection key changed` compare only with an earlier version that you
+published or pinned. A `winget also ships` line that says `cannot package it` is only information.
 
-**Next versions keep the rules.** A new version of the app gets the rules of the highest earlier version of the same app and architecture in the template folder: an operator rule's `VersionMax` is raised to the new version (for an EXE package, to the earlier version), and each Enforce rule needs a new proof run. Rebuilding the same version (`-Force`) keeps its rules and decisions. A rule removed on purpose stays removed. A project a test guest changed (`GUEST-TAMPER`) keeps no rules, decisions or capture records when you re-create it, and gives none to the next version: packaging the re-created project, or the next version, lists each of its rules as `ID-PRIOR-DROPPED` until you declare it again (for a captured rule: capture the sibling technologies again and apply its proposal) or acknowledge it. Which rules were lost is kept in `Documentation\PriorInstallDropped.json` on your computer; it never ships. A carried rule that is not valid for the new package is dropped on its own, with a warning naming the problem. A rule from a sibling capture is carried **unchanged**, with its capture records and its approval; only a new capture moves its window (`-CaptureSiblingTechnologies` again). The update app (`-PublishUpdate`) also applies to devices that have a prior install an Enforce rule would remove, so they get the package too.
+## Which version is packaged
 
-## The Staging copy: what ships and what never does
+The toolkit always packages the newest version that winget lists. There is no option to choose another version. To
+package an older version, get its installer yourself and follow [Package an app that is not in winget](manual-apps.md).
+Older winget versions are only used as the old version in an update test.
 
-The raw project under `Projects\` is your source of truth and is **never modified during packaging**. Each run copies it fresh into `Staging\<Template>\<ProjectName>`, but the copy *excludes* the non-shipping folders up front, so they never exist in Staging at all:
+## If something goes wrong
 
-| Excluded folder | Why it must not ship |
+| Message starts with | What to do |
 |---|---|
-| `Sandbox\` | Test scaffolding: `.wsb` configs, countdown scripts, the old-version installer, dependency installers |
-| `Documentation\` | Sandbox install-capture JSON and logs, the prior-install decisions and capture records |
-| `Intune\` | **Privacy:** holds `Publications.json`, your tenant id and Intune app ids. These must never travel to an end-user device |
-| `Docs\`, `Examples\` | PSADT v4 boilerplate: pure package bloat |
+| `Package ID '...' not found in winget` | Check the exact winget ID with `winget search git`. |
+| `Download FAILED for` | After a network problem, package the app again. Otherwise package your own installer: see [Package an app that is not in winget](manual-apps.md). |
+| `winget reported success for ... but wrote no installer` | This is a portable, zip or Store app without an installer. Package a real installer as an app that is not in winget. |
+| `... is marked not configured` | The build stopped halfway. Package the app again: this replaces the folder. |
+| `The capture recorded NO changes` | The installer did nothing, often because of wrong silent switches. Fix them, then run the install capture again. |
+| `Another Windows Sandbox is still running` | Only one Windows Sandbox can run at a time. Close the other one, then run the install capture again. |
 
-Excluding at copy time (rather than copying everything and deleting afterwards) means the copy is smaller and faster, there is no freshly-written file for antivirus to lock mid-delete, and the tenant/app ids in `Intune\Publications.json` cannot leak into the package even if a later cleanup step were to fail.
+More messages and fixes are in [Packaging from winget](troubleshooting.md#packaging-from-winget),
+[The install capture](troubleshooting.md#the-install-capture) and
+[Recover from a stopped build](projects.md#recover-from-a-stopped-build).
 
-### The optimizer safety net
+## Next step
 
-After the copy, the optimizer runs on the Staging copy anyway. It is normally a no-op for the folders above, but it catches anything that slipped through and additionally removes:
+Test the package in a clean test machine before you build and publish it.
 
-- `*.md` and `*.wsb` files in the project root
-- `SupportFiles\TargetedDocumentationScript*` and its log files (`SupportFiles\RequirementScript.ps1` is **kept** for reference; nothing uploads it)
-- Any empty subdirectories
-
-If a locked file prevents stripping a bloat folder, you get a warning and a slightly larger package. If the `Intune\` folder itself cannot be removed, packaging **refuses to continue**. A larger package is acceptable, leaked tenant ids are not. The same holds for `Documentation\`: it holds your prior-install decisions and the records of captures run in a test guest, which never ship.
-
-## IntuneWinAppUtil.exe: auto-download and verification
-
-The packager is Microsoft's official Win32 Content Prep Tool. On first use it is downloaded automatically into the module's `Tools\` folder (latest GitHub release first, raw repository file as fallback). No manual setup.
-
-Because this binary is executed on your packaging machine, its **Authenticode signature is verified on every run**, both right after a download and for a copy that already sits in `Tools\`. The signature must be valid and issued to *Microsoft Corporation*; anything else is deleted on the spot so a rejected binary can never be silently reused. If the download fails, the error tells you where to fetch the tool manually and where to place it.
-
-## Where the output lands
-
-Output is grouped by [org template](org-templates.md), like every other tier:
-
-```
-C:\Win32Apps\
-  Projects\
-    Contoso\
-      Git_x64_2.53.0\            raw project (Sandbox\, Documentation\, Intune\ intact)
-  Staging\
-    Contoso\
-      Git_x64_2.53.0\            lean copy, kept after the run
-  IntuneWin\
-    Contoso\
-      Git_x64_2.53.0.intunewin   ready to upload
-```
-
-## Re-packaging
-
-Running the command again on the same project is always safe:
-
-- The previous Staging copy is deleted (with retries for briefly AV-locked files) and rebuilt from the current raw project, so Staging always reflects your latest edits. If a file stays locked, the run fails loudly rather than packaging a stale, half-cleared copy.
-- An existing `<ProjectName>.intunewin` is overwritten.
-
-So the edit loop is simply: change the project under `Projects\`, re-run `Export-Win32ToolkitIntuneWin`.
-
-## Publishing straight after packaging
-
-When the package is built and neither `-PublishIntune` nor `-PublishUpdate` was passed, you are asked interactively: `Upload to Microsoft Intune now? (Y/N)` (`Invoke-Win32Toolkit`, `New-Win32ToolkitManualApp` and `Complete-Win32ToolkitManualApp` ask too when they package; pass `-NoPublishPrompt` to skip it; the menu never asks). Answer `Y` to hand off to [Publish-Win32ToolkitIntuneApp](reference/Publish-Win32ToolkitIntuneApp.md) immediately.
-
-To skip the question:
-
-```powershell
-# Package and publish in one step (prompts for Graph sign-in on first use)
-Export-Win32ToolkitIntuneWin -ProjectPath $proj -PublishIntune
-
-# Also publish the requirement-gated update app alongside the install app
-Export-Win32ToolkitIntuneWin -ProjectPath $proj -PublishIntune -PublishUpdate
-```
-
-Automation can suppress the prompt entirely with `-NoPublishPrompt`. See the [Publish-Win32ToolkitIntuneApp](reference/Publish-Win32ToolkitIntuneApp.md) reference for what publishing does, including the update-app behavior and upload timeouts.
+[Next: test the package](testing.md){ .md-button .md-button--primary }

@@ -5,15 +5,32 @@
   page's front-matter `description:` or the global site_description), so we do NOT re-emit those.
   We add Open Graph + Twitter Card tags (Material only emits those with the social plugin, which we
   deliberately do not use) and homepage JSON-LD structured data.
+
+  Zensical renders templates with MiniJinja: no Python methods or functions, only filters and tests
+  (for example `is startingwith`, not `.startswith()`).
 #}
+
+{#- base.html tests page.is_homepage, which Zensical does not set: without this block the home page
+    title would be "Home - win32-toolkit". The home page has an empty URL. -#}
+{% block htmltitle %}
+  {% if page and not page.url %}
+    <title>{{ config.site_name }}</title>
+  {% else %}
+    {{ super() }}
+  {% endif %}
+{% endblock %}
+
 {% block extrahead %}
   {{ super() }}
+
+  {#- The home page has an empty URL. Zensical has no page.is_homepage. -#}
+  {% set _is_home = page and not page.url %}
 
   {#- Page title, resolved the way base.html does -#}
   {% set _title = config.site_name %}
   {% if page and page.meta and page.meta.title %}
     {% set _title = page.meta.title ~ " - " ~ config.site_name %}
-  {% elif page and page.title and not page.is_homepage %}
+  {% elif page and page.title and not _is_home %}
     {% set _title = (page.title | striptags) ~ " - " ~ config.site_name %}
   {% endif %}
 
@@ -23,14 +40,14 @@
     {% set _desc = page.meta.description %}
   {% endif %}
 
-  {#- Absolute URL, provided by MkDocs because site_url is set -#}
+  {#- Absolute URL, provided because site_url is set -#}
   {% set _url = page.canonical_url if (page and page.canonical_url) else config.site_url %}
 
   {#- Optional share image. Set extra.image in mkdocs.yml to a 1200x630 PNG/JPG once one exists.
       Unset today => no image tags emitted (nothing 404s) and the Twitter card degrades to summary.
       SVG is intentionally not used: social scrapers do not preview it. -#}
   {% set _image = config.extra.image | default("") %}
-  {% if _image and not _image.startswith("http") %}
+  {% if _image and _image is not startingwith("http") %}
     {% set _image = (config.site_url | trim("/")) ~ "/" ~ (_image | trim("/")) %}
   {% endif %}
 
@@ -51,7 +68,7 @@
   <meta name="twitter:image" content="{{ _image }}" />
   {% endif %}
 
-  {% if page and page.is_homepage %}
+  {% if _is_home %}
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -61,7 +78,7 @@
     "url": {{ config.site_url | tojson }},
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Windows",
-    "softwareRequirements": "PowerShell 7.2 or later",
+    "softwareRequirements": "PowerShell 7.4 or later",
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
     "author": { "@type": "Organization", "name": "CloudFlow", "url": "https://cloudflow.be/" },
     "license": "https://github.com/MG-Cloudflow/win32-toolkit/blob/main/LICENSE",

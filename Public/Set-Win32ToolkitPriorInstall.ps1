@@ -1,134 +1,207 @@
 function Set-Win32ToolkitPriorInstall {
     <#
     .SYNOPSIS
-        Lists or sets the prior-install rules of a project: another installer technology of the app that the package
-        refuses (Block), removes before it installs (Enforce) or only reports (Report).
+        Lists, adds, changes or removes the prior-install rules of a project.
     .DESCRIPTION
-        A device can already have the app from ANOTHER installer technology (for example the vendor's NSIS setup of
-        Notepad++ while the package installs the WiX MSI). Installing next to it leaves two registrations over one
-        folder. A prior-install rule names that other install EXACTLY - its uninstall key in HKLM, the registry view,
-        the publisher, the display name (or a {v} template) and a version window - and says what the package does when
-        it finds it:
+        Set-Win32ToolkitPriorInstall shows and changes the prior-install rules of a project. A prior
+        install is the same app, installed on a device with another installer technology. For
+        example, a device has the vendor's NSIS setup of Notepad++, and your package installs the
+        MSI. A rule names that install exactly and says what the package does with it: Block,
+        Enforce or Report (see -Mode).
 
-          Block    the install FAILS on such a device (exit code 69101) until the rule is Enforce;
-          Enforce  the package runs that install's own uninstaller (NSIS '/S _?=<its folder>', Inno Setup
-                   '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART') after the close-apps dialog and before it installs;
-          Report   the device gets a marker (LastSeen) and the install goes on; nothing is removed.
+        With only -ProjectPath, the command lists the rules and writes nothing. Use it after a
+        sibling capture (a capture of the other installer technologies of the app) or a failed
+        Update test. In the menu: Work with an existing project > choose your project > Prior
+        installs. Typed rules, waivers and -Revoke are command line only.
 
-        A device whose install is NEWER than the window fails with 69102; an exact key that is not the declared install
-        (another publisher, name or version) is left as it is and the install goes on; a declared install in another
-        folder than InstallDir fails with 69105. The rules are DATA in SupportFiles\AppConfig.json (PriorInstalls): the
-        deploy script reads them when it runs. After a change, re-package (Export-Win32ToolkitIntuneWin) and publish the
-        new .intunewin - a project created by this win32-toolkit version needs no re-creation. A project created before
-        it has no remove-prior blocks: re-create it first (copy hand-written Install code out); this command refuses to
-        write rules into it.
+        Before every change, the command shows what it will do and asks you to confirm. In scripts,
+        add -Confirm:$false. It writes only SupportFiles\AppConfig.json and
+        Documentation\PriorInstallDecisions.json. The second file never goes into the package. The
+        command never changes the deploy script and never writes to Intune. Devices get a rule
+        change after you build the package again (Export-Win32ToolkitIntuneWin) and publish it.
 
-        An Enforce rule removes another vendor's install as SYSTEM, so Export refuses it until a Hyper-V Unattended
-        Update test proved it (Test-Win32ToolkitProject -Scenario Update -Backend HyperV -TestMode Unattended), or an
-        operator rule carries a PROOF waiver. Every rule needs the package's own identity, recorded by the install
-        capture, and its process names are merged into ProcessesToClose so the close-apps dialog closes the app first.
+        An Enforce rule removes another install as SYSTEM on every device that has it. So the
+        package build refuses it until an unattended Update test on the Hyper-V test VM has proved
+        it. Only a rule that is not from a sibling capture can skip the proof, with a PROOF waiver.
+        A typed Enforce rule also needs the removal data: -UninstallerType, -UninstallerFileName,
+        -InstallDir, -MainExe and at least one -ProcessName.
 
-        Parameter sets:
-          List (default)  the rules, their source and lineage, their proof state, the decisions and what each does on a
-                          device. Writes nothing.
-          Manual          one rule typed by the operator (Source Operator).
-          FromUpdateTest  a rule from the last failed Update test's candidates (Documentation\PriorInstallCandidates.json,
-                          Source UpdateTest): the High candidate, or -CandidateKey.
-          FromSiblingCapture
-                          rules from the proposals of a sibling capture (Test-Win32ToolkitProject -Scenario SiblingCapture;
-                          Source SiblingCapture), re-derived from the hash-verified capture records every time. Without
-                          -ProposalId (Block or Report only): every High-confidence proposal without flags whose identity
-                          is not a rule yet - the others are listed, never written, and an existing rule is never changed.
-                          With -ProposalId: those proposals, one confirmation each; Enforce needs -ProposalId, an
-                          Enforce-eligible proposal and records one approval per proposal (kept on the host). The window
-                          is never typed: VersionMin is the oldest capture's observed version, VersionMax the newest one
-                          of the same identity.
-          SetMode         change the mode of existing rules (Block -> Enforce after the proof; Enforce -> Block in an
-                          incident). A rule from a sibling capture becomes Enforce only through -FromSiblingCapture.
-          Remove          remove rules (the merged process names stay).
-          Waive / Acknowledge / Revoke   host-side decisions (Documentation\PriorInstallDecisions.json; never shipped).
-
-        Every write shows the resulting rule and its device consequence first and asks for confirmation (ConfirmImpact
-        High; pass -Confirm:$false in scripts). -Mode has no default.
+        It stops with an error whose ID starts with W32T. when it cannot make the change, and then
+        writes nothing. W32T.PriorInstallSlotsMissing: the deploy script cannot take rules, most
+        often because an earlier win32-toolkit version created the project. Re-create the project,
+        but first copy out hand-written install code: re-creating deletes the folder.
+        W32T.PriorInstallRefused: the install capture has not run yet, or the change is not allowed
+        for this rule. W32T.PriorInstallInvalid: a value is wrong or missing, or the rules would not
+        be valid. The message says what to fix.
     .PARAMETER ProjectPath
-        The PSADT project folder.
+        The project folder: <base folder>\Projects\<template>\<project>. Give only this parameter to
+        list the rules. You can leave out the name -ProjectPath, because the first value is the
+        project folder.
     .PARAMETER Mode
-        Block, Enforce or Report (no default).
+        What the package does on a device that has the install. Block fails the install (exit code
+        69101). Enforce runs the uninstaller of that install after the close-apps dialog, then
+        installs. Report writes a marker in the registry and installs. There is no default.
     .PARAMETER Key
-        Manual: the exact uninstall key name under HKLM\SOFTWARE[\WOW6432Node]\Microsoft\Windows\CurrentVersion\Uninstall.
+        For a typed rule: the exact name of the uninstall key of the install, for example Notepad++.
+        Windows keeps these keys for Apps & Features under
+        HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall, or for 32-bit apps under
+        HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall.
     .PARAMETER View
-        Manual: Native (the 64-bit view) or Wow6432 (the 32-bit view).
+        For a typed rule: the registry view of the key. Native is the 64-bit view, Wow6432 is the
+        32-bit view (WOW6432Node).
     .PARAMETER Publisher
-        Manual: the exact Publisher value of that key.
+        For a typed rule: the exact Publisher value of the key. On a device, an install with another
+        publisher is left as it is.
     .PARAMETER DisplayName
-        Manual: the exact DisplayName value (or use -DisplayNameTemplate; an empty name needs a DISPLAYNAME waiver).
+        For a typed rule: the exact DisplayName value of the key. On a device, an install with
+        another name is left as it is. Give this or -DisplayNameTemplate, not both. A rule without a
+        name needs a DISPLAYNAME waiver, recorded before the rule (see -Waive).
     .PARAMETER DisplayNameTemplate
-        Manual: the DisplayName with the version replaced by exactly one {v} (for example 'Wireshark {v} x64').
+        For a typed rule: the display name with the version replaced by exactly one {v}, for example
+        'Wireshark {v} x64'. Use it when the name changes with each version.
     .PARAMETER VersionMin
-        The lowest DisplayVersion the rule applies to (four parts, padded). FromUpdateTest: defaults to the version the
-        test observed. A lower one is never removed (it is left as it is).
+        The lowest version (DisplayVersion) the rule applies to. On a device, a lower version is
+        left as it is. An empty value needs a VERSIONMIN waiver, recorded before the rule. With
+        -FromUpdateTest, the default is the version the test found.
     .PARAMETER VersionMax
-        The highest DisplayVersion the rule applies to; a newer install fails with 69102. For a package of the same
-        technology family (an EXE package) it must be lower than the package version. FromUpdateTest: defaults to the
-        observed version (same family) or the package version (another family).
+        The highest version the rule applies to. With Block or Enforce, a device with a newer
+        version fails the install (exit code 69102). With -FromUpdateTest, the default is the
+        package version. If your package installs from an .exe file, the value must be lower than
+        the package version. The default with -FromUpdateTest is then the version the test found.
     .PARAMETER UninstallerType
-        Manual, Enforce: nullsoft or inno (selects the constant uninstall switches).
+        For a typed rule: the kind of uninstaller. Use nullsoft for an NSIS setup and inno for Inno
+        Setup. It sets the silent switches, which are fixed: /S _?=<folder> for nullsoft, and
+        /VERYSILENT /SUPPRESSMSGBOXES /NORESTART for inno. An Enforce rule needs it.
     .PARAMETER UninstallerFileName
-        Manual, Enforce: the uninstaller's file name (for example uninstall.exe).
+        For a typed rule: the file name of the uninstaller in the install folder, for example
+        uninstall.exe. An Enforce rule needs it.
     .PARAMETER InstallDir
-        Manual, Enforce: the install folder as %ProgramFiles%\<folder> or %ProgramFiles(x86)%\<folder>.
+        For a typed rule: the install folder, as %ProgramFiles%\<folder> or
+        %ProgramFiles(x86)%\<folder> with 1 to 4 folder names. An Enforce rule needs it. On a device
+        with the install in another folder, an Enforce rule fails the install (exit code 69105).
     .PARAMETER MainExe
-        Manual, Enforce: the app's main program file in InstallDir (its absence makes the registration a leftover).
+        For a typed rule: the file name of the main program in the install folder, for example
+        notepad++.exe. It must differ from the uninstaller. An Enforce rule needs it. If the program
+        is missing on a device, the package leaves that install as it is.
     .PARAMETER ProcessName
-        The app's process names (no .exe; merged into ProcessesToClose).
+        The process names of the app, without .exe, for example notepad++. A typed Enforce rule
+        needs at least one, and a rule takes at most 8. The names of Block and Enforce rules are
+        added to ProcessesToClose, so the close-apps dialog can close the app before a removal.
+        Default with -FromUpdateTest: the names the test found.
     .PARAMETER UninstallerSigner
-        Manual: the exact signer subject the uninstaller must have (Get-AuthenticodeSignature Valid).
+        For a typed rule: the exact subject of the certificate that signs the uninstaller. Optional.
+        If you give it, a device runs the uninstaller only when its signature is valid and has this
+        subject. Otherwise the install fails there (exit code 69105).
     .PARAMETER Id
-        The rule id (^[a-z0-9-]{1,40}$). Manual / FromUpdateTest: one id (default: derived, for example nsis-x64).
-        SetMode: the rules to change.
+        The rule ID, for example nsis-x64: lower-case letters, digits and hyphens, 40 characters or
+        fewer. A new rule gets a default ID. With -Mode and no rule data, -Id names the existing
+        rules whose mode you change. A typed Block rule without removal data cannot become Enforce
+        with -Id and -Mode alone. Type the rule again with the same ID, -Mode Enforce and all
+        removal data.
     .PARAMETER FromUpdateTest
-        Declare the rule from the last failed Update test's candidates.
+        Makes the rule from the candidate of the last failed Update test. When the old version stays
+        installed after the update, the test saves it as a candidate in
+        Documentation\PriorInstallCandidates.json. In the menu: Prior installs > Declare from the
+        last Update test.
     .PARAMETER CandidateKey
-        FromUpdateTest: the uninstall key of the candidate to use when it is not the single High candidate.
+        With -FromUpdateTest: the uninstall key of the candidate to use. Use it when there is not
+        exactly one candidate with High confidence. Command line only: the menu does not offer this.
     .PARAMETER FromSiblingCapture
-        Declare rules from the proposals of the project's sibling capture (Documentation\SiblingCapture\*.json).
+        Makes rules from the proposals of the project: the rules that its sibling captures suggest.
+        Without -ProposalId, it writes every proposal with High confidence and no warning flags that
+        is not a rule yet, as Block or Report. It lists the others with the reason and never changes
+        an existing rule. Run the capture first with Test-Win32ToolkitProject -Scenario
+        SiblingCapture.
     .PARAMETER ProposalId
-        FromSiblingCapture: the proposals to apply (for example nsis-x64; the List and the capture name them). Required
-        with -Mode Enforce: one confirmation and one approval per proposal.
+        The IDs of the proposals to write, as the list shows them, for example nsis-x64. Use it for
+        a proposal that is left out without -ProposalId, or to change a rule from a capture. Enforce
+        needs it, and the proposal must allow Enforce (the list shows Enforce-eligible). You confirm
+        each proposal, and the command records one approval (your recorded yes) for each.
     .PARAMETER Remove
-        The ids of the rules to remove.
+        The IDs of the rules to remove. Devices with that install then keep it next to this package.
+        The process names of the rules stay in ProcessesToClose. If the previous version had the
+        rule, acknowledge ID-PRIOR-DROPPED before you build the package.
     .PARAMETER Waive
-        PROOF (ship an Enforce rule without a proof), VERSIONMIN (no or a lower VersionMin than proven) or DISPLAYNAME
-        (no display name) for -Target, with -Reason. Never for a rule from a sibling capture.
+        Records a waiver for -Target: the package build then accepts a rule without one thing it
+        normally needs. PROOF: an Enforce rule without a proof. VERSIONMIN: no VersionMin, or one
+        below the oldest version a proof run removed. DISPLAYNAME: no display name. Not allowed for
+        a rule from a sibling capture. Command line only: the menu does not offer this.
     .PARAMETER Acknowledge
-        ID-PRIOR-DROPPED (a rule of the previous version is gone on purpose), DATA-LOSS (the prior's uninstaller deleted
-        user data in the proof run, or - for a rule from a sibling capture - the capture's removability probe saw it delete
-        configuration files in its install folder) or SIGNER-MISMATCH, for -Target, with -Reason.
+        Records an acknowledgement for -Target: you accept a known risk. DATA-LOSS: the uninstaller
+        of the prior install deletes user data or configuration files. SIGNER-MISMATCH: the
+        uninstaller of a captured install has another signer than your package. ID-PRIOR-DROPPED: a
+        rule of the previous version is missing on purpose. The package build stops until the ones
+        that apply are recorded.
     .PARAMETER Revoke
-        Remove the Waive or Acknowledge decision of that code for -Target.
+        Removes the waiver or acknowledgement with this code for -Target, for example when its
+        reason is no longer true. It needs no -Reason. Command line only: the menu does not offer
+        this.
     .PARAMETER Target
-        The rule id a decision is about (it may be declared before the rule exists).
+        The ID of the rule that a waiver, acknowledgement or -Revoke is about. The rule does not
+        have to exist yet: record a DISPLAYNAME or VERSIONMIN waiver before you type the rule.
     .PARAMETER Reason
-        Why (1-512 characters; kept on the host, never shipped).
+        Why you accept the waiver or acknowledgement, in 1 to 512 characters. It stays on your PC
+        with the decision and never goes into the package.
+    .EXAMPLE
+        $project = 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1'   # your project folder
+        Set-Win32ToolkitPriorInstall -ProjectPath $project
+
+        This lists the rules of the project and the proposals of its sibling captures, with their
+        state. It writes nothing.
+    .EXAMPLE
+        $project = 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1'
+        Set-Win32ToolkitPriorInstall -ProjectPath $project -FromSiblingCapture -Mode Block
+
+        This makes a Block rule from each proposal that has High confidence and no warning flags and
+        is not a rule yet. It asks you to confirm each one and lists the others with the reason.
+    .EXAMPLE
+        $project = 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1'
+        Set-Win32ToolkitPriorInstall $project -FromSiblingCapture -Mode Enforce -ProposalId nsis-x64
+
+        This makes the proposal nsis-x64 an Enforce rule and records your approval. It then shows
+        the Update test command that proves the rule, and any acknowledgement the package build
+        still needs.
+    .EXAMPLE
+        $project = 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1'
+        Set-Win32ToolkitPriorInstall -ProjectPath $project -Id nsis-x64 -Mode Block
+
+        This changes the rule nsis-x64 to Block, for example while you investigate a problem on
+        devices. Devices get the change after you build the package again and publish it.
+    .EXAMPLE
+        $rule = @{
+            ProjectPath         = 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1'
+            Id                  = 'nsis-x64'
+            Mode                = 'Enforce'
+            Key                 = 'Notepad++'
+            View                = 'Native'
+            Publisher           = 'Notepad++ Team'
+            DisplayName         = 'Notepad++ (64-bit x64)'
+            VersionMin          = '8.7.9'
+            VersionMax          = '8.9.8.1'
+            UninstallerType     = 'nullsoft'
+            UninstallerFileName = 'uninstall.exe'
+            InstallDir          = '%ProgramFiles%\Notepad++'
+            MainExe             = 'notepad++.exe'
+            ProcessName         = 'notepad++'
+        }
+        Set-Win32ToolkitPriorInstall @rule -Confirm:$false
+
+        This adds a typed Enforce rule from a script: @rule passes each line of $rule as a
+        parameter, and -Confirm:$false skips the question. If nsis-x64 is a typed Block rule, this
+        replaces it.
     .OUTPUTS
-        PSCustomObject[] - one per rule: Id, Mode, Kind, Key, View, Window, Source, Lineage, Proof, Decisions, Consequence.
-    .EXAMPLE
-        Set-Win32ToolkitPriorInstall -ProjectPath 'C:\Win32Apps\Projects\Contoso\Notepad++_x64_8.9.8.1'
-    .EXAMPLE
-        # Declare the vendor NSIS install the last Update test left behind, Block first
-        Set-Win32ToolkitPriorInstall -ProjectPath $p -FromUpdateTest -Mode Block
-    .EXAMPLE
-        # After the Hyper-V proof run: remove it before installing
-        Set-Win32ToolkitPriorInstall -ProjectPath $p -Id nsis-x64 -Mode Enforce
-    .EXAMPLE
-        # After a sibling capture: Block every High, flag-free proposal; then approve one for removal
-        Set-Win32ToolkitPriorInstall -ProjectPath $p -FromSiblingCapture -Mode Block
-        Set-Win32ToolkitPriorInstall -ProjectPath $p -FromSiblingCapture -Mode Enforce -ProposalId nsis-x64
-    .EXAMPLE
-        Set-Win32ToolkitPriorInstall -ProjectPath $p -Mode Block -Key 'Notepad++' -View Native -Publisher 'Notepad++ Team' `
-            -DisplayName 'Notepad++ (64-bit x64)' -VersionMin 8.7.9 -VersionMax 8.9.8.1
-    .EXAMPLE
-        Set-Win32ToolkitPriorInstall -ProjectPath $p -Acknowledge DATA-LOSS -Target nsis-x64 -Reason 'user settings live in %APPDATA%'
+        One object for each rule of the project, as it is when the command ends.
+        Id, Mode, Key and Proof are shown.
+        Proof is Proven or NotProven for an Enforce rule, and NotNeeded for the others.
+        Other properties: Kind, View, Window, Source, Lineage, Decisions and Consequence.
+        Lineage is Capture for a rule from a sibling capture.
+        Consequence is the effect of the rule on a device.
+    .LINK
+        https://win32toolkit.com/reference/Set-Win32ToolkitPriorInstall/
+    .LINK
+        https://win32toolkit.com/prior-installs/
+    .LINK
+        https://win32toolkit.com/prior-installs-enforce/
     #>
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High', DefaultParameterSetName = 'List')]
     [OutputType([pscustomobject[]])]

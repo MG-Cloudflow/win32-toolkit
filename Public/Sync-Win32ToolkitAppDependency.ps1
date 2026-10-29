@@ -1,35 +1,73 @@
 function Sync-Win32ToolkitAppDependency {
     <#
     .SYNOPSIS
-        Pushes a project's declared dependencies onto the app it ALREADY published in Intune, without
-        re-publishing it.
+        Updates the dependencies of an app that is already in Intune, without publishing it again.
     .DESCRIPTION
-        Publish-Win32ToolkitIntuneApp always creates a NEW app (it has no update path), so "just re-publish
-        it" is NOT a way to fix an app's dependencies: it would create a DUPLICATE app and leave the
-        original — the one that is actually assigned to your users — still without them.
+        Sync-Win32ToolkitAppDependency gives the Intune app of a project the dependencies that the
+        project declares now. Use it after you change them with Set-Win32ToolkitAppDependency, or
+        after you publish a dependency that was missing when you published the app. Do not publish
+        the app again: that creates a new app, and the assigned app keeps its old dependencies.
+        Command line only.
 
-        This is the supported way to change the dependencies of an app that is already live:
+        The command signs in to Intune when needed. It uses the tenant pinned on the project, if
+        there is one. If it signs you in, the sign-in is saved on disk: run
+        Connect-Win32ToolkitIntune first to keep it in this PowerShell window only.
 
-            1. edit the declaration   (Set-Win32ToolkitAppDependency / the TUI)
-            2. Sync-Win32ToolkitAppDependency -ProjectPath <the project>
+        The command finds the app, looks up each dependency and replaces the dependencies of the
+        app with the ones it found. A dependency that it cannot find now is removed from the app.
+        Read the warnings, and run the command again when the cause is fixed. Supersedence set in
+        Intune is kept.
 
-        The app id comes from the project's publication cache (<ProjectPath>\Intune\Publications.json,
-        written when it was published from this machine). Declared dependencies are AUTHORITATIVE: the app's
-        dependency set is replaced, so removing a declaration here really does remove the relationship in
-        Intune. Supersedence is preserved untouched (see Set-Win32ToolkitAppRelationships).
+        The app is the one in the publication record of the project (Intune\Publications.json).
+        This is the app you last published from this PC to the tenant you are signed in to.
 
-        Typical use: you published an app whose dependency was not in the tenant yet (it warned and
-        published anyway). You then package + publish the dependency — and run this to link them.
+        It stops with an error when there is no publication record and no -AppId. It also stops
+        when the sign-in lands on another tenant than the one pinned on the project.
     .PARAMETER ProjectPath
-        The project whose declared dependencies should be pushed to its published app.
+        The project of the app, for example <base folder>\Projects\<template>\<project>. The
+        command reads the dependencies and the publication record from it. A project from
+        New-Win32ToolkitManualApp has no tenant pinned: the command then only warns and uses the
+        tenant you are signed in to.
     .PARAMETER AppId
-        Override the app to update (e.g. it was published from another machine, so there is no local cache
-        entry — copy the id from the Intune portal).
-    .OUTPUTS
-        [int] the number of dependency relationships now attached.
+        The Intune app ID of the app to update, from the Intune admin center. Default: the app in
+        the publication record of the project. Use it when there is no record, for example after a
+        publish from another PC. Also use it to update a copy of the app other than the one you
+        published last.
     .EXAMPLE
-        Set-Win32ToolkitAppDependency -ProjectPath $p -DependsOn 'winget:Microsoft.VCRedist.2015+.x64'
-        Sync-Win32ToolkitAppDependency -ProjectPath $p
+        $project = 'C:\Win32Apps\Projects\Contoso\Contoso_Reader_x64_3.2.0'   # your project folder
+        Sync-Win32ToolkitAppDependency -ProjectPath $project
+
+        This gives the Contoso Reader app in Intune the dependencies that the project declares now.
+        The app keeps its ID and its assignments.
+    .EXAMPLE
+        $vcredist = 'winget:Microsoft.VCRedist.2015+.x64'
+        Set-Win32ToolkitAppDependency -ProjectPath $project -DependsOn $vcredist
+        Sync-Win32ToolkitAppDependency -ProjectPath $project
+
+        This adds the Visual C++ redistributable to the project ($project as in the first example)
+        and links it to the app in Intune. Publish the redistributable with the toolkit first:
+        Sync-Win32ToolkitAppDependency links only an app that is already in the tenant.
+    .EXAMPLE
+        $appId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'   # from the Intune admin center
+        Sync-Win32ToolkitAppDependency -ProjectPath $project -AppId $appId
+
+        This updates the app with the ID that you copied, for example an app published from
+        another PC ($project as in the first example).
+    .EXAMPLE
+        Sync-Win32ToolkitAppDependency -ProjectPath $project -WhatIf
+
+        This signs in and looks up the dependencies ($project as in the first example), but
+        changes nothing in Intune.
+    .OUTPUTS
+        The number of dependencies that the app now has in Intune.
+        With -WhatIf, the number it would set.
+    .NOTES
+        Needs: the Microsoft.Graph.Authentication module, and an Intune admin role with the Relate
+        permission for mobile apps. Time: seconds after the sign-in.
+    .LINK
+        https://win32toolkit.com/reference/Sync-Win32ToolkitAppDependency/
+    .LINK
+        https://win32toolkit.com/dependencies/
     #>
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType([int])]

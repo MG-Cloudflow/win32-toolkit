@@ -1,121 +1,106 @@
 # Export-Win32ToolkitIntuneWin
 
 ## SYNOPSIS
-Packages a PSADT project into a .intunewin file for Intune deployment.
+Checks a project and builds its .intunewin package, and can publish it to Intune.
 
 ## SYNTAX
 
 ```
 Export-Win32ToolkitIntuneWin [[-ProjectPath] <String>] [[-BasePath] <String>] [-PublishIntune] [-PublishUpdate]
  [-NoPublishPrompt] [[-PublishTimeoutSeconds] <Int32>] [-AllowLegacyScript] [-PassThru]
- [-ProgressAction <ActionPreference>] [-WhatIf] [-Confirm] [<CommonParameters>]
+ [-WhatIf] [-Confirm] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
-Works with the win32-toolkit template-grouped folder layout:
+Export-Win32ToolkitIntuneWin builds the .intunewin package of a project: the file that Intune
+needs.
+It first runs the package check, which refuses a project that is not safe to ship and
+lists every problem with its fix.
+Then it builds the package from a clean copy of the project,
+without test files, Intune IDs or other data that must not reach devices.
 
-    \<BasePath\>\
-      Projects\\\<Template\>\\\<App\>\    raw PSADT projects - never modified
-      Staging\\\<Template\>\\\<App\>\     cleaned copy produced during packaging (kept for re-runs)
-      IntuneWin\\\<Template\>\         finished .intunewin files
+Use it to get the package file, or to see the package check before you publish.
+In the menu:
+Work with an existing project \> Package to .intunewin.
+Unless you give -PublishIntune,
+-PublishUpdate or -NoPublishPrompt, the command asks "Upload to Microsoft Intune now?
+(Y/N)"
+after the build.
+The answer Y publishes the install app only.
 
-Steps performed:
-1.
-Resolves the target project (interactive picker if ProjectPath is omitted).
-   A project marked not configured (its build stopped after the project folder was created: a
-   refused configuration, a failed download, no installer found) is refused with
-   W32T.ProjectNotConfigured, also under -WhatIf and with no override: re-create it.
-   Then refuses to package a deploy script win32-toolkit cannot vouch for
-   (Assert-Win32ToolkitPackageReady -Stage Export), before anything is downloaded or copied: the
-   script must exist and parse (also under Windows PowerShell 5.1, which Intune uses), carry the
-   AppConfig loader written by win32-toolkit, use a supported PSAppDeployToolkit template layout
-   and version that matches the bundled module, and Invoke-AppDeployToolkit.exe (the launcher
-   Intune starts) must sit next to it, and every uninstall cleanup path must be a folder the
-   app's own install created (no override).
-Every problem is listed in one W32T.PackageNotReady error.
-   A missing install tattoo, a project patched by win32-toolkit 1.1.6 or older, or a bundled
-   prerelease PSAppDeployToolkit (e.g.
-4.2.0-rc2) only warns.
-2.
-Locates or auto-downloads IntuneWinAppUtil.exe into the module's Tools\ folder
-   (Authenticode-verified as Microsoft-signed before use).
-3.
-Copies the raw project into Staging\\\<Template\>\\\<ProjectName\>\, EXCLUDING everything that
-   must never ship: Docs\, Examples\, Sandbox\ (test artifacts), Documentation\ (captures),
-   and Intune\ (Publications.json - tenant + app ids that must never travel to a device).
-   Re-copied on every run so Staging always reflects the latest raw project.
-4.
-Runs Optimize-Win32ToolkitProject against the Staging copy as a safety net - strips any
-   surviving non-shipping folder (a locked Intune\ folder aborts packaging), root *.md and
-   *.wsb files, the TargetedDocumentationScript, and empty dirs.
-Projects\ stays untouched.
-5.
-Runs IntuneWinAppUtil.exe against the Staging copy, outputting to IntuneWin\\\<Template\>\.
-6.
-Renames the produced Invoke-AppDeployToolkit.intunewin → \<ProjectName\>.intunewin.
-6b.
-Warns (never stops) when the latest install/uninstall test failed or gave no verdict, the latest
-   Update test failed, a technology switch was seen, or identity checks found something (for example
-   winget also ships another installer technology for this app that no Update test has covered).
-   Shown once per run, also when Export publishes.
+The package is \<base folder\>\IntuneWin\\\<template\>\\\<project\>.intunewin, and it replaces an older
+one.
+The clean copy stays in \<base folder\>\Staging\\\<template\>\\\<project\>.
+Building never changes
+the project.
+The first build downloads IntuneWinAppUtil.exe, the Microsoft tool that builds
+the package.
+Every run checks the Microsoft signature of this tool.
 
--WhatIf is a dry run: the gate (step 1) and the warnings (6b) run, nothing is downloaded, staged,
-optimised or built (steps 2-6), an older .intunewin is not reported as created, and a requested
-publish is only announced.
--Confirm asks once for the whole package build.
+After the build, the command shows warnings, for example about a failed test.
+A failed test
+only warns: it does not stop packaging or publishing.
+
+It stops with an error whose ID starts with W32T.
+when the project is not safe to build.
+W32T.ProjectNotConfigured means that the project build stopped halfway: re-create the project.
+W32T.PackageNotReady lists the problems that the package check found.
 
 ## EXAMPLES
 
 ### EXAMPLE 1
 ```
-Export-Win32ToolkitIntuneWin
+Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'
 ```
+
+This builds C:\Win32Apps\IntuneWin\Contoso\Git_x64_2.53.0.intunewin.
+Then it asks if you want
+to upload the package to Intune.
 
 ### EXAMPLE 2
 ```
-Export-Win32ToolkitIntuneWin -BasePath 'D:\Packaging'
+$project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+Export-Win32ToolkitIntuneWin -ProjectPath $project -PublishIntune
 ```
+
+This builds the package and publishes it to Intune as the install app.
 
 ### EXAMPLE 3
 ```
-Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0'
+$project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+Export-Win32ToolkitIntuneWin -ProjectPath $project -PublishIntune -PublishUpdate
 ```
+
+This builds the package and publishes the install app first.
+Then it publishes the update app,
+for devices that already have the app.
 
 ### EXAMPLE 4
 ```
-Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0' -PublishIntune
+$project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+Export-Win32ToolkitIntuneWin -ProjectPath $project -PublishIntune -WhatIf
 ```
+
+This runs the package check and shows the warnings.
+It builds nothing and publishes nothing.
 
 ### EXAMPLE 5
 ```
-# Publish both the install app and the requirement-gated update app
-Export-Win32ToolkitIntuneWin -ProjectPath 'C:\Win32Apps\Projects\Git_x64_2.53.0' -PublishIntune -PublishUpdate
+$project = 'C:\Win32Apps\Projects\Contoso\Git_x64_2.53.0'   # your project folder
+$result = Export-Win32ToolkitIntuneWin -ProjectPath $project -NoPublishPrompt -PassThru
+$result.IntuneWinPath
 ```
 
-### EXAMPLE 6
-```
-# A big package on a slow tenant - wait up to 15 minutes for the commit
-Export-Win32ToolkitIntuneWin -ProjectPath $proj -PublishIntune -PublishTimeoutSeconds 900
-```
-
-### EXAMPLE 7
-```
-# A hand-maintained deploy script that win32-toolkit never patched
-Export-Win32ToolkitIntuneWin -ProjectPath $proj -NoPublishPrompt -AllowLegacyScript
-```
-
-### EXAMPLE 8
-```
-# Package, publish, and keep what happened
-$r = Export-Win32ToolkitIntuneWin -ProjectPath $proj -PublishIntune -PassThru
-$r.IntuneWinPath; $r.Published.PortalUri; $r.Problems
-```
+This is the form for scripts.
+It builds the package without the upload question and shows the
+path of the package.
 
 ## PARAMETERS
 
 ### -ProjectPath
-Full path to the raw PSADT project folder under Projects\.
-If omitted, an interactive numbered list is shown.
+The project folder: \<base folder\>\Projects\\\<template\>\\\<project\>.
+Without it, the command shows
+a numbered list of your projects and asks for a number.
 
 ```yaml
 Type: String
@@ -130,16 +115,12 @@ Accept wildcard characters: False
 ```
 
 ### -BasePath
-Root folder containing the Templates\, Projects\, Staging\, and IntuneWin\ tiers.
-If omitted,
-the registry-saved value is used (see Invoke-Win32Toolkit).
-
-When -ProjectPath is supplied, an explicit -BasePath is honoured: Staging\ and IntuneWin\ are
-written under it.
-If -BasePath is omitted, the base is derived from the project path, which must
-follow the \<BasePath\>\Projects\\\<Template\>\\\<ProjectName\> layout - a project stored anywhere else
-is an error telling you to pass -BasePath (rather than silently creating Staging\ and IntuneWin\
-in an unexpected place).
+The base folder for this command only.
+It is not saved.
+Default: the base folder that holds
+the project, or your saved base folder when you give no -ProjectPath.
+You need it when the
+project is not in \<base folder\>\Projects\\\<template\>\\\<project\>.
 
 ```yaml
 Type: String
@@ -154,14 +135,13 @@ Accept wildcard characters: False
 ```
 
 ### -PublishIntune
-After packaging, upload the .intunewin file directly to Microsoft Intune via Graph API.
-Requires the Microsoft.Graph.Authentication module.
-You will be prompted to authenticate
-interactively on the first run.
-A project with no detection rule (no install tattoo and no install
-capture) is not published: the W32T.NoDetectionRule error is passed through unchanged.
-To publish
-such an app anyway, call Publish-Win32ToolkitIntuneApp -AllowNoDetectionRule on the package.
+After the build, publishes the package to Intune as the install app, with
+Publish-Win32ToolkitIntuneApp.
+You sign in if you are not signed in yet.
+If no detection rule
+can be built, it stops with W32T.NoDetectionRule and publishes nothing.
+To publish such a
+package without a rule, use Publish-Win32ToolkitIntuneApp -AllowNoDetectionRule.
 
 ```yaml
 Type: SwitchParameter
@@ -176,9 +156,12 @@ Accept wildcard characters: False
 ```
 
 ### -PublishUpdate
-Also (or instead of -PublishIntune) publish the update app - a 2nd Intune app of the same version
-with an "app already installed" requirement rule.
-Use with -PublishIntune to publish both.
+After the build, publishes the update app: a second app of the same version that applies only
+to devices that already have the app.
+Add -PublishIntune to publish both, the install app
+first.
+If the toolkit has no sure way to see that the app is installed, it skips the update app
+with a warning.
 
 ```yaml
 Type: SwitchParameter
@@ -193,7 +176,10 @@ Accept wildcard characters: False
 ```
 
 ### -NoPublishPrompt
-Suppress the interactive "Upload to Intune now?" prompt (used by the TUI / automation).
+Removes the question "Upload to Microsoft Intune now?
+(Y/N)" after the build.
+Use it in
+scripts that only build the package.
 
 ```yaml
 Type: SwitchParameter
@@ -208,10 +194,13 @@ Accept wildcard characters: False
 ```
 
 ### -PublishTimeoutSeconds
-Passed straight to Publish-Win32ToolkitIntuneApp -TimeoutSeconds: how long to wait for Intune's two
-asynchronous steps (Azure Storage SAS URI, file commit).
-Omit to use that command's default (300 s).
-Raise it for very large packages or a slow tenant.
+How many seconds to wait for Intune at two points of the upload: for the upload address, and
+for the check of the uploaded file.
+Default: 300 (from 5 to 7200).
+Raise it, for example to
+900, for a very large package or a slow tenant.
+Command line only: the menu does not offer
+this.
 
 ```yaml
 Type: Int32
@@ -220,19 +209,21 @@ Aliases:
 
 Required: False
 Position: 3
-Default value: 0
+Default value: None
 Accept pipeline input: False
 Accept wildcard characters: False
 ```
 
 ### -AllowLegacyScript
-Package a deploy script that win32-toolkit never patched (no AppConfig loader), or whose PSADT
-template layout or bundled module version this win32-toolkit version does not support, as-is: those
-findings become warnings instead of stopping the export.
-Projects patched by older win32-toolkit
-versions do not need it.
-A script that does not parse, or a missing Invoke-AppDeployToolkit.exe,
-still stops the export.
+Builds the package even if win32-toolkit did not prepare the deploy script, or does not
+support its PSAppDeployToolkit version or layout.
+These problems become warnings.
+Projects
+from win32-toolkit 1.1.6 or older do not need it.
+It never overrides syntax errors, a missing
+Invoke-AppDeployToolkit.exe, unsafe uninstall cleanup folders or other checks.
+Command line
+only: the menu does not offer this.
 
 ```yaml
 Type: SwitchParameter
@@ -247,12 +238,9 @@ Accept wildcard characters: False
 ```
 
 ### -PassThru
-Return a summary object instead of nothing: ProjectPath, IntuneWinPath (the .intunewin built; empty
-under -WhatIf or when IntuneWinAppUtil.exe wrote none), Published (the objects
-Publish-Win32ToolkitIntuneApp returned) and Problems (what went wrong without stopping the export: no
-package built, the update app skipped).
-Invoke-Win32Toolkit, New-Win32ToolkitManualApp and
-Complete-Win32ToolkitManualApp use it for their result object.
+Returns a summary object instead of nothing.
+Use it in scripts to read the package path, the
+published apps and the problems.
 
 ```yaml
 Type: SwitchParameter
@@ -297,21 +285,6 @@ Accept pipeline input: False
 Accept wildcard characters: False
 ```
 
-### -ProgressAction
-{{ Fill ProgressAction Description }}
-
-```yaml
-Type: ActionPreference
-Parameter Sets: (All)
-Aliases: proga
-
-Required: False
-Position: Named
-Default value: None
-Accept pipeline input: False
-Accept wildcard characters: False
-```
-
 ### CommonParameters
 This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable, -InformationAction, -InformationVariable, -OutVariable, -OutBuffer, -PipelineVariable, -Verbose, -WarningAction, and -WarningVariable. For more information, see [about_CommonParameters](http://go.microsoft.com/fwlink/?LinkID=113216).
 
@@ -319,7 +292,21 @@ This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable
 
 ## OUTPUTS
 
-### None by default. With -PassThru, one [pscustomobject] { ProjectPath; IntuneWinPath; Published; Problems }.
+### Nothing by default.
+### With -PassThru, one object with ProjectPath, IntuneWinPath, Published and Problems.
+### Published holds the published apps.
+### Problems lists what went wrong without stopping the command.
+### An error stops the command and returns nothing.
 ## NOTES
+Time: seconds to a few minutes to build.
+A publish usually takes a few minutes, longer for big
+packages.
 
 ## RELATED LINKS
+
+[https://win32toolkit.com/reference/Export-Win32ToolkitIntuneWin/](https://win32toolkit.com/reference/Export-Win32ToolkitIntuneWin/)
+
+[https://win32toolkit.com/build-intunewin/](https://win32toolkit.com/build-intunewin/)
+
+[https://win32toolkit.com/publishing/](https://win32toolkit.com/publishing/)
+
