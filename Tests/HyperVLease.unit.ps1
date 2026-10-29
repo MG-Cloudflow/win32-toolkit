@@ -63,6 +63,7 @@ function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+. (Join-Path $repo 'Private\Initialize-Win32ToolkitLeaseFileType.ps1')   # the lease's file type (menu selectors D6)
 . (Join-Path $repo 'Private\Enter-Win32ToolkitHyperVLease.ps1')
 . (Join-Path $repo 'Private\Exit-Win32ToolkitHyperVLease.ps1')
 # C-9 (speed-up PR 4): Enter joins this process's background restore first; with none pending the real join does nothing.
@@ -497,7 +498,16 @@ $after = Try-Exclusive
     } else { Bad "statics: $($shares -join ', ') / $(@($statics | Where-Object { $_ -match 'Inheritable|DeleteOnClose' }) -join ', ')" }
     # The native type (a constant string): the holder's CreateFileW opens read+write, OPEN_ALWAYS, no security attributes
     # (not inheritable), FILE_FLAG_OPEN_REPARSE_POINT and never FILE_FLAG_DELETE_ON_CLOSE; Describe never follows a link.
-    $addTypes = @($astE.FindAll({ param($nd) $nd -is [System.Management.Automation.Language.CommandAst] -and $nd.GetCommandName() -eq 'Add-Type' }, $true))
+    # Menu selectors D6: the Add-Type moved unchanged into Initialize-Win32ToolkitLeaseFileType (shared with the read-only
+    # probe); the lease calls it, and no other file compiles the type.
+    $astT = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'Private\Initialize-Win32ToolkitLeaseFileType.ps1'), [ref]$null, [ref]$null)
+    $addTypes = @($astT.FindAll({ param($nd) $nd -is [System.Management.Automation.Language.CommandAst] -and $nd.GetCommandName() -eq 'Add-Type' }, $true))
+    $initCalls = @($astE.FindAll({ param($nd) $nd -is [System.Management.Automation.Language.CommandAst] -and $nd.GetCommandName() -eq 'Initialize-Win32ToolkitLeaseFileType' }, $true))
+    $otherTypes = @(Get-ChildItem -LiteralPath (Join-Path $repo 'Private'), (Join-Path $repo 'Public') -Filter '*.ps1' -File |
+        Where-Object { $_.Name -ne 'Initialize-Win32ToolkitLeaseFileType.ps1' -and [System.IO.File]::ReadAllText($_.FullName) -match 'public static class W32TLeaseFile' })
+    if ($initCalls.Count -eq 1 -and $otherTypes.Count -eq 0 -and @($astE.FindAll({ param($nd) $nd -is [System.Management.Automation.Language.CommandAst] -and $nd.GetCommandName() -eq 'Add-Type' }, $true)).Count -eq 0) {
+        Ok 'the lease compiles its file type through Initialize-Win32ToolkitLeaseFileType only'
+    } else { Bad "type sources: init calls $($initCalls.Count), other definitions $(@($otherTypes | ForEach-Object Name) -join ', ')" }
     $typeText = if ($addTypes.Count -eq 1) { $addTypes[0].Extent.Text } else { '' }
     if ($typeText -match [regex]::Escape('CreateFileW(path, 0xC0000000, (uint)share, IntPtr.Zero, 4, 0x80 | 0x00200000, IntPtr.Zero)') -and
         $typeText -match [regex]::Escape('CreateFileW(path, 0x00020080, 7, IntPtr.Zero, 3, 0x02000000 | 0x00200000, IntPtr.Zero)') -and $typeText -notmatch '0x04000000|Inherit') {
@@ -505,7 +515,7 @@ $after = Try-Exclusive
     } else { Bad 'the native type text changed' }
     # The hidden -TrustedOwnerSid weakens the check: tests only, never module or runner code.
     $passers = @(Get-ChildItem -LiteralPath (Join-Path $repo 'Private'), (Join-Path $repo 'Public'), (Join-Path $repo 'scripts') -Filter '*.ps1' -File -Recurse) + @(Get-Item -LiteralPath (Join-Path $repo 'win32-toolkit.psm1')) |
-        Where-Object { $_.Name -ne 'Enter-Win32ToolkitHyperVLease.ps1' -and [System.IO.File]::ReadAllText($_.FullName) -match 'TrustedOwnerSid' }
+        Where-Object { $_.Name -notin 'Enter-Win32ToolkitHyperVLease.ps1', 'Get-Win32ToolkitHyperVLeaseState.ps1' -and [System.IO.File]::ReadAllText($_.FullName) -match 'TrustedOwnerSid' }
     if ($passers.Count -eq 0) { Ok 'no module or runner file passes -TrustedOwnerSid' } else { Bad "-TrustedOwnerSid in: $(@($passers | ForEach-Object Name) -join ', ')" }
 
     # ============================== [p] the lock folder and file are not trusted ==============================

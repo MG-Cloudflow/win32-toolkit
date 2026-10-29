@@ -69,6 +69,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Start-Win32ToolkitHyperVBackgroundRestore.ps1')
 . (Join-Path $repo 'Private\Wait-Win32ToolkitHyperVTeardown.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitAsyncTeardownOwner.ps1')
+. (Join-Path $repo 'Private\Initialize-Win32ToolkitLeaseFileType.ps1')   # the lease's file type (menu selectors D6)
 . (Join-Path $repo 'Private\Enter-Win32ToolkitHyperVLease.ps1')
 . (Join-Path $repo 'Private\Exit-Win32ToolkitHyperVLease.ps1')
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitHyperVRun.ps1')
