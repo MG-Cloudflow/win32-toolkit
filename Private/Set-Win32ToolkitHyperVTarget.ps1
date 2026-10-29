@@ -27,7 +27,7 @@ function Set-Win32ToolkitHyperVTarget {
         [pscustomobject] VMName and CheckpointName (the values read back; '' = not set, the default), Ok ([bool] they are
         what was asked), Target (Get-Win32ToolkitHyperVTarget -NoThrow: what this window uses now).
     #>
-    [CmdletBinding(DefaultParameterSetName = 'Target')]
+    [CmdletBinding(DefaultParameterSetName = 'Target', SupportsShouldProcess)]
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory, ParameterSetName = 'Target')]
@@ -90,9 +90,11 @@ function Set-Win32ToolkitHyperVTarget {
         if ($cps.Count -ne 1) { & $refuse "VM '$vmText' has $($cps.Count) checkpoints named '$cpText' (exactly one is needed)." }
     }
 
-    Set-Win32ToolkitConfigValue -Name 'HyperVVMName' -Value $wantVm -ErrorAction Stop
-    Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Value $wantCp -ErrorAction Stop
-    Clear-Win32ToolkitHyperVStateCache -MarkerOnly
+    if ($PSCmdlet.ShouldProcess('HyperVVMName, HyperVCheckpoint (HKCU:\Software\CloudFlow\win32-toolkit)', "Save '$wantVm' / '$wantCp'")) {
+        Set-Win32ToolkitConfigValue -Name 'HyperVVMName' -Value $wantVm -ErrorAction Stop
+        Set-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Value $wantCp -ErrorAction Stop
+        Clear-Win32ToolkitHyperVStateCache -MarkerOnly
+    }
 
     $savedVm = [string](Get-Win32ToolkitConfigValue -Name 'HyperVVMName' -Default '')
     $savedCp = [string](Get-Win32ToolkitConfigValue -Name 'HyperVCheckpoint' -Default '')

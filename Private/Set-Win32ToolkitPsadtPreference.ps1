@@ -17,7 +17,7 @@ function Set-Win32ToolkitPsadtPreference {
     .OUTPUTS
         [pscustomobject] Requested, Saved (the value read back, '' = no pin), Ok ([bool] Saved equals Requested).
     #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
     [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)]
@@ -43,7 +43,9 @@ function Set-Win32ToolkitPsadtPreference {
         }
     }
 
-    Set-Win32ToolkitConfigValue -Name 'PreferredPsadtVersion' -Value $want -ErrorAction Stop
+    if ($PSCmdlet.ShouldProcess('PreferredPsadtVersion (HKCU:\Software\CloudFlow\win32-toolkit)', "Save '$want'")) {
+        Set-Win32ToolkitConfigValue -Name 'PreferredPsadtVersion' -Value $want -ErrorAction Stop
+    }
     $saved = ([string](Get-Win32ToolkitConfigValue -Name 'PreferredPsadtVersion' -Default '')).Trim()
     [pscustomobject]@{
         Requested = $want
