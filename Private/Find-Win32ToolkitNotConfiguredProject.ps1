@@ -11,9 +11,11 @@ function Find-Win32ToolkitNotConfiguredProject {
         does a Failed result's ProjectPath); otherwise every folder of the template directory.
 
         A candidate is named only when its marker (Get-Win32ToolkitNotConfiguredMarker) has a TimestampUtc with
-        SinceUtc <= t <= now + 1 minute AND the marker file's LastWriteTimeUtc >= SinceUtc: a marker from an earlier
-        run, one with no parsable time, or a future-dated (hand-made or copied) one is never named. Limit: during the
-        scan, a marker another session writes in the same template folder during this run is named too.
+        SinceUtc <= t <= now + 1 minute AND the marker file's LastWriteTimeUtc >= SinceUtc - 2 s: a marker from an
+        earlier run, one with no parsable time, or a future-dated (hand-made or copied) one is never named. The 2 s
+        allow for file times being coarser than [datetime]::UtcNow (about 16 ms on NTFS, 2 s on FAT): a marker written
+        in the same clock tick as the run start can carry a write time just before it. Limit: during the scan, a
+        marker another session writes in the same template folder during this run is named too.
 
         Never throws: its catch starts with the W32T.* re-throw, then returns nothing.
     .PARAMETER TemplateDirectory
@@ -52,7 +54,7 @@ function Find-Win32ToolkitNotConfiguredProject {
             $now = [datetime]::UtcNow
             if ($marker.TimestampUtc -lt $since -or $marker.TimestampUtc -gt $now.AddMinutes(1)) { continue }
             $file = Get-Item -LiteralPath $marker.Path -ErrorAction SilentlyContinue
-            if (-not $file -or $file.LastWriteTimeUtc -lt $since) { continue }
+            if (-not $file -or $file.LastWriteTimeUtc -lt $since.AddSeconds(-2)) { continue }
             $candidate
         }
     }

@@ -290,6 +290,16 @@ try {
     $p = LastPanel
     if ($p.Header -eq 'Something went wrong' -and $p.Data -ceq ('[red]refused[/]' + (& $kept $freshProj))) { Ok 'a sibling marker written during the run whose TimestampUtc is an hour old -> not named (the fresh one is)' } else { Bad "panel: $($p | ConvertTo-Json -Compress)" }
 
+    # File times are coarser than [datetime]::UtcNow (about 16 ms on NTFS, 2 s on FAT): a marker written in the same
+    # clock tick as the run start can carry a write time just before it (CI flake on a fast runner). Still this run's.
+    & $resetMarkers
+    $since = [datetime]::UtcNow
+    $tickProj = Join-Path $tplDir 'Tick_x64_1.0'; $staleProj = Join-Path $tplDir 'StaleFile_x64_1.0'
+    & $writeRaw $tickProj $since.AddMilliseconds(5) $since.AddMilliseconds(-15)
+    & $writeRaw $staleProj $since.AddMilliseconds(5) $since.AddSeconds(-3)
+    $named = @(Find-Win32ToolkitNotConfiguredProject -TemplateDirectory $tplDir -SinceUtc $since)
+    if ($named.Count -eq 1 -and $named[0] -eq [System.IO.Path]::GetFullPath($tickProj)) { Ok 'a marker file written 15 ms before the run start (coarse file clock) is named; one 3 s before is not' } else { Bad "named: $($named -join ', ')" }
+
     & $resetMarkers
     $projA = Join-Path $tplDir 'A_x64_1.0'; $projB = Join-Path $tplDir 'B_x64_1.0'
     Reset-Run @() (& $w32tErr 'W32T.PipelineAborted' 'PSADT configuration failed' $projA)
