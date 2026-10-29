@@ -129,7 +129,7 @@ function Select-Win32ToolkitPsadtModule {
             # Name the pin to clear: an env pin is easy to forget, and nothing installs a pinned version.
             $fixHint = switch ($prefSource) {
                 'Environment' { 'Fix: clear $env:W32T_PSADT_VERSION (set in this session), or install that version if it is supported.' }
-                'Registry'    { 'Fix: change or remove the PreferredPsadtVersion value under HKCU:\Software\CloudFlow\win32-toolkit, or install that version if it is supported.' }
+                'Registry'    { 'Fix: choose another version in the menu (Settings > PSAppDeployToolkit version), change or remove the PreferredPsadtVersion value under HKCU:\Software\CloudFlow\win32-toolkit, or install that version if it is supported.' }
                 default       { 'Fix: pass a supported, installed version.' }
             }
             "PreferredPsadtVersion '$pref' ($sourceText) is not installed or not supported (supported: $display). $fixHint"
