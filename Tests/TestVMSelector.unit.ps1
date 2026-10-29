@@ -34,7 +34,7 @@ $fail = 0
 function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
-foreach ($f in 'ConvertTo-Win32ToolkitSafeText', 'Get-Win32ToolkitHyperVTarget', 'Initialize-Win32ToolkitLeaseFileType', 'Get-Win32ToolkitHyperVLeaseState',
+foreach ($f in 'ConvertTo-Win32ToolkitSafeText', 'Get-Win32ToolkitWrappedText', 'Get-Win32ToolkitHyperVTarget', 'Initialize-Win32ToolkitLeaseFileType', 'Get-Win32ToolkitHyperVLeaseState',
     'Get-Win32ToolkitTestVMChoice', 'Set-Win32ToolkitHyperVTarget', 'Show-Win32ToolkitTestVMSelect', 'Show-Win32ToolkitTestVM') {
     . (Join-Path $repo "Private\$f.ps1")
 }

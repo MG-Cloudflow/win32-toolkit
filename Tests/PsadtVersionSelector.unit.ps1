@@ -94,7 +94,8 @@ function Clear-Host { }
 function Write-SpectreRule { param([Parameter(ValueFromRemainingArguments)]$a) }
 function Write-SpectreHost { param([Parameter(Position = 0)]$Message) $script:hostLines.Add([string]$Message) }
 function Format-SpectrePanel { param($Data, $Header, $Border, $Color) $script:panels.Add("$Header|$Data") }
-function Format-SpectreTable { param([Parameter(ValueFromPipeline)]$InputObject, [Parameter(ValueFromRemainingArguments)]$a) process { } }
+$script:tableRows = [System.Collections.Generic.List[object]]::new()
+function Format-SpectreTable { param([Parameter(ValueFromPipeline)]$InputObject, [Parameter(ValueFromRemainingArguments)]$a) process { $script:tableRows.Add($InputObject) } }
 function Out-SpectreHost { param([Parameter(ValueFromPipeline)]$Data) process { } }
 function Get-SpectreEscapedText { param($Text) $Text }
 function Read-SpectrePause { param([Parameter(ValueFromRemainingArguments)]$a) }
@@ -267,6 +268,24 @@ try {
     if (-not $x.Error -and $x.PicksLeft -eq 0 -and $script:cfg['PreferredPsadtVersion'] -eq '4.1.8' -and $script:panels -match '^Saved\|New projects get PSADT 4\.1\.8\.') { Ok 'choosing "Exactly 4.1.8" saves it and says what new projects get' } else { Bad "save: $($x.Error) left=$($x.PicksLeft) cfg=$($script:cfg['PreferredPsadtVersion']) panels=$($script:panels -join ' || ')" }
     $labels = $script:prompts[0].Labels
     if (($labels -contains 'Use the newest supported version (no pin) - now 4.2.0 (saved)') -and ($labels -contains 'Always the newest installed 4.1.x - now 4.1.8') -and ($labels -contains 'Install another supported version from PowerShell Gallery') -and ($labels[-1] -eq 'Back')) { Ok "menu labels: $($labels -join ' | ')" } else { Bad "labels: $($labels -join ' | ')" }
+    # The folder is pre-wrapped at '\' to the width its column gets (live check 2026-10-29: a long OneDrive module path
+    # squeezed the other columns to '...'); joined again it is the folder.
+    $bufW = 0; try { $bufW = [int]$Host.UI.RawUI.BufferSize.Width } catch { $bufW = 0 }; if ($bufW -le 0) { $bufW = 120 }
+    $deep = Join-Path $work ('very-long-folder-name-for-the-wrap-check\' * 4).TrimEnd('\')
+    $null = MakeFakePsadt $deep '4.1.9'
+    $env:PSModulePath = "$rootA;$rootB;$deep"
+    $script:tableRows.Clear()
+    $x = Drive -Picks 'Back'
+    $row = $script:tableRows | Where-Object { $_.Version -eq '4.1.9' }
+    $folderW = [Math]::Max(20, $bufW - 16 - 'Version'.Length - 'Supported'.Length - 'prerelease'.Length - 'ignored'.Length - 1)
+    $lines = @(([string]$row.Folder) -split "`n")
+    $want = Join-Path $deep 'PSAppDeployToolkit\4.1.9'
+    if (-not $x.Error -and $lines.Count -gt 1 -and @($lines | Where-Object { $_.Length -gt $folderW }).Count -eq 0 -and ($lines -join '') -eq $want -and $lines[0].EndsWith('\')) { Ok "the folder is wrapped at '\' to $folderW columns ($($lines.Count) lines) and joins back to the path" } else { Bad "folder wrap: $($x.Error) width $folderW lines $($lines | ForEach-Object { $_.Length })" }
+    # The saved pin is 4.1.8 here (the save above): exactly one row, the first 4.1.8 in PSModulePath order, is in use.
+    $inUse = @($script:tableRows | Where-Object { $_.Status -eq '[green]in use[/]' })
+    if ($inUse.Count -eq 1 -and $inUse[0].Version -eq '4.1.8' -and $inUse[0].Folder -like "$rootA*" -and ($script:tableRows | Where-Object { $_.Version -eq '4.3.0' }).Status -eq '[grey]ignored[/]') { Ok 'Status: exactly the copy new projects get is "in use" (pin 4.1.8, the first root), an unsupported one "ignored"' } else { Bad "status: $(($script:tableRows | ForEach-Object { "$($_.Version)=$($_.Status)" }) -join ' ')" }
+    Remove-Item -LiteralPath (Join-Path $work 'very-long-folder-name-for-the-wrap-check') -Recurse -Force
+    $env:PSModulePath = "$rootA;$rootB"
     $x = Drive -Picks 'Exactly 4.1.8 (saved)', 'Back'
     if (-not $x.Error -and ($script:hostLines -match 'already your saved choice') -and ($script:hostLines -match "Why:.*pinned by PreferredPsadtVersion '4\.1\.8'")) { Ok 'the saved choice is marked; choosing it again changes nothing; the why line names the registry pin' } else { Bad "again: $($x.Error) $($script:hostLines -join ' || ')" }
     $x = Drive -Picks 'Exactly 4.2.0-rc2*', 'Back' -Confirms $false

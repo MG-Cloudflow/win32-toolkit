@@ -101,16 +101,25 @@ function Show-Win32ToolkitTestVMSelect {
                 Write-SpectreHost '[yellow]No VM found.[/] Provision one on the Hyper-V test VM screen.'
             }
             else {
+                # Pre-wrap the long cells to the width their column really gets (as the system check does): one long cell
+                # otherwise makes Spectre squeeze the others to '...' (live check of the PSADT screen, 2026-10-29).
+                # 16 = 6 border glyphs + 10 padding for 5 columns; State is at most 'Running' wide.
+                $bufW = 0
+                try { $bufW = [int]$Host.UI.RawUI.BufferSize.Width } catch { $bufW = 0 }
+                if ($bufW -le 0) { $bufW = 120 }
+                $vmW = 24; $useW = 22; $noteW = 24
+                $cpW = [Math]::Max(16, $bufW - 16 - $vmW - 'Running'.Length - $useW - $noteW - 1)
+                $wrap = { param([string]$Text, [int]$Width) Get-SpectreEscapedText -Text (Get-Win32ToolkitWrappedText -Text (ConvertTo-Win32ToolkitSafeText -Text $Text -MaxLength 400) -MaxWidth $Width) }
                 $table = foreach ($r in $rows) {
                     $clean = @($r.Checkpoints | Where-Object Offered | ForEach-Object { $_.Name })
                     $cpText = if ($clean.Count -gt 3) { (($clean[0..2]) -join ', ') + ', ...' } else { $clean -join ', ' }
                     $isTarget = -not $target.Problem -and [string]::Equals($r.Name, [string]$target.VMName, [System.StringComparison]::OrdinalIgnoreCase)
                     [pscustomobject]@{
-                        'VM'               = & $esc $(if ($r.Count -gt 1) { "$($r.Name) ($($r.Count) VMs)" } else { $r.Name })
-                        'State'            = & $esc $r.State
-                        'Clean checkpoints' = & $esc $cpText
-                        'In use'           = & $esc (& $inUseText $r.Lease)
-                        ' '                = $(if ($isTarget) { '[green]tests use this one[/]' } elseif (-not $r.Offered) { "[grey]$(& $esc $r.WhyNot): not offered[/]" } else { '' })
+                        'VM'                = & $wrap $(if ($r.Count -gt 1) { "$($r.Name) ($($r.Count) VMs)" } else { $r.Name }) $vmW
+                        'State'             = & $esc $r.State
+                        'Clean checkpoints' = & $wrap $cpText $cpW
+                        'In use'            = & $wrap (& $inUseText $r.Lease) $useW
+                        'Note'              = $(if ($isTarget) { '[green]tests use this one[/]' } elseif (-not $r.Offered) { "[grey]$(& $wrap "not offered: $($r.WhyNot)" $noteW)[/]" } else { '' })
                     }
                 }
                 $table | Format-SpectreTable -AllowMarkup -Border Rounded -Color Grey | Out-SpectreHost

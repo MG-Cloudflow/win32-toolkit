@@ -120,6 +120,25 @@ function Show-Win32ToolkitPsadtVersion {
         $candidates = @(@($sel.Candidates) | Where-Object { $null -ne $_ })
         if ($candidates.Count -gt 0) {
             $inUsePath = if ($sel.Module) { [string]$sel.Module.Path } else { '' }
+            # Pre-wrap the folder to the width its column really gets, at '\' boundaries (as the system check pre-wraps
+            # its Detail): a long module path otherwise makes Spectre squeeze the short columns to '...' and wrap the
+            # version digit by digit (live check 2026-10-29). 16 = 6 border glyphs + 10 padding for 5 columns.
+            $bufW = 0
+            try { $bufW = [int]$Host.UI.RawUI.BufferSize.Width } catch { $bufW = 0 }
+            if ($bufW -le 0) { $bufW = 120 }
+            $verW = (@(@($candidates | ForEach-Object { ([string]$_.VersionText).Length }) + 'Version'.Length) | Measure-Object -Maximum).Maximum
+            $folderW = [Math]::Max(20, $bufW - 16 - $verW - 'Supported'.Length - 'prerelease'.Length - 'ignored'.Length - 1)
+            $wrapPath = {
+                param([string]$Path)
+                $lines = [System.Collections.Generic.List[string]]::new(); $line = ''
+                foreach ($part in [regex]::Split($Path, '(?<=\\)')) {
+                    $p = $part
+                    while ($p.Length -gt $folderW) { if ($line) { $lines.Add($line); $line = '' }; $lines.Add($p.Substring(0, $folderW)); $p = $p.Substring($folderW) }
+                    if (($line.Length + $p.Length) -le $folderW) { $line += $p } else { $lines.Add($line); $line = $p }
+                }
+                if ($line) { $lines.Add($line) }
+                $lines -join "`n"
+            }
             $rows = foreach ($c in $candidates) {
                 $mark = ''
                 if ($inUsePath -and [string]::Equals([string]$c.Path, $inUsePath, [System.StringComparison]::OrdinalIgnoreCase)) { $mark = '[green]in use[/]' }
@@ -128,8 +147,8 @@ function Show-Win32ToolkitPsadtVersion {
                     'Version'   = & $esc ([string]$c.VersionText)
                     'Supported' = $(if ($c.InRange) { 'Yes' } else { 'No' })
                     'Kind'      = $(if ($c.IsPrerelease) { 'prerelease' } else { 'stable' })
-                    'Folder'    = & $esc (Split-Path -Parent ([string]$c.Path))
-                    ' '         = $mark
+                    'Status'    = $mark
+                    'Folder'    = & $esc (& $wrapPath (Split-Path -Parent ([string]$c.Path)))
                 }
             }
             $rows | Format-SpectreTable -AllowMarkup -Border Rounded -Color Grey -Title 'Installed copies' | Out-SpectreHost
