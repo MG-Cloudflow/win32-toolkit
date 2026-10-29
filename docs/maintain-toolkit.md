@@ -81,10 +81,11 @@ It does not ask first. You see a line that starts with `Installing PSAppDeployTo
 The toolkit uses the first of these that applies:
 
 1. `$env:W32T_PSADT_VERSION`, for this PowerShell window only.
-2. The registry value `PreferredPsadtVersion`, for your Windows account.
+2. The registry value `PreferredPsadtVersion`, for your Windows account. The menu saves it for you.
 3. The newest supported version that is installed. A stable version wins over a test version of the same number.
 
-Choosing a version with one of the first two is called a [pin](glossary.md#pin).
+Choosing a version with one of the first two is called a [pin](glossary.md#pin). In the menu, **Settings** >
+**PSAppDeployToolkit version** shows the version that new projects get, and which of the three it comes from.
 
 Each project keeps the PSADT copy it was built with, so a new version or pin reaches new projects only. To change the
 version of a project, [re-create](glossary.md#re-create) it: make it again from the start. See
@@ -93,31 +94,66 @@ each project.
 
 ### Pin a version
 
-A pin is an exact version, such as `4.1.8`, or a major and minor number: `4.1` means the newest installed 4.1.x. Set
-or remove a pin with these commands:
+A pin is an exact version, such as `4.1.8`, or a major and minor number: `4.1` means the newest installed 4.1.x.
 
-```powershell
-$key = 'HKCU:\Software\CloudFlow\win32-toolkit'
-# every new project you create: the newest installed 4.1.x
-Set-ItemProperty -Path $key -Name 'PreferredPsadtVersion' -Value '4.1'
-# this PowerShell window only
-$env:W32T_PSADT_VERSION = '4.1.8'
-# remove the registry pin
-Remove-ItemProperty -Path $key -Name 'PreferredPsadtVersion'
-```
+=== "Menu"
 
-The toolkit never installs a pinned version for you. If it is missing, project creation stops with a warning that
-starts `PreferredPsadtVersion '<pin>'`. The [system check](glossary.md#system-check), the table on the
-main screen of the menu, shows an active pin on its PSADT row. A pin set with `$env:W32T_PSADT_VERSION` lasts until
-you close the window.
+    1. Start the menu ([`Show-Win32Toolkit`](reference/Show-Win32Toolkit.md)).
+    2. Choose **Settings** > **PSAppDeployToolkit version**. The screen shows **New projects get** and **Why**, then
+       the installed copies.
+    3. Choose **Use the newest supported version** to remove the pin, **Always the newest installed 4.1.x** to pin
+       `4.1`, or **Exactly 4.1.8** to pin one version.
+
+    The menu saves only a version that is installed and supported. For a prerelease it asks first. (The default is
+    No.) The screen never offers a version outside 4.1.x and 4.2.x.
+
+=== "Command line"
+
+    Set or remove a pin with these commands:
+
+    ```powershell
+    $key = 'HKCU:\Software\CloudFlow\win32-toolkit'
+    # every new project you create: the newest installed 4.1.x
+    Set-ItemProperty -Path $key -Name 'PreferredPsadtVersion' -Value '4.1'
+    # this PowerShell window only
+    $env:W32T_PSADT_VERSION = '4.1.8'
+    # remove the registry pin
+    Remove-ItemProperty -Path $key -Name 'PreferredPsadtVersion'
+    ```
+
+A PowerShell window uses one PSADT version until you close it. If this window already used another version, new
+projects in this window keep that version. The screen then says `Start a new PowerShell session`.
+
+The menu never changes `$env:W32T_PSADT_VERSION`. If you set it in a window, that window keeps it until you close it.
+Your choice in the menu is then for your other windows.
+
+Project creation never installs a pinned version. If the version is missing, it stops with a warning that starts
+`PreferredPsadtVersion '<pin>'`. The [system check](glossary.md#system-check), the table on the main screen of the
+menu, shows an active pin on its PSADT row. In the menu, the PSADT screen then offers **Install the pinned version**
+when PowerShell Gallery has it.
 
 ### Install PSADT by hand
 
-To add a supported version yourself, install it next to the others:
+Install another supported version next to the others. Nothing else changes: existing projects keep their own copy.
 
-```powershell
-Install-Module PSAppDeployToolkit -RequiredVersion 4.1.8 -Scope CurrentUser
-```
+=== "Menu"
+
+    1. Choose **Settings** > **PSAppDeployToolkit version** > **Install another supported version from PowerShell
+       Gallery**.
+    2. Choose a version, for example **Install 4.2.1**. The list shows only stable 4.1.x and 4.2.x versions that you
+       do not have yet.
+    3. At **Install PSAppDeployToolkit 4.2.1 for your Windows account?** answer `y`. (The default is No.)
+    4. At **Use 4.2.1 for new projects?** answer `y` to pin it. (The default is Yes.)
+
+    If you have a prerelease of the same number, such as `4.2.0-rc2`, the item is **Replace 4.2.0-rc2 with 4.2.0**.
+    Close every other PowerShell window that uses that prerelease first. The menu refuses it while its own window
+    uses the prerelease.
+
+=== "Command line"
+
+    ```powershell
+    Install-Module PSAppDeployToolkit -RequiredVersion 4.1.8 -Scope CurrentUser
+    ```
 
 !!! warning "Do not use Update-Module for PSADT"
 
@@ -130,7 +166,8 @@ If you install one and it is the newest supported version, new projects use it. 
 `Using PSAppDeployToolkit <version> - a PRERELEASE`. Do not use a prerelease in production.
 
 A command that creates a project can also offer a newer PSADT version. It asks
-`Install PSAppDeployToolkit <version> now? (y/n)`. It never asks when a pin is set, and the menu never asks.
+`Install PSAppDeployToolkit <version> now? (y/n)`. It never asks when a pin is set, or when you create the project in
+the menu.
 
 Add `-Force` to skip the question. But `-Force` also replaces a project of the same version without asking.
 
@@ -243,8 +280,8 @@ Follow these steps in order.
 1. If you built the test VM, remove it. In PowerShell 7 as administrator, run
    [`Remove-Win32ToolkitTestVM -RemoveVhdx`](reference/Remove-Win32ToolkitTestVM.md).
 
-    In the menu: **Settings** > **Hyper-V test VM** > **Remove the test VM**. At **Remove the test VM and delete its
-    VHDX?** answer `y` (the default is No). The VHDX is the virtual disk file of the test VM.
+    In the menu: **Settings** > **Hyper-V test VM** > **Remove the test VM**. At **Remove VM 'win32tk-golden' and
+    delete its virtual disks?** answer `y` (the default is No).
 
 2. Sign out of Intune with [`Disconnect-Win32ToolkitIntune`](reference/Disconnect-Win32ToolkitIntune.md), or choose
    **Microsoft Intune connection** > **Sign out** in the menu.

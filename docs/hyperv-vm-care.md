@@ -1,12 +1,12 @@
 ---
-description: "Change, reset, repair, rebuild or remove the Hyper-V test VM, and share it between PowerShell windows."
+description: "Choose, change, reset, repair, rebuild or remove the Hyper-V test VM, and share it between PowerShell windows."
 ---
 
 # Look after the Hyper-V test VM
 
 The [Hyper-V test VM](glossary.md#hyper-v-test-vm) is a Windows 11 virtual machine (VM) that
-win32-toolkit can use for tests. Before and after each test, the VM goes back to its [checkpoint](glossary.md#checkpoint) `clean-base`: a saved state of the running VM. This page shows how to change,
-reset, repair, rebuild, remove and share the VM.
+win32-toolkit can use for tests. Before and after each test, the VM goes back to its [checkpoint](glossary.md#checkpoint) `clean-base`: a saved state of the running VM. This page shows how to choose,
+change, reset, repair, rebuild, remove and share the VM.
 
 ## Before you start
 
@@ -31,7 +31,8 @@ your PC has the memory.
     2. Choose **Settings** > **Hyper-V test VM** > **Change VM resources**.
     3. At **New vCPU count**, type the number of virtual processors. Leave it blank to keep the current number.
     4. At **New memory**, type a size such as `8GB`. Leave it blank to keep the current size.
-    5. At **Apply now?** answer `y`. (The default is Yes.)
+    5. At **Apply the change to VM 'win32tk-golden' now?** answer `y`. (The default is Yes.) The question names your
+       test VM.
 
 === "Command line"
 
@@ -56,7 +57,9 @@ change its processors or memory.
 
 === "Menu"
 
-    Choose **Settings** > **Hyper-V test VM** > **Reset the VM to its clean checkpoint**.
+    1. Choose **Settings** > **Hyper-V test VM** > **Reset the VM to its clean checkpoint**.
+    2. At **Reset VM 'win32tk-golden' to its checkpoint 'clean-base'?** answer `y`. The default is Yes for
+       `win32tk-golden` and No for any other VM.
 
 === "Command line"
 
@@ -88,8 +91,10 @@ VM user in when Windows starts.
     [Re-take the checkpoint](hyperv-vm.md#re-take-the-checkpoint) instead.
 
 1. Choose **Settings** > **Hyper-V test VM** > **Configure guest AutoLogon + re-checkpoint**.
-2. If the toolkit asks for a user name, type the one that the VM was built with. (The default is `w32admin`.)
-3. Type the password of that user twice.
+2. At **This removes every checkpoint of VM 'win32tk-golden'** ... answer `y`. The default is Yes for `win32tk-golden`
+   and No for any other VM.
+3. If the toolkit asks for a user name, type the one that the VM was built with. (The default is `w32admin`.)
+4. Type the password of that user twice.
 
 The repair tests the password and turns on AutoLogon. Then it deletes all checkpoints and takes a new `clean-base` at
 the signed-in desktop.
@@ -134,10 +139,10 @@ plus Windows Update time.
 If a build stopped before its checkpoint, a new run without `-Force` stops with `VHDX already exists`. (The VHDX is the
 disk file of the VM.) Use the [repair](#repair-a-broken-vm) instead.
 
-!!! warning "The menu rebuilds by default"
-    **Settings** > **Hyper-V test VM** > **Provision the test VM from a Windows 11 ISO** checks for an existing VM or
-    disk. If it finds one, it asks **Delete it and rebuild from scratch?** The default is Yes. Answer `n` to keep your
-    VM.
+!!! warning "The menu rebuilds your test VM"
+    **Settings** > **Hyper-V test VM** > **Provision the test VM from a Windows 11 ISO** builds the test VM that you
+    chose. If that VM or its disk exists, it asks **Delete VM 'win32tk-golden' and rebuild VM 'win32tk-golden' from
+    scratch?** The default is Yes for `win32tk-golden` and No for any other VM. Answer `n` to keep your VM.
 
 ## Remove the VM
 
@@ -147,7 +152,7 @@ that file. Copy it first if you need it.
 === "Menu"
 
     1. Choose **Settings** > **Hyper-V test VM** > **Remove the test VM**.
-    2. At **Remove the test VM and delete its VHDX?** answer `y`. (The default is No.)
+    2. At **Remove VM 'win32tk-golden' and delete its virtual disks?** answer `y`. (The default is No.)
 
     The menu always deletes the disk files too.
 
@@ -170,9 +175,62 @@ Windows Sandbox. Set the default back with **Settings** > **Hyper-V test VM** > 
 **Windows Sandbox**. Without the menu, change the setting `TestBackend` to `Sandbox`
 ([Settings and folders](settings.md#change-a-setting)).
 
+## Choose another test VM
+
+All Hyper-V tests use one test VM and one checkpoint. Usually that is `win32tk-golden` with `clean-base`. If you have
+more VMs for tests, choose the one that tests use in the menu. The toolkit saves your choice for your Windows account,
+so every new PowerShell window uses it.
+
+!!! warning "Choose only a VM for tests"
+    Every test resets the VM to the checkpoint that you choose. All changes in the VM since that checkpoint are lost.
+    Never choose a VM that you use for other work.
+
+=== "Menu"
+
+    1. Start the menu ([`Show-Win32Toolkit`](reference/Show-Win32Toolkit.md)) in PowerShell 7 as administrator.
+    2. Choose **Settings** > **Hyper-V test VM** > **Choose the test VM and checkpoint**.
+    3. Choose the VM, for example **Use win32tk-second**.
+    4. Choose its checkpoint, for example **clean-base**.
+    5. At **Every test restores 'clean-base' and loses all changes made in win32tk-second since. Use win32tk-second
+       for tests?** answer `y`. The default is No, except for `win32tk-golden` and the VM that tests use now.
+
+    To go back to `win32tk-golden` with `clean-base`, choose **Back to the default (win32tk-golden, clean-base)**.
+
+=== "Command line"
+
+    The menu saves the settings `HyperVVMName` and `HyperVCheckpoint`. You can also set them yourself:
+
+    ```powershell
+    $key = 'HKCU:\Software\CloudFlow\win32-toolkit'
+    Set-ItemProperty -Path $key -Name 'HyperVVMName' -Value 'win32tk-second'
+    Set-ItemProperty -Path $key -Name 'HyperVCheckpoint' -Value 'clean-base'
+    ```
+
+The screen shows the VM and checkpoint that tests use, and why: **saved in Settings**, **the default**, or **pinned by
+W32T_HYPERV_VM in this window**. A table lists your VMs with their clean checkpoints. The **In use** column shows
+whether another PowerShell window is using a VM now. The screen only reads this. It never starts, resets or changes a
+VM.
+
+The screen does not offer these VMs and checkpoints:
+
+- Two VMs with the same name, or a name with `*`, `?`, `[` or `]`.
+- A VM without a clean checkpoint.
+- The checkpoints that the toolkit makes for dependencies (`clean-base+deps-...`), and Hyper-V recovery checkpoints.
+
+Also good to know:
+
+- The choice does not change where tests run. To test on the VM, [make the test VM your default](hyperv-vm.md#make-the-test-vm-your-default).
+- All test VMs use the one saved user name and password. A VM with another password fails at its first test.
+- If another window is using the VM, your next test [waits until it is free](#when-another-window-is-using-the-vm).
+- Without administrator rights, the screen cannot list your VMs. It only offers the default.
+- A window with the `W32T_HYPERV_VM` variable keeps its own VM. Your choice is for your other windows.
+- Windows that set only `W32T_HYPERV_VM` use the checkpoint name that you choose. So their VM needs a checkpoint with
+  that name.
+
 ## Use another VM in one PowerShell window
 
-To test on a second VM in one window only, set the [environment variable](glossary.md#environment-variable) `W32T_HYPERV_VM` there. An environment variable is a named value that
+To change the test VM for every window, [choose another test VM](#choose-another-test-vm) in the menu. To test on a
+second VM in one window only, set the [environment variable](glossary.md#environment-variable) `W32T_HYPERV_VM` there. An environment variable is a named value that
 a PowerShell window and its programs can read. Other windows keep your usual VM.
 
 The variable chooses the VM, not where tests run. So add `-Backend HyperV` to

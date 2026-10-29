@@ -108,26 +108,30 @@ column can also show one of these words:
 
 ## Settings
 
-**Settings** shows your base folder, then five items. [Settings and folders](settings.md) lists every setting.
+**Settings** shows your base folder, then six items. [Settings and folders](settings.md) lists every setting.
 
 | Item | What it does |
 |---|---|
 | **Change the base folder** | Saves a new base folder and uses it at once. Nothing is moved. |
-| **Hyper-V test VM** | Opens the **Hyper-V test VM** screen. |
+| **PSAppDeployToolkit version** | Shows the version that new projects get, and why. Opens the screen to [choose or install a version](maintain-toolkit.md#choose-the-psadt-version-for-new-projects). |
+| **Hyper-V test VM** | Shows the test VM and checkpoint that tests use. Opens the **Hyper-V test VM** screen. |
 | **Update check: On** or **Off** | Turns the update check off, or on again. Turning it on checks at once. |
 | **Re-run the system check** | Shows the system check table again. |
 | **Back to main menu** | Goes back. |
 
-The **Hyper-V test VM** screen shows whether the VM is ready. Then come these items:
+The **Hyper-V test VM** screen shows the test VM and checkpoint that tests use, and whether the VM is ready. Then come
+these items. Each item that changes the VM names it in its question.
 
-- [**Set the default test backend**](hyperv-vm.md#make-the-test-vm-your-default).
-- [**Provision the test VM from a Windows 11 ISO**](hyperv-vm.md#build-the-vm).
-- [**Change VM resources**](hyperv-vm-care.md#change-processors-or-memory).
-- [**Reset the VM to its clean checkpoint**](hyperv-vm-care.md#reset-the-vm-by-hand).
-- [**Configure guest AutoLogon + re-checkpoint**](hyperv-vm-care.md#repair-a-broken-vm). The guest is the Windows
-  inside the VM.
-- [**Remove the test VM**](hyperv-vm-care.md#remove-the-vm).
-- **Back**.
+| Item | What it does |
+|---|---|
+| [**Choose the test VM and checkpoint**](hyperv-vm-care.md#choose-another-test-vm) | Chooses the VM and checkpoint that tests use. |
+| [**Set the default test backend**](hyperv-vm.md#make-the-test-vm-your-default) | Chooses Windows Sandbox or the test VM for tests. |
+| [**Provision the test VM from a Windows 11 ISO**](hyperv-vm.md#build-the-vm) | Builds the test VM. |
+| [**Change VM resources**](hyperv-vm-care.md#change-processors-or-memory) | Changes its processors or memory. |
+| [**Reset the VM to its clean checkpoint**](hyperv-vm-care.md#reset-the-vm-by-hand) | Resets the VM. |
+| [**Configure guest AutoLogon + re-checkpoint**](hyperv-vm-care.md#repair-a-broken-vm) | Repairs the VM. The guest is the Windows inside the VM. |
+| [**Remove the test VM**](hyperv-vm-care.md#remove-the-vm) | Removes the VM and its disks. |
+| **Back** | Goes back. |
 
 ## Result panels and errors
 

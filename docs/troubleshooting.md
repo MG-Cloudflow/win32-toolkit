@@ -29,7 +29,7 @@ search. Also read the yellow warning lines above a red error, because they often
 | `Winget is not installed or not available in PATH` | [winget](glossary.md#winget), the Windows Package Manager, is missing. The menu says `winget is not available on this PC.` | Install App Installer from the Microsoft Store, or [package a manual app](manual-apps.md). |
 | `Windows Sandbox feature is not enabled.` ... | Windows Sandbox is off. win32-toolkit never turns on Windows features. You turn them on once. | [Turn on Windows Sandbox](install.md#turn-on-windows-sandbox), restart, and run the step again. |
 | `PSAppDeployToolkit <version> is already loaded` ... | One window can load only one PSADT version. | Open a new PowerShell window and run the step again. |
-| `PreferredPsadtVersion '<version>'` ... | The PSADT version you pinned is not installed or not supported. | Remove or change the pin. See [Choose the PSADT version](maintain-toolkit.md#choose-the-psadt-version-for-new-projects). |
+| `PreferredPsadtVersion '<version>'` ... | The PSADT version you pinned is not installed or not supported. | Choose another version in **Settings** > **PSAppDeployToolkit version**, or remove the pin. See [Choose the PSADT version](maintain-toolkit.md#choose-the-psadt-version-for-new-projects). |
 
 !!! note "Red rows on a new PC"
     On a new PC, the system check shows PSAppDeployToolkit, Microsoft.Graph.Authentication and IntuneWinAppUtil.exe in

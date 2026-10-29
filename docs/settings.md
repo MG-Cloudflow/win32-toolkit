@@ -24,9 +24,11 @@ The screen has these items:
 
 - **Change the base folder** asks **Enter the base folder for all output** and saves your answer. The default is
   your current base folder. It does not move your files.
-- **Hyper-V test VM** opens the screen of the [Hyper-V test VM](glossary.md#hyper-v-test-vm), a
-  virtual machine (VM) for tests that run as Intune does. There you choose where tests run, and build or remove
-  the VM.
+- **PSAppDeployToolkit version** shows the version that new projects get. There you
+  [choose a version, or install one](maintain-toolkit.md#choose-the-psadt-version-for-new-projects).
+- **Hyper-V test VM** shows the VM and checkpoint that tests use. It opens the screen of the
+  [Hyper-V test VM](glossary.md#hyper-v-test-vm), a virtual machine (VM) for tests that run as Intune does. There
+  you choose the test VM and where tests run, and build or remove the VM.
 - **Update check** turns the check for new toolkit versions on or off. Turning it on checks at once.
 - **Re-run the system check** shows the system check table again.
 
@@ -69,7 +71,7 @@ the app on devices.
 |---|---|---|---|
 | `BasePath` | Asked on the first run (suggests `C:\Win32Apps`) | A full folder path | Your base folder. Menu: **Settings** > **Change the base folder**. |
 | `PipelineCache` | `On` | `On`, `Off` | Keeps downloaded old versions for update tests and prepared dependency installers for later tests. |
-| `PreferredPsadtVersion` | Not set: the newest supported PSADT installed | An installed version (`4.1.8`), or `4.1` or `4.2` | The PSADT version for new projects. A version that is not installed stops project creation. |
+| `PreferredPsadtVersion` | Not set: the newest supported PSADT installed | An installed version (`4.1.8`), or `4.1` or `4.2` | The PSADT version for new projects. A version that is not installed stops project creation. Menu: **Settings** > **PSAppDeployToolkit version**. |
 | `UpdateCheck` | `On` | `On`, `Off` | The menu checks GitHub for a new toolkit version, once a day at most. Menu: **Settings** > **Update check**. |
 
 Type the base folder without quotes. Keep it short and local, such as `C:\Win32Apps`. A `-BasePath` parameter wins for
@@ -99,13 +101,14 @@ test in a service, or with redirected input, always runs unattended. In other sc
 ### Hyper-V test VM
 
 A [checkpoint](glossary.md#checkpoint) is a saved state of the VM. Every test returns the VM to its
-clean checkpoint. The VM build saves the name, checkpoint, processors and memory for you.
+clean checkpoint. The VM build saves the name, checkpoint, processors and memory for you. To use another VM, see
+[Choose another test VM](hyperv-vm-care.md#choose-another-test-vm).
 
 | Setting | Default | Allowed values | What it does |
 |---|---|---|---|
 | `HyperVAsyncTeardown` | `Off` | `On`, `Off` | Speed switch. `On`: after an unattended test in the menu or in [Invoke-Win32Toolkit](reference/Invoke-Win32Toolkit.md), the VM returns to its checkpoint in the background. |
 | `HyperVCapturePrewarm` | `Off` | `On`, `Off` | Speed switch. `On`: `Invoke-Win32Toolkit` prepares the test VM during the download, so the capture starts sooner. Ignored when `HyperVDepsCheckpoint` is `On`. |
-| `HyperVCheckpoint` | `clean-base` | A checkpoint name | The clean checkpoint of the test VM. |
+| `HyperVCheckpoint` | `clean-base` | A checkpoint name | The clean checkpoint of the test VM. Menu: **Settings** > **Hyper-V test VM** > **Choose the test VM and checkpoint**. |
 | `HyperVDepsCheckpoint` | `Off` | `On`, `Off` | Speed switch. `On`: keeps a checkpoint with the dependencies of a project installed, for its later tests. |
 | `HyperVLeaseWaitMinutes` | `60` | A whole number from 1 to 240. Other values count as `60`. | How long to wait while another PowerShell window uses the test VM or tests the same project. Then the test stops. |
 | `HyperVMemoryStartupBytes` | `4294967296` (4 GB) | A number of bytes | VM memory. The default is 4 GB. Give the VM 6 to 8 GB if your PC has the memory. |
@@ -113,7 +116,7 @@ clean checkpoint. The VM build saves the name, checkpoint, processors and memory
 | `HyperVProcessorCount` | `2` | A whole number from 1 to 64 | Number of processors of the test VM. |
 | `HyperVRevertMode` | `TurnOffFirst` | `TurnOffFirst`, `Legacy` | How the VM returns to its checkpoint. `TurnOffFirst` is faster. Use `Legacy` only if `TurnOffFirst` causes problems on your PC. |
 | `HyperVTeardownPark` | `Running` | `Running`, `Saved` | Speed switch. `Saved`: after an unattended test, the clean VM waits in the Saved state and uses no memory. Needs `TurnOffFirst`. |
-| `HyperVVMName` | `win32tk-golden` | A VM name | The name of the test VM. |
+| `HyperVVMName` | `win32tk-golden` | A VM name | The name of the test VM. Menu: **Settings** > **Hyper-V test VM** > **Choose the test VM and checkpoint**. |
 
 Change processors and memory with **Settings** > **Hyper-V test VM** > **Change VM resources**, or with
 [Set-Win32ToolkitTestVMResource](reference/Set-Win32ToolkitTestVMResource.md). A registry change alone only affects the

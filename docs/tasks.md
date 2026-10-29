@@ -173,6 +173,7 @@ Find your win32-toolkit question and follow the link. Most answers show the menu
 - [How do I make Hyper-V tests faster](hyperv-vm.md#make-hyper-v-tests-faster)?
 - [How do I keep the VM safe](hyperv-vm.md#keep-the-vm-safe)?
 - [How do I change processors or memory](hyperv-vm-care.md#change-processors-or-memory)?
+- [How do I choose another test VM](hyperv-vm-care.md#choose-another-test-vm)?
 - [Can one PowerShell window use another VM](hyperv-vm-care.md#use-another-vm-in-one-powershell-window)?
 - [Another window uses the VM. What now](hyperv-vm-care.md#when-another-window-is-using-the-vm)?
 

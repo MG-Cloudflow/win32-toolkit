@@ -61,14 +61,17 @@ You build the VM once. Time: about 30 to 60 minutes, plus Windows Update time.
     3. Choose **Settings** > **Hyper-V test VM** > **Provision the test VM from a Windows 11 ISO**.
     4. At **Path to a Windows 11 x64 ISO**, type the path, for example `C:\ISO\Win11_x64.iso`, and press <kbd>Enter</kbd>.
 
-    The menu always uses the default name, Windows edition, processors and memory. To give the VM more memory, change
-    it after the build: see [Change processors or memory](hyperv-vm-care.md#change-processors-or-memory).
+    The menu builds the test VM that tests use: `win32tk-golden`, unless you
+    [chose another one](hyperv-vm-care.md#choose-another-test-vm). It always uses the default Windows edition,
+    processors and memory. To give the VM more memory, change it after the build: see
+    [Change processors or memory](hyperv-vm-care.md#change-processors-or-memory).
 
     Many yellow lines that start with `VERBOSE:` appear. They are normal, even the ones that say `PowerShell Direct is
     not ready yet`. PowerShell Direct is how the toolkit reaches Windows in the VM.
 
-    If a VM or its disk is left from an earlier build, the menu asks **Delete it and rebuild from scratch?** The default
-    is Yes. Answer `n` to keep your VM, and see [Rebuild the VM](hyperv-vm-care.md#rebuild-the-vm).
+    If a VM or its disk is left from an earlier build, the menu asks **Delete VM 'win32tk-golden' and rebuild VM
+    'win32tk-golden' from scratch?** The default is Yes for `win32tk-golden` and No for any other VM. Answer `n` to
+    keep your VM, and see [Rebuild the VM](hyperv-vm-care.md#rebuild-the-vm).
 
 === "Command line"
 
@@ -215,14 +218,16 @@ In the main menu, choose **Settings** > **Hyper-V test VM**. The first lines sho
 
 ```text title="What you see"
 Default test backend: HyperV
+Test VM: win32tk-golden, checkpoint clean-base (the default)
 Hyper-V backend is READY - VM, checkpoint and guest credential are configured.
 VM resources: 2 vCPU / 4 GB  (win32tk-golden)
 ```
 
 <!-- SCREENSHOT: the TUI Hyper-V test VM screen showing "Hyper-V backend is READY" and the menu options -->
 
-The last line shows the virtual processors (vCPU) and the memory of the VM. If something is missing, the second line
-starts with `Hyper-V backend not ready:` and lists the reasons.
+The second line shows the VM and checkpoint that tests use, and why. The last line shows the virtual processors
+(vCPU) and the memory of the VM. If something is missing, the third line starts with `Hyper-V backend not ready:` and
+lists the reasons.
 
 | Reason | What to do |
 |---|---|
