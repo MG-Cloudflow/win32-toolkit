@@ -24,9 +24,12 @@ $script = Join-Path $repo 'build\Publish-ToPSGallery.ps1'
 # ── shadows: capture the staged payload at the moment of "publish", skip the heavy/real cmdlets ────
 # $global: (not $script:) so the capture survives the `& external.ps1` scope boundary.
 $global:w32tStaged = @()
+$global:w32tStagedHash = @{}
 function Publish-PSResource {
     param([string]$Path, [Parameter(ValueFromRemainingArguments)]$rest)
     $global:w32tStaged = @(Get-ChildItem $Path -Recurse -File | ForEach-Object { $_.FullName.Substring($Path.Length + 1).Replace('\', '/') })
+    $global:w32tStagedHash = @{}
+    foreach ($f in @(Get-ChildItem (Join-Path $Path 'DeployExtension') -Recurse -File -ErrorAction SilentlyContinue)) { $global:w32tStagedHash[$f.Name] = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash }
 }
 function Test-ModuleManifest { param([Parameter(ValueFromRemainingArguments)]$a) [pscustomobject]@{ Version = '1.0.1' } }
 # PSScriptAnalyzer absent -> lint block skipped; PSResourceGet present -> install skipped.
@@ -49,6 +52,14 @@ foreach ($f in $mustInclude) {
 }
 if (@($staged | Where-Object { $_ -like 'Public/*.ps1' }).Count -gt 0) { Ok 'ships Public/*.ps1' } else { Bad 'no Public/ scripts staged' }
 if (@($staged | Where-Object { $_ -like 'Private/*.ps1' }).Count -gt 0) { Ok 'ships Private/*.ps1' } else { Bad 'no Private/ scripts staged' }
+# The PSADT extension module every project gets (Copy-Win32ToolkitDeployExtension): exactly its two files, byte for byte.
+. (Join-Path $repo 'Private\Get-Win32ToolkitDeployExtension.ps1')
+$ext = Get-Win32ToolkitDeployExtension
+$extStaged = @($staged | Where-Object { $_ -like 'DeployExtension/*' } | Sort-Object)
+$extWant = @($ext.Files.Keys | ForEach-Object { "DeployExtension/$($ext.Name)/$_" } | Sort-Object)
+if (($extStaged -join '|') -ceq ($extWant -join '|')) { Ok "ships DeployExtension/$($ext.Name)/ (exactly its $($extWant.Count) files)" } else { Bad "DeployExtension staged: $($extStaged -join ', ') (want $($extWant -join ', '))" }
+$badHash = @($ext.Files.Keys | Where-Object { $global:w32tStagedHash[$_] -ne $ext.Files[$_] })
+if ($badHash.Count -eq 0) { Ok 'the staged extension files carry the pinned SHA-256 (copied byte for byte)' } else { Bad "staged extension files differ from the pinned hashes: $($badHash -join ', ')" }
 
 # The whole point: none of this may reach the Gallery.
 $mustExclude = @('docs', 'Tests', 'build', '.github', 'knowledge-base')

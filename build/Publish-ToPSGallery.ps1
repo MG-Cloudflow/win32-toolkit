@@ -3,7 +3,7 @@
 .SYNOPSIS
     Stage the win32-toolkit module payload and publish it to the PowerShell Gallery.
 .DESCRIPTION
-    The repo root mixes the module (win32-toolkit.psd1/.psm1, Public\, Private\) with things that must
+    The repo root mixes the module (win32-toolkit.psd1/.psm1, Public\, Private\, DeployExtension\) with things that must
     NOT ship: docs\, Tests\, build\, .github\, mkdocs.yml, CLAUDE.md, PSScriptAnalyzerSettings.psd1,
     the release-please files, and so on. Publish-PSResource has no -Exclude and a manifest FileList
     does NOT filter the package, so this stages a clean folder named exactly 'win32-toolkit' holding
@@ -53,6 +53,9 @@ try {
     }
     Copy-Item -Path (Join-Path $repoRoot 'Public')  -Destination $staging -Recurse
     Copy-Item -Path (Join-Path $repoRoot 'Private') -Destination $staging -Recurse
+    # win32-toolkit's PSADT extension module: copied into every package the module builds, byte for byte (its SHA-256 is
+    # pinned in Private\Get-Win32ToolkitDeployExtension.ps1; a gallery install without it cannot create a project).
+    Copy-Item -Path (Join-Path $repoRoot 'DeployExtension') -Destination $staging -Recurse
     if ($IncludeTools) { Copy-Item -Path (Join-Path $repoRoot 'Tools') -Destination $staging -Recurse }
 
     Write-Host "Staged module payload at: $staging" -ForegroundColor Cyan
