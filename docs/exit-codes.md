@@ -67,6 +67,7 @@ the app. If it stops with a problem, Intune reports one of these codes as failed
 | 60008 | PSADT could not start. Often the app was published by win32-toolkit 1.1.6 or older. | See [Fix apps that are already in Intune](maintain-toolkit.md#fix-apps-that-are-already-in-intune). |
 | 1602 | The user postponed the install. | Nothing, if you allow deferrals. Intune reports it as failed. |
 | 69113 | During an uninstall, the package stopped the app's EXE uninstaller after 30 minutes. Intune still reports the app as installed. | Check why the uninstaller does not finish. The PSADT log names the uninstaller. |
+| 69114 | The deploy script and `SupportFiles\AppConfig.json` name different kinds of installer, for example after a hand edit. Nothing was installed. | Undo the edit, or [re-create](glossary.md#re-create) the project. |
 
 The toolkit refuses org template text that would cause 60001 or 60008, for example a `$` sign before a letter. See
 [Text rules](org-templates.md#text-rules).

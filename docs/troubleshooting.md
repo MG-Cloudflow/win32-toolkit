@@ -129,7 +129,10 @@ refuses a project that the toolkit cannot trust, for example because of its [dep
 |---|---|---|
 | `win32-toolkit cannot vouch for the deploy script of` ... | The package check failed (`W32T.PackageNotReady`). One line per problem follows. | Fix each problem. See [The package check](build-intunewin.md#the-package-check). |
 | `'<name>' is marked not configured and cannot be packaged` ... | The build of the project stopped halfway (`W32T.ProjectNotConfigured`). | Package the app again. See [Recover from a stopped build](projects.md#recover-from-a-stopped-build). |
-| `Unsupported PSADT template shape:` ... | The toolkit does not know the layout of the deploy script (`W32T.UnsupportedTemplateShape`, or one line of the package check). | [Re-create the project](projects.md#re-create-a-project). |
+| `Unsupported PSADT template shape:` ... | The toolkit does not know the layout of the deploy script (`W32T.UnsupportedTemplateShape`, or one line of the package check). If the message says a newer win32-toolkit generated the script, a newer toolkit made the project. | [Re-create the project](projects.md#re-create-a-project), or update the toolkit. |
+| `Deploy extension (` ... | One line of the package check. The [toolkit extension](glossary.md#toolkit-extension) in the project is missing or changed, the deploy script lacks a block that the project needs, or a folder that PSADT would load is not an extension module. | Delete a folder that the message calls stray. Otherwise, [re-create the project](projects.md#re-create-a-project). |
+| `win32-toolkit has no deploy-script blocks for the installer type` ... | `SupportFiles\AppConfig.json` names a kind of installer that the toolkit cannot package (`W32T.UnsupportedInstallerType`). | Package an MSI, EXE, MSIX or APPX installer of the app. |
+| `win32-toolkit's own PSADT extension module at` ... | The toolkit's own files on your PC were changed or are incomplete (`W32T.DeployExtensionInvalid`). | [Update or reinstall](maintain-toolkit.md) win32-toolkit. |
 | `Unsafe uninstall cleanup path:` ... | The uninstall would delete a folder outside the app. This check has no override. | Remove the path from `SupportFiles\AppConfig.json`, run the install capture again, or re-create the project. |
 | `Failed to download IntuneWinAppUtil.exe:` ... | The toolkit could not reach GitHub. | Download the file by hand and put it in the folder the message names. |
 | `Skipped the update app: this project has no reliable` ... | This project cannot get an [update app](glossary.md#update-app): an app only for devices with an older version. | Publish the install app only. |
@@ -276,6 +279,7 @@ the message only, without an `Error id:` line. Search this page for its first wo
 | Error ID | What it means | Section |
 |---|---|---|
 | `W32T.DependencyNotStaged` | A test could not get a dependency. | [Dependencies](#dependencies) |
+| `W32T.DeployExtensionInvalid` | The toolkit's own extension files on your PC were changed. | [Building the package](#building-the-package) |
 | `W32T.DownloadFailed` | winget downloaded no installer. | [Packaging from winget](#packaging-from-winget) |
 | `W32T.GeneratedScriptInvalid` | The deploy script failed the toolkit's own check. | [Ask for help](#ask-for-help) |
 | `W32T.GuestTamper` | The test machine changed the project. | [Tests](#tests) |
@@ -298,6 +302,7 @@ the message only, without an `Error id:` line. Search this page for its first wo
 | `W32T.ProjectNotConfigured` | The project build stopped halfway. | [Building the package](#building-the-package) |
 | `W32T.SandboxBusy` | Another Windows Sandbox was open. | [Prior installs](#prior-installs) |
 | `W32T.SiblingCaptureUnsupported` | The sibling capture cannot run now. | [Prior installs](#prior-installs) |
+| `W32T.UnsupportedInstallerType` | The toolkit cannot package this kind of installer. | [Building the package](#building-the-package) |
 | `W32T.UnsupportedTemplateShape` | The deploy script layout is unknown. | [Building the package](#building-the-package) |
 
 Other IDs, such as `W32T.OrgTemplateDrift` or `W32T.PhaseAnchorMissing`, point to a problem inside the toolkit. If

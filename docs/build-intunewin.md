@@ -94,7 +94,7 @@ a free PowerShell tool for install scripts, with dialogs and logs.
 | `Invoke-AppDeployToolkit.ps1`, and `Invoke-AppDeployToolkit.exe` (the program that Intune starts) | `Sandbox\`: test files, logs and old-version installers |
 | `Files\`: the installer | `Documentation\`: install changes, test results, prior-install decisions |
 | `SupportFiles\`: `AppConfig.json` with the app settings, your hook scripts, `RequirementScript.ps1` (for reference only) | `Intune\`: the IDs of your tenant and your published apps |
-| The PSADT folders (`PSAppDeployToolkit\`, `Assets\`, `Config\`, `Strings\`) and your org extension module, if you have one | `*.md` and `*.wsb` files in the project folder, the capture script and its logs |
+| The PSADT folders (`PSAppDeployToolkit\`, `Assets\`, `Config\`, `Strings\`), the [toolkit extension](glossary.md#toolkit-extension) `PSAppDeployToolkit.Win32Toolkit\`, and your org extension module, if you have one | `*.md` and `*.wsb` files in the project folder, the capture script and its logs |
 
 The `Intune\` folder never goes into the package, so the IDs of your published apps never reach a device. If the
 toolkit cannot remove the `Intune\` or `Documentation\` folder from the Staging copy, it refuses to build.
@@ -125,13 +125,21 @@ Problems with prior-install rules start with `Prior install:`. See
 | The deploy script uses PowerShell 7 syntax (devices run Windows PowerShell 5.1) | Yes |
 | `Invoke-AppDeployToolkit.exe` is missing | Yes |
 | The uninstall would delete a folder outside the app's install folder, or `AppConfig.json` cannot be read | Yes, with no override |
+| The toolkit extension is missing, changed, or not the one the deploy script needs | Yes, with no override |
+| The deploy script lacks a toolkit block that the project needs, or has one that it does not need | Yes, with no override |
+| A folder that PSADT would load as an extension module is not one | Yes. For a project made by an older toolkit, it warns |
 | A prior-install rule cannot be applied | Yes (the message says how to clear it) |
 | The project was made by win32-toolkit 1.1.6 or older | No, it warns |
 | The deploy script writes no install tattoo | No, it warns |
 | The project contains a test version (prerelease) of PSADT | No, it warns |
 | The project has an older, less strict uninstall | No, it warns |
 
-The last row is about the uninstall on a device. The current uninstall waits up to 30 minutes for an EXE uninstaller
+The extension rows are about the [toolkit extension](glossary.md#toolkit-extension): the toolkit's own
+code, which the deploy script calls. Never change its folder in a project. If a check about it fails, re-create the
+project. PSADT loads every folder next to the deploy script whose name contains `PSAppDeployToolkit.` and more text,
+for example a copy named `PSAppDeployToolkit.Contoso - Copy`. Delete such a folder from the project.
+
+The row about an older uninstall is about the uninstall on a device. The current uninstall waits up to 30 minutes for an EXE uninstaller
 and for the programs that it starts. If the uninstaller still runs after that, the package stops it, and the
 uninstall ends with exit code 69113.
 

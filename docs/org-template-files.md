@@ -121,7 +121,9 @@ is installed.
 
 Intune starts only installs and uninstalls, so the repair hooks run only when someone starts a repair by hand. Each
 project gets a copy of your hooks in `SupportFiles\OrgHooks\`, and the package runs them on the device. A hook can use
-every PSADT command and the `$adtSession` object, which holds the data of the running deployment.
+every PSADT command, the `$adtSession` object, which holds the data of the running deployment, and `$appConfig`, the
+app settings from `SupportFiles\AppConfig.json`. Other variables whose names start with `$w32t` belong to the toolkit.
+Do not use them in a hook.
 
 ### Rules for hook scripts
 
