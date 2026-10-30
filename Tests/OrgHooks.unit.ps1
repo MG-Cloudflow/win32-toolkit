@@ -214,6 +214,51 @@ foreach ($golden in 'psadt-4.1.8', 'psadt-4.2.0-zeroconfig') {
     } else { Bad "$golden : fqid='$($r.Fqid)' script changed=$((Get-FileHash -LiteralPath $fx7.Script).Hash -ne $h7) hooks=$(Test-Path (Join-Path $fx7.Proj 'SupportFiles\OrgHooks')) $($r.Message)" }
 }
 
+Write-Host "`n[7c] win32-toolkit's own extension (lean deploy script PR 1): the reserved folder prefix and W32T command names" -ForegroundColor Cyan
+# Every package carries PSAppDeployToolkit.Win32Toolkit\ (Copy-Win32ToolkitDeployExtension); an org folder must never be
+# copied over it, and its function names stay the toolkit's.
+$toolkitDir = 'PSAppDeployToolkit.Win32Toolkit'
+foreach ($c in @(
+        @{ Name = $toolkitDir; L = 'an org folder named exactly like the toolkit extension' }
+        @{ Name = 'PSAppDeployToolkit.Win32ToolkitX'; L = "an org folder starting with the reserved name" }
+        @{ Name = 'psappdeploytoolkit.win32toolkit.contoso'; L = 'the reserved prefix in another case' }
+    )) {
+    $fx = New-Fixture -Golden 'psadt-4.1.8' -HooksEnabled $false -ExtModule $true
+    $script:ASSET = $fx.Assets
+    $src = Join-Path $fx.Assets $c.Name
+    Rename-Item -LiteralPath (Join-Path $fx.Assets 'PSAppDeployToolkit.Contoso') -NewName $c.Name
+    Get-ChildItem -LiteralPath $src -File | ForEach-Object { Rename-Item -LiteralPath $_.FullName -NewName ($c.Name + $_.Extension) }
+    Set-Content -LiteralPath (Join-Path $src "$($c.Name).psd1") -Value "@{ RootModule = '$($c.Name).psm1'; ModuleVersion = '1.0.0' }" -Encoding UTF8
+    $own = Join-Path $fx.Proj $toolkitDir; New-Item -ItemType Directory -Path $own -Force | Out-Null; Set-Content -LiteralPath (Join-Path $own 'canary.txt') -Value 'toolkit'
+    $r = Invoke-OrgHook $fx.Proj (Tmpl -Hooks $false -Ext $true)
+    $kept = (Test-Path -LiteralPath (Join-Path $own 'canary.txt')) -and @(Get-ChildItem -LiteralPath $own).Count -eq 1
+    if ($r.Fqid -eq 'W32T.OrgExtensionInvalid' -and $r.Message -match "starts with 'PSAppDeployToolkit\.Win32Toolkit', which win32-toolkit reserves" -and $kept -and
+        ($c.Name -eq $toolkitDir -or -not (Test-Path -LiteralPath (Join-Path $fx.Proj $c.Name)))) {
+        Ok "$($c.L) -> W32T.OrgExtensionInvalid (reserved), the project's toolkit folder untouched, nothing copied"
+    } else { Bad "$($c.L): fqid='$($r.Fqid)' kept=$kept $($r.Message)" }
+    $lf = @(Get-Win32ToolkitOrgExtensionLayoutFinding -ModuleFolder (Get-Item -LiteralPath $src))
+    if ($lf.Count -eq 1 -and $lf[0].Why -match 'reserves for its own PSADT extension module') { Ok "$($c.L): one layout finding (rule 0; nothing else checked)" } else { Bad "$($c.L) layout findings: $($lf.Why -join ' | ')" }
+}
+foreach ($c in @(
+        @{ L = 'an org psm1 that defines Install-W32TApp'; P = { param($d) Set-Content (Join-Path $d 'PSAppDeployToolkit.Contoso.psm1') 'function Install-W32TApp { param($x) }' }; W = "'Install-W32TApp'" }
+        @{ L = 'an org psm1 that sets an alias Show-W32TFoo'; P = { param($d) Set-Content (Join-Path $d 'PSAppDeployToolkit.Contoso.psm1') "Set-Alias -Name 'Show-W32TFoo' -Value Get-Date" }; W = "'Show-W32TFoo'" }
+        @{ L = 'an org manifest that exports the alias Uninstall-W32TApp'; P = { param($d) Set-Content (Join-Path $d 'PSAppDeployToolkit.Contoso.psd1') "@{ RootModule = 'PSAppDeployToolkit.Contoso.psm1'; AliasesToExport = @('Uninstall-W32TApp') }" }; W = "'Uninstall-W32TApp'" }
+        @{ L = 'a function: drive entry'; P = { param($d) Set-Content (Join-Path $d 'PSAppDeployToolkit.Contoso.psm1') "New-Item -Path 'function:\Set-W32TInstallTattoo' -Value { }" }; W = "'function:\\Set-W32TInstallTattoo'" }
+    )) {
+    Test-Ext $c.L 'psadt-4.2.0-zeroconfig' $c.P $true "defines or names the command $($c.W), and win32-toolkit reserves command names whose noun starts with 'W32T'"
+}
+Test-Ext "an org psm1 that only mentions 'W32T' in a message" 'psadt-4.2.0-zeroconfig' { param($d) Set-Content (Join-Path $d 'PSAppDeployToolkit.Contoso.psm1') "function Set-ContosoTattoo { Write-Output 'not a W32T command: Install-W32TApp runs first' }" } $false ''
+# The copy guard in Add-Win32ToolkitOrgHooks itself (a name Windows resolves to the toolkit folder, past the Assert).
+$fx = New-Fixture -Golden 'psadt-4.1.8' -HooksEnabled $false -ExtModule $true
+$script:ASSET = $fx.Assets
+$own = Join-Path $fx.Proj $toolkitDir; New-Item -ItemType Directory -Path $own -Force | Out-Null; Set-Content -LiteralPath (Join-Path $own 'canary.txt') -Value 'toolkit'
+function Assert-Win32ToolkitOrgExtensionModule { param($ProjectPath, $Template, $BasePath) [pscustomobject]@{ Name = 'PSAppDeployToolkit.Win32Toolkit. '; FullName = (Join-Path $script:ASSET 'PSAppDeployToolkit.Contoso') } }
+$r = Invoke-OrgHook $fx.Proj (Tmpl -Hooks $false -Ext $true)
+. (Join-Path $repo 'Private\Assert-Win32ToolkitOrgExtensionModule.ps1')
+if ($r.Fqid -eq 'W32T.OrgExtensionInvalid' -and $r.Message -match 'reserves for its own PSADT extension module\. Nothing was copied' -and (Test-Path -LiteralPath (Join-Path $own 'canary.txt'))) {
+    Ok "Add-Win32ToolkitOrgHooks refuses 'PSAppDeployToolkit.Win32Toolkit. ' (trailing dot and space) before its same-name delete; the toolkit folder is untouched"
+} else { Bad "copy guard: fqid='$($r.Fqid)' $($r.Message)" }
+
 Write-Host "`n[8] a missing hook anchor is FATAL (D10), the script is left untouched" -ForegroundColor Cyan
 $fx8 = New-Fixture -Golden 'psadt-4.1.8' -HooksEnabled $true -ExtModule $false -HookFiles @('PostRepair.ps1') `
     -Mutate { param($t) $t.Replace('## win32-toolkit:Post-Repair:org-ui', '## removed:Post-Repair:org-ui').Replace('## <Perform Post-Repair tasks here>', '## (marker removed by hand)') }

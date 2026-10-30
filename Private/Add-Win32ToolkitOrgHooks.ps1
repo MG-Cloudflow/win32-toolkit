@@ -23,7 +23,8 @@ function Add-Win32ToolkitOrgHooks {
         Copy-not-splice: no operator text ever enters the deploy script.
 
         A3: every Templates\<name>\PSAppDeployToolkit.<Org>\ folder is copied to the project root, where
-        the PSADT frontend imports it. Assert-Win32ToolkitOrgExtensionModule validates them FIRST (D11 /
+        the PSADT frontend imports it; a folder name starting with 'PSAppDeployToolkit.Win32Toolkit' (win32-toolkit's own
+        extension module) is refused, never copied over it. Assert-Win32ToolkitOrgExtensionModule validates them FIRST (D11 /
         ORG-08: '<Dir>\<Dir>.psd1' with an existing RootModule; a RequiredModules entry naming
         PSAppDeployToolkit must be satisfied by the bundled PSADT - ModuleVersion minimum, RequiredVersion
         exact, MaximumVersion upper bound - because 4.1 and 4.2 projects coexist). A violation throws
@@ -128,6 +129,14 @@ function Add-Win32ToolkitOrgHooks {
 
     # -- A3: org PSADT extension module(s), validated above (Assert-Win32ToolkitOrgExtensionModule) --
     foreach ($md in $modDirs) {
+        # Never over win32-toolkit's own extension folder: the Assert above refuses the reserved prefix (rule 0 of
+        # Get-Win32ToolkitOrgExtensionLayoutFinding); this guard also stops a name Windows resolves to it (a trailing dot or
+        # space) before the same-name delete below could reach it.
+        if ($md.Name.TrimEnd('.', ' ').StartsWith('PSAppDeployToolkit.Win32Toolkit', [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw [System.Management.Automation.ErrorRecord]::new(
+                [System.InvalidOperationException]::new("Org extension module '$($md.Name)' cannot be used: its folder name starts with 'PSAppDeployToolkit.Win32Toolkit', which win32-toolkit reserves for its own PSADT extension module. Nothing was copied."),
+                'W32T.OrgExtensionInvalid', [System.Management.Automation.ErrorCategory]::InvalidData, $md.FullName)
+        }
         $dest = Join-Path $ProjectPath $md.Name
         if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue }
         Copy-Item -LiteralPath $md.FullName -Destination $dest -Recurse -Force

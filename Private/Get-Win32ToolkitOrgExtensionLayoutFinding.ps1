@@ -8,6 +8,9 @@ function Get-Win32ToolkitOrgExtensionLayoutFinding {
         org template wizard (New-OrgTemplate, which warns about every finding when the extension module is enabled).
         The Why texts are the Assert's, byte for byte. Rules, in order:
 
+          0. the folder name starts with 'PSAppDeployToolkit.Win32Toolkit' (case-insensitive, trailing dots and spaces
+             trimmed as Windows does): win32-toolkit reserves it for its own PSADT extension module, which every package
+             carries (Get-Win32ToolkitDeployExtension). Nothing else is checked then.
           1. no '<Dir>\<Dir>.psd1' manifest (PSADT 4.2 imports the module by it; a psm1-only folder or a Save-Module
              '1.0.0\' layout fails every deployment of a PSADT 4.2 project). Nothing else is checked then.
           2. the manifest cannot be read. Nothing else is checked then.
@@ -16,6 +19,10 @@ function Get-Win32ToolkitOrgExtensionLayoutFinding {
           5. a RequiredModules entry (hashtable) for PSAppDeployToolkit that is not a valid Windows PowerShell 5.1
              module specification (a prerelease label, ModuleVersion with RequiredVersion, no version, ...).
           6. such an entry with a GUID that is not PSAppDeployToolkit's.
+          7. a command whose noun starts with 'W32T' (a function a .ps1/.psm1 in the folder defines, a string that names
+             one - an alias or a function: drive entry -, or a manifest FunctionsToExport / CmdletsToExport /
+             AliasesToExport entry): win32-toolkit reserves that prefix for its extension's functions. One finding per
+             name.
 
         Never throws: its catch starts with the W32T.* re-throw, then writes Write-Verbose and returns the findings
         found so far.
@@ -34,7 +41,14 @@ function Get-Win32ToolkitOrgExtensionLayoutFinding {
     $psadtGuid = [guid]'8c3c366b-8606-4576-9f2d-4051144f7ca2'
     $versionHint = "Fix: declare ModuleVersion = '4.1.0' (a minimum) or no version, and drop RequiredVersion/MaximumVersion - win32-toolkit builds PSADT 4.1.x and 4.2.x projects side by side."
     $layoutHint = "A Save-Module '1.0.0\' version-folder layout is not supported - put the module files directly in Templates\<name>\$dir\."
+    # win32-toolkit's own extension (Get-Win32ToolkitDeployExtension; the same prefix as Test-Win32ToolkitDeployExtension's
+    # EXTENSION-STRAY rule and the copy guard in Add-Win32ToolkitOrgHooks).
+    $reserved = 'PSAppDeployToolkit.Win32Toolkit'
     try {
+        if ($dir.TrimEnd('.', ' ').StartsWith($reserved, [System.StringComparison]::OrdinalIgnoreCase)) {
+            & $add "its folder name starts with '$reserved', which win32-toolkit reserves for its own PSADT extension module (every package carries it, and this folder would replace it). Fix: rename the folder, its manifest and its module, for example to 'PSAppDeployToolkit.<YourOrg>'."
+            return $findings.ToArray()
+        }
         $psd1 = Join-Path $ModuleFolder.FullName "$dir.psd1"
         if (-not (Test-Path -LiteralPath $psd1 -PathType Leaf)) {
             & $add "it has no '$dir\$dir.psd1' manifest. PSADT 4.2 imports extensions by that manifest, so a psm1-only folder fails every deployment of a PSADT 4.2 project (PSADT 4.1 still loads it by folder, but an org template must work for both: win32-toolkit builds PSADT 4.1.x and 4.2.x projects side by side). Fix: rename/add '$dir.psd1' (named exactly like the folder) with RootModule = '$dir.psm1'. $layoutHint"
@@ -74,6 +88,24 @@ function Get-Win32ToolkitOrgExtensionLayoutFinding {
             if ($spec.Guid -and $spec.Guid -ne $psadtGuid) {
                 & $add "its RequiredModules entry for PSAppDeployToolkit has GUID $($spec.Guid), which is not PSAppDeployToolkit's ($psadtGuid), so every deployment would fail. Fix: use Guid = '$psadtGuid' or drop the GUID."
             }
+        }
+
+        # Rule 7: command names with the noun prefix W32T (the toolkit extension's functions; the deploy script calls them
+        # module-qualified, so another module cannot shadow them, but the names must stay unambiguous in logs and help).
+        $w32tName = '^(function:[\\/]?)?[A-Za-z]+-W32T\w*$'
+        $names = [System.Collections.Generic.List[string]]::new()
+        foreach ($key in 'FunctionsToExport', 'CmdletsToExport', 'AliasesToExport') {
+            foreach ($entry in @($manifest[$key])) { if ($entry -is [string] -and $entry -match $w32tName) { $names.Add($entry) } }
+        }
+        foreach ($code in @(Get-ChildItem -LiteralPath $ModuleFolder.FullName -Recurse -File -Include '*.ps1', '*.psm1' -ErrorAction SilentlyContinue)) {
+            $codeAst = [System.Management.Automation.Language.Parser]::ParseFile($code.FullName, [ref]$null, [ref]$null)
+            foreach ($node in $codeAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -or $n -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true)) {
+                $value = if ($node -is [System.Management.Automation.Language.FunctionDefinitionAst]) { $node.Name } else { $node.Value }
+                if ($value -match $w32tName) { $names.Add($value) }
+            }
+        }
+        foreach ($n in @($names | Sort-Object -Unique)) {
+            & $add "it defines or names the command '$n', and win32-toolkit reserves command names whose noun starts with 'W32T' for its own PSADT extension module. Fix: rename the command."
         }
     }
     catch {
