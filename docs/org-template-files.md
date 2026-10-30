@@ -167,6 +167,13 @@ its name is exactly the folder name. In the manifest, set `RootModule = 'PSAppDe
 The toolkit refuses a version subfolder such as `1.0.0\`, which `Save-Module` creates. It also refuses a folder with
 only a `.psm1` file, because PSADT 4.2 loads the module through its manifest.
 
+The toolkit keeps some names for its own extension module, `PSAppDeployToolkit.Win32Toolkit`:
+
+- Your folder name must not start with `PSAppDeployToolkit.Win32Toolkit`.
+- Your module must not define or export a command with `W32T` right after the dash, such as `Install-W32TApp`.
+
+The wizard warns about these names, and packaging an app stops on them.
+
 ### Which PSADT version to declare
 
 The toolkit builds projects with PSADT 4.1 and 4.2 side by side, so your module must work with both. If the manifest

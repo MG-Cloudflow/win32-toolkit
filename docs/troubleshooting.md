@@ -46,7 +46,7 @@ An [org template](glossary.md#org-template) holds the settings of one customer.
 | `<Field>: '<value>' contains` ... | The wizard refuses a `$` before a letter, and any backtick. PSADT would fail or change the text. | Remove the character. See [Text rules](org-templates.md#text-rules). |
 | `Template '<name>' uses schema v` ... | An older toolkit version saved the template. | Answer `y` (the default), then answer the new questions. |
 | `Several org templates exist under` ... | A script cannot choose the template (`W32T.OrgTemplateChoiceNeeded`). | Add `-TemplateName` with the name of your template. |
-| `Org extension module '<folder>' cannot be used:` ... | The extension module has a wrong layout or asks for another PSADT version (`W32T.OrgExtensionInvalid`). | See [Add an extension module](org-template-files.md#add-an-extension-module). |
+| `Org extension module '<folder>' cannot be used:` ... | The extension module has a wrong layout, asks for another PSADT version, or uses a name the toolkit keeps for its own extension module (`W32T.OrgExtensionInvalid`). | See [Add an extension module](org-template-files.md#add-an-extension-module). |
 | `A maximum run time of <n> minutes is 30 minutes or less` ... | Intune would stop a slow uninstall first and report a timeout. | Keep the value above 30 minutes. The default is 60. |
 
 Changes to an org template reach new projects only. Re-create a project to apply them.
@@ -285,7 +285,7 @@ the message only, without an `Error id:` line. Search this page for its first wo
 | `W32T.InstallerVariantUnavailable` | winget lacks the pinned installer technology. | [Packaging from winget](#packaging-from-winget) |
 | `W32T.InvalidDependencyReference` | A dependency reference is not valid. | [Dependencies](#dependencies) |
 | `W32T.NoDetectionRule` | No detection rule can be built. | [Publishing](#publishing) |
-| `W32T.OrgExtensionInvalid` | The extension module has a wrong layout or PSADT version. | [Org templates](#org-templates) |
+| `W32T.OrgExtensionInvalid` | The extension module has a wrong layout, a wrong PSADT version, or a name the toolkit keeps. | [Org templates](#org-templates) |
 | `W32T.OrgTemplateChoiceNeeded` | A script must pass `-TemplateName`. | [Org templates](#org-templates) |
 | `W32T.OrgTemplateInvalid` | An org template text would make PSADT fail. | [Org templates](#org-templates) |
 | `W32T.PackageNotReady` | The package check failed. | [Building the package](#building-the-package) |
