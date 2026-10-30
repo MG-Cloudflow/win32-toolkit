@@ -50,6 +50,9 @@
            a Microsoft segment, a trailing dot, a '~' short name, CMTrace delimiters, a missing folder,
            invalid-only roots, no InstallRoots, a clean sub-folder, a throwing Remove-ADTFolder) and the
            junction target canary.
+    [2] runs twice (lean deploy script PR 1): once against the catalog block, once against Uninstall-W32TApp of the
+    extension module DeployExtension\PSAppDeployToolkit.Win32Toolkit (imported as a module, PSADT stubs global, no
+    $adtSession / $appConfig variable outside the call), so the two cannot behave differently.
     Test-time text substitution only: the shell-root list -> the 2nd segment of the long
     %USERPROFILE%\AppData\Local\Temp (so temp folders stand in for Program Files), and, for the case that
     returns after the limit, 'New-TimeSpan -Minutes 30' -> [TimeSpan]::FromMilliseconds(50) (5.1's
@@ -182,7 +185,10 @@ if (-not $ps51) {
 }
 
 $harness = @'
-param([string]$BlockPath)
+param([string]$BlockPath, [string]$ModulePath)
+# -ModulePath: the same cases against Uninstall-W32TApp of the extension module (lean deploy script PR 1). Run with -File,
+# Windows PowerShell 5.1 runs this harness in the global scope, so the stubs below are global and the module function
+# resolves them while it keeps its own variables; no $adtSession / $appConfig variable exists outside Invoke-Block.
 Set-StrictMode -Version 1
 $ErrorActionPreference = 'Stop'
 $fail = 0
@@ -192,15 +198,24 @@ function Bad($m) { Write-Output "FAIL: $m"; $script:fail++ }
 $tempLong = Join-Path $env:USERPROFILE 'AppData\Local\Temp'
 $root = Join-Path $tempLong ('w32tub-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
 $seg = $tempLong.Split('\')   # C:, Users, <user>, AppData, Local, Temp
-$shipped = [IO.File]::ReadAllText($BlockPath)
+$subject = if ($ModulePath) { 'Uninstall-W32TApp (the extension module)' } else { 'the catalog block' }
+$shipped = if ($ModulePath) { [IO.File]::ReadAllText($ModulePath) } else { [IO.File]::ReadAllText($BlockPath) }
 $e = $null; [void][Management.Automation.Language.Parser]::ParseInput($shipped, [ref]$null, [ref]$e)
-if (@($e).Count -eq 0) { Ok 'the block parses under Windows PowerShell 5.1' } else { Bad "5.1 parse: $($e[0].Message)" }
+if (@($e).Count -eq 0) { Ok "$subject parses under Windows PowerShell 5.1" } else { Bad "5.1 parse: $($e[0].Message)" }
 $rootsLine = "`$w32tShellRoots = @('Program Files', 'Program Files (x86)', 'ProgramData')"
 $text = $shipped.Replace($rootsLine, "`$w32tShellRoots = @('$($seg[1])')")
 $fastText = $text.Replace('New-TimeSpan -Minutes 30', '[TimeSpan]::FromMilliseconds(50)')
-if ($text -ne $shipped -and $fastText -ne $text) { Ok 'test-time substitutions applied (shell roots, limit)' } else { Bad 'a substitution target is missing from the block' }
-$blockSb = [scriptblock]::Create($text)
-$fastSb = [scriptblock]::Create($fastText)
+if ($text -ne $shipped -and $fastText -ne $text) { Ok "test-time substitutions applied to $subject (shell roots, limit)" } else { Bad "a substitution target is missing from $subject" }
+if ($ModulePath) {
+    # Two copies of the module (normal limit, fast limit); each case calls the function inside its own module.
+    $blockMod = New-Module -Name W32TUninstallNormal -ScriptBlock ([scriptblock]::Create($text))
+    $fastMod = New-Module -Name W32TUninstallFast -ScriptBlock ([scriptblock]::Create($fastText))
+    if (-not (Get-Variable -Name adtSession, appConfig -Scope Global -ErrorAction SilentlyContinue)) { Ok 'no global $adtSession / $appConfig: the function must use Get-ADTSession and -AppConfig' } else { Bad 'a global $adtSession / $appConfig exists' }
+}
+else {
+    $blockSb = [scriptblock]::Create($text)
+    $fastSb = [scriptblock]::Create($fastText)
+}
 
 function New-Tree {
     $app = Join-Path $root 'Vendor\App'
@@ -228,12 +243,18 @@ function Start-ADTProcess {
     }
 }
 function Remove-ADTFolder { param([string]$Path) if ($script:mode -eq 'rmthrow') { throw 'access denied' }; $script:removed += $Path }
-$adtSession = New-Object psobject
-$adtSession | Add-Member -MemberType ScriptMethod -Name SetExitCode -Value { param($c) $script:exitCode = $c }
+$w32tFakeSession = New-Object psobject
+$w32tFakeSession | Add-Member -MemberType ScriptMethod -Name SetExitCode -Value { param($c) $script:exitCode = $c }
+function Get-ADTSession { $w32tFakeSession }
 
 function Invoke-Block([object]$Uninstall, [switch]$Fast) {
     $script:log = @(); $script:started = @(); $script:removed = @(); $script:exitCode = $null; $script:msi = @()
     $appConfig = [pscustomobject]@{ Uninstall = $Uninstall }
+    if ($ModulePath) {
+        $mod = if ($Fast) { $fastMod } else { $blockMod }
+        try { $null = & $mod { param($c) Uninstall-W32TApp -AppConfig $c } $appConfig; return 'ok' } catch { return "threw: $($_.Exception.Message)" }
+    }
+    $adtSession = $w32tFakeSession
     $sb = if ($Fast) { $fastSb } else { $blockSb }
     try { . $sb; return 'ok' } catch { return "threw: $($_.Exception.Message)" }
 }
@@ -512,16 +533,21 @@ try {
     $harnessFile = Join-Path $work 'harness.ps1'
     [System.IO.File]::WriteAllText($blockFile, $block, (New-Object System.Text.UTF8Encoding($true)))
     [System.IO.File]::WriteAllText($harnessFile, $harness, (New-Object System.Text.UTF8Encoding($true)))
-    $out = @(& $ps51.Source -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $harnessFile -BlockPath $blockFile 2>&1 | ForEach-Object { "$_" })
-    $childExit = $LASTEXITCODE
-    $passes = 0
-    foreach ($line in $out) {
-        if ($line -like 'PASS: *') { Ok "5.1: $($line.Substring(6))"; $passes++ }
-        elseif ($line -like 'FAIL: *') { Bad "5.1: $($line.Substring(6))" }
+    # Every case twice: the catalog block (what the generator places until lean deploy script PR 2) and Uninstall-W32TApp
+    # of the extension module (the same text inside a function; DeployExtension.unit [5] pins that it is verbatim).
+    $psm1 = Join-Path $repo 'DeployExtension\PSAppDeployToolkit.Win32Toolkit\PSAppDeployToolkit.Win32Toolkit.psm1'
+    foreach ($run in @(@{ Label = 'block'; Arg = '-BlockPath'; Path = $blockFile }, @{ Label = 'Uninstall-W32TApp'; Arg = '-ModulePath'; Path = $psm1 })) {
+        $out = @(& $ps51.Source -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $harnessFile $run.Arg $run.Path 2>&1 | ForEach-Object { "$_" })
+        $childExit = $LASTEXITCODE
+        $passes = 0
+        foreach ($line in $out) {
+            if ($line -like 'PASS: *') { Ok "5.1 [$($run.Label)]: $($line.Substring(6))"; $passes++ }
+            elseif ($line -like 'FAIL: *') { Bad "5.1 [$($run.Label)]: $($line.Substring(6))" }
+        }
+        $result = @($out | Where-Object { $_ -like 'RESULT: *' })
+        if ($result.Count -eq 1 -and $childExit -eq [int]$result[0].Substring(8) -and $passes -ge 40) { Ok "the 5.1 child [$($run.Label)] ran to its end ($passes checks, exit $childExit)" }
+        else { Bad "the 5.1 child [$($run.Label)] did not finish: exit $childExit, $passes passes, output:`n$($out -join "`n")" }
     }
-    $result = @($out | Where-Object { $_ -like 'RESULT: *' })
-    if ($result.Count -eq 1 -and $childExit -eq [int]$result[0].Substring(8) -and $passes -ge 40) { Ok "the 5.1 child ran to its end ($passes checks, exit $childExit)" }
-    else { Bad "the 5.1 child did not finish: exit $childExit, $passes passes, output:`n$($out -join "`n")" }
 }
 finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
