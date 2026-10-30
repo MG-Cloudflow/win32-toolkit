@@ -81,9 +81,12 @@ function Get-Win32ToolkitParityDialogRisk {
                     $orgUiBlock = @($shape.Layout.Blocks | Where-Object { $_.Phase -eq 'Pre-Install' -and $_.Slot -eq 'org-ui' }) | Select-Object -First 1
                     # The shape reader parsed the same text without errors (Psadt41 needs a clean parse).
                     $ast = [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$null)
+                    # The org welcome is PSADT's dialog itself (GeneratorVersion 2) or the toolkit extension's call that shows it
+                    # (GeneratorVersion 3, lean deploy script PR 2); either one inside the org-ui block is the org welcome.
+                    $welcomeNames = @('Show-ADTInstallationWelcome', 'PSAppDeployToolkit.Win32Toolkit\Show-W32TInstallWelcome', 'Show-W32TInstallWelcome')
                     $calls = @($ast.FindAll({
                                 param($n)
-                                $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Show-ADTInstallationWelcome'
+                                $n -is [System.Management.Automation.Language.CommandAst] -and $welcomeNames -contains $n.GetCommandName()
                             }, $true) | Where-Object { $region -and $_.Extent.StartOffset -ge $region.RegionStart -and $_.Extent.StartOffset -lt $region.RegionEnd })
                     $hasOrgUi = $false; $orgUiDefers = $false; $hasScript = $false; $scriptDefers = $false
                     foreach ($call in $calls) {

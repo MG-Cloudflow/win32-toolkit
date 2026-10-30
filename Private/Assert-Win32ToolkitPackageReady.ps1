@@ -18,6 +18,9 @@ function Assert-Win32ToolkitPackageReady {
             its template shape and version are supported               both     error; -AllowLegacyScript: warning
             it was patched by win32-toolkit 1.1.6 or older ('Legacy')   both     warning only
             it writes the win32-toolkit install tattoo                  both     warning only
+            the toolkit extension and the block plan (GeneratorVersion  both     error (no override); a stray
+            3: Test-Win32ToolkitDeployExtension) and stray extension             folder of an older script: warning
+            folders PSADT would import
             it parses under Windows PowerShell 5.1 (fail-open)          Export   error
             Invoke-AppDeployToolkit.exe exists next to it               Export   error
             the bundled PSADT module and the script form a supported    Export   error; -AllowLegacyScript: warning
@@ -185,6 +188,19 @@ function Assert-Win32ToolkitPackageReady {
 
         if (-not $shape.HasTattoo) {
             $warnings.Add("$scriptPath writes no win32-toolkit install tattoo, so Intune detection falls back to the sandbox capture (Documentation\InstallationChanges_*.json). Re-create the project to get version detection.")
+        }
+
+        # -- win32-toolkit's PSADT extension module (lean deploy script PR 2) -----------------------------------
+        # A GeneratorVersion 3 script calls it: the project's copy must be a known version, the one the script names, and the
+        # script's blocks the ones the block plan names. Both stages: Finalize runs before every test, so a test never runs
+        # or proves a changed extension. A stray folder PSADT would import is an error for GeneratorVersion 3 and a warning
+        # otherwise (legacy projects are packaged unchanged). No -AllowLegacyScript override.
+        foreach ($finding in @(Test-Win32ToolkitDeployExtension -ProjectPath $ProjectPath -Shape $shape)) {
+            $line = "Deploy extension ($($finding.Code)): $($finding.Message)"
+            if ($finding.Severity -eq 'Error') { $errors.Add($line) } else { $warnings.Add($line) }
+        }
+        if ($Stage -eq 'Export' -and $shape.GeneratorVersion -eq 2) {
+            Write-Host "  Note: $scriptPath was generated before win32-toolkit's extension module (inline blocks). It is packaged as it is; re-create the project to get the lean deploy script." -ForegroundColor DarkGray
         }
 
         if ($Stage -eq 'Export') {

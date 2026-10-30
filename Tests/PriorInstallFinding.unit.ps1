@@ -57,7 +57,7 @@ function Get-GeneratedScript([switch]$NoOrgUi, [switch]$NoBlocks) {
         $tmp = Join-Path $root ('gen_' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.ps1')
         $null = New-Item -ItemType Directory -Path $root -Force
         [IO.File]::WriteAllText($tmp, $golden, [Text.UTF8Encoding]::new($true))
-        $null = Set-PSADTDataDrivenScript -ScriptPath $tmp -WarningAction SilentlyContinue
+        $null = Set-PSADTDataDrivenScript -ScriptPath $tmp -InstallerType msi -WarningAction SilentlyContinue
         $t = [IO.File]::ReadAllText($tmp, [Text.Encoding]::UTF8)
         if (-not $NoOrgUi) {
             $t = Remove-Win32ToolkitPhaseDefaultUi -Content $t -Phase 'Pre-Install'

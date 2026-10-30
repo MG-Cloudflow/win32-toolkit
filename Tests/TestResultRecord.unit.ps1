@@ -263,7 +263,7 @@ $null = Add-Win32ToolkitTestResult -ProjectPath $proj9 -Scenario 'Update' -Backe
     ObservedVersions = @{ 'nsis-x64' = "8.9.5`e[31m"; 'Bad Id' = '1' }; DataLoss = @('nsis-x64'); Unknown = 'dropped' }
 $r9 = (Get-Win32ToolkitTestResult -ProjectPath $proj9)[-1]
 $pr = $r9.Proof
-if ((@($pr.PSObject.Properties.Name) -join ',') -eq 'SchemaVersion,PriorInstallsHash,ScriptSha256,FilesSha256,SupportFilesSha256,BaselineInstallerSha256,CatalogVersion,EntryIds,CaptureIds,RequirementChecked,ObservedVersions,DataLoss') { Ok 'the Proof keys in the frozen order; an unknown key dropped' } else { Bad "proof keys: $(@($pr.PSObject.Properties.Name) -join ',')" }
+if ((@($pr.PSObject.Properties.Name) -join ',') -eq 'SchemaVersion,PriorInstallsHash,ScriptSha256,FilesSha256,SupportFilesSha256,BaselineInstallerSha256,CatalogVersion,ExtensionSha256,EntryIds,CaptureIds,RequirementChecked,ObservedVersions,DataLoss') { Ok 'the Proof keys in the frozen order; an unknown key dropped' } else { Bad "proof keys: $(@($pr.PSObject.Properties.Name) -join ',')" }
 if ($pr.PriorInstallsHash -ceq $h64 -and $pr.BaselineInstallerSha256 -eq '' -and $pr.CatalogVersion -ceq '1a2cadc16dec5c3b' -and $pr.RequirementChecked -eq $true -and (@($pr.EntryIds) -join ',') -eq 'nsis-x64' -and (@($pr.CaptureIds) -join ',') -eq '3f9c0a7d51e2b846' -and (@($pr.DataLoss) -join ',') -eq 'nsis-x64') {
     Ok 'hashes, catalog version, ids (bad ids dropped), RequirementChecked and DataLoss kept'
 } else { Bad "proof values: $($pr | ConvertTo-Json -Compress)" }

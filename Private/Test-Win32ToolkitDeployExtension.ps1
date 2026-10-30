@@ -15,6 +15,11 @@ function Test-Win32ToolkitDeployExtension {
           EXTENSION-UNKNOWN   the folder is not a known version: changed, extra or missing files, or a link.
           EXTENSION-MISMATCH  a known version, but not the one the deploy script was generated for (its loader marker), or
                               without the uninstall / prior-install revision the script's markers name.
+          PLAN-MISMATCH       a GeneratorVersion 3 script whose blocks are not the ones Get-Win32ToolkitDeployBlockPlan names
+                              for the project (AppConfig Installer.Type, manual = its manual-install block, the hook files in
+                              SupportFiles\OrgHooks): a block missing or extra, a call block whose code lines are not this
+                              toolkit's call (the prior-install pair and hooks: presence only), or an Uninstall section in
+                              AppConfig while the plan has no uninstall call.
           EXTENSION-STAGING   (-StagingPath) the Staging copy of the folder differs from the project's.
 
         The extension checks apply to a GeneratorVersion 3 deploy script (the shape's ExtensionVersion); the stray rule
@@ -118,6 +123,51 @@ function Test-Win32ToolkitDeployExtension {
                     if ($off.Count -gt 0) {
                         & $add 'EXTENSION-MISMATCH' 'Error' "The project's '$name' folder does not belong to its deploy script ($($off -join '; ')). Re-create the project." $folder
                     }
+                }
+            }
+        }
+
+        # ---- the blocks of a GeneratorVersion 3 script against the block plan ----
+        $script = Join-Path $ProjectPath 'Invoke-AppDeployToolkit.ps1'
+        if ($usesExtension -and $Shape.PSObject.Properties['Shape'] -and [string]$Shape.Shape -in @('Psadt41', 'Psadt42ZeroConfig') -and (Test-Path -LiteralPath $script -PathType Leaf)) {
+            $text = [System.IO.File]::ReadAllText($script, [System.Text.Encoding]::UTF8) -replace "`r`n", "`n"
+            $cfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
+            $type = if ($cfg.PSObject.Properties['Installer'] -and $cfg.Installer -and $cfg.Installer.PSObject.Properties['Type']) { [string]$cfg.Installer.Type } else { '' }
+            $hookPhases = @(foreach ($ph in 'Pre-Install', 'Post-Install', 'Pre-Uninstall', 'Post-Uninstall', 'Pre-Repair', 'Post-Repair') {
+                    if (Test-Path -LiteralPath (Join-Path $ProjectPath ('SupportFiles\OrgHooks\' + ($ph -replace '-', '') + '.ps1')) -PathType Leaf) { $ph }
+                })
+            $plan = $null
+            try { $plan = @(Get-Win32ToolkitDeployBlockPlan -Shape $Shape.Shape -InstallerType $type -ManualInstall:($text.Contains('## win32-toolkit:Install:manual-install (begin)')) -HookPhases $hookPhases) }
+            catch {
+                if ($_.FullyQualifiedErrorId -ne 'W32T.UnsupportedInstallerType') { throw }
+                & $add 'PLAN-MISMATCH' 'Error' "The project's installer type has no deploy-script blocks: $($_.Exception.Message)" $script
+            }
+            if ($plan) {
+                $present = @{}
+                foreach ($m in [regex]::Matches($text, '(?ms)^[ \t]*## win32-toolkit:(?<p>[\w-]+):(?<s>[\w-]+) \(begin\)[^\n]*\n(?<body>.*?)^[ \t]*## win32-toolkit:\k<p>:\k<s> \(end\)')) {
+                    $present["$($m.Groups['p'].Value):$($m.Groups['s'].Value)"] = $m.Groups['body'].Value
+                }
+                $wanted = @($plan | ForEach-Object { "$($_.Phase):$($_.Slot)" })
+                $extra = @($present.Keys | Where-Object { $wanted -notcontains $_ } | Sort-Object)
+                $missing = @($wanted | Where-Object { -not $present.ContainsKey($_) })
+                # A call block must hold this toolkit's call (its code lines; comments may differ between versions). The
+                # prior-install pair and the hooks are inline texts: present is enough.
+                $codeLines = { param([string]$Body) @(($Body -split "`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') }) -join "`n" }
+                $wrong = @(foreach ($row in $plan) {
+                        $key = "$($row.Phase):$($row.Slot)"
+                        if (-not $present.ContainsKey($key) -or $row.Block -in @('RemovePriorCheck', 'RemovePrior', 'Hook')) { continue }
+                        $want = if ($row.Technology) { Get-Win32ToolkitDeployScriptBlock -Name $row.Block -Technology $row.Technology } else { Get-Win32ToolkitDeployScriptBlock -Name $row.Block }
+                        if ((& $codeLines $present[$key]) -cne (& $codeLines $want)) { $key }
+                    })
+                $uninstallData = $cfg.PSObject.Properties['Uninstall'] -and $cfg.Uninstall -and
+                    (@(@($cfg.Uninstall.ProductCodes) + @($cfg.Uninstall.Uninstallers) + @($cfg.Uninstall.CleanupPaths) | Where-Object { $_ }).Count -gt 0)
+                $why = [System.Collections.Generic.List[string]]::new()
+                if ($missing.Count) { $why.Add("it lacks the block(s) $($missing -join ', ')") }
+                if ($extra.Count) { $why.Add("it has block(s) this project does not need: $($extra -join ', ')") }
+                if ($wrong.Count) { $why.Add("these blocks do not hold this toolkit's call: $($wrong -join ', ')") }
+                if ($uninstallData -and $wanted -notcontains 'Uninstall:uninstall') { $why.Add("SupportFiles\AppConfig.json has an Uninstall section, but a(n) '$type' project has no uninstall call") }
+                if ($why.Count) {
+                    & $add 'PLAN-MISMATCH' 'Error' "The deploy script does not match the blocks this project needs (installer type '$type'$(if ($text.Contains('## win32-toolkit:Install:manual-install (begin)')) { ', manual' })): $($why -join '; '). Re-create the project." $script
                 }
             }
         }

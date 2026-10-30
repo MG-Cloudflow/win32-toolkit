@@ -8,7 +8,8 @@
     still returns nothing.
 
     The real Export runs; IntuneWinAppUtil.exe (Start-Process), the staging cleanup, the advisory, the trust
-    check and Publish are shadowed. Temp folders only; the repository's Tools\ folder is only read.
+    check and Publish are shadowed. [5] (lean deploy script PR 2): the Staging copy's toolkit extension is re-checked after
+    the clean-up - the same bytes build the package, a changed copy is W32T.PackageNotReady before IntuneWinAppUtil.exe runs. Temp folders only; the repository's Tools\ folder is only read.
 
     Run:  pwsh -File Tests\ExportPassThru.unit.ps1
 #>
@@ -31,20 +32,27 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 # C-9 (TUI audit G4): the not-configured gate runs first (no marker here -> it returns nothing).
 . (Join-Path $repo 'Private\Get-Win32ToolkitNotConfiguredMarker.ps1')
 . (Join-Path $repo 'Private\Assert-Win32ToolkitProjectConfigured.ps1')
+# C-9 (lean deploy script PR 2): the package gate and Export's Staging check read the toolkit extension.
+. (Join-Path $repo 'Private\Get-Win32ToolkitDeployExtension.ps1')
+. (Join-Path $repo 'Private\Test-Win32ToolkitDeployExtension.ps1')
 . (Join-Path $repo 'Public\Export-Win32ToolkitIntuneWin.ps1')
 
 # -- shadows ------------------------------------------------------------------------------------------
 function Assert-Win32ToolkitPackageReady { param([string]$ProjectPath, [string]$Stage, [switch]$AllowLegacyScript) [pscustomobject]@{ Ready = $true; Warnings = [string[]]@() } }
 function Assert-Win32ToolkitTrustedBinary { param($Path, $ExpectedSubject, [switch]$RemoveOnFailure) }   # the repository's copy is only read
-function Optimize-Win32ToolkitProject { param($ProjectPath) }
+# [5] tampers the Staging copy of the toolkit extension after the clean-up, as a broken copy or a stray process would.
+$script:tamperStaging = $false
+function Optimize-Win32ToolkitProject { param($ProjectPath) if ($script:tamperStaging) { Add-Content -LiteralPath (Join-Path $ProjectPath 'PSAppDeployToolkit.Win32Toolkit\PSAppDeployToolkit.Win32Toolkit.psm1') -Value '# changed in Staging' } }
 function Remove-Win32ToolkitPathWithRetry { param($Path) Remove-Item -LiteralPath $Path -Recurse -Force; $true }
 function Write-Win32ToolkitPackageAdvisory { param($ProjectPath, $Context, [switch]$ProbeIfMissing) }
 function Invoke-WebRequest { throw 'no download in this suite' }
 function Invoke-RestMethod { throw 'no download in this suite' }
 # IntuneWinAppUtil.exe: writes the default package into the -o folder unless $script:writePackage is $false.
 $script:writePackage = $true
+$script:startCalls = 0
 function Start-Process {
     param($FilePath, $ArgumentList, [switch]$Wait, [switch]$PassThru, [switch]$NoNewWindow)
+    $script:startCalls++
     if ($script:writePackage -and "$ArgumentList" -match '-o "([^"]+)"') { [System.IO.File]::WriteAllBytes((Join-Path $Matches[1] 'Invoke-AppDeployToolkit.intunewin'), [byte[]](1..32)) }
     [pscustomobject]@{ ExitCode = 0 }
 }
@@ -117,7 +125,18 @@ try {
     $r = Invoke-Export @{ PublishIntune = $true; PassThru = $true; WhatIf = $true }
     $o = $r.Out | Select-Object -First 1
     if (-not $r.Error -and $r.Out.Count -eq 1 -and $o.IntuneWinPath -eq '' -and @($o.Problems).Count -eq 0 -and @($o.Published).Count -eq 0 -and $script:publishCalls.Count -eq 0) { Ok "-WhatIf -PassThru -> one object, IntuneWinPath '', no problems, nothing published" } else { Bad "out=$($r.Out | ConvertTo-Json -Compress -Depth 4) err=$($r.Error)" }
-}
+    Write-Host '[5] the Staging copy of the toolkit extension (lean deploy script PR 2)' -ForegroundColor Cyan
+    Copy-Item -LiteralPath (Join-Path $repo 'DeployExtension\PSAppDeployToolkit.Win32Toolkit') -Destination (Join-Path $proj 'PSAppDeployToolkit.Win32Toolkit') -Recurse
+    $script:tamperStaging = $false; $script:startCalls = 0
+    $r = Invoke-Export @{ NoPublishPrompt = $true; PassThru = $true }
+    if (-not $r.Error -and $script:startCalls -eq 1 -and ($r.Out | Select-Object -First 1).IntuneWinPath -eq $package) { Ok 'the same extension in Staging -> the package is built' } else { Bad "same: err=$($r.Error) start=$($script:startCalls)" }
+    $script:tamperStaging = $true; $script:startCalls = 0
+    $r = Invoke-Export @{ NoPublishPrompt = $true; PassThru = $true }
+    if ($r.Error -and $r.Error.FullyQualifiedErrorId -eq 'W32T.PackageNotReady' -and $r.Error.Exception.Message.Contains('cannot vouch for the Staging copy') -and $r.Error.Exception.Message.Contains('differs') -and $script:startCalls -eq 0) {
+        Ok 'a changed Staging copy -> W32T.PackageNotReady before IntuneWinAppUtil.exe runs'
+    } else { Bad "tampered: err=$($r.Error) start=$($script:startCalls)" }
+    $script:tamperStaging = $false
+    Remove-Item -LiteralPath (Join-Path $proj 'PSAppDeployToolkit.Win32Toolkit') -Recurse -Force}
 finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

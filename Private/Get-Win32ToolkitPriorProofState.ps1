@@ -95,7 +95,8 @@ function Get-Win32ToolkitPriorProofState {
             $named.Add($i)
             $same = ([string](& $prop $proof 'PriorInstallsHash') -ceq $binding.PriorInstallsHash) -and ([string](& $prop $proof 'ScriptSha256') -ceq $binding.ScriptSha256) -and
                 ([string](& $prop $proof 'FilesSha256') -ceq $binding.FilesSha256) -and ([string](& $prop $proof 'SupportFilesSha256') -ceq $binding.SupportFilesSha256) -and
-                ([string](& $prop $proof 'CatalogVersion') -ceq $binding.CatalogVersion)
+                ([string](& $prop $proof 'CatalogVersion') -ceq $binding.CatalogVersion) -and
+                ([string](& $prop $proof 'ExtensionSha256') -ceq [string]$binding.ExtensionSha256)
             if ($same) { $candidates.Add($i) }
         }
         $lastFailed = -1
@@ -159,7 +160,8 @@ function Get-Win32ToolkitPriorProofState {
                 # "AppConfig.json" before).
                 # No brackets inside a part: the reason itself is shown in brackets (live rows KILL-WOW, APP-RUNNING).
                 $partNames = [ordered]@{ PriorInstallsHash = 'the prior-install rules or the own identity'; ScriptSha256 = 'the deploy script'; FilesSha256 = 'the Files folder'
-                    SupportFilesSha256 = 'a file in SupportFiles was added, removed or changed - AppConfig.json, an org hook, UpdateRequirement.ps1 or another file'; CatalogVersion = 'the remove-prior catalog' }
+                    SupportFilesSha256 = 'a file in SupportFiles was added, removed or changed - AppConfig.json, an org hook, UpdateRequirement.ps1 or another file'; CatalogVersion = 'the remove-prior catalog'
+                    ExtensionSha256 = "win32-toolkit's PSADT extension module in the project" }
                 $changedParts = @($partNames.Keys | Where-Object { [string](& $prop $np $_) -cne [string]$binding.$_ } | ForEach-Object { $partNames[$_] })
             }
             $state.Reason = if ($named.Count -eq 0) { 'no proof run (Update test on Hyper-V, unattended)' }

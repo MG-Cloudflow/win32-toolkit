@@ -13,13 +13,16 @@ function Get-Win32ToolkitPriorProofBinding {
                                  under Files\, sorted ordinal (the installer, transforms, extra files);
           - SupportFilesSha256 : the same over SupportFiles\ (AppConfig.json, the org hooks dot-sourced before
                                  remove-prior, UpdateRequirement.ps1);
-          - CatalogVersion     : Get-Win32ToolkitDeployScriptBlock -Name RemovePriorCatalogVersion.
+          - CatalogVersion     : Get-Win32ToolkitDeployScriptBlock -Name RemovePriorCatalogVersion;
+          - ExtensionSha256    : the same tree hash over the project's copy of win32-toolkit's PSADT extension module
+                                 (lean deploy script PR 2; its functions run the uninstall, the tattoo and the org
+                                 dialogs), '' when the project has none (GeneratorVersion 0 / 2).
         Hashes are 64 upper-case hex characters; a missing file or folder hashes as empty ('' for the script). Pure
         read; never throws for a missing part (a W32T.* error from a helper is re-thrown).
     .PARAMETER ProjectPath
         The PSADT project folder.
     .OUTPUTS
-        [pscustomobject] PriorInstallsHash, ScriptSha256, FilesSha256, SupportFilesSha256, CatalogVersion.
+        [pscustomobject] PriorInstallsHash, ScriptSha256, FilesSha256, SupportFilesSha256, CatalogVersion, ExtensionSha256.
     .EXAMPLE
         $binding = Get-Win32ToolkitPriorProofBinding -ProjectPath $p
     #>
@@ -55,11 +58,14 @@ function Get-Win32ToolkitPriorProofBinding {
     $cfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
     $script = Join-Path $ProjectPath 'Invoke-AppDeployToolkit.ps1'
     $scriptHash = if (Test-Path -LiteralPath $script -PathType Leaf) { & $hex ([System.IO.File]::ReadAllBytes($script)) } else { '' }
+    $extension = Join-Path $ProjectPath 'PSAppDeployToolkit.Win32Toolkit'
+    $extensionHash = if (Test-Path -LiteralPath $extension -PathType Container) { & $treeHash $extension } else { '' }
     [pscustomobject]@{
         PriorInstallsHash  = Get-Win32ToolkitPriorInstallHash -Config $cfg -Kind Binding
         ScriptSha256       = $scriptHash
         FilesSha256        = & $treeHash (Join-Path $ProjectPath 'Files')
         SupportFilesSha256 = & $treeHash (Join-Path $ProjectPath 'SupportFiles')
         CatalogVersion     = [string](Get-Win32ToolkitDeployScriptBlock -Name RemovePriorCatalogVersion)
+        ExtensionSha256    = $extensionHash
     }
 }

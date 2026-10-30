@@ -40,6 +40,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\ConvertTo-PSSingleQuoted.ps1')
 . (Join-Path $repo 'Private\Test-Win32ToolkitProductCode.ps1')
 . (Join-Path $repo 'Private\Set-PSADTDataDrivenScript.ps1')
+foreach ($f in 'Get-Win32ToolkitAppConfig', 'Get-Win32ToolkitDeployBlockPlan', 'ConvertTo-Win32ToolkitSafeText', 'Get-Win32ToolkitDeployExtension', 'Copy-Win32ToolkitDeployExtension') { . (Join-Path $repo "Private\$f.ps1") }   # C-9 (lean deploy script PR 2): the generator plans blocks and copies the extension
 . (Join-Path $repo 'Private\Set-Win32ToolkitTextBlock.ps1')   # Set-TextBlock, promoted out of Apply-OrgTemplate
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitAccentLiteral.ps1') # accent normalizer — New-Win32ToolkitSparseConfig dep
 . (Join-Path $repo 'Private\New-Win32ToolkitSparseConfig.ps1') # sparse config.psd1 generator (F1) — Apply-OrgTemplate dep
@@ -173,6 +174,8 @@ function New-FixtureProject([string]$Golden = 'psadt-4.1.8') {
         [System.IO.File]::WriteAllText($f.P, (($f.T -replace "`r?`n", "`r`n") + "`r`n"), $bom)
     }
     [System.IO.File]::WriteAllText((Join-Path $p 'Invoke-AppDeployToolkit.ps1'), ($deploy -replace "`n", "`r`n"), $bom)
+    # Lean deploy script PR 2: the generator and the org template plan the blocks from Installer.Type (BOM-less, as the toolkit writes it).
+    [System.IO.File]::WriteAllText((Join-Path $p 'SupportFiles\AppConfig.json'), '{ "SchemaVersion": "1.0", "Installer": { "Type": "exe", "FileName": "app.exe" } }', (New-Object System.Text.UTF8Encoding($false)))
     return $p
 }
 

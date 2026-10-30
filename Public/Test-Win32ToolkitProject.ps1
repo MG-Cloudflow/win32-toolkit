@@ -1234,7 +1234,7 @@ function Test-Win32ToolkitProject {
                             ForEach-Object { [string]$_.CaptureId } | Select-Object -Unique)
                     @{
                         PriorInstallsHash = $b.PriorInstallsHash; ScriptSha256 = $b.ScriptSha256; FilesSha256 = $b.FilesSha256; SupportFilesSha256 = $b.SupportFilesSha256
-                        CatalogVersion = $b.CatalogVersion; BaselineInstallerSha256 = $baseSha; EntryIds = $proofEntryIds; CaptureIds = $capIds; RequirementChecked = [bool]$requirementFifth
+                        CatalogVersion = $b.CatalogVersion; ExtensionSha256 = $b.ExtensionSha256; BaselineInstallerSha256 = $baseSha; EntryIds = $proofEntryIds; CaptureIds = $capIds; RequirementChecked = [bool]$requirementFifth
                     }
                 }
                 # After the run: the versions the guest observed (C-14: size cap, parse, known ids, printable text) and the

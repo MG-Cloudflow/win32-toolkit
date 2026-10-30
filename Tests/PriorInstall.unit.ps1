@@ -56,7 +56,7 @@ function New-PiProject([string]$Name, [switch]$NoOwn, [switch]$NoOrgUi, [switch]
     foreach ($d in 'SupportFiles', 'Documentation', 'Files') { $null = New-Item -ItemType Directory -Path (Join-Path $p $d) -Force }
     $script = Join-Path $p 'Invoke-AppDeployToolkit.ps1'
     [IO.File]::WriteAllText($script, $golden, [Text.UTF8Encoding]::new($true))
-    $null = Set-PSADTDataDrivenScript -ScriptPath $script -WarningAction SilentlyContinue
+    $null = Set-PSADTDataDrivenScript -ScriptPath $script -InstallerType $InstallerType -WarningAction SilentlyContinue
     $t = [IO.File]::ReadAllText($script, [Text.Encoding]::UTF8)
     if (-not $NoOrgUi) {
         $t = Remove-Win32ToolkitPhaseDefaultUi -Content $t -Phase 'Pre-Install'

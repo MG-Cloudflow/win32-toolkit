@@ -1,7 +1,7 @@
 function Set-PSADTDataDrivenScript {
     <#
     .SYNOPSIS
-        Rewrites a scaffolded PSADT deploy script (Invoke-AppDeployToolkit.ps1) to be data-driven.
+        Rewrites a scaffolded PSADT deploy script (Invoke-AppDeployToolkit.ps1) to be data-driven and lean.
     .DESCRIPTION
         Shape-aware, fail-closed generator for the PSADT 4.1.x template and the PSADT 4.2 template
         scaffolded with New-ADTTemplate -ZeroConfig (Get-Win32ToolkitDeployScriptShape). Every code line
@@ -9,24 +9,28 @@ function Set-PSADTDataDrivenScript {
         app-specific value, so untrusted winget/registry/template values never enter a code position: the
         script reads them at runtime from SupportFiles\AppConfig.json (as data).
 
+        GeneratorVersion 3 (lean deploy script PR 2; design knowledge-base/designs/lean-deploy-script-extension.md):
+        the script gets only the blocks its project needs (Get-Win32ToolkitDeployBlockPlan: the template shape, the
+        installer type, manual or not), and most of them are one module-qualified call into win32-toolkit's PSADT
+        extension module, which this generator copies into the project first (Copy-Win32ToolkitDeployExtension):
+
           1. $adtSession hashtable: AppVendor/AppName/AppVersion/AppArch/AppProcessesToClose/
              AppScriptAuthor/AppScriptDate point at $appConfig; ExitWithMsiCodes = $true is added.
-          2. Session:loader block (above $adtSession): loads AppConfig.json and initialises the tattoo gate.
-          3. Install: the data-driven install routine (msix/appx via provisioning, everything else non-MSI
-             via Start-ADTProcess with the configured SilentArgs) - or, with -ManualInstall, the
-             manual-install note marking where the operator writes the install - then 'install-done'.
-             MSI installers are installed by PSADT's own Zero-Config block (the 4.1.x default template;
-             4.2 New-ADTTemplate -ZeroConfig; App.Name stays empty); on 4.2 the toolkit adds an 'msp'
-             block because 4.2's Zero-Config block no longer applies .msp patches (4.1.8 did).
-          4. Uninstall: the data-driven uninstall routine (msi product codes, exe uninstallers, msix
-             identity-based removal).
-          5. Post-Install / Post-Uninstall: the install "tattoo" (HKLM:\SOFTWARE\<Author>\<Vendor>\<Name>
-             \Version) that the Intune detection rule keys on; Post-Install writes it only when the Install
-             phase reached its end; Post-Uninstall also removes a legacy WOW6432Node copy.
-          6. Pre-Install: the remove-prior pair (installer-identity PR 3) - 'prior-check' (slot 5, before the org
-             dialogs: evaluates AppConfig.PriorInstalls and refuses with a 691xx exit code before any app is closed)
-             and 'remove-prior' (slot 30, after the org dialogs and hook: removes only the proven priors). Without
+          2. Session:loader block (above $adtSession): names the generator and the extension version, loads
+             AppConfig.json and initialises the tattoo gate.
+          3. Install: Install-W32TApp -Technology Exe | Appx for an EXE / MSIX / APPX installer - or, with
+             -ManualInstall, the manual-install note marking where the operator writes the install - then
+             'install-done'. An MSI gets no install call: PSADT's own Zero-Config block installs it (the 4.1.x
+             default template; 4.2 New-ADTTemplate -ZeroConfig; App.Name stays empty); on 4.2 an MSI also gets
+             Install-W32TMsiPatch ('msp'), because 4.2's Zero-Config block no longer applies .msp patches.
+          4. Uninstall: Uninstall-W32TApp (msi product codes, exe uninstallers, msix identity-based removal) for
+             every type but MSI (Zero-Config uninstalls it; an MSI project never gets an Uninstall section).
+          5. Post-Install / Post-Uninstall: Set-/Remove-W32TInstallTattoo, the install "tattoo"
+             (HKLM:\SOFTWARE\<Author>\<Vendor>\<Name>\Version) that the Intune detection rule keys on.
+          6. Pre-Install: the remove-prior pair (installer-identity PR 3), still inline - 'prior-check' (slot 5,
+             before the org dialogs) and 'remove-prior' (slot 30, after the org dialogs and hook). Without
              PriorInstalls entries both do nothing. Placed on every new project, never re-rendered later (D12).
+          A generator-owned block the plan no longer has (install, manual-install, msp, uninstall) is removed.
 
         Each block sits between '## win32-toolkit:<Phase>:<Slot>' sentinels (Set-Win32ToolkitPhaseBlock),
         so a re-run re-renders every block in place - byte-identical when nothing changed - and never
@@ -34,8 +38,10 @@ function Set-PSADTDataDrivenScript {
 
         Fail closed: a missing file, an unknown or unsupported template shape (incl. the PSADT 4.2 default
         template without Zero-Config), a DeployAppScriptVersion outside the supported range, missing PSADT
-        4.1 markers, a missing session anchor or a script that would not parse throws a W32T.* error and
-        leaves the file untouched. Only a missing AppScriptDate anchor is non-critical: the script is
+        4.1 markers, a missing session anchor, a script generated by an earlier win32-toolkit (GeneratorVersion 2,
+        never converted in place), an installer type without blocks (W32T.UnsupportedInstallerType), a changed
+        toolkit extension (W32T.DeployExtensionInvalid) or a script that would not parse throws a W32T.* error and
+        leaves the script untouched. Only a missing AppScriptDate anchor is non-critical: the script is
         written and $false is returned with a warning.
 
         A script patched by win32-toolkit 1.1.6 or older (Support 'Legacy') is returned unchanged ($true).
@@ -47,6 +53,9 @@ function Set-PSADTDataDrivenScript {
     .PARAMETER ManualInstall
         Hard apps: place the manual-install note instead of the data-driven install routine. The
         uninstall and the tattoo stay automated.
+    .PARAMETER InstallerType
+        msi, exe, msix or appx. Absent: SupportFiles\AppConfig.json Installer.Type of the script's project (both
+        pipeline callers write it first).
     .OUTPUTS
         [bool] $true = patched cleanly or already patched; $false = written and valid, with warnings.
     .EXAMPLE
@@ -61,7 +70,10 @@ function Set-PSADTDataDrivenScript {
 
         # Hard apps: leave the Install region for the operator to author instead of
         # inserting the data-driven install routine. Uninstall stays automated.
-        [switch]$ManualInstall
+        [switch]$ManualInstall,
+
+        [ValidateSet('msi', 'exe', 'msix', 'appx')]
+        [string]$InstallerType
     )
 
     $display = $script:PsadtSupportedRange.Display
@@ -121,6 +133,11 @@ function Set-PSADTDataDrivenScript {
         throw (& $shapeError $shape $hint)
     }
 
+    # A GeneratorVersion 2 script (inline blocks, an earlier win32-toolkit) is never converted in place: re-creating the
+    # project gives the lean script (D12 spirit; a project is only generated at creation anyway).
+    if ($shape.GeneratorVersion -eq 2) {
+        throw (& $shapeError $shape 'The deploy script was generated by an earlier win32-toolkit (GeneratorVersion 2, inline blocks): it is packaged as it is and never converted in place. Re-create the project to get the lean deploy script; copy any hand-written Install code out first.')
+    }
     $nl = if ($content.Contains("`r`n")) { "`r`n" } else { "`n" }
     $warnings = [System.Collections.Generic.List[string]]::new()
 
@@ -183,40 +200,35 @@ function Set-PSADTDataDrivenScript {
     }
     $content = $content.Substring(0, $htStart) + $ht + $content.Substring($htEnd)
 
-    # ---- 4./5. loader + generator blocks (catalog text only) ----
-    $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Session' -Slot 'loader' -Code (Get-Win32ToolkitDeployScriptBlock -Name Loader)
-    if ($ManualInstall) {
-        $content = Remove-Win32ToolkitPhaseBlock -Content $content -Phase 'Install' -Slot 'install'
-        $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Install' -Slot 'manual-install' -Code (Get-Win32ToolkitDeployScriptBlock -Name ManualInstall)
+    # ---- 4./5. loader + generator blocks (catalog text only), as the block plan says ----
+    $projectPath = Split-Path -Parent $ScriptPath
+    $type = $InstallerType
+    if (-not $type) {
+        $cfg = Get-Win32ToolkitAppConfig -ProjectPath $projectPath
+        if ($cfg.PSObject.Properties['Installer'] -and $cfg.Installer -and $cfg.Installer.PSObject.Properties['Type']) { $type = [string]$cfg.Installer.Type }
     }
-    else {
-        $content = Remove-Win32ToolkitPhaseBlock -Content $content -Phase 'Install' -Slot 'manual-install'
-        $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Install' -Slot 'install' -Code (Get-Win32ToolkitDeployScriptBlock -Name Install)
+    $plan = @(Get-Win32ToolkitDeployBlockPlan -Shape $shape.Shape -InstallerType ([string]$type) -ManualInstall:$ManualInstall | Where-Object { $_.Owner -eq 'Generator' })
+    foreach ($slot in @(@{ Phase = 'Install'; Slot = 'install' }, @{ Phase = 'Install'; Slot = 'manual-install' }, @{ Phase = 'Install'; Slot = 'msp' }, @{ Phase = 'Uninstall'; Slot = 'uninstall' })) {
+        if (-not @($plan | Where-Object { $_.Phase -eq $slot.Phase -and $_.Slot -eq $slot.Slot }).Count) {
+            $content = Remove-Win32ToolkitPhaseBlock -Content $content -Phase $slot.Phase -Slot $slot.Slot
+        }
     }
-    if ($shape.Shape -eq 'Psadt42ZeroConfig') {
-        $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Install' -Slot 'msp' -Code (Get-Win32ToolkitDeployScriptBlock -Name Msp)
+    foreach ($row in $plan) {
+        $code = if ($row.Technology) { Get-Win32ToolkitDeployScriptBlock -Name $row.Block -Technology $row.Technology } else { Get-Win32ToolkitDeployScriptBlock -Name $row.Block }
+        $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase $row.Phase -Slot $row.Slot -Code $code
     }
-    else {
-        $content = Remove-Win32ToolkitPhaseBlock -Content $content -Phase 'Install' -Slot 'msp'
-    }
-    $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Install' -Slot 'install-done' -Code (Get-Win32ToolkitDeployScriptBlock -Name InstallDone)
-    $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Uninstall' -Slot 'uninstall' -Code (Get-Win32ToolkitDeployScriptBlock -Name Uninstall)
-    # Installer-identity PR 3: the remove-prior pair on EVERY new project. With no PriorInstalls entries in AppConfig.json
-    # both blocks do nothing; entries are data read at run time, so adding one later never changes this script (D12).
-    $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Pre-Install' -Slot 'prior-check' -Code (Get-Win32ToolkitDeployScriptBlock -Name RemovePriorCheck)
-    $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Pre-Install' -Slot 'remove-prior' -Code (Get-Win32ToolkitDeployScriptBlock -Name RemovePrior)
-    $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Post-Install' -Slot 'tattoo' -Code (Get-Win32ToolkitDeployScriptBlock -Name TattooInstall)
-    $content = Set-Win32ToolkitPhaseBlock -Content $content -Phase 'Post-Uninstall' -Slot 'tattoo' -Code (Get-Win32ToolkitDeployScriptBlock -Name TattooUninstall)
 
     # The result must still be the same template layout, now generated by this version.
     $after = Get-Win32ToolkitDeployScriptShape -Content $content
-    if ($after.Shape -ne $shape.Shape -or $after.GeneratorVersion -ne 2) {
+    if ($after.Shape -ne $shape.Shape -or $after.GeneratorVersion -ne 3) {
         throw [System.Management.Automation.ErrorRecord]::new(
             [System.InvalidOperationException]::new("The patched deploy script no longer matches its template layout (was $($shape.Shape), now $($after.Shape); $($after.Reason)). $ScriptPath was not changed."),
             'W32T.GeneratedScriptInvalid', [System.Management.Automation.ErrorCategory]::InvalidResult, $ScriptPath)
     }
 
-    # ---- 6. write (UTF-8 with BOM; host + 5.1 parse; original bytes restored on failure) ----
+    # ---- 6. the toolkit extension the calls need, then the script (UTF-8 with BOM; host + 5.1 parse; original
+    #      bytes restored on failure). A changed toolkit source throws W32T.DeployExtensionInvalid before the write.
+    $null = Copy-Win32ToolkitDeployExtension -ProjectPath $projectPath
     Write-Win32ToolkitDeployScript -Path $ScriptPath -Content $content -OriginalBytes $originalBytes
 
     foreach ($w in $warnings) { Write-Warning $w }

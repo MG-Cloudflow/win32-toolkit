@@ -99,7 +99,7 @@ function New-DProject([string]$Name, [string]$Version = '8.9.9', [string]$Templa
         $tmp = Join-Path $root 'gen.ps1'
         $null = New-Item -ItemType Directory -Path $root -Force
         [IO.File]::WriteAllText($tmp, $golden, [Text.UTF8Encoding]::new($true))
-        $null = Set-PSADTDataDrivenScript -ScriptPath $tmp -WarningAction SilentlyContinue
+        $null = Set-PSADTDataDrivenScript -ScriptPath $tmp -InstallerType msi -WarningAction SilentlyContinue
         $t = [IO.File]::ReadAllText($tmp, [Text.Encoding]::UTF8)
         $t = Remove-Win32ToolkitPhaseDefaultUi -Content $t -Phase 'Pre-Install'
         $script:generated = Set-Win32ToolkitPhaseBlock -Content $t -Phase 'Pre-Install' -Slot 'org-ui' -Code (Get-Win32ToolkitDeployScriptBlock -Name OrgUiPreInstall)

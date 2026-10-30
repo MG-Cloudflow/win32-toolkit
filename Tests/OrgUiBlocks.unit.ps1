@@ -46,7 +46,7 @@ function Test-Win32ToolkitPsadtVersionSupported {
 }
 foreach ($f in 'Get-Win32ToolkitDeployScriptShape', 'Set-Win32ToolkitPhaseBlock', 'Remove-Win32ToolkitPhaseBlock',
     'Remove-Win32ToolkitPhaseDefaultUi', 'Get-Win32ToolkitDeployScriptBlock', 'Write-Win32ToolkitDeployScript',
-    'Test-Win32ToolkitPS51Syntax', 'Set-PSADTDataDrivenScript', 'Set-Win32ToolkitTextBlock', 'Apply-OrgTemplate',
+    'Test-Win32ToolkitPS51Syntax', 'Set-PSADTDataDrivenScript', 'Get-Win32ToolkitAppConfig', 'Get-Win32ToolkitDeployBlockPlan', 'ConvertTo-Win32ToolkitSafeText', 'Get-Win32ToolkitDeployExtension', 'Copy-Win32ToolkitDeployExtension', 'Set-Win32ToolkitTextBlock', 'Apply-OrgTemplate',
     'Add-Win32ToolkitOrgHooks', 'Assert-Win32ToolkitOrgExtensionModule', 'Get-Win32ToolkitOrgExtensionLayoutFinding', 'Get-Win32ToolkitAppConfig', 'Set-Win32ToolkitAppConfig',
     'ConvertTo-PSSingleQuoted') {
     . (Join-Path $repo "Private\$f.ps1")
@@ -106,7 +106,8 @@ function New-Project([string]$Fixture, [string]$Label, [switch]$NoGenerate) {
     $bom = New-Object System.Text.UTF8Encoding($true)
     [System.IO.File]::WriteAllText((Join-Path $p 'Config\config.psd1'), "@{`r`n    Toolkit = @{ CompanyName = 'PSAppDeployToolkit' }`r`n}`r`n", $bom)
     [System.IO.File]::WriteAllText((Join-Path $p 'Strings\strings.psd1'), (($stringsPsd1 -replace "`r?`n", "`r`n") + "`r`n"), $bom)
-    $app = [pscustomobject]@{ SchemaVersion = '1.0'; App = [pscustomobject]@{ Vendor = 'Contoso'; Name = 'Tool'; DisplayName = 'Tool'; Version = '1.0'; Arch = 'x64'; ScriptAuthor = 'old'; ScriptDate = '2026-10-15' } }
+    $app = [pscustomobject]@{ SchemaVersion = '1.0'; App = [pscustomobject]@{ Vendor = 'Contoso'; Name = 'Tool'; DisplayName = 'Tool'; Version = '1.0'; Arch = 'x64'; ScriptAuthor = 'old'; ScriptDate = '2026-10-15' }
+        Installer = [pscustomobject]@{ Type = 'exe'; FileName = 'tool.exe'; SilentArgs = '/S' } }   # lean deploy script PR 2: the block plan reads Installer.Type
     $null = Set-Win32ToolkitAppConfig -ProjectPath $p -Config $app
     Copy-Item -LiteralPath (Join-Path $repo "Tests\Fixtures\$Fixture\Invoke-AppDeployToolkit.ps1") -Destination (Join-Path $p 'Invoke-AppDeployToolkit.ps1')
     if (-not $NoGenerate) { $null = Set-PSADTDataDrivenScript -ScriptPath (Join-Path $p 'Invoke-AppDeployToolkit.ps1') -WarningAction SilentlyContinue }
@@ -158,7 +159,7 @@ foreach ($g in 'psadt-4.1.8', 'psadt-4.2.0-zeroconfig') {
     if ($outside.Count -eq 0 -and $t -notmatch '\$saiwParams') { Ok "$g : no Show-ADT* call / `$saiwParams outside toolkit blocks" } else { Bad "$g : left: $(($outside | ForEach-Object { $_.Extent.Text }) -join ' | ')" }
     $errs = $null; [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $p 'Invoke-AppDeployToolkit.ps1'), [ref]$null, [ref]$errs)
     $ps51 = @(Test-Win32ToolkitPS51Syntax -Path (Join-Path $p 'Invoke-AppDeployToolkit.ps1'))
-    if (@($errs).Count -eq 0 -and $ps51.Count -eq 0 -and $sh.Support -eq 'Supported' -and $sh.GeneratorVersion -eq 2) { Ok "$g : host + 5.1 parse clean, still Supported / GeneratorVersion 2" } else { Bad "$g : host=$(@($errs).Count) 5.1=$($ps51.Count) $($sh.Support)" }
+    if (@($errs).Count -eq 0 -and $ps51.Count -eq 0 -and $sh.Support -eq 'Supported' -and $sh.GeneratorVersion -eq 3) { Ok "$g : host + 5.1 parse clean, still Supported / GeneratorVersion 3" } else { Bad "$g : host=$(@($errs).Count) 5.1=$($ps51.Count) $($sh.Support)" }
     if (-not $t.Contains("O'Brien IT") -and -not $t.Contains("Don't switch off") -and -not $t.Contains("It's installed.")) { Ok "$g : no template value spliced into the deploy script" } else { Bad "$g : a template value reached the deploy script" }
     $projects[$g] = $p
 }
@@ -212,31 +213,7 @@ function Get-Phase([string]$Text, [string]$Name) {
 $expPreMiddle = @'
     ## win32-toolkit:Pre-Install:org-ui (begin) - managed by win32-toolkit; regenerated, do not edit inside
     ## Org template dialogs - policy is DATA in SupportFiles\AppConfig.json (OrgUi); nothing is spliced here.
-    ## PSADT 4.2 note: DeployMode Auto resolves to Silent when no listed process is running (or the list is
-    ## empty), so these dialogs only show when the user must close an app.
-    $w32tUi = $appConfig.OrgUi
-    if ($w32tUi -and $w32tUi.Welcome -and $w32tUi.Welcome.Enabled) {
-        $w32tWelcome = @{}
-        if ($w32tUi.Welcome.AllowDefer) {
-            $w32tWelcome['AllowDefer'] = $true
-            if ([int]$w32tUi.Welcome.DeferTimes -gt 0) { $w32tWelcome['DeferTimes'] = [int]$w32tUi.Welcome.DeferTimes }
-        }
-        if ($w32tUi.Welcome.CheckDiskSpace) { $w32tWelcome['CheckDiskSpace'] = $true }
-        if ($w32tUi.Welcome.PersistPrompt) { $w32tWelcome['PersistPrompt'] = $true }
-        if ($adtSession.AppProcessesToClose.Count -gt 0) {
-            $w32tWelcome['CloseProcesses'] = $adtSession.AppProcessesToClose
-            if ($w32tUi.Welcome.BlockExecution) { $w32tWelcome['BlockExecution'] = $true }
-            $w32tCountdown = [int]$w32tUi.Welcome.CloseProcessesCountdown
-            if ($w32tCountdown -gt 0 -and $w32tCountdown -le 86400) { $w32tWelcome['CloseProcessesCountdown'] = $w32tCountdown }
-        }
-        Show-ADTInstallationWelcome @w32tWelcome
-    }
-    if ($w32tUi -and $w32tUi.Progress -and $w32tUi.Progress.Enabled) {
-        $w32tProgress = @{}
-        if (-not [string]::IsNullOrWhiteSpace([string]$w32tUi.Progress.StatusMessage)) { $w32tProgress['StatusMessage'] = [string]$w32tUi.Progress.StatusMessage }
-        if (-not [string]::IsNullOrWhiteSpace([string]$w32tUi.Progress.StatusMessageDetail)) { $w32tProgress['StatusMessageDetail'] = [string]$w32tUi.Progress.StatusMessageDetail }
-        Show-ADTInstallationProgress @w32tProgress
-    }
+    PSAppDeployToolkit.Win32Toolkit\Show-W32TInstallWelcome -AppConfig $appConfig
     ## win32-toolkit:Pre-Install:org-ui (end)
     ## win32-toolkit:Pre-Install:hook (begin) - managed by win32-toolkit; regenerated, do not edit inside
     ## Org hook Pre-Install: runs SupportFiles\OrgHooks\PreInstall.ps1 when present (edit that file, not this block).
@@ -257,26 +234,12 @@ New-Variable -Name Post-Install -Force -Value {
     if (Test-Path -LiteralPath $orgHookScript) { . $orgHookScript }
     ## win32-toolkit:Post-Install:hook (end)
     ## win32-toolkit:Post-Install:tattoo (begin) - managed by win32-toolkit; regenerated, do not edit inside
-    ## win32-toolkit install tattoo - records install state + version for the Intune detection rule.
-    ## Written only when the Install phase reached its end ($w32tInstallDone, set by the install-done block).
-    $w32tName = if ($appConfig.App.DisplayName) { $appConfig.App.DisplayName } else { $appConfig.App.Name }
-    if (-not $w32tInstallDone) {
-        Write-ADTLogEntry -Message 'win32-toolkit: the Install phase did not run to its end - the detection tattoo was NOT written.' -Severity 2
-    }
-    elseif ($w32tName -and $appConfig.App.Vendor -and $appConfig.App.Version -and $appConfig.App.ScriptAuthor) {
-        Set-ADTRegistryKey -Key "HKLM:\SOFTWARE\$($appConfig.App.ScriptAuthor)\$($appConfig.App.Vendor)\$w32tName" -Name 'Version' -Value "$($appConfig.App.Version)" -Type 'String'
-    }
+    ## win32-toolkit install tattoo - records install state + version for the Intune detection rule (only when the Install phase ran to its end).
+    PSAppDeployToolkit.Win32Toolkit\Set-W32TInstallTattoo -AppConfig $appConfig -InstallDone $w32tInstallDone
     ## win32-toolkit:Post-Install:tattoo (end)
     ## win32-toolkit:Post-Install:org-ui (begin) - managed by win32-toolkit; regenerated, do not edit inside
-    ## Org template completion prompt - policy is DATA in AppConfig.json (OrgUi.Completion). Never shown for a
-    ## Zero-Config MSI (4.1.8 parity: the PSADT 4.2 template prompts unconditionally).
-    $w32tUi = $appConfig.OrgUi
-    if ($w32tUi -and $w32tUi.Completion -and $w32tUi.Completion.Enabled -and -not $adtSession.UseDefaultMsi -and
-        -not [string]::IsNullOrWhiteSpace([string]$w32tUi.Completion.Message)) {
-        $w32tButton = [string]$w32tUi.Completion.ButtonRightText
-        if ([string]::IsNullOrWhiteSpace($w32tButton)) { $w32tButton = 'OK' }
-        Show-ADTInstallationPrompt -Message ([string]$w32tUi.Completion.Message) -ButtonRightText $w32tButton -NoWait
-    }
+    ## Org template completion prompt - policy is DATA in SupportFiles\AppConfig.json (OrgUi.Completion).
+    PSAppDeployToolkit.Win32Toolkit\Show-W32TCompletionPrompt -AppConfig $appConfig
     ## win32-toolkit:Post-Install:org-ui (end)
 }
 '@ -replace "`r`n", "`n" | ForEach-Object { $_ + "`n" }
@@ -288,20 +251,8 @@ New-Variable -Name Post-Uninstall -Force -Value {
     if (Test-Path -LiteralPath $orgHookScript) { . $orgHookScript }
     ## win32-toolkit:Post-Uninstall:hook (end)
     ## win32-toolkit:Post-Uninstall:tattoo (begin) - managed by win32-toolkit; regenerated, do not edit inside
-    ## win32-toolkit install tattoo - remove the key written during install.
-    $w32tName = if ($appConfig.App.DisplayName) { $appConfig.App.DisplayName } else { $appConfig.App.Name }
-    if ($w32tName -and $appConfig.App.Vendor -and $appConfig.App.ScriptAuthor) {
-        $w32tTattooKey = "HKLM:\SOFTWARE\$($appConfig.App.ScriptAuthor)\$($appConfig.App.Vendor)\$w32tName"
-        Remove-ADTRegistryKey -Key $w32tTattooKey -Recurse
-        ## Legacy cleanup: packages published with the old 'powershell.exe -File' command line ran 32-bit under
-        ## the Intune Management Extension and wrote the tattoo under WOW6432Node. Remove that copy too - only
-        ## when it exists: Remove-ADTRegistryKey logs a warning for an absent key, the normal case since the
-        ## exe launcher.
-        $w32tLegacyKey = "HKLM:\SOFTWARE\WOW6432Node\$($appConfig.App.ScriptAuthor)\$($appConfig.App.Vendor)\$w32tName"
-        if ([System.Environment]::Is64BitProcess -and (Test-Path -LiteralPath $w32tLegacyKey)) {
-            Remove-ADTRegistryKey -Key $w32tTattooKey -Wow6432Node -Recurse
-        }
-    }
+    ## win32-toolkit install tattoo - removed at uninstall, with its legacy WOW6432Node copy.
+    PSAppDeployToolkit.Win32Toolkit\Remove-W32TInstallTattoo -AppConfig $appConfig
     ## win32-toolkit:Post-Uninstall:tattoo (end)
 }
 '@ -replace "`r`n", "`n" | ForEach-Object { $_ + "`n" }
@@ -312,8 +263,8 @@ foreach ($c in @(@{ N = 'Pre-Install (spec 5.3)'; P = 'Pre-Install'; E = $expPre
     if ($got -ceq $c.E) { Ok "$($c.N) byte-for-byte" } else { Bad "$($c.N) differs:`n$got" }
 }
 $pu = Get-Phase $t 'Pre-Uninstall'
-if ($pu.Contains('$w32tUi.UninstallWelcome.Enabled -and $adtSession.AppProcessesToClose.Count -gt 0') -and (Get-Phase $t 'Pre-Repair').Contains('$w32tUi.UninstallWelcome.Enabled')) {
-    Ok 'Pre-Uninstall and Pre-Repair use the maintenance (UninstallWelcome) policy'
+if ($pu.Contains('PSAppDeployToolkit.Win32Toolkit\Show-W32TMaintenanceWelcome -AppConfig $appConfig') -and (Get-Phase $t 'Pre-Repair').Contains('PSAppDeployToolkit.Win32Toolkit\Show-W32TMaintenanceWelcome -AppConfig $appConfig')) {
+    Ok 'Pre-Uninstall and Pre-Repair call the maintenance welcome (UninstallWelcome policy)'
 } else { Bad 'maintenance welcome missing' }
 
 # -- [5] fail closed before any write --------------------------------------------------------------

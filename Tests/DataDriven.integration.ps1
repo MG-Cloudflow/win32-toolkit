@@ -168,9 +168,9 @@ InstallerSwitches:
         if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { Ok 'deploy script written UTF-8 with BOM' } else { Bad 'deploy script has no UTF-8 BOM' }
         $ps1 = Read-Text $scriptPath
         $s1 = Get-Win32ToolkitDeployScriptShape -Content $ps1
-        if ($s1.Shape -eq $expectShape -and $s1.GeneratorVersion -eq 2 -and $s1.Support -eq 'Supported') { Ok "shape kept ($($s1.Shape)), GeneratorVersion 2, Supported" } else { Bad "shape after patch: $($s1.Shape) / $($s1.GeneratorVersion) / $($s1.Support)" }
+        if ($s1.Shape -eq $expectShape -and $s1.GeneratorVersion -eq 3 -and $s1.Support -eq 'Supported') { Ok "shape kept ($($s1.Shape)), GeneratorVersion 3, Supported" } else { Bad "shape after patch: $($s1.Shape) / $($s1.GeneratorVersion) / $($s1.Support)" }
         if ($ps1.Contains('$appConfig =') -and $ps1.Contains('$w32tInstallDone = $false')) { Ok 'loader present (AppConfig + tattoo gate initialised)' } else { Bad 'no loader' }
-        if ($ps1.Contains('## Data-driven install') -and $ps1.Contains('## Data-driven uninstall')) { Ok 'routines present' } else { Bad 'routines' }
+        if ($ps1.Contains('PSAppDeployToolkit.Win32Toolkit\Install-W32TApp -AppConfig $appConfig -Technology Exe') -and $ps1.Contains('PSAppDeployToolkit.Win32Toolkit\Uninstall-W32TApp -AppConfig $appConfig') -and (Test-Path -LiteralPath (Join-Path (Split-Path $scriptPath) 'PSAppDeployToolkit.Win32Toolkit\PSAppDeployToolkit.Win32Toolkit.psm1'))) { Ok 'routines: the install and uninstall calls into the toolkit extension, which sits next to the script' } else { Bad 'routines' }
         if (([regex]::Matches($ps1, '(?m)^\s*ExitWithMsiCodes = \$true\s*$')).Count -eq 1) { Ok 'ExitWithMsiCodes = $true added once (D13)' } else { Bad 'ExitWithMsiCodes line missing or duplicated' }
         foreach ($k in 'AppVendor = $appConfig.App.Vendor', 'AppName = $appConfig.App.Name', 'AppVersion = $appConfig.App.Version',
             'AppArch = $appConfig.App.Arch', 'AppScriptAuthor = $appConfig.App.ScriptAuthor', 'AppScriptDate = $appConfig.App.ScriptDate') {
@@ -180,21 +180,25 @@ InstallerSwitches:
         $postInstall = Get-PhaseText $ps1 'Post-Install'
         $postUninstall = Get-PhaseText $ps1 'Post-Uninstall'
         $installText = Get-PhaseText $ps1 'Install'
+        # Lean deploy script PR 2: the tattoo code lives in the project's copy of the toolkit extension (Set-/Remove-W32TInstallTattoo).
+        $extText = Read-Text (Join-Path (Split-Path $scriptPath) 'PSAppDeployToolkit.Win32Toolkit\PSAppDeployToolkit.Win32Toolkit.psm1')
         if ($postInstall.Contains('## win32-toolkit:Post-Install:tattoo (begin)') -and $postInstall.Contains('win32-toolkit install tattoo - records') -and
-            $postInstall.Contains('if (-not $w32tInstallDone) {') -and
-            $postInstall.Contains('Set-ADTRegistryKey -Key "HKLM:\SOFTWARE\$($appConfig.App.ScriptAuthor)\$($appConfig.App.Vendor)\$w32tName" -Name ''Version'' -Value "$($appConfig.App.Version)" -Type ''String''') -and
-            $postInstall.Contains('$w32tName = if ($appConfig.App.DisplayName) { $appConfig.App.DisplayName } else { $appConfig.App.Name }')) {
-            Ok 'Post-Install tattoo block: DisplayName-driven, value-free, gated on $w32tInstallDone (5.4)'
+            $postInstall.Contains('PSAppDeployToolkit.Win32Toolkit\Set-W32TInstallTattoo -AppConfig $appConfig -InstallDone $w32tInstallDone') -and
+            $extText.Contains('if (-not $w32tInstallDone) {') -and
+            $extText.Contains('Set-ADTRegistryKey -Key "HKLM:\SOFTWARE\$($appConfig.App.ScriptAuthor)\$($appConfig.App.Vendor)\$w32tName" -Name ''Version'' -Value "$($appConfig.App.Version)" -Type ''String''') -and
+            $extText.Contains('$w32tName = if ($appConfig.App.DisplayName) { $appConfig.App.DisplayName } else { $appConfig.App.Name }')) {
+            Ok 'Post-Install tattoo: the call passes $w32tInstallDone; Set-W32TInstallTattoo is DisplayName-driven, value-free and gated on it (5.4)'
         } else { Bad 'Post-Install tattoo block missing or changed' }
         if ($installText.Contains('## win32-toolkit:Install:install-done (begin)') -and $installText.Contains('$w32tInstallDone = $true')) { Ok 'Install phase ends with the install-done block' } else { Bad 'install-done block missing from the Install phase' }
         if ($postUninstall.Contains('## win32-toolkit:Post-Uninstall:tattoo (begin)') -and
-            $postUninstall.Contains('Remove-ADTRegistryKey -Key $w32tTattooKey -Recurse') -and
-            $postUninstall.Contains('Remove-ADTRegistryKey -Key $w32tTattooKey -Wow6432Node -Recurse') -and
-            $postUninstall.Contains('[System.Environment]::Is64BitProcess -and (Test-Path -LiteralPath $w32tLegacyKey)')) {
+            $postUninstall.Contains('PSAppDeployToolkit.Win32Toolkit\Remove-W32TInstallTattoo -AppConfig $appConfig') -and
+            $extText.Contains('Remove-ADTRegistryKey -Key $w32tTattooKey -Recurse') -and
+            $extText.Contains('Remove-ADTRegistryKey -Key $w32tTattooKey -Wow6432Node -Recurse') -and
+            $extText.Contains('[System.Environment]::Is64BitProcess -and (Test-Path -LiteralPath $w32tLegacyKey)')) {
             Ok 'Post-Uninstall tattoo block removes the key in both registry views (5.5, D5 legacy cleanup; the WOW6432Node copy only when present)'
         } else { Bad 'Post-Uninstall tattoo block missing or changed' }
         $msp = $installText.Contains('## win32-toolkit:Install:msp (begin)')
-        if ($msp -eq $is42) { Ok "msp block present iff PSADT 4.2 (present: $msp)" } else { Bad "msp block present=$msp on $($sel.VersionText)" }
+        if (-not $msp) { Ok 'no msp block for an EXE (msp is for an MSI on PSADT 4.2 only)' } else { Bad "msp block in an EXE project on $($sel.VersionText)" }
 
         Write-Host "`n[4] KEY PROOF: payloads only in data, never in code" -ForegroundColor Cyan
         if (-not $ps1.Contains($INSTALL_PAYLOAD)) { Ok 'install payload absent from .ps1' } else { Bad 'install payload LEAKED' }
@@ -274,7 +278,7 @@ InstallerSwitches:
         if ($ps1b.Contains('AppScriptAuthor = $appConfig.App.ScriptAuthor')) { Ok 'AppScriptAuthor still reads AppConfig after branding' } else { Bad 'AppScriptAuthor no longer data-driven' }
         $orgUiMissing = @('Pre-Install', 'Pre-Uninstall', 'Pre-Repair', 'Post-Install', 'Post-Repair' | Where-Object { -not $ps1b.Contains("## win32-toolkit:${_}:org-ui (begin)") })
         if ($orgUiMissing.Count -eq 0) { Ok 'org-ui blocks in the five dialog phases' } else { Bad "org-ui block missing in: $($orgUiMissing -join ', ')" }
-        if (([regex]::Matches($ps1b, 'Set-ADTRegistryKey')).Count -eq 1 -and ([regex]::Matches($ps1b, [regex]::Escape('win32-toolkit install tattoo - records'))).Count -eq 1) { Ok 'tattoo survived org-template branding' } else { Bad 'tattoo clobbered by branding' }
+        if (([regex]::Matches($ps1b, 'Set-W32TInstallTattoo')).Count -eq 1 -and ([regex]::Matches($ps1b, [regex]::Escape('win32-toolkit install tattoo - records'))).Count -eq 1) { Ok 'tattoo survived org-template branding' } else { Bad 'tattoo clobbered by branding' }
 
         Write-Host "`n[8] Update requirement rule (presence check; hostile values escaped; both registry views)" -ForegroundColor Cyan
         $rr = Get-Win32ToolkitRequirementRule -ProjectPath $proj
@@ -368,6 +372,9 @@ InstallerSwitches:
             New-Item -ItemType Directory -Path $p -Force | Out-Null
             $f = Join-Path $p 'Invoke-AppDeployToolkit.ps1'
             Write-Text $f $Text
+            # Lean deploy script PR 2: the generator plans the blocks from AppConfig.json Installer.Type.
+            New-Item -ItemType Directory -Path (Join-Path $p 'SupportFiles') -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $p 'SupportFiles\AppConfig.json') -Value '{ "Installer": { "Type": "exe" } }' -Encoding UTF8
             $f
         }
 
@@ -387,7 +394,7 @@ InstallerSwitches:
         $c2 = Read-Text $dep2
         if ($r2 -eq $false -and (@($wv2) -match 'AppScriptDate')) { Ok 'date-only miss -> $false + warning naming AppScriptDate' } else { Bad "r2=$r2 wv=[$($wv2 -join ';')]" }
         $s2 = Get-Win32ToolkitDeployScriptShape -Content $c2
-        if ($c2.Contains($loaderSentinel) -and $s2.Shape -eq $expectShape -and $s2.GeneratorVersion -eq 2 -and $s2.ParseErrors -eq 0) { Ok 'date-only miss still writes a valid, fully patched script' } else { Bad 'file not patched on a date-only miss' }
+        if ($c2.Contains($loaderSentinel) -and $s2.Shape -eq $expectShape -and $s2.GeneratorVersion -eq 3 -and $s2.ParseErrors -eq 0) { Ok 'date-only miss still writes a valid, fully patched script' } else { Bad 'file not patched on a date-only miss' }
 
         # (3) critical drift -> W32T.UnsupportedTemplateShape, message starts with the C-1 prefix, file byte-identical
         $criticalCases = [ordered]@{
@@ -470,20 +477,24 @@ InstallerSwitches:
         if ($mxPs1 -cne $mxPristine -and $mxPs1.Contains($loaderSentinel)) { Ok 'GUARD: msix deploy script patched (differs from the scaffold, loader sentinel)' } else { Bad 'GUARD: msix deploy script NOT patched' }
         $errsMx = $null; [System.Management.Automation.Language.Parser]::ParseFile($mxScript, [ref]$null, [ref]$errsMx) | Out-Null
         if (-not ($errsMx -and $errsMx.Count)) { Ok 'patched msix deploy script parses' } else { Bad "parse: $($errsMx[0].Message)" }
-        if ($mxPs1 -match 'Add-AppxProvisionedPackage' -and $mxPs1 -match 'IsSystem') { Ok 'install block: SYSTEM provisioning + interactive Add-AppxPackage branch' } else { Bad 'msix install branch missing' }
-        if ($mxPs1 -match 'Remove-AppxPackage' -and $mxPs1 -match [regex]::Escape('Where-Object { $_.Name -eq $u.PackageName }')) { Ok 'uninstall block: exact-Name Remove-AppxPackage' } else { Bad 'msix uninstall branch missing' }
-        if ($mxPs1 -notmatch [regex]::Escape('O''Evil') -and $mxPs1 -notmatch 'Evil\.Msix') { Ok 'identity values only in AppConfig.json, never in the .ps1 (data-vs-code)' } else { Bad 'identity leaked into code' }
+        # Lean deploy script PR 2: the script calls Install-W32TApp -Technology Appx / Uninstall-W32TApp; their code is in the project's
+        # copy of the toolkit extension ($mxExt), where the G1/G3/G5 checks below look.
+        $mxExt = Read-Text (Join-Path $mxProj 'PSAppDeployToolkit.Win32Toolkit\PSAppDeployToolkit.Win32Toolkit.psm1')
+        if ($mxPs1.Contains('PSAppDeployToolkit.Win32Toolkit\Install-W32TApp -AppConfig $appConfig -Technology Appx') -and $mxPs1.Contains('PSAppDeployToolkit.Win32Toolkit\Uninstall-W32TApp -AppConfig $appConfig')) { Ok 'msix script: Install-W32TApp -Technology Appx and Uninstall-W32TApp calls' } else { Bad 'msix calls missing' }
+        if ($mxExt -match 'Add-AppxProvisionedPackage' -and $mxExt -match 'IsSystem') { Ok 'install code: SYSTEM provisioning + interactive Add-AppxPackage branch' } else { Bad 'msix install branch missing' }
+        if ($mxExt -match 'Remove-AppxPackage' -and $mxExt -match [regex]::Escape('Where-Object { $_.Name -eq $u.PackageName }')) { Ok 'uninstall code: exact-Name Remove-AppxPackage' } else { Bad 'msix uninstall branch missing' }
+        if ($mxPs1 -notmatch [regex]::Escape('O''Evil') -and $mxPs1 -notmatch 'Evil\.Msix' -and $mxExt -notmatch 'Evil') { Ok 'identity values only in AppConfig.json, never in the .ps1 (data-vs-code)' } else { Bad 'identity leaked into code' }
 
         # G1: provisioning without -Regions silently no-ops (DISM: "provisioned only if it is pinned to
         # start layout") -> Intune reports Installed and no user ever gets the app.
-        if ($mxPs1 -match [regex]::Escape("-Regions 'all'")) { Ok "G1: Add-AppxProvisionedPackage passes -Regions 'all' (else provisioning silently no-ops)" }
+        if ($mxExt -match [regex]::Escape("-Regions 'all'")) { Ok "G1: Add-AppxProvisionedPackage passes -Regions 'all' (else provisioning silently no-ops)" }
         else { Bad "G1: -Regions 'all' missing from the provisioning call" }
         # G3: no Add-AppxPackage fallback under SYSTEM - it would register the app into SYSTEM's own
         # profile, throw nothing, and let the tattoo report a successful install of an app nobody has.
-        if ($mxPs1 -match [regex]::Escape('Add-AppxProvisionedPackage -Online -PackagePath $installerPath -SkipLicense -Regions ''all'' -ErrorAction Stop')) {
+        if ($mxExt -match [regex]::Escape('Add-AppxProvisionedPackage -Online -PackagePath $installerPath -SkipLicense -Regions ''all'' -ErrorAction Stop')) {
             Ok 'G3: provisioning uses -ErrorAction Stop (Appx cmdlets error non-terminating by default)'
         } else { Bad 'G3: provisioning call is not -ErrorAction Stop' }
-        $sysBranch = [regex]::Match($mxPs1, '(?s)IsSystem\)\s*\{(.*?)\}\s*else\s*\{')
+        $sysBranch = [regex]::Match($mxExt, '(?s)IsSystem\)\s*\{(.*?)\}\s*else\s*\{')
         # Strip comment lines first - the block's own comment explains why the fallback was removed and
         # names the cmdlet, which would otherwise match here. 'Add-AppxProvisionedPackage' does not
         # contain 'Add-AppxPackage' as a substring, so the provisioning call cannot false-positive.
@@ -494,15 +505,15 @@ InstallerSwitches:
         if ($sysCode -match 'throw') { Ok 'G3: a provisioning failure rethrows (fails the deployment loudly)' } else { Bad 'G3: provisioning failure does not rethrow' }
         # G5: $uninstallSuccess was computed and never read - every uninstaller could fail and the
         # script still returned 0, so Intune recorded a successful uninstall of an app still installed.
-        if ($mxPs1 -match [regex]::Escape('if (-not $uninstallSuccess -and')) { Ok 'G5: uninstall throws when no uninstaller reported success' }
+        if ($mxExt -match [regex]::Escape('if (-not $uninstallSuccess -and')) { Ok 'G5: uninstall throws when no uninstaller reported success' }
         else { Bad 'G5: failed uninstall still returns success' }
         # G5 must not throw on codes that MEAN success: 1605 = product not installed (already gone - the
         # goal state holds), 1641/3010 = removed + reboot initiated/required. Both loops share one set.
-        if ($mxPs1 -match [regex]::Escape('$w32tUninstallOk = @(0, 1605, 1641, 3010)')) { Ok 'G5: success codes include 1605/1641/3010 (no false uninstall failure)' }
+        if ($mxExt -match [regex]::Escape('$w32tUninstallOk = @(0, 1605, 1641, 3010)')) { Ok 'G5: success codes include 1605/1641/3010 (no false uninstall failure)' }
         else { Bad 'G5: success-code set missing or wrong' }
-        if (([regex]::Matches($mxPs1, [regex]::Escape('-in $w32tUninstallOk'))).Count -eq 2) { Ok 'G5: both uninstall loops share the same success set (cannot drift)' }
+        if (([regex]::Matches($mxExt, [regex]::Escape('-in $w32tUninstallOk'))).Count -eq 2) { Ok 'G5: both uninstall loops share the same success set (cannot drift)' }
         else { Bad 'G5: the two loops do not share the success set' }
-        if ($mxPs1 -notmatch [regex]::Escape('-in @(0, 3010)')) { Ok 'G5: no stale narrow success check remains' } else { Bad 'G5: a stale @(0,3010) check survives' }
+        if ($mxExt -notmatch [regex]::Escape('-in @(0, 3010)')) { Ok 'G5: no stale narrow success check remains' } else { Bad 'G5: a stale @(0,3010) check survives' }
 
         # Tattoo detection: inject ScriptAuthor+Vendor (no org template in this harness)
         $mxCfg2 = Get-Win32ToolkitAppConfig -ProjectPath $mxProj
@@ -526,21 +537,22 @@ InstallerSwitches:
         $mi = Get-PhaseText $msiPs1 'Install'
         $mu = Get-PhaseText $msiPs1 'Uninstall'
         $zcI = $mi.IndexOf('if ($adtSession.UseDefaultMsi)')
-        if ($zcI -ge 0 -and $mi.Contains('Start-ADTMsiProcess') -and $mi.Contains('## win32-toolkit:Install:install (begin)') -and $mi.Contains('## win32-toolkit:Install:install-done (begin)')) {
-            Ok "Install phase: PSADT's Zero-Config MSI block AND the toolkit install/install-done blocks (V7)"
-        } else { Bad 'Install phase lacks the Zero-Config block or the toolkit blocks' }
-        if ($zcI -ge 0 -and $zcI -lt $mi.IndexOf('## win32-toolkit:Install:install (begin)')) { Ok 'Zero-Config block runs before the toolkit install block' } else { Bad 'Zero-Config block not ahead of the toolkit block' }
-        if ($mu.Contains('if ($adtSession.UseDefaultMsi)') -and $mu.Contains('Start-ADTMsiProcess') -and $mu.Contains('## win32-toolkit:Uninstall:uninstall (begin)')) {
-            Ok "Uninstall phase: PSADT's Zero-Config MSI block AND the toolkit uninstall block"
-        } else { Bad 'Uninstall phase lacks the Zero-Config block or the toolkit block' }
+        # Lean deploy script PR 2 (block plan): an MSI gets no install and no uninstall block - PSADT's Zero-Config block does both.
+        if ($zcI -ge 0 -and $mi.Contains('Start-ADTMsiProcess') -and -not $mi.Contains('## win32-toolkit:Install:install (begin)') -and $mi.Contains('## win32-toolkit:Install:install-done (begin)')) {
+            Ok "Install phase: PSADT's Zero-Config MSI block, no toolkit install block, install-done kept (V7)"
+        } else { Bad 'Install phase lacks the Zero-Config block, or carries an install block' }
+        if ($zcI -ge 0 -and $zcI -lt $mi.IndexOf('## win32-toolkit:Install:install-done (begin)')) { Ok 'Zero-Config block runs before install-done' } else { Bad 'Zero-Config block not ahead of install-done' }
+        if ($mu.Contains('if ($adtSession.UseDefaultMsi)') -and $mu.Contains('Start-ADTMsiProcess') -and -not $mu.Contains('## win32-toolkit:Uninstall:uninstall (begin)')) {
+            Ok "Uninstall phase: PSADT's Zero-Config MSI block, no toolkit uninstall block"
+        } else { Bad 'Uninstall phase lacks the Zero-Config block, or carries an uninstall block' }
         $mspHere = $mi.Contains('## win32-toolkit:Install:msp (begin)')
         if ($mspHere -eq $is42) { Ok "msp block (4.1.8 MSP parity) present iff PSADT 4.2 (present: $mspHere)" } else { Bad "msp present=$mspHere on $($sel.VersionText)" }
         if ($is42 -and $mspHere) {
-            if ($mi.Contains('Start-ADTMsiProcess -Action Patch -FilePath $w32tMsp.FullName') -and $mi.IndexOf('## win32-toolkit:Install:msp (begin)') -gt $zcI) { Ok 'msp block patches DefaultMspFiles after the Zero-Config install' } else { Bad 'msp block text/order' }
+            if ($mi.Contains('PSAppDeployToolkit.Win32Toolkit\Install-W32TMsiPatch') -and $mi.IndexOf('## win32-toolkit:Install:msp (begin)') -gt $zcI) { Ok 'msp block calls Install-W32TMsiPatch after the Zero-Config install' } else { Bad 'msp block content or position wrong' }
         }
         $sMsi = Get-Win32ToolkitDeployScriptShape -Content $msiPs1
         $e51m = @(Test-Win32ToolkitPS51Syntax -Path (Join-Path $msiProj 'Invoke-AppDeployToolkit.ps1'))
-        if ($sMsi.Shape -eq $expectShape -and $sMsi.GeneratorVersion -eq 2 -and $sMsi.ParseErrors -eq 0 -and $e51m.Count -eq 0) { Ok 'MSI script: shape kept, GeneratorVersion 2, host + 5.1 parse clean' } else { Bad "MSI script: $($sMsi.Shape)/$($sMsi.GeneratorVersion)/$($sMsi.ParseErrors) 5.1=[$($e51m -join ' | ')]" }
+        if ($sMsi.Shape -eq $expectShape -and $sMsi.GeneratorVersion -eq 3 -and $sMsi.ParseErrors -eq 0 -and $e51m.Count -eq 0) { Ok 'MSI script: shape kept, GeneratorVersion 3, host + 5.1 parse clean' } else { Bad "MSI script: $($sMsi.Shape)/$($sMsi.GeneratorVersion)/$($sMsi.ParseErrors) 5.1=[$($e51m -join ' | ')]" }
 
         Write-Host "`n[15] Critical abort: Configure-PSADTForInstaller on an Unknown-shape script propagates the W32T error" -ForegroundColor Cyan
         $abort = Join-Path $base 'Abort'

@@ -17,8 +17,9 @@
       [4]  value-free: no Invoke-Expression, Add-Type, [scriptblock]::Create, ExpandString, NewScriptBlock, web or
            process commands, Import-Module; '&' / '.' only on a variable the same function assigns a scriptblock literal
            to; no global writes; no app or vendor name.
-      [5]  each function carries its block-catalog text verbatim (PR 1: the generator still places the catalog blocks, so
-           the two must not drift until PR 2 removes the catalog bodies).
+      [5]  the catalog's call blocks (PR 2): one module-qualified call each, into an exported function with parameters it
+           declares and constant arguments; every export has a caller; the Loader marker and the uninstall revision marker
+           name the current row.
       [6]  under Windows PowerShell 5.1, the module imported with PSADT's commands stubbed (and no $adtSession /
            $appConfig variable anywhere): module-level preferences; Install-W32TApp (EXE, APPX for a non-SYSTEM user,
            missing file, the 69114 refusal for every mismatch); Install-W32TMsiPatch; the two tattoo functions;
@@ -145,17 +146,39 @@ $appNames = '(?i)firefox|mozilla|helper\.exe|notepad|7-zip|chrome|google|adobe|z
 $named = @([regex]::Matches([System.IO.File]::ReadAllText($psm1Path), $appNames) | ForEach-Object { $_.Value })
 if ($named.Count -eq 0) { Ok 'no app or vendor name (the module ships in every package)' } else { Bad "app / vendor names: $($named -join ', ')" }
 
-# == [5] catalog parity ====================================================================================
-Write-Host '[5] every function carries its block-catalog text verbatim (PR 1)' -ForegroundColor Cyan
-$pairs = [ordered]@{ 'Install-W32TApp' = 'Install'; 'Install-W32TMsiPatch' = 'Msp'; 'Uninstall-W32TApp' = 'Uninstall'; 'Set-W32TInstallTattoo' = 'TattooInstall'
-    'Remove-W32TInstallTattoo' = 'TattooUninstall'; 'Show-W32TInstallWelcome' = 'OrgUiPreInstall'; 'Show-W32TMaintenanceWelcome' = 'OrgUiPreMaintenance'; 'Show-W32TCompletionPrompt' = 'OrgUiPostInstall' }
-foreach ($fnName in $pairs.Keys) {
+# == [5] the catalog's call blocks ===========================================================================
+Write-Host "[5] the catalog's call blocks: one module-qualified call each, into a function the module exports" -ForegroundColor Cyan
+# Lean deploy script PR 2: the generator places these blocks; their code is one call into this module. Every call names an
+# exported function with parameters it declares and constant arguments only; every exported function has a caller; the
+# loader marker and the uninstall revision marker name the current row of the known-versions table.
+$calls = [ordered]@{ 'Install (Exe)' = @{ Name = 'Install'; Tech = 'Exe' }; 'Install (Appx)' = @{ Name = 'Install'; Tech = 'Appx' }; 'Msp' = @{ Name = 'Msp' }; 'Uninstall' = @{ Name = 'Uninstall' }
+    'TattooInstall' = @{ Name = 'TattooInstall' }; 'TattooUninstall' = @{ Name = 'TattooUninstall' }; 'OrgUiPreInstall' = @{ Name = 'OrgUiPreInstall' }
+    'OrgUiPreMaintenance' = @{ Name = 'OrgUiPreMaintenance' }; 'OrgUiPostInstall' = @{ Name = 'OrgUiPostInstall' } }
+$called = [System.Collections.Generic.List[string]]::new()
+$allowedArgs = @('$appConfig', '$w32tInstallDone', 'Exe', 'Appx')
+foreach ($label in $calls.Keys) {
+    $c = $calls[$label]
+    $text = if ($c.Tech) { Get-Win32ToolkitDeployScriptBlock -Name $c.Name -Technology $c.Tech } else { Get-Win32ToolkitDeployScriptBlock -Name $c.Name }
+    $code = @(($text -split "`n") | Where-Object { $_.Trim() -and -not $_.Trim().StartsWith('#') })
+    $blockAst = [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$null)
+    $cmd = @($blockAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+    $ok = $code.Count -eq 1 -and $cmd.Count -eq 1 -and $cmd[0].GetCommandName() -like "$($ext.Name)\*"
+    $fnName = if ($cmd.Count -eq 1) { ($cmd[0].GetCommandName() -split '\\', 2)[1] } else { '' }
     $fnAst = $allFunctions | Where-Object { $_.Name -eq $fnName } | Select-Object -First 1
-    $body = ($fnAst.Body.Extent.Text -replace "`r`n", "`n")
-    $catalog = (Get-Win32ToolkitDeployScriptBlock -Name $pairs[$fnName]) -split "`n" | ForEach-Object { if ($_.Trim()) { '    ' + $_ } else { '' } }
-    if ($body.Contains(($catalog -join "`n"))) { Ok "$fnName holds catalog '$($pairs[$fnName])' verbatim (4-space indent)" } else { Bad "$fnName drifted from catalog '$($pairs[$fnName])'" }
+    $declared = if ($fnAst -and $fnAst.Body.ParamBlock) { @($fnAst.Body.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) } else { @() }
+    $named = if ($cmd.Count -eq 1) { @($cmd[0].CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] } | ForEach-Object { $_.ParameterName }) } else { @() }
+    $values = if ($cmd.Count -eq 1) { @($cmd[0].CommandElements | Select-Object -Skip 1 | Where-Object { $_ -isnot [System.Management.Automation.Language.CommandParameterAst] } | ForEach-Object { $_.Extent.Text }) } else { @() }
+    if ($ok -and $fnAst -and $exports -contains $fnName -and @($named | Where-Object { $declared -notcontains $_ }).Count -eq 0 -and @($values | Where-Object { $allowedArgs -cnotcontains $_ }).Count -eq 0) {
+        Ok "catalog '$label': $($cmd[0].Extent.Text)"
+        $called.Add($fnName)
+    } else { Bad "catalog '$label' is not one module-qualified call to an exported function with declared parameters and constant arguments: $($code -join ' | ')" }
 }
-
+$unused = @($exports | Where-Object { $called -notcontains $_ })
+if ($unused.Count -eq 0) { Ok 'every exported function has a caller in the catalog' } else { Bad "exported but never called: $($unused -join ', ')" }
+$loader = Get-Win32ToolkitDeployScriptBlock -Name Loader
+if (($loader -split "`n")[0] -ceq "## win32-toolkit generator 3; extension $($ext.Name) $($ext.Version)") { Ok "the Loader's first line names generator 3 and the current extension $($ext.Name) $($ext.Version)" } else { Bad "Loader marker: $(($loader -split "`n")[0])" }
+$un = [regex]::Match((Get-Win32ToolkitDeployScriptBlock -Name Uninstall), '## Uninstall revision (\d+) \(win32-toolkit\)')
+if ($un.Success -and [int]$un.Groups[1].Value -eq $ext.UninstallRevision) { Ok "the Uninstall call block names uninstall revision $($ext.UninstallRevision), the extension's" } else { Bad 'Uninstall revision marker does not match the extension row' }
 # == [6] Windows PowerShell 5.1: the functions with PSADT stubbed ===========================================
 Write-Host '[6] the functions under Windows PowerShell 5.1 (PSADT commands stubbed)' -ForegroundColor Cyan
 $ps51 = Get-Command powershell.exe -ErrorAction SilentlyContinue

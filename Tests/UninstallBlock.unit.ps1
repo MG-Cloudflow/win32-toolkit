@@ -73,7 +73,13 @@ function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
 . (Join-Path $repo 'Private\Get-Win32ToolkitDeployScriptBlock.ps1')
-$block = Get-Win32ToolkitDeployScriptBlock -Name Uninstall
+# Lean deploy script PR 2: the uninstall code lives in Uninstall-W32TApp of the extension module (the catalog's Uninstall block is
+# one call into it). $block = that function's body from its first code comment on, de-indented: the text the device runs.
+$psm1 = Join-Path $repo 'DeployExtension\PSAppDeployToolkit.Win32Toolkit\PSAppDeployToolkit.Win32Toolkit.psm1'
+$fnAst = [System.Management.Automation.Language.Parser]::ParseFile($psm1, [ref]$null, [ref]$null).Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Uninstall-W32TApp' }, $true)
+$fnBody = ($fnAst.Body.Extent.Text -replace "`r`n", "`n")
+$fnBody = $fnBody.Substring($fnBody.IndexOf('    ## Data-driven uninstall (values from SupportFiles\AppConfig.json).'))
+$block = (($fnBody.Substring(0, $fnBody.LastIndexOf('}')).TrimEnd() -split "`n") | ForEach-Object { if ($_.StartsWith('    ')) { $_.Substring(4) } else { $_ } }) -join "`n"
 
 # == [1] static checks =================================================================================
 Write-Host '[1] the catalog text: revision marker, constants, 5.1/C-10 rules, variable names' -ForegroundColor Cyan
@@ -136,7 +142,7 @@ if ((Get-Count $block "-match '$nsisRule'") -eq 1 -and 'C:\Vendor\App\uninstall.
 $appNames = '(?i)firefox|mozilla|helper\.exe|notepad|7-zip|chrome|google|adobe|zoom'
 $named = [System.Collections.Generic.List[string]]::new()
 foreach ($bn in @((Get-Command Get-Win32ToolkitDeployScriptBlock).Parameters['Name'].Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] } | ForEach-Object { $_.ValidValues })) {
-    $bt = if ($bn -eq 'Hook') { Get-Win32ToolkitDeployScriptBlock -Name Hook -Phase Pre-Install -HookFile PreInstall.ps1 } else { Get-Win32ToolkitDeployScriptBlock -Name $bn }
+    $bt = if ($bn -eq 'Hook') { Get-Win32ToolkitDeployScriptBlock -Name Hook -Phase Pre-Install -HookFile PreInstall.ps1 } elseif ($bn -eq 'Install') { Get-Win32ToolkitDeployScriptBlock -Name Install -Technology Exe } else { Get-Win32ToolkitDeployScriptBlock -Name $bn }
     foreach ($hit in [regex]::Matches($bt, $appNames)) { $named.Add("${bn}: $($hit.Value)") }
 }
 if ($named.Count -eq 0) { Ok 'no catalog block names an app or vendor (the text ships in every package)' } else { Bad "app/vendor names in the catalog: $($named -join ', ')" }
@@ -533,10 +539,9 @@ try {
     $harnessFile = Join-Path $work 'harness.ps1'
     [System.IO.File]::WriteAllText($blockFile, $block, (New-Object System.Text.UTF8Encoding($true)))
     [System.IO.File]::WriteAllText($harnessFile, $harness, (New-Object System.Text.UTF8Encoding($true)))
-    # Every case twice: the catalog block (what the generator places until lean deploy script PR 2) and Uninstall-W32TApp
-    # of the extension module (the same text inside a function; DeployExtension.unit [5] pins that it is verbatim).
-    $psm1 = Join-Path $repo 'DeployExtension\PSAppDeployToolkit.Win32Toolkit\PSAppDeployToolkit.Win32Toolkit.psm1'
-    foreach ($run in @(@{ Label = 'block'; Arg = '-BlockPath'; Path = $blockFile }, @{ Label = 'Uninstall-W32TApp'; Arg = '-ModulePath'; Path = $psm1 })) {
+    # Lean deploy script PR 2: projects run Uninstall-W32TApp (the catalog block is one call into it), so only the function runs here;
+    # the harness keeps its -BlockPath mode for the text of a GeneratorVersion 2 project.
+    foreach ($run in @(@{ Label = 'Uninstall-W32TApp'; Arg = '-ModulePath'; Path = $psm1 })) {
         $out = @(& $ps51.Source -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $harnessFile $run.Arg $run.Path 2>&1 | ForEach-Object { "$_" })
         $childExit = $LASTEXITCODE
         $passes = 0

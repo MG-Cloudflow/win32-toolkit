@@ -9,13 +9,16 @@
       * configured like the toolkit does it: Configure-PSADTForInstaller (EXE/MSI/MSIX, org template loaded)
         or Set-PSADTDataDrivenScript -ManualInstall + Apply-OrgTemplate (manual), with an org template that
         has all six hooks, an org logo and a valid PSAppDeployToolkit.Contoso extension module
-      * per project: shape Psadt41 (4.1) / Psadt42ZeroConfig (4.2), GeneratorVersion 2; loader, session edits
-        and ExitWithMsiCodes; exactly the expected toolkit blocks per phase in canonical order (msp iff 4.2,
-        tattoo, 5 org-ui, 6 hooks - last in Pre-*, first in Post-*); no PSADT default dialog outside toolkit
-        blocks; extension module + hook files copied; 0 warnings matching drift|anchor|pattern not found
+      * per project: shape Psadt41 (4.1) / Psadt42ZeroConfig (4.2), GeneratorVersion 3 (lean deploy script PR 2:
+        the loader marker names the toolkit extension); loader, session edits and ExitWithMsiCodes; exactly the
+        blocks of the block plan per phase in canonical order (install / uninstall only for a non-MSI, msp only
+        for an MSI on 4.2, tattoo, 5 org-ui, 6 hooks - last in Pre-*, first in Post-*); no PSADT default dialog
+        outside toolkit blocks; the toolkit extension (PSAppDeployToolkit.Win32Toolkit, byte-identical to the
+        shipped copy), the org extension module and the hook files copied; 0 warnings matching
+        drift|anchor|pattern not found
       * Windows PowerShell 5.1 parse (Test-Win32ToolkitPS51Syntax) clean on the deploy script and on every
         generated guest/device script (install assertions, log collector, package runner, countdown, update
-        assertions, targeted documentation, UpdateRequirement.ps1, org hooks, extension module)
+        assertions, targeted documentation, UpdateRequirement.ps1, org hooks, both extension modules)
       * no variable assigned inside a toolkit block collides with a PSADT exported variable or a PSADT
         environment-table variable (read-only on 4.2; GEN-06)
       * Assert-Win32ToolkitPackageReady -Stage Export passes with no warning (on a prerelease PSADT:
@@ -24,7 +27,8 @@
         Assets\AppIcon.png is the 64x64 org bitmap, not the bytes captured right after the scaffold
       * in a child powershell.exe (5.1): the bundled module imported by path, Initialize-ADTModule
         -ScriptDirectory <project>: Assets.Logo / Assets.Banner resolve to <project>\Assets\*.png (not Base64),
-        so the effective logo is the org logo; the org extension module imports next to it
+        so the effective logo is the org logo; the toolkit extension (its 8 functions) and the org extension
+        module import next to it
 
     Scratch root %TEMP%\w32t-tc-<4 hex> (printed as 'SCRATCH: <path>'). With $env:W32T_KEEP_TEST_OUTPUT set the
     root is kept and printed as 'KEPT: <path>' (spec 6 step 4 parses everything under it with 5.1).
@@ -63,7 +67,7 @@ New-Item -ItemType Directory -Path $scratch -Force | Out-Null
 Write-Host "SCRATCH: $scratch"
 
 $fail = & $mod {
-    param($sel, $scratch)
+    param($sel, $scratch, $repo)
     $ErrorActionPreference = 'Stop'
     $script:W32TTestFail = 0
     function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
@@ -136,15 +140,16 @@ $fail = & $mod {
     # '## <Perform ... tasks here>' markers and the '##====' / '## MARK:' banners of the next phase).
     function Get-CodeOnly([string]$Text) { [regex]::Replace($Text, '(?m)^[ \t]*#[^\r\n]*(?=\r?$)', '').Trim() }
 
-    # Canonical toolkit blocks per phase (spec 2.6 slot table; 5.2-5.5).
-    $installSlots = @(if ($is42) { 'msp' }) + @('install', 'install-done')
+    # Canonical toolkit blocks per phase (spec 2.6 slot table; 5.2-5.5), narrowed by the block plan (lean deploy script
+    # PR 2): an MSI gets no install and no uninstall block (PSADT's Zero-Config block does both) and the msp block only
+    # on 4.2; an EXE / MSIX gets install + uninstall; a manual app gets manual-install. Install / Uninstall are set per kind.
     $expectAuto = [ordered]@{
         'Session'        = @('loader')
         'Pre-Install'    = @('prior-check', 'org-ui', 'hook', 'remove-prior')
-        'Install'        = $installSlots
+        'Install'        = @()
         'Post-Install'   = @('hook', 'tattoo', 'org-ui')
         'Pre-Uninstall'  = @('org-ui', 'hook')
-        'Uninstall'      = @('uninstall')
+        'Uninstall'      = @()
         'Post-Uninstall' = @('hook', 'tattoo')
         'Pre-Repair'     = @('org-ui', 'hook')
         'Repair'         = @()
@@ -249,7 +254,7 @@ InstallerSwitches:
         $probe = Join-Path $scratch 'probe51.ps1'
         [System.IO.File]::WriteAllText($probe, (@(
                     '$ErrorActionPreference = ''Stop'''
-                    '$r = @{ Ok = $false; Ps = [string]$PSVersionTable.PSVersion; Logo = ''''; Banner = ''''; EnvKeys = @(); ModuleVars = @(); ExtensionOk = $false; Error = '''' }'
+                    '$r = @{ Ok = $false; Ps = [string]$PSVersionTable.PSVersion; Logo = ''''; Banner = ''''; EnvKeys = @(); ModuleVars = @(); ExtensionOk = $false; W32TCommands = 0; Error = '''' }'
                     'try {'
                     '    $proj = $env:W32T_TC_PROJECT'
                     '    Import-Module -Name (Join-Path $proj ''PSAppDeployToolkit\PSAppDeployToolkit.psd1'')'
@@ -263,6 +268,8 @@ InstallerSwitches:
                     '    $r.ModuleVars = @((Get-Module -Name PSAppDeployToolkit).ExportedVariables.Keys | ForEach-Object { [string]$_ })'
                     '    Import-Module -Name (Join-Path $proj ''PSAppDeployToolkit.Contoso\PSAppDeployToolkit.Contoso.psd1'')'
                     '    $r.ExtensionOk = ((Get-ContosoGreeting) -eq ''Hello from Contoso'')'
+                    '    Import-Module -Name (Join-Path $proj ''PSAppDeployToolkit.Win32Toolkit\PSAppDeployToolkit.Win32Toolkit.psd1'')'
+                    '    $r.W32TCommands = @(Get-Command -Module PSAppDeployToolkit.Win32Toolkit).Count'
                     '    $r.Ok = $true'
                     '} catch { $r.Error = [string]$_.Exception.Message }'
                     '''W32T-RESULT:'' + ($r | ConvertTo-Json -Compress -Depth 3)') -join "`r`n"), (New-Object System.Text.UTF8Encoding($true)))
@@ -276,8 +283,9 @@ InstallerSwitches:
             $scriptPath = Join-Path $proj 'Invoke-AppDeployToolkit.ps1'
             $c = Read-Text $scriptPath
             $shape = Get-Win32ToolkitDeployScriptShape -Content $c -IncludeLayout
-            if ($shape.Shape -eq $expectShape -and $shape.GeneratorVersion -eq 2 -and $shape.Support -eq 'Supported' -and $shape.ParseErrors -eq 0 -and $shape.HasTattoo) {
-                Ok "shape $($shape.Shape), GeneratorVersion 2, Supported, host parse clean, tattoo"
+            if ($shape.Shape -eq $expectShape -and $shape.GeneratorVersion -eq 3 -and $shape.Support -eq 'Supported' -and $shape.ParseErrors -eq 0 -and $shape.HasTattoo -and
+                $shape.ExtensionName -eq 'PSAppDeployToolkit.Win32Toolkit' -and $shape.ExtensionVersion -eq [version]'1.0.0') {
+                Ok "shape $($shape.Shape), GeneratorVersion 3 (extension PSAppDeployToolkit.Win32Toolkit 1.0.0), Supported, host parse clean, tattoo"
             } else { Bad "shape $($shape.Shape) / gen $($shape.GeneratorVersion) / $($shape.Support) / parse $($shape.ParseErrors) / tattoo $($shape.HasTattoo) ($($shape.Reason))" }
             if (@($shape.Layout.BlockIssues).Count -eq 0) { Ok 'every toolkit block is well-formed and inside its phase' } else { Bad "block issues: $(@($shape.Layout.BlockIssues | ForEach-Object { $_.Message }) -join '; ')" }
             $bytes = [System.IO.File]::ReadAllBytes($scriptPath)
@@ -297,7 +305,12 @@ InstallerSwitches:
             # Exactly the expected toolkit blocks per phase, in canonical order.
             $expect = [ordered]@{}
             foreach ($k in $expectAuto.Keys) { $expect[$k] = @($expectAuto[$k]) }
-            if ($manual) { $expect['Install'] = @($expect['Install'] | ForEach-Object { if ($_ -eq 'install') { 'manual-install' } else { $_ } }) }
+            $expect['Install'] = switch ($case.Kind) {
+                'msi' { @(if ($is42) { 'msp' }) + @('install-done') }
+                'manual' { @('manual-install', 'install-done') }
+                default { @('install', 'install-done') }
+            }
+            $expect['Uninstall'] = @(if ($case.Kind -ne 'msi') { 'uninstall' })
             $blocks = @($shape.Layout.Blocks)
             foreach ($phase in $expect.Keys) {
                 $got = @($blocks | Where-Object { $_.Phase -eq $phase } | Sort-Object Start | ForEach-Object { $_.Slot })
@@ -357,6 +370,14 @@ InstallerSwitches:
 
             # Org template side effects: extension module, hook files, assets, AppConfig policy.
             if (Test-Path -LiteralPath (Join-Path $proj 'PSAppDeployToolkit.Contoso\PSAppDeployToolkit.Contoso.psd1')) { Ok 'extension module copied (PSAppDeployToolkit.Contoso\PSAppDeployToolkit.Contoso.psd1)' } else { Bad 'extension module not copied' }
+            # The toolkit extension: copied next to the script, byte-identical to the shipped copy (lean deploy script PR 2).
+            $extSame = $true
+            foreach ($ef in 'PSAppDeployToolkit.Win32Toolkit.psd1', 'PSAppDeployToolkit.Win32Toolkit.psm1') {
+                $src = Join-Path $repo "DeployExtension\PSAppDeployToolkit.Win32Toolkit\$ef"
+                $dst = Join-Path $proj "PSAppDeployToolkit.Win32Toolkit\$ef"
+                if (-not (Test-Path -LiteralPath $dst) -or (Get-FileHash -LiteralPath $src).Hash -ne (Get-FileHash -LiteralPath $dst).Hash) { $extSame = $false }
+            }
+            if ($extSame) { Ok 'toolkit extension copied (PSAppDeployToolkit.Win32Toolkit), byte-identical to the shipped copy' } else { Bad 'toolkit extension missing or differs from the shipped copy' }
             $missingHooks = @($hookFiles | Where-Object { -not (Test-Path -LiteralPath (Join-Path $proj "SupportFiles\OrgHooks\$_")) })
             if ($missingHooks.Count -eq 0) { Ok 'all six hook files copied to SupportFiles\OrgHooks' } else { Bad "hook files missing: $($missingHooks -join ', ')" }
             $cfg = Get-Win32ToolkitAppConfig -ProjectPath $proj
@@ -403,6 +424,7 @@ InstallerSwitches:
                 if (Test-Path -LiteralPath $d) { Get-ChildItem -LiteralPath $d -Recurse -File -Include '*.ps1', '*.psm1' | ForEach-Object { $gen.Add($_.FullName) } }
             }
             Get-ChildItem -LiteralPath (Join-Path $proj 'PSAppDeployToolkit.Contoso') -File -Filter '*.psm1' -ErrorAction SilentlyContinue | ForEach-Object { $gen.Add($_.FullName) }
+            Get-ChildItem -LiteralPath (Join-Path $proj 'PSAppDeployToolkit.Win32Toolkit') -File -Filter '*.psm1' -ErrorAction SilentlyContinue | ForEach-Object { $gen.Add($_.FullName) }
             foreach ($expected in 'Sandbox\InstallAssertions.ps1', 'Sandbox\CollectLogs.ps1', 'Sandbox\Invoke-PsadtPackage.ps1', 'Sandbox\Countdown.ps1',
                 'SupportFiles\TargetedDocumentationScript.ps1', 'SupportFiles\UpdateRequirement.ps1') {
                 if (-not (Test-Path -LiteralPath (Join-Path $proj $expected))) { Bad "expected generated script missing: $expected" }
@@ -412,7 +434,7 @@ InstallerSwitches:
                 $e51 = @(Test-Win32ToolkitPS51Syntax -Path $f)
                 if ($e51.Count) { $bad51++; Bad "5.1 parse: $($f.Substring($proj.Length + 1)): $($e51 -join ' | ')" }
             }
-            if ($bad51 -eq 0) { Ok "$(@($gen | Select-Object -Unique).Count) scripts parse under 5.1 (deploy script, Sandbox\*, SupportFiles\*, extension module)" }
+            if ($bad51 -eq 0) { Ok "$(@($gen | Select-Object -Unique).Count) scripts parse under 5.1 (deploy script, Sandbox\*, SupportFiles\*, both extension modules)" }
 
             Write-Host "`n[5] $($case.Name): packaging gate and the PSADT module on Windows PowerShell 5.1" -ForegroundColor Cyan
             try {
@@ -460,6 +482,7 @@ InstallerSwitches:
             if ($res.Logo -eq $logoWant -and (Test-Path -LiteralPath $logoWant)) { Ok "5.1 ($($res.Ps)): Assets.Logo = <project>\Assets\AppIcon.png (not Base64)" } else { Bad "5.1: Assets.Logo = [$($res.Logo)]" }
             if ($res.Banner -eq $bannerWant -and (Test-Path -LiteralPath $bannerWant)) { Ok '5.1: Assets.Banner = <project>\Assets\Banner.Classic.png (not Base64)' } else { Bad "5.1: Assets.Banner = [$($res.Banner)]" }
             if ($res.ExtensionOk) { Ok '5.1: the org extension module imports next to the bundled PSADT (<Dir>\<Dir>.psd1)' } else { Bad '5.1: the org extension module did not import' }
+            if ($res.W32TCommands -eq 8) { Ok '5.1: the toolkit extension imports next to the bundled PSADT (8 functions)' } else { Bad "5.1: the toolkit extension exported $($res.W32TCommands) functions, expected 8" }
             $envNames = @($res.EnvKeys | Where-Object { $_ })
             $owned = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
             foreach ($k in @($psadtVars) + $envNames + @($res.ModuleVars)) { if ($k) { [void]$owned.Add([string]$k) } }
@@ -468,6 +491,21 @@ InstallerSwitches:
             elseif ($assigned.Count -lt 5) { Bad "only $($assigned.Count) toolkit-block assignments found - the collision check would be vacuous" }
             elseif ($clash.Count -eq 0) { Ok "no toolkit-block variable ($($assigned.Count)) collides with a PSADT variable ($($owned.Count): exported + environment table)" }
             else { Bad "toolkit-block variables colliding with PSADT variables: [$($clash -join ', ')] (PSADT names known: $($owned.Count))" }
+            # The same check on the toolkit extension's functions (lean deploy script PR 2): their variables are function-local
+            # in the module, so a clash could not break a deployment today; a clash still means a confusing log or a later bug.
+            $extPath = Join-Path $proj 'PSAppDeployToolkit.Win32Toolkit\PSAppDeployToolkit.Win32Toolkit.psm1'
+            $extAst = [System.Management.Automation.Language.Parser]::ParseFile($extPath, [ref]$null, [ref]$null)
+            $extAssigned = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            foreach ($n in $extAst.FindAll({ param($x) $x -is [System.Management.Automation.Language.AssignmentStatementAst] -or $x -is [System.Management.Automation.Language.ForEachStatementAst] }, $true)) {
+                $target = if ($n -is [System.Management.Automation.Language.ForEachStatementAst]) { $n.Variable } else { $n.Left }
+                foreach ($v in @($target.FindAll({ param($x) $x -is [System.Management.Automation.Language.VariableExpressionAst] }, $true) | Select-Object -First 1)) {
+                    [void]$extAssigned.Add(($v.VariablePath.UserPath -replace '^(script|global|local|private):', ''))
+                }
+            }
+            $extClash = @($extAssigned | Where-Object { $owned.Contains($_) })
+            if ($extAssigned.Count -lt 5) { Bad "only $($extAssigned.Count) toolkit-extension assignments found - the collision check would be vacuous" }
+            elseif ($extClash.Count -eq 0) { Ok "no toolkit-extension variable ($($extAssigned.Count)) collides with a PSADT variable" }
+            else { Bad "toolkit-extension variables colliding with PSADT variables: [$($extClash -join ', ')]" }
         }
     }
     catch {
@@ -475,7 +513,7 @@ InstallerSwitches:
     }
 
     $script:W32TTestFail
-} $sel $scratch
+} $sel $scratch $repo
 
 if ($env:W32T_KEEP_TEST_OUTPUT) {
     Write-Host "KEPT: $scratch"

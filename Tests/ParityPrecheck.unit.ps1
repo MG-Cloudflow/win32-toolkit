@@ -49,7 +49,7 @@ function Test-Win32ToolkitPsadtVersionSupported {
     return ($v -ge $script:PsadtSupportedRange.Min -and $v -lt $script:PsadtSupportedRange.MaxExclusive)
 }
 foreach ($f in 'Get-Win32ToolkitDeployScriptShape', 'Set-Win32ToolkitPhaseBlock', 'Remove-Win32ToolkitPhaseBlock', 'Remove-Win32ToolkitPhaseDefaultUi',
-    'Get-Win32ToolkitDeployScriptBlock', 'Write-Win32ToolkitDeployScript', 'Test-Win32ToolkitPS51Syntax', 'Set-PSADTDataDrivenScript',
+    'Get-Win32ToolkitDeployScriptBlock', 'Write-Win32ToolkitDeployScript', 'Test-Win32ToolkitPS51Syntax', 'Set-PSADTDataDrivenScript', 'Get-Win32ToolkitAppConfig', 'Get-Win32ToolkitDeployBlockPlan', 'ConvertTo-Win32ToolkitSafeText', 'Get-Win32ToolkitDeployExtension', 'Copy-Win32ToolkitDeployExtension',
     'Set-Win32ToolkitTextBlock', 'Get-Win32ToolkitAppConfig', 'Set-Win32ToolkitAppConfig', 'ConvertTo-PSSingleQuoted', 'ConvertTo-Win32ToolkitSafeText',
     'Get-Win32ToolkitParityDialogRisk', 'Get-Win32ToolkitGuestSignedInUser', 'Invoke-Win32ToolkitParityPrecheck',
     # C-9 (installer-identity PR 3 live checks): a Zero-Config MSI's File-table programs count as processes to close.
@@ -75,6 +75,8 @@ function New-RiskProject {
         SchemaVersion    = '1.0'
         App              = [ordered]@{ Vendor = 'Contoso'; Name = $AppName; DisplayName = 'Tool'; Version = '1.0'; Arch = 'x64'; ScriptAuthor = 'Contoso IT' }
         ProcessesToClose = @($Processes)
+        # Lean deploy script PR 2: the block plan reads Installer.Type (an empty App.Name is a Zero-Config MSI).
+        Installer        = [ordered]@{ Type = $(if ($AppName) { 'exe' } else { 'msi' }); FileName = 'app' }
     }
     if ($Welcome) { $cfg['OrgUi'] = [ordered]@{ SchemaVersion = '1.0'; Welcome = $Welcome } }
     $null = Set-Win32ToolkitAppConfig -ProjectPath $p -Config ([pscustomobject]$cfg)

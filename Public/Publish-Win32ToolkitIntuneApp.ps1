@@ -169,6 +169,9 @@ function Publish-Win32ToolkitIntuneApp {
         # First, before the update requirement and the -WhatIf gate (no sign-in needed): a package whose rules are not
         # the ones Export checked (changed after Export, or no Staging copy to compare) is refused: W32T.PackageNotReady.
         $null = Assert-Win32ToolkitPriorInstallPackaged -ProjectPath $ProjectPath -IntuneWinPath $IntuneWinPath
+        # The same comparison for win32-toolkit's PSADT extension module (lean deploy script PR 2): the Staging copy the
+        # .intunewin was built from still holds the project's copy, byte for byte. W32T.PackageNotReady otherwise.
+        $null = Assert-Win32ToolkitDeployExtensionPackaged -ProjectPath $ProjectPath -IntuneWinPath $IntuneWinPath
         $priorRules = @(@(if ($appCfg.PSObject.Properties.Name -contains 'PriorInstalls' -and $appCfg.PriorInstalls -and $appCfg.PriorInstalls.PSObject.Properties['Entries']) { $appCfg.PriorInstalls.Entries }) |
             Where-Object { $null -ne $_ })
         $priorEnforce = @($priorRules | Where-Object { [string]$_.Mode -ceq 'Enforce' })

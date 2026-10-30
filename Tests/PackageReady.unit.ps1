@@ -43,6 +43,11 @@ $findingPath = Join-Path $repo 'Private\Get-Win32ToolkitCleanupPathFinding.ps1'
 . (Join-Path $repo 'Private\Get-Win32ToolkitInstallRoot.ps1')
 . (Join-Path $repo 'Private\Get-WingetManifestFile.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitAppConfig.ps1')
+# C-9 (lean deploy script PR 2): the package gate and Export's Staging check read the toolkit extension.
+. (Join-Path $repo 'Private\Get-Win32ToolkitDeployExtension.ps1')
+. (Join-Path $repo 'Private\Test-Win32ToolkitDeployExtension.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitDeployBlockPlan.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitDeployScriptBlock.ps1')
 
 # == Shadows: contract results of the WP-A / WP-B helpers ==========================================
 $script:shape      = $null

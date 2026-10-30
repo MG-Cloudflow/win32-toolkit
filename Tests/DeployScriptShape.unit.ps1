@@ -4,7 +4,7 @@
 
     Covers: the three PSADT goldens (4.1.8, 4.2.0 default, 4.2.0 Zero-Config); the three legacy-1.1.6
     fixtures (Psadt41 / GeneratorVersion 0 / Support 'Legacy' with exactly the markers 1.1.6 replaced);
-    shape preserved after full patching (GeneratorVersion 2); mutations that must classify as Unknown
+    shape preserved after full patching (GeneratorVersion 3, lean deploy script PR 2); mutations that must classify as Unknown
     (missing New-Variable phase, missing dispatcher, renamed *-ADTDeployment function, changed
     InstallPhase assignment, mixed layouts, parse error, partial Zero-Config); 4.1 marker census; foreign
     AppConfig loader; out-of-range / mismatched DeployAppScriptVersion; -Path vs -Content; missing file;
@@ -39,7 +39,7 @@ function Test-Win32ToolkitPsadtVersionSupported {
 
 foreach ($f in 'Get-Win32ToolkitDeployScriptShape', 'Set-Win32ToolkitPhaseBlock', 'Remove-Win32ToolkitPhaseBlock',
     'Remove-Win32ToolkitPhaseDefaultUi', 'Get-Win32ToolkitDeployScriptBlock', 'Write-Win32ToolkitDeployScript',
-    'Test-Win32ToolkitPS51Syntax', 'Set-PSADTDataDrivenScript') {
+    'Test-Win32ToolkitPS51Syntax', 'Set-PSADTDataDrivenScript', 'Get-Win32ToolkitAppConfig', 'Get-Win32ToolkitDeployBlockPlan', 'ConvertTo-Win32ToolkitSafeText', 'Get-Win32ToolkitDeployExtension', 'Copy-Win32ToolkitDeployExtension') {
     . (Join-Path $repo "Private\$f.ps1")
 }
 
@@ -99,11 +99,11 @@ foreach ($c in @(
 }
 
 # -- [3] full patching keeps the shape -------------------------------------------------------------
-Write-Host '[3] after full patching (generator + org-ui + hooks) the shape is unchanged, GeneratorVersion 2' -ForegroundColor Cyan
+Write-Host '[3] after full patching (generator + org-ui + hooks) the shape is unchanged, GeneratorVersion 3' -ForegroundColor Cyan
 foreach ($c in @(@{ N = 'psadt-4.1.8'; T = $g418; S = 'Psadt41' }, @{ N = 'psadt-4.2.0-zeroconfig'; T = $g42z; S = 'Psadt42ZeroConfig' })) {
     $p = Join-Path $TMP "full-$($c.N).ps1"
     [System.IO.File]::WriteAllText($p, $c.T, (New-Object System.Text.UTF8Encoding($true)))
-    $null = Set-PSADTDataDrivenScript -ScriptPath $p -WarningAction SilentlyContinue
+    $null = Set-PSADTDataDrivenScript -ScriptPath $p -InstallerType exe -WarningAction SilentlyContinue
     $t = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)
     $ui = [ordered]@{ 'Pre-Install' = 'OrgUiPreInstall'; 'Pre-Uninstall' = 'OrgUiPreMaintenance'; 'Pre-Repair' = 'OrgUiPreMaintenance'; 'Post-Install' = 'OrgUiPostInstall'; 'Post-Repair' = 'OrgUiPostRepair' }
     foreach ($ph in $ui.Keys) {
@@ -114,8 +114,8 @@ foreach ($c in @(@{ N = 'psadt-4.1.8'; T = $g418; S = 'Psadt41' }, @{ N = 'psadt
         $t = Set-Win32ToolkitPhaseBlock -Content $t -Phase $ph -Slot 'hook' -Code (Get-Win32ToolkitDeployScriptBlock -Name Hook -Phase $ph -HookFile (($ph -replace '-', '') + '.ps1'))
     }
     $r = Shape $t
-    if ($r.Shape -eq $c.S -and $r.GeneratorVersion -eq 2 -and $r.Support -eq 'Supported' -and $r.HasTattoo -and $r.IsPatched) {
-        Ok "$($c.N): still $($c.S), GeneratorVersion 2, Supported, IsPatched, HasTattoo"
+    if ($r.Shape -eq $c.S -and $r.GeneratorVersion -eq 3 -and $r.Support -eq 'Supported' -and $r.HasTattoo -and $r.IsPatched) {
+        Ok "$($c.N): still $($c.S), GeneratorVersion 3, Supported, IsPatched, HasTattoo"
     } else { Bad "$($c.N): $($r.Shape) gen $($r.GeneratorVersion) $($r.Support) ($($r.Reason))" }
     $lr = Get-Win32ToolkitDeployScriptShape -Content $t -IncludeLayout
     if (@($lr.Layout.BlockIssues).Count -eq 0 -and @($lr.Layout.Blocks).Count -ge 17) { Ok "$($c.N): $(@($lr.Layout.Blocks).Count) toolkit blocks, no block issues" }
@@ -213,9 +213,9 @@ try {
     [Environment]::CurrentDirectory = $elsewhere
     $r = Get-Win32ToolkitDeployScriptShape -Path '.\proj\Invoke-AppDeployToolkit.ps1'
     if ($r.Shape -eq 'Psadt41' -and $r.Support -eq 'Supported') { Ok "shape -Path '.\proj\Invoke-AppDeployToolkit.ps1' -> Psadt41 / Supported" } else { Bad "relative shape -> $($r.Shape) / $($r.Support) ($($r.Reason))" }
-    $null = Set-PSADTDataDrivenScript -ScriptPath '.\proj\Invoke-AppDeployToolkit.ps1' -WarningAction SilentlyContinue
+    $null = Set-PSADTDataDrivenScript -ScriptPath '.\proj\Invoke-AppDeployToolkit.ps1' -InstallerType exe -WarningAction SilentlyContinue
     $r = Get-Win32ToolkitDeployScriptShape -Path $relScript
-    if ($r.Shape -eq 'Psadt41' -and $r.GeneratorVersion -eq 2) { Ok 'Set-PSADTDataDrivenScript with a relative -ScriptPath patches the file at the PowerShell location' } else { Bad "relative generator -> $($r.Shape) gen $($r.GeneratorVersion) ($($r.Reason))" }
+    if ($r.Shape -eq 'Psadt41' -and $r.GeneratorVersion -eq 3) { Ok 'Set-PSADTDataDrivenScript with a relative -ScriptPath patches the file at the PowerShell location' } else { Bad "relative generator -> $($r.Shape) gen $($r.GeneratorVersion) ($($r.Reason))" }
     Write-Win32ToolkitDeployScript -Path '.\proj\written.ps1' -Content "'ok'`r`n" -OriginalBytes @()
     if ((Test-Path -LiteralPath (Join-Path $rel 'proj\written.ps1')) -and @(Get-ChildItem -LiteralPath $elsewhere -Force).Count -eq 0) { Ok 'Write-Win32ToolkitDeployScript with a relative -Path writes at the PowerShell location; nothing lands in the process directory' }
     else { Bad "relative writer: written=$(Test-Path -LiteralPath (Join-Path $rel 'proj\written.ps1')) elsewhere=[$(@(Get-ChildItem -LiteralPath $elsewhere -Force -Recurse | ForEach-Object Name) -join ', ')]" }
@@ -234,13 +234,13 @@ $revLine = '(?m)^[ \t]*## Uninstall revision 2 \(win32-toolkit\)[^\n]*\n'
 foreach ($c in @(@{ N = 'psadt-4.1.8'; T = $g418; S = 'Psadt41' }, @{ N = 'psadt-4.2.0-zeroconfig'; T = $g42z; S = 'Psadt42ZeroConfig' })) {
     $p = Join-Path $TMP "rev-$($c.N).ps1"
     [System.IO.File]::WriteAllText($p, ($c.T -replace "`n", "`r`n"), (New-Object System.Text.UTF8Encoding($true)))
-    $null = Set-PSADTDataDrivenScript -ScriptPath $p -WarningAction SilentlyContinue
+    $null = Set-PSADTDataDrivenScript -ScriptPath $p -InstallerType exe -WarningAction SilentlyContinue
     $rp = Get-Win32ToolkitDeployScriptShape -Path $p
-    if ($rp.Shape -eq $c.S -and $rp.GeneratorVersion -eq 2 -and $rp.Support -eq 'Supported' -and $rp.UninstallRevision -eq 2) { Ok "$($c.N) generated by this version (-Path, CRLF + BOM) -> UninstallRevision 2, GeneratorVersion 2" } else { Bad "$($c.N) generated -> $($rp.Shape) gen $($rp.GeneratorVersion) rev $($rp.UninstallRevision)" }
+    if ($rp.Shape -eq $c.S -and $rp.GeneratorVersion -eq 3 -and $rp.Support -eq 'Supported' -and $rp.UninstallRevision -eq 2) { Ok "$($c.N) generated by this version (-Path, CRLF + BOM) -> UninstallRevision 2, GeneratorVersion 3" } else { Bad "$($c.N) generated -> $($rp.Shape) gen $($rp.GeneratorVersion) rev $($rp.UninstallRevision)" }
     $t = ([System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)) -replace "`r`n", "`n"
     $old = [regex]::Replace($t, $revLine, '')
     $r = Shape $old
-    if ($old -ne $t -and $r.UninstallRevision -eq 1 -and $r.Shape -eq $c.S -and $r.GeneratorVersion -eq 2 -and $r.Support -eq 'Supported') { Ok "$($c.N): the revision line removed (a block built before PR 2) -> 1, still Supported" } else { Bad "$($c.N) without marker -> rev $($r.UninstallRevision) $($r.Shape) $($r.Support)" }
+    if ($old -ne $t -and $r.UninstallRevision -eq 1 -and $r.Shape -eq $c.S -and $r.GeneratorVersion -eq 3 -and $r.Support -eq 'Supported') { Ok "$($c.N): the revision line removed (a block built before PR 2) -> 1, still Supported" } else { Bad "$($c.N) without marker -> rev $($r.UninstallRevision) $($r.Shape) $($r.Support)" }
     $outside = $old + "`n## Uninstall revision 2 (win32-toolkit)`n"
     $r = Shape $outside
     if ($r.UninstallRevision -eq 1) { Ok "$($c.N): the marker text outside the uninstall block does not count -> still 1" } else { Bad "$($c.N) marker outside -> rev $($r.UninstallRevision)" }
@@ -269,7 +269,7 @@ foreach ($c in @(@{ N = 'psadt-4.1.8'; T = $g418 }, @{ N = 'psadt-4.2.0'; T = $g
 foreach ($c in @(@{ N = 'psadt-4.1.8'; T = $g418; S = 'Psadt41' }, @{ N = 'psadt-4.2.0-zeroconfig'; T = $g42z; S = 'Psadt42ZeroConfig' })) {
     $p = Join-Path $TMP "prior-$($c.N).ps1"
     [System.IO.File]::WriteAllText($p, ($c.T -replace "`n", "`r`n"), (New-Object System.Text.UTF8Encoding($true)))
-    $null = Set-PSADTDataDrivenScript -ScriptPath $p -WarningAction SilentlyContinue
+    $null = Set-PSADTDataDrivenScript -ScriptPath $p -InstallerType exe -WarningAction SilentlyContinue
     $bare = ([System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)) -replace "`r`n", "`n"
     $r = Shape $bare
     if ($r.RemovePriorRevision -eq 2 -and -not $r.PriorCheckFirst) { Ok "$($c.N) generated WITHOUT the org template -> revision 2, PriorCheckFirst false (the PSADT welcome runs before prior-check)" } else { Bad "$($c.N) no org -> $($r.RemovePriorRevision) / $($r.PriorCheckFirst)" }
@@ -311,6 +311,30 @@ try {
     $r = Get-Win32ToolkitDeployScriptShape -Content ''
     if ($r.RemovePriorRevision -eq 0 -and -not $r.PriorCheckFirst) { Ok "-Content '' -> RemovePriorRevision 0, PriorCheckFirst false, no throw" } else { Bad "-Content '' -> $($r.RemovePriorRevision)" }
 } catch { Bad "RemovePriorRevision threw: $($_.Exception.Message)" }
+# -- [12] GeneratorVersion 3 and the extension marker (lean deploy script PR 2) ---------------------------------
+Write-Host '[12] GeneratorVersion 3: the loader names the generator and the toolkit extension version' -ForegroundColor Cyan
+$p = Join-Path $TMP 'gv3.ps1'
+[System.IO.File]::WriteAllText($p, $g42z, (New-Object System.Text.UTF8Encoding($true)))
+$null = Set-PSADTDataDrivenScript -ScriptPath $p -InstallerType exe -WarningAction SilentlyContinue
+$g3 = ([System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)) -replace "`r`n", "`n"
+$r = Shape $g3
+if ($r.GeneratorVersion -eq 3 -and $r.ExtensionName -ceq 'PSAppDeployToolkit.Win32Toolkit' -and $r.ExtensionVersion -eq [version]'1.0.0' -and $r.Support -eq 'Supported') { Ok 'generated -> GeneratorVersion 3, ExtensionName PSAppDeployToolkit.Win32Toolkit, ExtensionVersion 1.0.0, Supported' } else { Bad "gv3 -> $($r.GeneratorVersion) $($r.ExtensionName) $($r.ExtensionVersion) $($r.Support)" }
+$marker = '## win32-toolkit generator 3; extension PSAppDeployToolkit.Win32Toolkit 1.0.0'
+$noMarker = $g3.Replace("$marker`n", '')
+$r = Shape $noMarker
+if ($noMarker -ne $g3 -and $r.GeneratorVersion -eq 2 -and $null -eq $r.ExtensionName -and $null -eq $r.ExtensionVersion -and $r.Support -eq 'Supported') { Ok 'the marker removed -> GeneratorVersion 2 (inline-block projects stay Supported)' } else { Bad "no marker -> $($r.GeneratorVersion) $($r.ExtensionName) $($r.Support)" }
+$r = Shape ($noMarker + "`n$marker`n")
+if ($r.GeneratorVersion -eq 2) { Ok 'the marker outside the loader block does not count -> GeneratorVersion 2' } else { Bad "marker outside -> $($r.GeneratorVersion)" }
+$r = Shape ($g3.Replace($marker, '## win32-toolkit generator 4; extension PSAppDeployToolkit.Win32Toolkit 2.0.0'))
+if ($r.GeneratorVersion -eq 4 -and $r.Support -eq 'Unsupported' -and $r.SupportReason -match 'newer win32-toolkit') { Ok 'generator 4 (a newer toolkit) -> Unsupported, "newer win32-toolkit"' } else { Bad "gen 4 -> $($r.GeneratorVersion) $($r.Support) '$($r.SupportReason)'" }
+$r = Shape ($g3.Replace($marker, '## win32-toolkit generator 3; extension PSAppDeployToolkit.Win32Toolkit one'))
+if ($r.GeneratorVersion -eq 2 -and $null -eq $r.ExtensionVersion) { Ok 'an unreadable extension version -> the marker does not count (GeneratorVersion 2)' } else { Bad "bad version -> $($r.GeneratorVersion) $($r.ExtensionVersion)" }
+# The generator converts nothing in place: a GeneratorVersion 2 script is refused, the file left as it is.
+$p2 = Join-Path $TMP 'gv2.ps1'
+[System.IO.File]::WriteAllText($p2, $noMarker, (New-Object System.Text.UTF8Encoding($true)))
+$h2 = (Get-FileHash -LiteralPath $p2).Hash
+$fq = try { $null = Set-PSADTDataDrivenScript -ScriptPath $p2 -InstallerType exe -WarningAction SilentlyContinue; '' } catch { $_.FullyQualifiedErrorId }
+if ($fq -eq 'W32T.UnsupportedTemplateShape' -and (Get-FileHash -LiteralPath $p2).Hash -eq $h2) { Ok 'the generator refuses a GeneratorVersion 2 script (W32T.UnsupportedTemplateShape), the file untouched' } else { Bad "gv2 regenerate -> '$fq'" }
 Remove-Item -LiteralPath $TMP -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'DeployScriptShape unit test PASSED' -ForegroundColor Green; exit 0 }

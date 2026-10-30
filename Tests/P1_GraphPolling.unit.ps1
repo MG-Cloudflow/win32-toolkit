@@ -39,6 +39,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Public\Publish-Win32ToolkitIntuneApp.ps1')
 # C-9 (installer-identity PR 3, L40): the prior-install binding check runs first; these projects have no rules.
 function Assert-Win32ToolkitPriorInstallPackaged { param($ProjectPath, $IntuneWinPath) $null = $ProjectPath, $IntuneWinPath; '' }
+function Assert-Win32ToolkitDeployExtensionPackaged { param($ProjectPath, $IntuneWinPath) $null = $ProjectPath, $IntuneWinPath; '' }   # lean deploy script PR 2 (Publish's extension check)
 
 # ── shadows ──────────────────────────────────────────────────────────────────────────────────────
 # Nothing may actually sleep: capture what WOULD have been slept instead.

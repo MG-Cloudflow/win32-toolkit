@@ -3,15 +3,18 @@
     and its writer Write-Win32ToolkitDeployScript.
 
       * 4.1.8 and 4.2.0 Zero-Config goldens: $true, no warnings, host + Windows PowerShell 5.1 parse clean,
-        UTF-8 BOM, idempotent; the generated-code contract (spec 5.1/5.2) reproduced byte-for-byte on 4.2;
-        the install/uninstall routines are today's (1.1.6) routines, comments included.
+        UTF-8 BOM, idempotent; the generated-code contract (spec 5.1/5.2, GeneratorVersion 3: the loader marker and
+        one Install-W32TApp call) reproduced byte-for-byte on 4.2; the install/uninstall routines of the toolkit
+        extension's functions are today's (1.1.6) routines, comments included.
       * legacy 1.1.6 fixtures: $true and byte-identical.
       * fail closed: 4.2 default template, missing 4.1 marker, DeployAppScriptVersion 4.3.0, unknown shape,
         missing file, missing session anchor -> W32T.UnsupportedTemplateShape with the stable C-1 wording,
         file byte-identical; a forced 5.1 parse error -> W32T.GeneratedScriptInvalid, original bytes restored.
       * gen-2 re-render (loader text changed -> catalog text), AppScriptDate miss -> $false + warning,
-        msp only on 4.2, -ManualInstall toggling, MSI Zero-Config anchors kept, ExitWithMsiCodes once,
-        hostile AppConfig values never reach the script.
+        msp only for an MSI on 4.2, -ManualInstall toggling, MSI Zero-Config anchors kept, ExitWithMsiCodes once,
+        hostile AppConfig values never reach the script; lean deploy script PR 2: the installer type comes from
+        AppConfig.json (or -InstallerType), a missing one is W32T.UnsupportedInstallerType and a GeneratorVersion 2
+        script is refused, both with the file untouched; an MSI gets no install and no uninstall block.
 
     Run:  pwsh -File Tests\GeneratorFailClosed.unit.ps1
 #>
@@ -35,7 +38,7 @@ function Test-Win32ToolkitPsadtVersionSupported {
     return ($v -ge $script:PsadtSupportedRange.Min -and $v -lt $script:PsadtSupportedRange.MaxExclusive)
 }
 foreach ($f in 'Get-Win32ToolkitDeployScriptShape', 'Set-Win32ToolkitPhaseBlock', 'Remove-Win32ToolkitPhaseBlock',
-    'Get-Win32ToolkitDeployScriptBlock', 'Write-Win32ToolkitDeployScript', 'Test-Win32ToolkitPS51Syntax', 'Set-PSADTDataDrivenScript') {
+    'Get-Win32ToolkitDeployScriptBlock', 'Write-Win32ToolkitDeployScript', 'Test-Win32ToolkitPS51Syntax', 'Set-PSADTDataDrivenScript', 'Get-Win32ToolkitAppConfig', 'Get-Win32ToolkitDeployBlockPlan', 'ConvertTo-Win32ToolkitSafeText', 'Get-Win32ToolkitDeployExtension', 'Copy-Win32ToolkitDeployExtension') {
     . (Join-Path $repo "Private\$f.ps1")
 }
 # The real 5.1 checker, with a switch to force a 5.1 parse error.
@@ -49,9 +52,11 @@ New-Item -ItemType Directory -Path $TMP -Force | Out-Null
 function Get-Fixture([string]$Name) {
     ([System.IO.File]::ReadAllText((Join-Path $repo "Tests\Fixtures\$Name\Invoke-AppDeployToolkit.ps1"), [System.Text.Encoding]::UTF8)) -replace "`r`n", "`n"
 }
-# Copy a fixture into its own scratch project; CRLF + BOM like a real scaffold. Returns the script path.
-function Copy-FixtureCase([string]$Fixture, [string]$Label, [scriptblock]$Mutate) {
-    $d = Join-Path $TMP $Label; New-Item -ItemType Directory -Path $d -Force | Out-Null
+# Copy a fixture into its own scratch project; CRLF + BOM like a real scaffold, with an AppConfig.json naming the installer type
+# (lean deploy script PR 2: the generator plans the blocks from it). Returns the script path.
+function Copy-FixtureCase([string]$Fixture, [string]$Label, [scriptblock]$Mutate, [string]$Type = 'exe') {
+    $d = Join-Path $TMP $Label; New-Item -ItemType Directory -Path (Join-Path $d 'SupportFiles') -Force | Out-Null
+    if ($Type) { Set-Content -LiteralPath (Join-Path $d 'SupportFiles\AppConfig.json') -Value (@{ SchemaVersion = '1.0'; Installer = @{ Type = $Type; FileName = "app.$Type" } } | ConvertTo-Json) -Encoding UTF8 }
     $text = Get-Fixture $Fixture
     if ($Mutate) { $text = & $Mutate $text }
     $p = Join-Path $d 'Invoke-AppDeployToolkit.ps1'
@@ -96,6 +101,7 @@ Write-Host '[2] spec 5.1 / 5.2 reproduced byte-for-byte (4.2 Zero-Config, automa
 $expectedSession = @'
 ## MARK: Variables
 ## win32-toolkit:Session:loader (begin) - managed by win32-toolkit; regenerated, do not edit inside
+## win32-toolkit generator 3; extension PSAppDeployToolkit.Win32Toolkit 1.0.0
 # Data-driven deployment values (win32-toolkit): read app-specific settings as DATA.
 $appConfig = if (Test-Path -LiteralPath "$PSScriptRoot\SupportFiles\AppConfig.json") {
     # -Encoding UTF8: AppConfig.json is BOM-less UTF-8 and this runs under Windows PowerShell 5.1 on the
@@ -130,7 +136,7 @@ $adtSession = @{
     ExitWithMsiCodes = $true
 }
 '@ -replace "`r`n", "`n" | ForEach-Object { $_ + "`n" }
-$expectedInstallHead = @'
+$expectedInstall = @'
 ## MARK: Install
 New-Variable -Name Install -Force -Value {
     ## Handle Zero-Config MSI actions.
@@ -143,22 +149,9 @@ New-Variable -Name Install -Force -Value {
         }
         Start-ADTMsiProcess @ExecuteDefaultMSISplat
     }
-    ## win32-toolkit:Install:msp (begin) - managed by win32-toolkit; regenerated, do not edit inside
-    ## PSADT 4.2's Zero-Config block no longer applies .msp patches (4.1.8 did): keep 4.1.8 parity.
-    if ($adtSession.UseDefaultMsi) {
-        foreach ($w32tMsp in @($adtSession.DefaultMspFiles)) {
-            if ($w32tMsp) { Start-ADTMsiProcess -Action Patch -FilePath $w32tMsp.FullName }
-        }
-    }
-    ## win32-toolkit:Install:msp (end)
     ## win32-toolkit:Install:install (begin) - managed by win32-toolkit; regenerated, do not edit inside
-    ## Data-driven install (values from SupportFiles\AppConfig.json).
-    if ($appConfig.Installer -and $appConfig.Installer.Type -in @('msix', 'appx')) {
-'@ -replace "`r`n", "`n"
-$expectedInstallTail = @'
-    elseif ($appConfig.Installer -and $appConfig.Installer.Type -ne 'msi') {
-'@ -replace "`r`n", "`n"
-$expectedInstallEnd = @'
+    ## Data-driven install: the installer named in SupportFiles\AppConfig.json (Installer), by the toolkit extension module.
+    PSAppDeployToolkit.Win32Toolkit\Install-W32TApp -AppConfig $appConfig -Technology Exe
     ## win32-toolkit:Install:install (end)
     ## win32-toolkit:Install:install-done (begin) - managed by win32-toolkit; regenerated, do not edit inside
     $w32tInstallDone = $true
@@ -167,20 +160,27 @@ $expectedInstallEnd = @'
 '@ -replace "`r`n", "`n" | ForEach-Object { $_ + "`n" }
 $z = Get-Text $patched['psadt-4.2.0-zeroconfig-auto']
 $s0 = $z.IndexOf('## MARK: Variables'); $s1 = $z.IndexOf("`n}`n", $z.IndexOf('$adtSession = @{', $s0)) + 3
-if ($z.Substring($s0, $s1 - $s0) -ceq $expectedSession) { Ok 'session area (loader + $adtSession edits + ExitWithMsiCodes) = spec 5.1 byte-for-byte' } else { Bad "session area differs from spec 5.1:`n$($z.Substring($s0, $s1 - $s0))" }
+if ($z.Substring($s0, $s1 - $s0) -ceq $expectedSession) { Ok 'session area (loader with the generator-3 marker + $adtSession edits + ExitWithMsiCodes) = spec 5.1 byte-for-byte' } else { Bad "session area differs from spec 5.1:`n$($z.Substring($s0, $s1 - $s0))" }
 $i0 = $z.IndexOf('## MARK: Install'); $i1 = $z.IndexOf("`n}`n", $i0) + 3
 $install = $z.Substring($i0, $i1 - $i0)
-if ($install.StartsWith($expectedInstallHead) -and $install.Contains($expectedInstallTail) -and $install.EndsWith($expectedInstallEnd)) { Ok 'Install phase = spec 5.2 (Zero-Config block, msp, install, install-done)' }
-else { Bad "Install phase differs from spec 5.2:`n$install" }
+if ($install -ceq $expectedInstall) { Ok 'Install phase of an EXE on 4.2 = the Zero-Config block, one Install-W32TApp call, install-done (no msp: not an MSI)' }
+else { Bad "Install phase differs:`n$install" }
 
-# The routines are today's (1.1.6) routines, comments included (re-based; em dash -> ' - ' for ASCII).
+# The routines the extension's functions run are today's (1.1.6) routines, comments included (re-based; em dash -> ' - '
+# for ASCII). Lean deploy script PR 2: they live in Install-W32TApp / Uninstall-W32TApp, 4 spaces deep as in 1.1.6.
 $legacy = Get-Fixture 'legacy-1.1.6-auto'
 $oldInstall = ([regex]::Match($legacy, '(?s)    ## Data-driven install \(values from SupportFiles\\AppConfig\.json\)\.\n.*?\n    \}\n(?=\n)')).Value
 $oldUninstall = ([regex]::Match($legacy, '(?s)    ## Data-driven uninstall \(values from SupportFiles\\AppConfig\.json\)\.\n.*?\n    \}\n(?=\n)')).Value
-$g41 = Get-Text $patched['psadt-4.1.8-auto']
-$newInstall = ([regex]::Match($g41, '(?s)## win32-toolkit:Install:install \(begin\)[^\n]*\n(.*?)    ## win32-toolkit:Install:install \(end\)')).Groups[1].Value
-$newUninstall = ([regex]::Match($g41, '(?s)## win32-toolkit:Uninstall:uninstall \(begin\)[^\n]*\n(.*?)    ## win32-toolkit:Uninstall:uninstall \(end\)')).Groups[1].Value
-if ($oldInstall -and $newInstall -ceq $oldInstall) { Ok 'install block = the 1.1.6 install routine line for line' } else { Bad 'install block differs from the 1.1.6 routine' }
+$psm1Text = ([System.IO.File]::ReadAllText((Join-Path $repo 'DeployExtension\PSAppDeployToolkit.Win32Toolkit\PSAppDeployToolkit.Win32Toolkit.psm1'), [System.Text.Encoding]::UTF8)) -replace "`r`n", "`n"
+function Get-FunctionPart([string]$Function, [string]$From) {
+    $f0 = $psm1Text.IndexOf("function $Function {"); $f1 = $psm1Text.IndexOf("`n}`n", $f0)
+    $s = $psm1Text.IndexOf($From, $f0)
+    if ($f0 -lt 0 -or $s -lt 0 -or $s -gt $f1) { return '' }
+    $psm1Text.Substring($s, $f1 + 1 - $s)
+}
+$newInstall = Get-FunctionPart 'Install-W32TApp' '    ## Data-driven install (values from SupportFiles\AppConfig.json).'
+$newUninstall = Get-FunctionPart 'Uninstall-W32TApp' '    ## Data-driven uninstall (values from SupportFiles\AppConfig.json).'
+if ($oldInstall -and $newInstall -ceq $oldInstall) { Ok 'Install-W32TApp runs the 1.1.6 install routine line for line' } else { Bad 'Install-W32TApp differs from the 1.1.6 routine' }
 # The uninstall block is revision 2 (installer-identity PR 2): it keeps the 1.1.6 lines of the ProductCodes loop,
 # the msi and msix branches and the no-success guard (line for line), and adds the revision marker.
 $oldU = $oldUninstall -replace [char]0x2014, '-'
@@ -192,9 +192,9 @@ $keptParts = [ordered]@{
     'no-success guard'    = ([regex]::Match($oldU, '(?ms)^        # Fail loudly when nothing actually uninstalled\..*?\n        \}\n')).Value
 }
 $missingParts = @($keptParts.Keys | Where-Object { -not $keptParts[$_] -or -not $newUninstall.Contains($keptParts[$_]) })
-if ($oldUninstall -and $missingParts.Count -eq 0 -and $newUninstall.StartsWith($keptParts['first line'])) { Ok 'uninstall block keeps the 1.1.6 lines of the ProductCodes loop, the msi and msix branches and the no-success guard (em dash -> ASCII)' }
-else { Bad "uninstall block lost 1.1.6 lines: $($missingParts -join ', ')" }
-if (([regex]::Matches($newUninstall, [regex]::Escape('    ## Uninstall revision 2 (win32-toolkit)'))).Count -eq 1 -and $newUninstall -cne $oldU) { Ok 'uninstall block adds the revision-2 marker (installer-identity PR 2)' } else { Bad 'uninstall block has no single revision-2 marker' }
+if ($oldUninstall -and $missingParts.Count -eq 0 -and $newUninstall.StartsWith($keptParts['first line'])) { Ok 'Uninstall-W32TApp keeps the 1.1.6 lines of the ProductCodes loop, the msi and msix branches and the no-success guard (em dash -> ASCII)' }
+else { Bad "Uninstall-W32TApp lost 1.1.6 lines: $($missingParts -join ', ')" }
+if (([regex]::Matches($newUninstall, [regex]::Escape('    ## Uninstall revision 2 (win32-toolkit)'))).Count -eq 1 -and $newUninstall -cne $oldU) { Ok 'Uninstall-W32TApp carries the revision-2 marker (installer-identity PR 2)' } else { Bad 'Uninstall-W32TApp has no single revision-2 marker' }
 
 # -- [3] legacy fixtures are never modified --------------------------------------------------------
 Write-Host '[3] projects patched by win32-toolkit 1.1.6: $true and byte-identical' -ForegroundColor Cyan
@@ -265,14 +265,22 @@ if ($r.Fqid -eq 'W32T.GeneratedScriptInvalid' -and $r.Message -match 'forced 5\.
 else { Bad "fqid='$($r.Fqid)' restored=$((Get-Hash $p) -eq $h) $($r.Message)" }
 
 # -- [8] block selection ---------------------------------------------------------------------------
-Write-Host '[8] msp only on 4.2; -ManualInstall swaps install / manual-install' -ForegroundColor Cyan
+Write-Host '[8] msp only for an MSI on 4.2; an MSI gets no install and no uninstall block; -ManualInstall swaps install / manual-install' -ForegroundColor Cyan
 foreach ($k in $patched.Keys) {
     $t = Get-Text $patched[$k]
-    $hasMsp = $t.Contains('## win32-toolkit:Install:msp (begin)')
-    $want = $k -like 'psadt-4.2.0-zeroconfig*'
-    if ($hasMsp -eq $want) { Ok "$k : msp block present=$hasMsp" } else { Bad "$k : msp present=$hasMsp" }
+    if (-not $t.Contains('## win32-toolkit:Install:msp (begin)')) { Ok "$k : no msp block (an EXE)" } else { Bad "$k : msp block in an EXE project" }
     $isManual = $k -like '*-manual'
     if ($t.Contains('## win32-toolkit:Install:manual-install (begin)') -eq $isManual -and $t.Contains('## win32-toolkit:Install:install (begin)') -eq (-not $isManual)) { Ok "$k : the right install block" } else { Bad "$k : wrong install block" }
+}
+foreach ($g in 'psadt-4.1.8', 'psadt-4.2.0-zeroconfig') {
+    $p = Copy-FixtureCase $g "$g-msi" -Type 'msi'
+    $r = Invoke-Gen $p
+    $t = Get-Text $p
+    $wantMsp = $g -eq 'psadt-4.2.0-zeroconfig'
+    if ($r.Result -eq $true -and $t.Contains('## win32-toolkit:Install:msp (begin)') -eq $wantMsp -and -not $t.Contains('## win32-toolkit:Install:install (begin)') -and
+        -not $t.Contains('## win32-toolkit:Uninstall:uninstall (begin)') -and $t.Contains('## win32-toolkit:Install:install-done (begin)')) {
+        Ok "$g MSI: msp=$wantMsp, no install and no uninstall block (PSADT's Zero-Config installs and uninstalls it), install-done kept"
+    } else { Bad "$g MSI: result=$($r.Result) $($r.Fqid)" }
 }
 $p = $patched['psadt-4.2.0-zeroconfig-auto']
 $null = Invoke-Gen $p -Manual
@@ -281,6 +289,13 @@ if ($t.Contains('Install:manual-install (begin)') -and -not $t.Contains('Install
 $null = Invoke-Gen $p
 $t = Get-Text $p
 if ($t.Contains('Install:install (begin)') -and -not $t.Contains('Install:manual-install (begin)') -and ([regex]::Matches($t, 'Install:install-done \(begin\)')).Count -eq 1) { Ok 'manual -> auto: back to install, one install-done' } else { Bad 'manual -> auto toggle failed' }
+# A changed installer type re-renders the plan: the blocks the new type does not need are removed.
+$p = Copy-FixtureCase 'psadt-4.2.0-zeroconfig' 'retype'
+$null = Invoke-Gen $p
+Set-Content -LiteralPath (Join-Path (Split-Path $p) 'SupportFiles\AppConfig.json') -Value (@{ Installer = @{ Type = 'msi' } } | ConvertTo-Json) -Encoding UTF8
+$r = Invoke-Gen $p
+$t = Get-Text $p
+if ($r.Result -eq $true -and $t.Contains('Install:msp (begin)') -and -not $t.Contains('Install:install (begin)') -and -not $t.Contains('Uninstall:uninstall (begin)')) { Ok 'exe -> msi re-run: install and uninstall blocks removed, msp placed' } else { Bad "retype: $($r.Fqid)" }
 
 # -- [9] MSI anchors (V7 guard), ExitWithMsiCodes, session -----------------------------------------
 Write-Host '[9] the Install phase keeps PSADT''s Zero-Config MSI block AND carries the toolkit blocks' -ForegroundColor Cyan
@@ -297,7 +312,10 @@ foreach ($k in 'psadt-4.1.8-auto', 'psadt-4.2.0-zeroconfig-auto') {
     else { Bad "$k : zc=$($zc.Count) blocks=[$($blocks -join ',')]" }
     if (([regex]::Matches($t, '(?m)^\s*ExitWithMsiCodes = \$true')).Count -eq 1) { Ok "$k : ExitWithMsiCodes = `$true exactly once" } else { Bad "$k : ExitWithMsiCodes count wrong" }
     if ($t.Contains('AppScriptAuthor = $appConfig.App.ScriptAuthor') -and -not $t.Contains('<author name>')) { Ok "$k : AppScriptAuthor is data (no template value left)" } else { Bad "$k : AppScriptAuthor not data-driven" }
-    if ($t.Contains('win32-toolkit install tattoo - records') -and $t.Contains('-Wow6432Node -Recurse') -and $t.Contains('(Test-Path -LiteralPath $w32tLegacyKey)')) { Ok "$k : tattoo + legacy WOW6432Node cleanup (only when that key exists)" } else { Bad "$k : tattoo blocks missing" }
+    if ($t.Contains('win32-toolkit install tattoo - records') -and $t.Contains('PSAppDeployToolkit.Win32Toolkit\Set-W32TInstallTattoo -AppConfig $appConfig -InstallDone $w32tInstallDone') -and
+        $t.Contains('PSAppDeployToolkit.Win32Toolkit\Remove-W32TInstallTattoo -AppConfig $appConfig') -and (Get-FunctionPart 'Remove-W32TInstallTattoo' '    ## win32-toolkit install tattoo').Contains('(Test-Path -LiteralPath $w32tLegacyKey)')) {
+        Ok "$k : the tattoo calls; Remove-W32TInstallTattoo removes the legacy WOW6432Node copy only when that key exists"
+    } else { Bad "$k : tattoo blocks missing" }
 }
 
 # -- [10] value-free -------------------------------------------------------------------------------
@@ -311,6 +329,19 @@ $null = Invoke-Gen $p
 $t = Get-Text $p
 if (-not $t.Contains('Start-Process calc') -and -not $t.Contains('$(calc)') -and -not $t.Contains('/S & calc')) { Ok 'the generated script contains none of the AppConfig values' } else { Bad 'an AppConfig value was spliced into the script' }
 
+# -- [11] lean deploy script PR 2: the installer type, GeneratorVersion 2 ------------------------------
+Write-Host '[11] no installer type -> W32T.UnsupportedInstallerType; -InstallerType wins; a GeneratorVersion 2 script is refused' -ForegroundColor Cyan
+$p = Copy-FixtureCase 'psadt-4.1.8' 'notype' -Type ''
+$h = Get-Hash $p
+$r = Invoke-Gen $p
+if ($r.Fqid -eq 'W32T.UnsupportedInstallerType' -and (Get-Hash $p) -eq $h -and -not (Test-Path -LiteralPath (Join-Path (Split-Path $p) 'PSAppDeployToolkit.Win32Toolkit'))) { Ok 'no AppConfig Installer.Type -> W32T.UnsupportedInstallerType; script byte-identical, no extension copied' } else { Bad "no type -> '$($r.Fqid)'" }
+$null = Set-PSADTDataDrivenScript -ScriptPath $p -InstallerType msix -WarningAction SilentlyContinue
+if ((Get-Text $p).Contains('Install-W32TApp -AppConfig $appConfig -Technology Appx') -and (Test-Path -LiteralPath (Join-Path (Split-Path $p) 'PSAppDeployToolkit.Win32Toolkit\PSAppDeployToolkit.Win32Toolkit.psm1'))) { Ok '-InstallerType msix -> -Technology Appx, the extension copied next to the script' } else { Bad '-InstallerType ignored' }
+$gv2 = (Get-Text $p).Replace("## win32-toolkit generator 3; extension PSAppDeployToolkit.Win32Toolkit 1.0.0`n", '')
+[System.IO.File]::WriteAllText($p, $gv2, (New-Object System.Text.UTF8Encoding($true)))
+$h = Get-Hash $p
+$r = Invoke-Gen $p
+if ($r.Fqid -eq 'W32T.UnsupportedTemplateShape' -and (Test-C1 $r.Message) -and $r.Message.Contains('GeneratorVersion 2') -and (Get-Hash $p) -eq $h) { Ok 'a GeneratorVersion 2 script -> W32T.UnsupportedTemplateShape (C-1 wording, "GeneratorVersion 2"), never converted in place' } else { Bad "gv2 -> '$($r.Fqid)' $($r.Message)" }
 Remove-Item -LiteralPath $TMP -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'GeneratorFailClosed unit test PASSED' -ForegroundColor Green; exit 0 }

@@ -21,7 +21,7 @@ function Test-Win32ToolkitPsadtVersionSupported {
 }
 foreach ($f in 'Get-Win32ToolkitDeployScriptShape', 'Set-Win32ToolkitPhaseBlock', 'Remove-Win32ToolkitPhaseBlock',
     'Remove-Win32ToolkitPhaseDefaultUi', 'Get-Win32ToolkitDeployScriptBlock', 'Write-Win32ToolkitDeployScript',
-    'Test-Win32ToolkitPS51Syntax', 'Set-PSADTDataDrivenScript', 'Add-Win32ToolkitOrgHooks', 'Assert-Win32ToolkitOrgExtensionModule',
+    'Test-Win32ToolkitPS51Syntax', 'Set-PSADTDataDrivenScript', 'Get-Win32ToolkitAppConfig', 'Get-Win32ToolkitDeployBlockPlan', 'ConvertTo-Win32ToolkitSafeText', 'Get-Win32ToolkitDeployExtension', 'Copy-Win32ToolkitDeployExtension', 'Add-Win32ToolkitOrgHooks', 'Assert-Win32ToolkitOrgExtensionModule',
     'Get-Win32ToolkitOrgExtensionLayoutFinding') {   # C-9 (TUI audit G4): the Assert's project-independent rules
     . (Join-Path $repo "Private\$f.ps1")
 }
@@ -47,7 +47,7 @@ function New-Fixture {
         # Generate once per golden (each write runs a real 5.1 parse): Set-PSADTDataDrivenScript, then the
         # deploy-script part of Apply-OrgTemplate (PSADT defaults out, org-ui blocks in).
         Copy-Item -LiteralPath (Join-Path $repo "Tests\Fixtures\$Golden\Invoke-AppDeployToolkit.ps1") -Destination $script
-        $null = Set-PSADTDataDrivenScript -ScriptPath $script -WarningAction SilentlyContinue
+        $null = Set-PSADTDataDrivenScript -ScriptPath $script -InstallerType exe -WarningAction SilentlyContinue
         $g = [System.IO.File]::ReadAllText($script, [System.Text.Encoding]::UTF8)
         $ui = [ordered]@{ 'Pre-Install' = 'OrgUiPreInstall'; 'Pre-Uninstall' = 'OrgUiPreMaintenance'; 'Pre-Repair' = 'OrgUiPreMaintenance'; 'Post-Install' = 'OrgUiPostInstall'; 'Post-Repair' = 'OrgUiPostRepair' }
         foreach ($ph in $ui.Keys) {
@@ -117,7 +117,7 @@ foreach ($golden in 'psadt-4.1.8', 'psadt-4.2.0-zeroconfig') {
     $ps51 = @(Test-Win32ToolkitPS51Syntax -Path $fx.Script)
     if (@($errs).Count -eq 0 -and $ps51.Count -eq 0) { Ok 'deploy script parses (host + Windows PowerShell 5.1)' } else { Bad "parse: host=$(@($errs).Count) 5.1=[$($ps51 -join '; ')]" }
     $sh = Get-Win32ToolkitDeployScriptShape -Path $fx.Script
-    if ($sh.Support -eq 'Supported' -and $sh.GeneratorVersion -eq 2) { Ok "shape intact ($($sh.Shape))" } else { Bad "shape $($sh.Shape) $($sh.Support)" }
+    if ($sh.Support -eq 'Supported' -and $sh.GeneratorVersion -eq 3) { Ok "shape intact ($($sh.Shape), GeneratorVersion 3)" } else { Bad "shape $($sh.Shape) $($sh.Support)" }
 
     Write-Host '[2] idempotent re-apply' -ForegroundColor Cyan
     $before = Get-FileHash -LiteralPath $fx.Script

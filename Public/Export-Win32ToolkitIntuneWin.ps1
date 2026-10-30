@@ -321,6 +321,15 @@ function Export-Win32ToolkitIntuneWin {
             # ── Step 3: Clean up the Staging copy ────────────────────────────────────
             Optimize-Win32ToolkitProject -ProjectPath $stagingPath
 
+            # The package gate checked the project; the .intunewin is built from the Staging copy: its toolkit extension
+            # (lean deploy script PR 2) must still be the project's, byte for byte, after the copy and the clean-up.
+            $staged = @(Test-Win32ToolkitDeployExtension -ProjectPath $ProjectPath -Shape ([pscustomobject]@{ GeneratorVersion = $null }) -StagingPath $stagingPath | Where-Object { $_.Code -eq 'EXTENSION-STAGING' })
+            if ($staged.Count -gt 0) {
+                throw [System.Management.Automation.ErrorRecord]::new(
+                    [System.InvalidOperationException]::new("win32-toolkit cannot vouch for the Staging copy of '$ProjectPath': $($staged[0].Message) Nothing was packaged or published."),
+                    'W32T.PackageNotReady', [System.Management.Automation.ErrorCategory]::InvalidData, $stagingPath)
+            }
+
             # ── Step 4: Ensure output folder exists (IntuneWin\<Template>\) ───────────
             if (-not (Test-Path $intuneWinDir)) {
                 New-Item -Path $intuneWinDir -ItemType Directory -Force | Out-Null

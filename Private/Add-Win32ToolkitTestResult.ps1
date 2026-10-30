@@ -299,6 +299,7 @@ function Add-Win32ToolkitTestResult {
             SupportFilesSha256      = & $hex64 $Proof['SupportFilesSha256']
             BaselineInstallerSha256 = & $hex64 $Proof['BaselineInstallerSha256']
             CatalogVersion          = if ($Proof['CatalogVersion'] -is [string] -and $Proof['CatalogVersion'] -cmatch '^[0-9a-f]{16}$') { $Proof['CatalogVersion'] } else { '' }
+            ExtensionSha256         = & $hex64 $Proof['ExtensionSha256']
             EntryIds                = & $idList $Proof['EntryIds'] '^[a-z0-9-]{1,40}$'
             CaptureIds              = & $idList $Proof['CaptureIds'] '^[a-f0-9]{16}$'
             RequirementChecked      = & $bool $Proof['RequirementChecked']
