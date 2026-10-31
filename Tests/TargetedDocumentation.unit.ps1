@@ -54,9 +54,11 @@ $perr = $null; [void][System.Management.Automation.Language.Parser]::ParseInput(
 if ($hasBom) { Ok 'script written UTF-8 with BOM' } else { Bad 'no UTF-8 BOM on generated script' }
 if (-not $perr) { Ok 'generated script parses (5.1-safe syntax)' } else { Bad "parse errors: $($perr[0].Message)" }
 if ($text.Contains("`$backend = 'Sandbox'")) { Ok 'backend literal baked = Sandbox' } else { Bad 'backend not baked to Sandbox' }
-if ((GuardCount $text $sandGuard) -eq 2) { Ok 'two Sandbox-only guards (init wait + auto-close/Stop-Computer)' } else { Bad "sandbox guards = $(GuardCount $text $sandGuard)" }
+if ((GuardCount $text $sandGuard) -eq 3) { Ok 'three Sandbox-only guards (init wait + its capture-log line + auto-close/Stop-Computer)' } else { Bad "sandbox guards = $(GuardCount $text $sandGuard)" }
 if ((GuardCount $text $hvGuard) -eq 1) { Ok 'one HyperV guard (ProgressPreference)' } else { Bad "hyperv guards = $(GuardCount $text $hvGuard)" }
-if ($text.Contains('Stop-Computer')) { Ok 'Stop-Computer present (guarded)' } else { Bad 'Stop-Computer missing' }
+# Test campaign F1: a bare Stop-Computer left the Windows Sandbox 0.8 client window open after the capture.
+$stops = @([System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$null).FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Stop-Computer' }, $true))
+if ($stops.Count -eq 1 -and @($stops[0].CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq 'Force' }).Count -eq 1) { Ok 'one Stop-Computer (guarded), with -Force like the test guests' } else { Bad "Stop-Computer calls: $(@($stops | ForEach-Object { $_.Extent.Text }) -join ' | ')" }
 
 # THE most important ordering rule in the capture: declared dependencies must be installed BEFORE the
 # pre-install baseline. If they went in afterwards, the dependency's own files/registry/services would show
@@ -85,8 +87,81 @@ if (-not (Test-Path -LiteralPath $wsbH)) { Ok 'HyperV: no .wsb built' } else { B
 if ($script:started -eq 0) { Ok 'HyperV: WindowsSandbox.exe never launched' } else { Bad "Start-Process called $script:started time(s)" }
 if ($jsonH -like '*Documentation\InstallationChanges_*.json') { Ok 'HyperV returns expected capture path' } else { Bad "returned: $jsonH" }
 
+# --- single-instance guard before the capture launch (test campaign 2026-10-21, S8-F4) ----------------
+Write-Host '[2b] Sandbox launch waits for a free Sandbox; still busy after 90 s -> $false, no launch' -ForegroundColor Cyan
+$projW = New-Proj
+$script:waitArgs = $null; $script:launches = 0
+function Wait-Win32ToolkitSandboxFree { param([int]$TimeoutSeconds) $script:waitArgs = $TimeoutSeconds; $script:sandboxFree }
+function Invoke-Win32ToolkitTestRun { param($Backend, $SandboxConfigPath) $script:launches++; [pscustomobject]@{ Launched = $true } }
+$script:sandboxFree = $false
+$wW = $null
+
+$retW = New-TargetedDocumentation -ProjectPath $projW -ProjectName 'Busy_x64_1.0' -Backend Sandbox -WarningVariable wW -WarningAction SilentlyContinue 6>$null
+if ($retW -eq $false -and $script:launches -eq 0 -and $script:waitArgs -eq 90 -and @($wW | Where-Object { "$_" -match 'Another Windows Sandbox is still running after waiting 90 s' -and "$_" -match 'NOT launched' }).Count -eq 1) { Ok 'busy Sandbox: waited 90 s, never launched, warned, returned $false (no 30-min wait)' } else { Bad "busy: ret=$retW launches=$($script:launches) wait=$($script:waitArgs) warn=$($wW -join ' | ')" }
+$script:sandboxFree = $true
+$retF = New-TargetedDocumentation -ProjectPath $projW -ProjectName 'Busy_x64_1.0' -Backend Sandbox -WarningAction SilentlyContinue 6>$null
+if ($retF -like '*Documentation\InstallationChanges_*.json' -and $script:launches -eq 1) { Ok 'free Sandbox: launched once, returns the expected capture path' } else { Bad "free: ret=$retF launches=$($script:launches)" }
+Remove-Item Function:\Wait-Win32ToolkitSandboxFree, Function:\Invoke-Win32ToolkitTestRun
+Remove-Item -LiteralPath $projW -Recurse -Force -ErrorAction SilentlyContinue
+
+# --- capture noise (test campaign 2026-10-21, S7-F7) --------------------------------------------------
+Write-Host '[3] the file snapshots leave out the PSADT run''s own .NET/PowerShell noise (both snapshots alike)' -ForegroundColor Cyan
+if ($text.Contains("Join-Path `$env:ProgramData 'Microsoft\NetFramework\BreadcrumbStore'") -and $text.Contains("Join-Path `$env:LOCALAPPDATA 'Microsoft\Windows\PowerShell'")) { Ok 'the guest script lists the BreadcrumbStore and PowerShell-cache noise (static literals)' } else { Bad 'noise list missing' }
+# Behaviour: run the generated noise list + snapshot function against a fake ProgramData/LOCALAPPDATA tree.
+$ast = [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$null)
+$snapFn = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-TargetedDirectorySnapshot' }, $true))[0]
+$noiseStmts = @($ast.EndBlock.Statements | Where-Object { $_.Extent.Text -match '^\s*(\$snapshotNoise\s*=|if \(\$env:(ProgramData|LOCALAPPDATA)\)\s*\{\s*\$snapshotNoise)' })
+$fake = Join-Path ([System.IO.Path]::GetTempPath()) ('w32noise_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+$pd = Join-Path $fake 'ProgramData'; $la = Join-Path $fake 'LocalAppData'
+foreach ($d in "$pd\Microsoft\NetFramework\BreadcrumbStore", "$pd\Vendor\App", "$la\Microsoft\Windows\PowerShell", "$la\Vendor") { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+foreach ($f in "$pd\Microsoft\NetFramework\BreadcrumbStore\a.crumb", "$pd\Vendor\App\app.exe", "$la\Microsoft\Windows\PowerShell\StartupProfileData-NonInteractive", "$la\Vendor\settings.json") { Set-Content -LiteralPath $f -Value 'x' }
+$savedPd = $env:ProgramData; $savedLa = $env:LOCALAPPDATA
+try {
+    $env:ProgramData = $pd; $env:LOCALAPPDATA = $la
+    function Write-Log { param($Message, $Level) }
+    . ([scriptblock]::Create((@($noiseStmts | ForEach-Object { $_.Extent.Text }) -join "`n") + "`n" + $snapFn.Extent.Text))
+    $snap = @(Get-TargetedDirectorySnapshot -Description 'probe' -Paths @($pd, $la) -Depth 5 6>$null | ForEach-Object { $_.FullName })
+    $hasNoise = @($snap | Where-Object { $_ -like '*BreadcrumbStore*' -or $_ -like '*\Microsoft\Windows\PowerShell*' }).Count
+    if ($noiseStmts.Count -ge 3 -and $hasNoise -eq 0 -and ($snap -contains "$pd\Vendor\App\app.exe") -and ($snap -contains "$la\Vendor\settings.json")) { Ok 'BreadcrumbStore and PowerShell-cache entries are left out; C:\ProgramData\Vendor and LOCALAPPDATA\Vendor files are kept' }
+    else { Bad "snapshot (noise stmts $($noiseStmts.Count)): $($snap -join ' | ')" }
+}
+finally {
+    $env:ProgramData = $savedPd; $env:LOCALAPPDATA = $savedLa
+    Remove-Item -LiteralPath $fake -Recurse -Force -ErrorAction SilentlyContinue
+}
+if ($textH.Contains("Join-Path `$env:ProgramData 'Microsoft\NetFramework\BreadcrumbStore'")) { Ok 'the same filter in the Hyper-V capture script' } else { Bad 'Hyper-V script lacks the noise filter' }
+
+# A capture whose declared dependency cannot be staged STOPS (re-verification 2026-10-21, B3 #1): the W32T error
+# reaches the caller (Finalize has no try, so Invoke-Win32Toolkit / the manual flow re-throw it) instead of a
+# warning and $false.
+Write-Host '[4] dependency staging: W32T.DependencyNotStaged propagates (C-2); a plain error keeps the warning' -ForegroundColor Cyan
+$projD = New-Proj
+$savedStaging4 = ${function:Initialize-Win32ToolkitDependencyStaging}
+function Initialize-Win32ToolkitDependencyStaging { param($ProjectPath)
+    throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new("Dependency 'project:Contoso\Missing' of $ProjectPath could not be staged: the project was not found."), 'W32T.DependencyNotStaged', [System.Management.Automation.ErrorCategory]::ObjectNotFound, 'project:Contoso\Missing')
+}
+$retD = 'not-set'; $eD = $null; $wD = $null
+try { $retD = New-TargetedDocumentation -ProjectPath $projD -ProjectName 'Test_x64_1.0' -Backend HyperV -WarningVariable wD -WarningAction SilentlyContinue 6>$null } catch { $eD = $_ }
+if ($eD -and $eD.FullyQualifiedErrorId -eq 'W32T.DependencyNotStaged' -and $retD -eq 'not-set' -and @($wD | Where-Object { "$_" -like 'Failed to create targeted documentation*' }).Count -eq 0) { Ok 'W32T.DependencyNotStaged is re-thrown (no "Failed to create targeted documentation" warning, no $false)' } else { Bad "caught='$($eD.FullyQualifiedErrorId)' returned='$retD' warnings=[$(@($wD) -join ' | ')]" }
+function Initialize-Win32ToolkitDependencyStaging { param($ProjectPath) throw "disk full (plain error) for $ProjectPath" }
+$retP = $null; $wP = $null
+$retP = New-TargetedDocumentation -ProjectPath $projD -ProjectName 'Test_x64_1.0' -Backend HyperV -WarningVariable wP -WarningAction SilentlyContinue 6>$null
+if ($retP -eq $false -and @($wP | Where-Object { "$_" -like 'Failed to create targeted documentation: disk full*' }).Count -eq 1) { Ok 'a plain error keeps the warning + $false (unchanged)' } else { Bad "plain: returned='$retP' warnings=[$(@($wP) -join ' | ')]" }
+${function:Initialize-Win32ToolkitDependencyStaging} = $savedStaging4
+
+# The run's -BasePath reaches the capture's dependency staging (re-verification 2026-10-21, B3 #4).
+Write-Host '[5] -BasePath reaches Initialize-Win32ToolkitDependencyStaging (only when given)' -ForegroundColor Cyan
+$script:stageArgs = $null
+function Initialize-Win32ToolkitDependencyStaging { param($ProjectPath, $BasePath) $script:stageArgs = @{ ProjectPath = $ProjectPath }; if ($PSBoundParameters.ContainsKey('BasePath')) { $script:stageArgs['BasePath'] = $BasePath }; return 0 }
+$null = New-TargetedDocumentation -ProjectPath $projD -ProjectName 'Test_x64_1.0' -Backend HyperV -BasePath 'D:\OtherBase' 6>$null
+if ($script:stageArgs -and $script:stageArgs['BasePath'] -eq 'D:\OtherBase') { Ok '-BasePath reaches Initialize-Win32ToolkitDependencyStaging' } else { Bad "staging args: $(if ($script:stageArgs) { ($script:stageArgs.Keys | ForEach-Object { "$_=$($script:stageArgs[$_])" }) -join '; ' })" }
+$script:stageArgs = $null
+$null = New-TargetedDocumentation -ProjectPath $projD -ProjectName 'Test_x64_1.0' -Backend HyperV 6>$null
+if ($script:stageArgs -and -not $script:stageArgs.ContainsKey('BasePath')) { Ok 'no -BasePath -> none passed (the staging resolves the configured base folder)' } else { Bad 'BasePath passed although none was given' }
+${function:Initialize-Win32ToolkitDependencyStaging} = $savedStaging4
+
 # best-effort cleanup
-Remove-Item -LiteralPath $projS, $projH -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $projS, $projH, $projD -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All TargetedDocumentation tests passed.' -ForegroundColor Green; exit 0 }

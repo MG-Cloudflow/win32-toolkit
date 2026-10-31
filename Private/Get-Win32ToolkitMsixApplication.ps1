@@ -4,7 +4,7 @@ function Get-Win32ToolkitMsixApplication {
         Reads the executables an MSIX/APPX package (or bundle) declares — the processes to close.
 
     .DESCRIPTION
-        Host-side (PS 7.2+). An MSIX declares its apps in the manifest:
+        Host-side (PS 7.4+). An MSIX declares its apps in the manifest:
             <Applications><Application Id="App" Executable="pwsh.exe" ... /></Applications>
         That is the ONLY reliable source for an MSIX, because the capture-based detector
         (Update-PSADTProcessesToClose) looks exclusively for classic Win32 artifacts — App Paths keys,

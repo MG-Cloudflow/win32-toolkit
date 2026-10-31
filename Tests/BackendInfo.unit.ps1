@@ -15,6 +15,9 @@ function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
 . (Join-Path $repo 'Private\Get-Win32ToolkitBackendInfo.ps1')
+# C-9 (speed-up PR 3): the label names the VM through the real resolver (fed by the config shadow); no pin leaks in.
+. (Join-Path $repo 'Private\Get-Win32ToolkitHyperVTarget.ps1')
+Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue
 
 $script:cfg      = @{ TestBackend = 'Sandbox'; HyperVVMName = 'win32tk-golden' }
 $script:resolved = 'Sandbox'
@@ -44,6 +47,28 @@ Write-Host '[4] custom VM name flows into the label' -ForegroundColor Cyan
 $script:cfg['TestBackend'] = 'HyperV'; $script:cfg['HyperVVMName'] = 'lab-vm'; $script:resolved = 'HyperV'; $script:reasons = @()
 $i = Get-Win32ToolkitBackendInfo
 if ($i.Label -eq 'Hyper-V VM (lab-vm)') { Ok 'label uses the configured VM name' } else { Bad "label=$($i.Label)" }
+
+Write-Host '[5] (speed-up PR 3) a pinned VM that is not ready: FellBack, the label names the pinned VM, nothing thrown (display)' -ForegroundColor Cyan
+$script:noPinThrow = $null
+function Get-Win32ToolkitTestBackend { param($Backend, [switch]$NoPinThrow, $WarningAction) $script:noPinThrow = [bool]$NoPinThrow; return $script:resolved }
+try {
+    $env:W32T_HYPERV_VM = 'lane-vm'
+    $script:cfg['TestBackend'] = 'HyperV'; $script:cfg['HyperVVMName'] = 'win32tk-golden'; $script:resolved = 'Sandbox'; $script:reasons = @("VM 'lane-vm' not found")
+    $i = $null; $threw = $null
+    try { $i = Get-Win32ToolkitBackendInfo } catch { $threw = $_ }
+    if (-not $threw -and $i.FellBack -and $i.Resolved -eq 'Sandbox' -and $i.Label -eq 'Hyper-V VM (lane-vm, pinned by W32T_HYPERV_VM: not ready, no test will run)' -and $i.Reasons.Count -eq 1 -and $script:noPinThrow) {
+        Ok 'FellBack $true, the label names the pinned VM and that no test will run, the reasons; Get-Win32ToolkitTestBackend asked with -NoPinThrow'
+    } else { Bad "pinned: threw=$threw label=$($i.Label) fellBack=$($i.FellBack) noPinThrow=$($script:noPinThrow)" }
+    $script:resolved = 'HyperV'; $script:reasons = @()
+    $i = Get-Win32ToolkitBackendInfo
+    if ($i.Label -eq 'Hyper-V VM (lane-vm)' -and -not $i.FellBack) { Ok 'pinned and ready: the label names the pinned VM, not the registry''s' } else { Bad "pinned ready: $($i.Label)" }
+    $env:W32T_HYPERV_VM = '   '
+    $script:resolved = 'Sandbox'; $script:reasons = @('W32T_HYPERV_VM is not a valid VM name (1 to 100 characters, no control character)')
+    $threw = $null
+    try { $i = Get-Win32ToolkitBackendInfo } catch { $threw = $_ }
+    if (-not $threw -and $i.FellBack -and $i.Label -eq 'Hyper-V VM (W32T_HYPERV_VM is not valid: no test will run)') { Ok 'an invalid pin: no throw, the label says so' } else { Bad "invalid pin: threw=$threw label=$($i.Label)" }
+}
+finally { Remove-Item Env:\W32T_HYPERV_VM -ErrorAction SilentlyContinue }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All BackendInfo tests passed.' -ForegroundColor Green; exit 0 }

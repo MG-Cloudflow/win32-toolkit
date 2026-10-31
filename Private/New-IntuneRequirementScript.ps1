@@ -103,7 +103,10 @@ function New-IntuneRequirementScript {
         # false-positive "installed". Same discipline as Get-Win32ToolkitRequirementRule.
         $appNameSq    = ConvertTo-PSSingleQuoted $appName
         $appVersionSq = ConvertTo-PSSingleQuoted $appVersion
-        $productCodes = @($productCodes | Where-Object { Test-Win32ToolkitProductCode $_ })
+        # One entry per product code, case-insensitively, first occurrence kept: a capture names the same MSI
+        # product code in the key path AND in its UninstallString (Select-Object -Unique is case-sensitive).
+        $seenProductCodes = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $productCodes = @($productCodes | Where-Object { (Test-Win32ToolkitProductCode $_) -and $seenProductCodes.Add([string]$_) })
 
         # A COMMENT is a code context too. ConvertTo-PSSingleQuoted protects a single-quoted LITERAL; it does
         # nothing for text emitted inside <# ... #>. A DisplayName containing '#>' would CLOSE the comment block
@@ -135,16 +138,16 @@ try {
         'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
     )
     
-"@
+"@ + "`r`n"
 
         # Add product code checks if available
         if ($productCodes.Count -gt 0) {
             $requirementScript += @"
     # Check specific product codes first
     `$productCodes = @(
-"@
+"@ + "`r`n"
             foreach ($pc in $productCodes) {
-                $requirementScript += "        '$(ConvertTo-PSSingleQuoted $pc)'`n"
+                $requirementScript += "        '$(ConvertTo-PSSingleQuoted $pc)'`r`n"
             }
             $requirementScript += @"
     )
@@ -164,7 +167,7 @@ try {
         }
     }
     
-"@
+"@ + "`r`n"
         }
 
         # Add registry search for application name
@@ -188,7 +191,7 @@ try {
                         if (`$installedVersion) {
                             Write-Host "Installed Version: `$installedVersion"
                         }
-"@
+"@ + "`r`n"
 
         # Add version comparison logic if we have a version to compare
         if ($appVersion) {
@@ -217,14 +220,14 @@ try {
                             Write-Host "Application found (no version comparison)"
                             exit 0
                         }
-"@
+"@ + "`r`n"
         } else {
             $requirementScript += @"
                         
                         # No specific version required, app is installed
                         Write-Host "Application found"
                         exit 0
-"@
+"@ + "`r`n"
         }
 
         $requirementScript += @"
@@ -267,16 +270,13 @@ try {
         # DisplayName comparison would silently never match. PS7's Set-Content -Encoding UTF8 writes NO
         # BOM, so write the bytes ourselves (same as Get-Win32ToolkitRequirementRule).
         [System.IO.File]::WriteAllText($defaultPath, ($requirementScript + "`r`n"), (New-Object System.Text.UTF8Encoding($true)))
-        Write-Host "`n✓ SUCCESS: Requirement script saved to:" -ForegroundColor Green
-        Write-Host "  $defaultPath" -ForegroundColor White
-        
-        Write-Host "`nUsage Instructions:" -ForegroundColor Cyan
-        Write-Host "1. Copy the generated PowerShell script content" -ForegroundColor White
-        Write-Host "2. In Intune, go to your Win32 app > Requirements" -ForegroundColor White
-        Write-Host "3. Add requirement rule: 'Script'" -ForegroundColor White
-        Write-Host "4. Paste the script content" -ForegroundColor White
-        Write-Host "5. Set 'Run script as 32-bit process': No" -ForegroundColor White
-        Write-Host "6. Set 'Enforce script signature check': No" -ForegroundColor White
+        # A neutral note, never "paste this as a requirement" (test campaign 2026-10-21, H5-F7): the script is
+        # detection-shaped (met only when this exact app is installed at or above this version), so as a
+        # requirement of the INSTALL app it would keep the app off every device that does not have it yet.
+        Write-Host "`nReference script saved (not uploaded): $defaultPath" -ForegroundColor Gray
+        Write-Host '  It is detection-shaped: met only when this exact DisplayName is installed at or above this version.' -ForegroundColor Gray
+        Write-Host '  Do not add it as a requirement of the install app (new devices would never get the app).' -ForegroundColor Gray
+        Write-Host '  Publishing sets the detection rule itself, plus a presence requirement for an Update app.' -ForegroundColor Gray
         
         return $true
     }

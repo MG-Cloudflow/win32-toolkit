@@ -44,7 +44,9 @@ function Invoke-WebRequest {
     [pscustomobject]@{ Content = $script:iwrBody; Headers = $script:iwrHeaders }
 }
 
-function New-Dir { $p = Join-Path ([System.IO.Path]::GetTempPath()) ('w32ico_' + [guid]::NewGuid().ToString('N').Substring(0, 8)); New-Item -ItemType Directory -Path $p -Force | Out-Null; $p }
+# Every temp folder is registered here and removed at the end, pass or fail (test campaign 2026-10-21, H7-F12).
+$script:tmp = [System.Collections.Generic.List[string]]::new()
+function New-Dir { $p = Join-Path ([System.IO.Path]::GetTempPath()) ('w32ico_' + [guid]::NewGuid().ToString('N').Substring(0, 8)); $script:tmp.Add($p); New-Item -ItemType Directory -Path $p -Force | Out-Null; $p }
 function New-Proj {
     param([string]$IconUrl)
     $project = New-Dir
@@ -61,58 +63,67 @@ $realIco = [byte[]]@(0x00,0x00,0x01,0x00, 0x01,0x00,0x10,0x10)
 # Not an image at all — an HTML error page.
 $notImg  = [System.Text.Encoding]::ASCII.GetBytes('<html><body>404 Not Found</body></html>')
 
-# ── (a) http:// URL: refused, never fetched, nothing written ──────────────────────────────────────
-Write-Host '[a] http:// IconUrl is refused — not fetched, no icon written' -ForegroundColor Cyan
-Reset-Iwr
-$script:iwrBody = $realPng
-$t = New-Proj -IconUrl 'http://example.com/icon.png'
-$r = Get-AppIconFromWinget -ProjectPath $t.Project -FilesPath $t.Files 3>$null 6>$null
-if ($r -eq $false)            { Ok 'returns $false for a non-HTTPS URL' } else { Bad "http:// returned $r" }
-if ($script:iwrCalled -eq 0)  { Ok 'Invoke-WebRequest was NOT called (no plaintext fetch)' } else { Bad "http:// was fetched ($($script:iwrCalled)x)" }
-if (-not (Test-Path -LiteralPath $t.Png)) { Ok 'no AppIcon.png written' } else { Bad 'wrote an icon for an http:// URL' }
+try {
+    # ── (a) http:// URL: refused, never fetched, nothing written ──────────────────────────────────────
+    Write-Host '[a] http:// IconUrl is refused — not fetched, no icon written' -ForegroundColor Cyan
+    Reset-Iwr
+    $script:iwrBody = $realPng
+    $t = New-Proj -IconUrl 'http://example.com/icon.png'
+    $r = Get-AppIconFromWinget -ProjectPath $t.Project -FilesPath $t.Files 3>$null 6>$null
+    if ($r -eq $false)            { Ok 'returns $false for a non-HTTPS URL' } else { Bad "http:// returned $r" }
+    if ($script:iwrCalled -eq 0)  { Ok 'Invoke-WebRequest was NOT called (no plaintext fetch)' } else { Bad "http:// was fetched ($($script:iwrCalled)x)" }
+    if (-not (Test-Path -LiteralPath $t.Png)) { Ok 'no AppIcon.png written' } else { Bad 'wrote an icon for an http:// URL' }
 
-# ── (b) https + real PNG magic bytes: accepted, AppIcon.png written ────────────────────────────────
-Write-Host '[b] https + PNG magic bytes -> $true and AppIcon.png written' -ForegroundColor Cyan
-Reset-Iwr
-$script:iwrBody = $realPng
-$t = New-Proj -IconUrl 'https://example.com/icon.png'
-$r = Get-AppIconFromWinget -ProjectPath $t.Project -FilesPath $t.Files 3>$null 6>$null
-if ($r -eq $true)                       { Ok 'returns $true for a valid PNG over HTTPS' } else { Bad "valid PNG returned $r" }
-if ($script:iwrCalled -eq 1)            { Ok 'Invoke-WebRequest was called once' } else { Bad "fetch count = $($script:iwrCalled)" }
-if (Test-Path -LiteralPath $t.Png)      { Ok 'AppIcon.png was written' } else { Bad 'no AppIcon.png written for a valid PNG' }
-if (Test-Path -LiteralPath $t.Png) {
-    $written = [System.IO.File]::ReadAllBytes($t.Png)
-    if ($written.Length -eq $realPng.Length -and $written[0] -eq 0x89) { Ok 'the exact PNG bytes were written' } else { Bad 'written bytes do not match the PNG body' }
+    # ── (b) https + real PNG magic bytes: accepted, AppIcon.png written ────────────────────────────────
+    Write-Host '[b] https + PNG magic bytes -> $true and AppIcon.png written' -ForegroundColor Cyan
+    Reset-Iwr
+    $script:iwrBody = $realPng
+    $t = New-Proj -IconUrl 'https://example.com/icon.png'
+    $r = Get-AppIconFromWinget -ProjectPath $t.Project -FilesPath $t.Files 3>$null 6>$null
+    if ($r -eq $true)                       { Ok 'returns $true for a valid PNG over HTTPS' } else { Bad "valid PNG returned $r" }
+    if ($script:iwrCalled -eq 1)            { Ok 'Invoke-WebRequest was called once' } else { Bad "fetch count = $($script:iwrCalled)" }
+    if (Test-Path -LiteralPath $t.Png)      { Ok 'AppIcon.png was written' } else { Bad 'no AppIcon.png written for a valid PNG' }
+    if (Test-Path -LiteralPath $t.Png) {
+        $written = [System.IO.File]::ReadAllBytes($t.Png)
+        if ($written.Length -eq $realPng.Length -and $written[0] -eq 0x89) { Ok 'the exact PNG bytes were written' } else { Bad 'written bytes do not match the PNG body' }
+    }
+    # SCF-11 / ORG-13: no mirror into the bundled module (PSADT 4.2 layout: it has no Assets\ folder).
+    if (-not (Test-Path -LiteralPath (Join-Path $t.Project 'PSAppDeployToolkit'))) { Ok 'no PSAppDeployToolkit\Assets folder created (no mirror)' } else { Bad 'a PSAppDeployToolkit\ folder was created in the project' }
+
+    # ── (b2) https + real ICO magic bytes: also writes AppIcon.ico ─────────────────────────────────────
+    Write-Host '[b2] https + ICO magic bytes -> AppIcon.ico written alongside AppIcon.png' -ForegroundColor Cyan
+    Reset-Iwr
+    $script:iwrBody = $realIco
+    $t = New-Proj -IconUrl 'https://example.com/whatever.png'   # URL ext lies (.png) but bytes are ICO
+    # PSADT 4.1.8 layout: the bundled module has an Assets\ folder - it must stay untouched.
+    New-Item -ItemType Directory -Path (Join-Path $t.Project 'PSAppDeployToolkit\Assets') -Force | Out-Null
+    $r = Get-AppIconFromWinget -ProjectPath $t.Project -FilesPath $t.Files 3>$null 6>$null
+    if ($r -eq $true)                  { Ok 'returns $true for a valid ICO over HTTPS' } else { Bad "valid ICO returned $r" }
+    if (Test-Path -LiteralPath $t.Ico) { Ok 'AppIcon.ico written from the detected type (not the URL extension)' } else { Bad 'no AppIcon.ico for genuine ICO bytes' }
+    $mirror = @(Get-ChildItem -LiteralPath (Join-Path $t.Project 'PSAppDeployToolkit\Assets') -Force -ErrorAction SilentlyContinue)
+    if ($mirror.Count -eq 0) { Ok 'nothing written under PSAppDeployToolkit\Assets (no mirror)' } else { Bad "mirror written: $($mirror.Name -join ', ')" }
+
+    # ── (c) https + non-image body: refused, no icon written over the default ─────────────────────────
+    Write-Host '[c] https + non-image body (<html>) -> $false, default icon preserved' -ForegroundColor Cyan
+    Reset-Iwr
+    $script:iwrBody = $notImg
+    $t = New-Proj -IconUrl 'https://example.com/icon.png'
+    $r = Get-AppIconFromWinget -ProjectPath $t.Project -FilesPath $t.Files 3>$null 6>$null
+    if ($r -eq $false)                        { Ok 'returns $false when the body is not an image' } else { Bad "non-image returned $r" }
+    if (-not (Test-Path -LiteralPath $t.Png)) { Ok 'no AppIcon.png written over the PSADT default' } else { Bad 'wrote a non-image as the icon' }
+
+    # ── (d) https + body over 5 MB: refused ───────────────────────────────────────────────────────────
+    Write-Host '[d] https + body > 5 MB -> $false (size cap enforced on the real byte count)' -ForegroundColor Cyan
+    Reset-Iwr
+    $big = [byte[]]::new((5MB) + 1)          # PNG magic + oversized => must fail on SIZE, not content
+    $big[0] = 0x89; $big[1] = 0x50; $big[2] = 0x4E; $big[3] = 0x47
+    $script:iwrBody = $big
+    $t = New-Proj -IconUrl 'https://example.com/huge.png'
+    $r = Get-AppIconFromWinget -ProjectPath $t.Project -FilesPath $t.Files 3>$null 6>$null
+    if ($r -eq $false)                        { Ok 'returns $false when the body exceeds 5 MB' } else { Bad "oversized body returned $r" }
+    if (-not (Test-Path -LiteralPath $t.Png)) { Ok 'no oversized file written' } else { Bad 'wrote a >5 MB icon' }
 }
-
-# ── (b2) https + real ICO magic bytes: also writes AppIcon.ico ─────────────────────────────────────
-Write-Host '[b2] https + ICO magic bytes -> AppIcon.ico written alongside AppIcon.png' -ForegroundColor Cyan
-Reset-Iwr
-$script:iwrBody = $realIco
-$t = New-Proj -IconUrl 'https://example.com/whatever.png'   # URL ext lies (.png) but bytes are ICO
-$r = Get-AppIconFromWinget -ProjectPath $t.Project -FilesPath $t.Files 3>$null 6>$null
-if ($r -eq $true)                  { Ok 'returns $true for a valid ICO over HTTPS' } else { Bad "valid ICO returned $r" }
-if (Test-Path -LiteralPath $t.Ico) { Ok 'AppIcon.ico written from the detected type (not the URL extension)' } else { Bad 'no AppIcon.ico for genuine ICO bytes' }
-
-# ── (c) https + non-image body: refused, no icon written over the default ─────────────────────────
-Write-Host '[c] https + non-image body (<html>) -> $false, default icon preserved' -ForegroundColor Cyan
-Reset-Iwr
-$script:iwrBody = $notImg
-$t = New-Proj -IconUrl 'https://example.com/icon.png'
-$r = Get-AppIconFromWinget -ProjectPath $t.Project -FilesPath $t.Files 3>$null 6>$null
-if ($r -eq $false)                        { Ok 'returns $false when the body is not an image' } else { Bad "non-image returned $r" }
-if (-not (Test-Path -LiteralPath $t.Png)) { Ok 'no AppIcon.png written over the PSADT default' } else { Bad 'wrote a non-image as the icon' }
-
-# ── (d) https + body over 5 MB: refused ───────────────────────────────────────────────────────────
-Write-Host '[d] https + body > 5 MB -> $false (size cap enforced on the real byte count)' -ForegroundColor Cyan
-Reset-Iwr
-$big = [byte[]]::new((5MB) + 1)          # PNG magic + oversized => must fail on SIZE, not content
-$big[0] = 0x89; $big[1] = 0x50; $big[2] = 0x4E; $big[3] = 0x47
-$script:iwrBody = $big
-$t = New-Proj -IconUrl 'https://example.com/huge.png'
-$r = Get-AppIconFromWinget -ProjectPath $t.Project -FilesPath $t.Files 3>$null 6>$null
-if ($r -eq $false)                        { Ok 'returns $false when the body exceeds 5 MB' } else { Bad "oversized body returned $r" }
-if (-not (Test-Path -LiteralPath $t.Png)) { Ok 'no oversized file written' } else { Bad 'wrote a >5 MB icon' }
+finally { foreach ($tp in $script:tmp) { Remove-Item -LiteralPath $tp -Recurse -Force -ErrorAction SilentlyContinue } }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All P3_IconValidation tests passed.' -ForegroundColor Green; exit 0 }

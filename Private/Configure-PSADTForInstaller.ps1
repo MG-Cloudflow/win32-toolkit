@@ -7,7 +7,13 @@ function Configure-PSADTForInstaller {
         DATA via ConvertTo-Json, never interpolated into generated code) and patches
         Invoke-AppDeployToolkit.ps1 with fixed, value-free routines that read that data at runtime
         (see Set-PSADTDataDrivenScript). MSI installers keep an empty App.Name so PSADT Zero-Config
-        MSI still applies. Org-template branding is applied afterwards, unchanged.
+        MSI still applies. The org template is applied afterwards (Apply-OrgTemplate).
+
+        Fail closed: critical generator / org-template problems (an unsupported PSADT template shape,
+        a missing block anchor, a deploy script that would not parse, invalid org-template text, ...)
+        throw a W32T.* error that propagates to the caller. Any other failure, or an org template that
+        could not be applied, returns $false; the caller must not document, test, package or publish
+        the project then.
 
         See knowledge-base/designs/data-driven-generation.md.
     .PARAMETER ProjectPath
@@ -16,12 +22,21 @@ function Configure-PSADTForInstaller {
         App metadata resolved from winget (used as a fallback for Name/Version).
     .PARAMETER Architecture
         Target architecture string (x64/x86/arm64).
+    .PARAMETER InstallerPin
+        The installer-technology pin the download used (Resolve-Win32ToolkitInstallerPin): its PinnedBy,
+        InstallerType and WingetClient are recorded in AppConfig.Source. Absent = winget's choice.
+        AppConfig.Source (installer-identity PR 1, spec 2.6) records which winget installer was packaged and
+        why; it is data only (the deploy script never reads it). If it cannot be built, a warning is written
+        and the project is still configured without it.
     #>
     [CmdletBinding()]
     param(
         [string]$ProjectPath,
         [PSCustomObject]$AppInfo,
-        [string]$Architecture
+        [string]$Architecture,
+        [PSCustomObject]$InstallerPin,
+        # The run's base folder, passed on to Apply-OrgTemplate (template assets, hooks, extension module).
+        [string]$BasePath
     )
 
     try {
@@ -77,6 +92,23 @@ function Configure-PSADTForInstaller {
             FileName   = $fileInfo.FileName
             SilentArgs = $silent
         }) -Force
+
+        # ---- Source: which winget installer was packaged and why (installer identity) - data only ----
+        $pinnedBy = 'winget-default'; $requestedType = ''; $wingetClient = ''
+        if ($InstallerPin) {
+            if ($InstallerPin.PSObject.Properties['PinnedBy'] -and $InstallerPin.PinnedBy) { $pinnedBy = [string]$InstallerPin.PinnedBy }
+            if ($pinnedBy -ne 'winget-default' -and $InstallerPin.PSObject.Properties['InstallerType']) { $requestedType = [string]$InstallerPin.InstallerType }
+            if ($InstallerPin.PSObject.Properties['WingetClient']) { $wingetClient = [string]$InstallerPin.WingetClient }
+        }
+        try {
+            $source = Get-Win32ToolkitProjectSource -ProjectPath $ProjectPath -Rebuild -Architecture $Architecture -PinnedBy $pinnedBy -RequestedInstallerType $requestedType -WingetClient $wingetClient
+            $cfg | Add-Member -NotePropertyName Source -NotePropertyValue $source -Force
+        }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Warning "The installer source (AppConfig.Source) could not be recorded: $($_.Exception.Message). The project is configured without it; the identity checks rebuild it from Files\."
+        }
+
         if (-not ($cfg.PSObject.Properties.Name -contains 'ProcessesToClose')) {
             $cfg | Add-Member -NotePropertyName ProcessesToClose -NotePropertyValue @() -Force
         }
@@ -125,22 +157,28 @@ function Configure-PSADTForInstaller {
         }
 
         # ---- Patch the deploy script to be data-driven (fixed, value-free) ----
+        # Critical problems THROW (W32T.*, re-thrown below); $false = written and valid, with warnings.
         if (Set-PSADTDataDrivenScript -ScriptPath $scriptPath) {
             Write-Verbose 'Deploy script patched to data-driven'
         } else {
-            Write-Warning 'Data-driven patching of the deploy script did not complete cleanly'
+            Write-Warning 'Data-driven patching of the deploy script completed with warnings (see above) - the script was written and is valid.'
         }
 
-        # ---- Org template branding and dialog settings (unchanged) ----
+        # ---- Org template branding and dialog settings ----
         if ($script:OrgTemplate) {
             Write-Verbose 'Applying org template...'
-            Apply-OrgTemplate -ProjectPath $ProjectPath -Template $script:OrgTemplate | Out-Null
+            if (-not (Apply-OrgTemplate -ProjectPath $ProjectPath -Template $script:OrgTemplate -BasePath $BasePath)) {
+                Write-Warning 'The org template could not be applied (see the warning above) - the project is NOT configured.'
+                return $false
+            }
         }
 
         Write-Host '✓ PSADT project configured (data-driven)!' -ForegroundColor Green
         return $true
     }
     catch {
+        # Fail-closed errors (unsupported template shape, anchors, invalid script/template) propagate.
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
         Write-Warning "Failed to configure PSADT: $($_.Exception.Message)"
         return $false
     }

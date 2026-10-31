@@ -1,10 +1,19 @@
-#Requires -Version 7.2
+#Requires -Version 7.4
 
 # Module-scope state variables.
 # In a .psm1, $script: is module scope — persists for the module lifetime,
 # never visible in the caller's global session.
 $script:OrgTemplate           = $null
 $script:TemplateSchemaVersion = '4.0'
+
+# Supported PSAppDeployToolkit range (impact analysis §13 D1/D3, L3): Min inclusive, MaxExclusive exclusive.
+# Widen MaxExclusive only after the template-contract suite and the golden-drift test pass on the new minor
+# (a new minor normally needs a new deploy-script shape - L5). Never narrow it (D3). Keep Display in sync.
+$script:PsadtSupportedRange = [pscustomobject]@{
+    Min          = [version]'4.1.0'
+    MaxExclusive = [version]'4.3.0'
+    Display      = '4.1.x and 4.2.x'
+}
 
 # Ensure downloads (winget icons, IntuneWinAppUtil.exe, GitHub/PSGallery, Graph/Azure)
 # negotiate a modern TLS version — add TLS 1.2 (and 1.3 where the OS supports it)
@@ -38,5 +47,18 @@ foreach ($folder in @('Private', 'Public')) {
     if (Test-Path $folderPath) {
         Get-ChildItem -Path $folderPath -Filter '*.ps1' -File |
             ForEach-Object { . $_.FullName }
+    }
+}
+
+# The machine-wide test-VM and project leases this process holds are open lock files (Enter-Win32ToolkitHyperVLease,
+# Hyper-V speed-up PR 3). Remove-Module or Import-Module -Force must close them: an unreferenced handle would keep the
+# lease, and block this very process, until the garbage collector finds it.
+$ExecutionContext.SessionState.Module.OnRemove = {
+    if ($script:HyperVLeases) {
+        foreach ($hold in @($script:HyperVLeases.Values)) {
+            try { $hold['Stream'].Dispose() }
+            catch { Write-Verbose "A test-VM lease could not be closed: $($_.Exception.Message)" }
+        }
+        $script:HyperVLeases = $null
     }
 }

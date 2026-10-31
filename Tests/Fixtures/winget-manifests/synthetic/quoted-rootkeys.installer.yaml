@@ -1,0 +1,29 @@
+# Hand-made test fixture (win32-toolkit): not a real package.
+# Root-level Scope and InstallerLocale (inherited by every item), quoted values, an INDENTED Installers: list,
+# a nested AppsAndFeaturesEntries block without an InstallerType, and trailing comments.
+PackageIdentifier: Contoso.QuotedRoot
+PackageVersion: '2.0.1'
+Scope: machine
+InstallerLocale: "en-US"
+Installers:
+  - Architecture: x64
+    InstallerType: "nullsoft"   # trailing comment after a quoted value
+    ProductCode: 'Contoso QuotedRoot'
+    InstallerUrl: https://example.invalid/contoso-quotedroot-2.0.1-x64.exe
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000001
+  - Architecture: x64
+    InstallerType: wix
+    Scope: 'user'
+    InstallerUrl: https://example.invalid/contoso-quotedroot-2.0.1-x64.msi
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000002
+    ProductCode: '{11111111-2222-3333-4444-555555555555}'
+    AppsAndFeaturesEntries:
+      - UpgradeCode: '{66666666-7777-8888-9999-000000000000}'
+        DisplayName: Contoso QuotedRoot (MSI)
+  - Architecture: x86
+    InstallerType: 'inno'
+    InstallerUrl: https://example.invalid/contoso-quotedroot-2.0.1-x86.exe
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000003
+ManifestType: installer
+ManifestVersion: 1.6.0
+# trailing comment at the end of the file

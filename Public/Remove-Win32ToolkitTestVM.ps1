@@ -1,18 +1,58 @@
 function Remove-Win32ToolkitTestVM {
     <#
     .SYNOPSIS
-        Tears down the Hyper-V test VM (stop, remove checkpoints + VM, optionally delete the VHDX).
+        Deletes the Hyper-V test VM and, if you ask, its disk files.
     .DESCRIPTION
-        HOST-ONLY cleanup. Turns the VM off, removes all its checkpoints and the VM config, and — with
-        -RemoveVhdx — deletes its virtual disks. Each step is best-effort so partial state still cleans.
+        Remove-Win32ToolkitTestVM turns the Hyper-V test VM off and deletes its checkpoints and
+        the VM itself. With -RemoveVhdx it also deletes the virtual disk files of the VM. There is
+        no confirmation question, so check the VM name first or use -WhatIf.
+
+        Use it when you no longer need the VM. You do not need it before a rebuild:
+        New-Win32ToolkitTestVM -Force deletes the old VM first. In the menu: Settings > Hyper-V
+        test VM > Remove the test VM. The menu asks first (the default answer is No) and always
+        deletes the disk files.
+
+        Your settings stay, including your default test machine. If it is still the Hyper-V test VM,
+        tests warn that the VM is not found and use Windows Sandbox. Set the default back to
+        Windows Sandbox in the menu. After -RemoveVhdx, check the <base folder>\HyperV\Golden
+        folder: the base virtual disk can stay there, and you can delete it by hand.
+
+        If the VM does not exist, the command warns "VM '<name>' not found" and changes nothing.
+        W32T.HyperVLeaseTimeout means that another PowerShell window kept the VM for too long.
     .PARAMETER Name
-        VM name (default: the stored HyperVVMName, else 'win32tk-golden').
+        The VM to delete. Default: the VM in the W32T_HYPERV_VM environment variable if it is set,
+        else your saved test VM (win32tk-golden unless you chose another name).
     .PARAMETER RemoveVhdx
-        Also delete the VM's VHDX file(s).
+        Also deletes the virtual disk files that the VM uses. Without it, the files stay on disk.
+        If you built the VM on your own virtual disk, this can delete your file.
+    .EXAMPLE
+        Remove-Win32ToolkitTestVM -RemoveVhdx
+
+        This deletes your test VM, its checkpoints and its disk files, without a question. Check
+        the C:\Win32Apps\HyperV\Golden folder afterwards.
+    .EXAMPLE
+        Remove-Win32ToolkitTestVM
+
+        This deletes the VM and its checkpoints, and keeps the virtual disk files.
+    .EXAMPLE
+        Remove-Win32ToolkitTestVM -RemoveVhdx -WhatIf
+
+        This shows which VM the command would delete, and deletes nothing.
+    .OUTPUTS
+        None. A line in green says that the VM was removed.
+        If one step fails, the command does not stop and still shows the green line.
+        If you are not sure, check with Get-VM.
+    .NOTES
+        Needs: PowerShell 7 run as administrator. Time: seconds to a minute. Only one PowerShell
+        window at a time can use the test VM.
+    .LINK
+        https://win32toolkit.com/reference/Remove-Win32ToolkitTestVM/
+    .LINK
+        https://win32toolkit.com/hyperv-vm-care/
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [string]$Name = (Get-Win32ToolkitConfigValue -Name 'HyperVVMName' -Default 'win32tk-golden'),
+        [string]$Name = ((Get-Win32ToolkitHyperVTarget).VMName),
         [switch]$RemoveVhdx
     )
 
@@ -23,17 +63,22 @@ function Remove-Win32ToolkitTestVM {
     }
 
     if ($PSCmdlet.ShouldProcess($Name, "Stop + remove VM$(if ($RemoveVhdx) { ' + delete VHDX' })")) {
-        # Invalidate the process-local clean marker / readiness cache before mutating VM state.
-        Clear-Win32ToolkitHyperVStateCache
-        $vhds = @($vm.HardDrives.Path)
-        Stop-VM -Name $Name -TurnOff -Force -ErrorAction SilentlyContinue
-        Get-VMCheckpoint -VMName $Name -ErrorAction SilentlyContinue | Remove-VMCheckpoint -ErrorAction SilentlyContinue
-        Remove-VM -Name $Name -Force -ErrorAction SilentlyContinue
-        if ($RemoveVhdx) {
-            foreach ($path in $vhds) {
-                if ($path) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+        # One process at a time on the VM (speed-up PR 3, D10): never remove it under a running test.
+        $lease = Enter-Win32ToolkitHyperVLease -VMName $Name -VMId ([string]$vm.Id) -Purpose 'removal'
+        try {
+            # Invalidate the process-local clean marker / readiness cache before mutating VM state.
+            Clear-Win32ToolkitHyperVStateCache
+            $vhds = @($vm.HardDrives.Path)
+            Stop-VM -Name $Name -TurnOff -Force -ErrorAction SilentlyContinue
+            Get-VMCheckpoint -VMName $Name -ErrorAction SilentlyContinue | Remove-VMCheckpoint -ErrorAction SilentlyContinue
+            Remove-VM -Name $Name -Force -ErrorAction SilentlyContinue
+            if ($RemoveVhdx) {
+                foreach ($path in $vhds) {
+                    if ($path) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+                }
             }
+            Write-Host "✓ Removed VM '$Name'." -ForegroundColor Green
         }
-        Write-Host "✓ Removed VM '$Name'." -ForegroundColor Green
+        finally { $null = Exit-Win32ToolkitHyperVLease -Lease $lease }
     }
 }

@@ -1,7 +1,7 @@
 # New-Win32ToolkitManualApp
 
 ## SYNOPSIS
-Creates a Win32 packaging project for an app that is NOT in winget.
+Creates a project from your own installer, for an app that is not in winget.
 
 ## SYNTAX
 
@@ -10,50 +10,114 @@ New-Win32ToolkitManualApp [[-Name] <String>] [[-Version] <String>] [[-Architectu
  [[-SourcePath] <String>] [[-Publisher] <String>] [[-Description] <String>] [[-InformationUrl] <String>]
  [[-SilentArgs] <String>] [[-IconPath] <String>] [[-TemplateName] <String>] [[-BasePath] <String>]
  [-Reconfigure] [-Advanced] [-Force] [-Continue] [[-RunTest] <String[]>] [-PackageIntune] [-PublishIntune]
- [-PublishUpdate] [[-DependsOn] <String[]>] [[-DependencyType] <String>] [-ProgressAction <ActionPreference>]
+ [-PublishUpdate] [[-DependsOn] <String[]>] [[-DependencyType] <String>] [-NoPublishPrompt]
  [<CommonParameters>]
 ```
 
 ## DESCRIPTION
-Scaffolds a PSADT v4 project from an operator-supplied installer, applies the org template, and
-writes the data-driven AppConfig.json - the same downstream automation (sandbox capture →
-uninstall, testing, packaging, upload) used by the winget flow then applies.
+New-Win32ToolkitManualApp creates a project from an installer that you bring.
+An MSI, an MSIX
+or APPX package, or an EXE with silent switches becomes an Easy app: the toolkit writes the
+install.
+An EXE without silent switches, or any app with -Advanced, becomes an Advanced app:
+you write the install code.
+The console calls it a HARD APP.
+In both modes, the toolkit
+writes the uninstall.
+Always give -Publisher: the toolkit needs it to detect the installed
+version.
 
-Input is hybrid: pass what you can as parameters; you are prompted for any missing required field
-(Name, Version, Architecture, SourcePath).
+For an Easy app, -Continue, -RunTest, -PackageIntune, -PublishIntune and -PublishUpdate run
+the install capture and the steps you ask for.
+Without them, the command only creates the
+project.
+For an Advanced app, the command stops after it creates the project and ignores these
+options: finish it with Complete-Win32ToolkitManualApp.
+In the menu: Package a manual app (not
+in winget).
 
-Two modes:
-- Easy  - provide -SilentArgs, or an MSI (Zero-Config), or an MSIX/APPX package (installed via
-          Add-AppxPackage/provisioning, uninstalled by package identity): the install runs
-          data-driven.
-Add -Continue (or -RunTest/-PackageIntune/-PublishIntune) to finalise.
-- Hard  - pass -Advanced (or an EXE with no -SilentArgs): the Install region of
-          Invoke-AppDeployToolkit.ps1 is left for you to author.
-The uninstall stays automated.
-          Finish later with Complete-Win32ToolkitManualApp.
+The project is \<base folder\>\Projects\\\<template\>\\\<name\>_\<architecture\>_\<version\>.
+If the
+installer or the org template cannot be set up, the folder is kept.
+The toolkit then refuses
+to build or publish it until you create the app again.
+
+It stops with an error whose ID starts with W32T.
+when a -DependsOn reference is wrong
+(W32T.InvalidDependencyReference).
+It also stops when it cannot create the project
+(W32T.ProjectCreationFailed), for example when you do not let it replace an existing project.
 
 ## EXAMPLES
 
 ### EXAMPLE 1
 ```
-# Easy app, end to end
-New-Win32ToolkitManualApp -Name 'Acme Tool' -Version '3.1.0' -Architecture x64 `
-    -SourcePath 'C:\src\AcmeTool.exe' -SilentArgs '/S' -Publisher 'Acme' -TemplateName 'Contoso' `
-    -Continue -RunTest InstallUninstall -PublishIntune
+$app = @{
+    Name         = 'Contoso Reader'
+    Version      = '3.2.0'
+    Architecture = 'x64'
+    SourcePath   = 'C:\Installers\ContosoReader.msi'
+    Publisher    = 'Contoso Ltd'
+    TemplateName = 'Contoso'
+}
+New-Win32ToolkitManualApp @app -RunTest InstallUninstall -PackageIntune -NoPublishPrompt
 ```
+
+This creates the Easy app project Contoso_Reader_x64_3.2.0, runs the install capture and an
+install and uninstall test, and builds the package.
+Nothing is published to Intune.
 
 ### EXAMPLE 2
 ```
-# Hard app - scaffold, then finish after editing the Install region
-New-Win32ToolkitManualApp -Name 'Legacy CAD' -Version '12.0' -Architecture x64 `
-    -SourcePath 'C:\src\LegacyCAD\' -Advanced -TemplateName 'Contoso'
-Complete-Win32ToolkitManualApp -ProjectPath 'C:\Win32Apps\Projects\Contoso\Legacy_CAD_x64_12.0' -RunTest InstallUninstall
+$cad = @{
+    Name         = 'Fabrikam CAD'
+    Version      = '12.0'
+    Architecture = 'x64'
+    SourcePath   = 'C:\Installers\FabrikamCAD'
+    Publisher    = 'Fabrikam'
+    TemplateName = 'Contoso'
+}
+New-Win32ToolkitManualApp @cad -Advanced
 ```
+
+This creates the Advanced app project Fabrikam_CAD_x64_12.0 from a folder and stops.
+Write your
+install code in Invoke-AppDeployToolkit.ps1, then run Complete-Win32ToolkitManualApp.
+
+### EXAMPLE 3
+```
+New-Win32ToolkitManualApp @app -DependsOn 'winget:Microsoft.VCRedist.2015+.x64' -Continue
+```
+
+This creates Contoso Reader with the Visual C++ redistributable as a dependency ($app as in the
+first example).
+The install capture installs the redistributable first.
+Publish the
+redistributable with the toolkit before this app, so that Intune can link it.
+
+### EXAMPLE 4
+```
+$r = New-Win32ToolkitManualApp @app -RunTest InstallUninstall -PackageIntune -NoPublishPrompt
+if ($r.Status -eq 'Succeeded') {
+    Publish-Win32ToolkitIntuneApp -IntuneWinPath $r.IntuneWinPath -ProjectPath $r.ProjectPath
+}
+```
+
+This is the form for scripts ($app as in the first example).
+It publishes the package only when
+the install capture and the test had no problems.
+A W32T error stops the script.
 
 ## PARAMETERS
 
 ### -Name
-Application display name (required; prompted if omitted).
+The name of the app.
+The project name starts with it, and Intune shows it as the app name.
+If
+you leave it out, the command asks for it.
+For an MSI, Intune shows the project name instead,
+for example Contoso_Reader_x64_3.2.0.
+You can rename the app in the Intune admin center.
 
 ```yaml
 Type: String
@@ -68,7 +132,11 @@ Accept wildcard characters: False
 ```
 
 ### -Version
-Application version (required; prompted if omitted).
+The app version, for example 3.2.0.
+It is part of the project name.
+With a publisher, the
+detection rule checks for this exact version.
+If you leave it out, the command asks for it.
 
 ```yaml
 Type: String
@@ -83,7 +151,10 @@ Accept wildcard characters: False
 ```
 
 ### -Architecture
-x64 | x86 | arm64 (required; prompted if omitted).
+The processor architecture of the app.
+It is part of the project name, and Intune uses it as
+the architecture of the app.
+If you leave it out, the command asks for it (Enter means x64).
 
 ```yaml
 Type: String
@@ -98,7 +169,13 @@ Accept wildcard characters: False
 ```
 
 ### -SourcePath
-Installer file, or a folder of files, copied into the project's Files\ folder (required).
+The installer file, or a folder with the installer and the files it needs.
+The command copies
+it into the project.
+In a folder, the installer must be at the top level.
+An MSI wins over an
+EXE, and an EXE over an MSIX or APPX package.
+If you leave it out, the command asks for it.
 
 ```yaml
 Type: String
@@ -113,7 +190,12 @@ Accept wildcard characters: False
 ```
 
 ### -Publisher
-Publisher / vendor (used for the PSADT AppVendor and the Intune app-shell publisher).
+The publisher of the app.
+Always give it: the command does not ask for it.
+Without a
+publisher, the package does not record the installed version.
+Intune then uses a weaker
+detection rule from the install capture, and shows the publisher as Unknown.
 
 ```yaml
 Type: String
@@ -128,7 +210,7 @@ Accept wildcard characters: False
 ```
 
 ### -Description
-App description (Intune app shell).
+The description of the app in Intune.
 
 ```yaml
 Type: String
@@ -143,7 +225,7 @@ Accept wildcard characters: False
 ```
 
 ### -InformationUrl
-Information URL (Intune app shell).
+A web page with information about the app, shown in Intune.
 
 ```yaml
 Type: String
@@ -158,8 +240,12 @@ Accept wildcard characters: False
 ```
 
 ### -SilentArgs
-Silent-install switches.
-Providing them selects the "easy" (data-driven) install.
+The silent switches of an EXE installer, for example /S.
+With them, the EXE becomes an Easy
+app.
+Without them, it becomes an Advanced app.
+The command ignores this value for an MSI, MSIX
+or APPX package.
 
 ```yaml
 Type: String
@@ -174,7 +260,11 @@ Accept wildcard characters: False
 ```
 
 ### -IconPath
-Optional local image copied to Assets\AppIcon.png.
+An image file for the app icon, for example a .png file.
+The toolkit uses it instead of the
+icon that the install capture finds.
+If the file does not exist, the command ignores it without
+a message.
 
 ```yaml
 Type: String
@@ -189,7 +279,11 @@ Accept wildcard characters: False
 ```
 
 ### -TemplateName
-Org template to apply (under \<BasePath\>\Templates).
+The org template to use.
+If you leave it out, the command uses your only org template, or asks
+you to choose when there are several.
+If the name does not exist yet, the org template wizard
+starts and creates it.
 
 ```yaml
 Type: String
@@ -204,7 +298,9 @@ Accept wildcard characters: False
 ```
 
 ### -BasePath
-Base folder (registry-backed default; prompts on first run).
+The base folder for this command only.
+Default: your saved base folder.
+The value is not saved.
 
 ```yaml
 Type: String
@@ -219,7 +315,7 @@ Accept wildcard characters: False
 ```
 
 ### -Reconfigure
-Re-prompt for the base folder and save the new value to the registry, ignoring any stored value.
+Asks for the base folder again and saves your answer as the new default.
 
 ```yaml
 Type: SwitchParameter
@@ -234,7 +330,12 @@ Accept wildcard characters: False
 ```
 
 ### -Advanced
-Hard app - leave the Install region for manual authoring.
+Creates an Advanced app: you write the install code in Invoke-AppDeployToolkit.ps1, between
+the '## win32-toolkit:Install:manual-install' block and the 'install-done' block.
+The code runs
+under Windows PowerShell 5.1 on devices and must stop with throw, never return.
+It must not
+assign PSADT variables such as $envTemp.
 
 ```yaml
 Type: SwitchParameter
@@ -249,7 +350,12 @@ Accept wildcard characters: False
 ```
 
 ### -Force
-Overwrite an existing project folder of the same name without prompting.
+Replaces an existing project with the same name, architecture and version without asking.
+This
+deletes the old folder with its install code, install captures, test results, dependencies and
+publication record.
+Prior-install rules are kept.
+Use it in scripts.
 
 ```yaml
 Type: SwitchParameter
@@ -264,7 +370,11 @@ Accept wildcard characters: False
 ```
 
 ### -Continue
-Easy app - run the finalize phase (sandbox capture → uninstall → optional test/package/publish) inline.
+Runs the install capture right after the project is created.
+The capture records what the
+installer changes, and the toolkit builds the uninstall steps from it.
+Ignored for an Advanced
+app.
 
 ```yaml
 Type: SwitchParameter
@@ -279,9 +389,13 @@ Accept wildcard characters: False
 ```
 
 ### -RunTest
-Test scenario(s) to run during the finalize phase: 'InstallUninstall', 'Update', or both.
-Implies
--Continue behavior for easy apps.
+The tests to run after the install capture.
+Default: no test.
+Use InstallUninstall: Update has
+no older version to start from here and ends as Inconclusive.
+To test an update, run
+Test-Win32ToolkitProject -BaselineProject later.
+Ignored for an Advanced app.
 
 ```yaml
 Type: String[]
@@ -296,7 +410,10 @@ Accept wildcard characters: False
 ```
 
 ### -PackageIntune
-Package the project into a .intunewin during the finalize phase.
+Builds the package after the install capture and the tests.
+The command then asks whether to
+upload it to Intune, unless you also use -PublishIntune, -PublishUpdate or -NoPublishPrompt.
+Ignored for an Advanced app.
 
 ```yaml
 Type: SwitchParameter
@@ -311,7 +428,11 @@ Accept wildcard characters: False
 ```
 
 ### -PublishIntune
-Upload the packaged app to Microsoft Intune during the finalize phase (implies packaging).
+Builds the package and publishes it to Intune as a new install app.
+You sign in to Intune if
+needed.
+A failed test does not stop the publish.
+Ignored for an Advanced app.
 
 ```yaml
 Type: SwitchParameter
@@ -326,7 +447,12 @@ Accept wildcard characters: False
 ```
 
 ### -PublishUpdate
-Also publish the UPDATE app (a second, requirement-gated Intune app of the same version).
+Publishes the update app: a second Intune app of the same version that installs only on
+devices that already have the app.
+Add -PublishIntune to publish the install app too.
+This also
+runs the install capture and builds the package.
+Ignored for an Advanced app.
 
 ```yaml
 Type: SwitchParameter
@@ -341,9 +467,12 @@ Accept wildcard characters: False
 ```
 
 ### -DependsOn
-Dependencies to declare: 'winget:\<Id\>', 'project:\<Template\>\\\<Name\>', or 'intune:\<AppGuid\>'
-references.
-Installed first in the test guest and related to the Intune app at publish time.
+The apps that Intune must install before this app: 'winget:\<id\>',
+'project:\<template\>\\\<project\>' or 'intune:\<app ID\>'.
+The install capture and the tests also
+install winget and project dependencies first.
+A wrong reference stops the command before
+anything is created.
 
 ```yaml
 Type: String[]
@@ -358,7 +487,12 @@ Accept wildcard characters: False
 ```
 
 ### -DependencyType
-How Intune treats the declared dependencies: 'autoInstall' (default) or 'detect'.
+How Intune treats the dependencies.
+Default: autoInstall (Intune installs them first).
+With
+detect, Intune only checks that a dependency is there and does not install this app when it is
+missing.
+Command line only: the menu does not offer this.
 
 ```yaml
 Type: String
@@ -367,22 +501,25 @@ Aliases:
 
 Required: False
 Position: 14
-Default value: AutoInstall
+Default value: autoInstall
 Accept pipeline input: False
 Accept wildcard characters: False
 ```
 
-### -ProgressAction
-{{ Fill ProgressAction Description }}
+### -NoPublishPrompt
+Skips the question 'Upload to Microsoft Intune now?
+(Y/N)' after -PackageIntune builds the
+package.
+Use it in scripts.
 
 ```yaml
-Type: ActionPreference
+Type: SwitchParameter
 Parameter Sets: (All)
-Aliases: proga
+Aliases:
 
 Required: False
 Position: Named
-Default value: None
+Default value: False
 Accept pipeline input: False
 Accept wildcard characters: False
 ```
@@ -394,7 +531,19 @@ This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable
 
 ## OUTPUTS
 
-### System.Management.Automation.PSObject
+### A result object. Check Status: Succeeded, CompletedWithProblems, Failed or Scaffolded.
+### Scaffolded means: finish with Complete-Win32ToolkitManualApp. Problems lists what went wrong.
+### A W32T error stops the command and returns nothing.
 ## NOTES
+Needs: Windows Sandbox or the Hyper-V test VM for the install capture and the tests.
+Time: the
+install capture usually takes 5 to 20 minutes, and the toolkit stops waiting after 30 minutes.
 
 ## RELATED LINKS
+
+[https://win32toolkit.com/reference/New-Win32ToolkitManualApp/](https://win32toolkit.com/reference/New-Win32ToolkitManualApp/)
+
+[https://win32toolkit.com/manual-apps/](https://win32toolkit.com/manual-apps/)
+
+[https://win32toolkit.com/dependencies/](https://win32toolkit.com/dependencies/)
+

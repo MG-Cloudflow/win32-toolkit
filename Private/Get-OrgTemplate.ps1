@@ -2,10 +2,38 @@ function Get-OrgTemplate {
     [CmdletBinding()]
     param(
         [string]$TemplateName = '',
-        [string]$BasePath
+        [string]$BasePath,
+        # Skip the D9 text check (Assert-Win32ToolkitOrgTemplateText) on a stored template. Only for
+        # callers that read nothing PSADT expands (Connect-Win32ToolkitIntune reads TenantId); every
+        # packaging path keeps the check.
+        [switch]$SkipTextValidation
     )
 
+    # A stored template is re-validated on every load: it may predate the D9 rules or have been
+    # hand-edited, and text PSADT cannot expand fails every deployment built from it.
+    $validateText = -not $SkipTextValidation
+    function Assert-LoadedTemplate {
+        param([PSCustomObject]$Tpl)
+        if (-not $validateText -or -not $Tpl) { return }
+        # Throws W32T.OrgTemplateInvalid; the default -Context is "template '<TemplateName>'".
+        Assert-Win32ToolkitOrgTemplateText -Template $Tpl
+    }
+
     if ([string]::IsNullOrWhiteSpace($BasePath)) { $BasePath = Get-Win32ToolkitBasePath }
+    # Nobody can answer the picker or the template wizard on a non-interactive host (a service, CI, redirected input) or
+    # in a 'pwsh -NonInteractive' console: Read-Host threw a non-W32T error there, or waited in a hidden console (live row
+    # LIVE-PREP). Such a run fails closed with W32T.OrgTemplateChoiceNeeded and names what to pass, before any prompt.
+    $cannotPrompt = $false
+    try { $cannotPrompt = [bool](Test-Win32ToolkitHostNonInteractive) -or [bool](Test-Win32ToolkitNonInteractiveSwitch) }
+    catch {
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+        $cannotPrompt = $false
+    }
+    $needChoice = {
+        param([string]$Why)
+        throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new("$Why This run cannot prompt: pass -TemplateName <name> of an existing template, or create one interactively (Show-Win32Toolkit, or Invoke-Win32Toolkit -NewTemplate -TemplateName <name> from an interactive console)."),
+            'W32T.OrgTemplateChoiceNeeded', [System.Management.Automation.ErrorCategory]::InvalidArgument, $BasePath)
+    }
     $templateFolder = (Get-Win32ToolkitPaths -BasePath $BasePath).Templates
     if (-not (Test-Path $templateFolder)) {
         New-Item -ItemType Directory -Path $templateFolder -Force | Out-Null
@@ -16,10 +44,12 @@ function Get-OrgTemplate {
         $specificPath = Join-Path $templateFolder "$TemplateName.json"
         if (Test-Path $specificPath) {
             $t = Get-Content -Path $specificPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            $t = Update-OrgTemplateIfNeeded -Template $t -FilePath $specificPath
+            $t = Update-OrgTemplateIfNeeded -Template $t -FilePath $specificPath -BasePath $BasePath
+            Assert-LoadedTemplate $t
             Write-Host "✓ Loaded org template: $($t.TemplateName)" -ForegroundColor Green
             return $t
         } else {
+            if ($cannotPrompt) { & $needChoice "The org template '$TemplateName' does not exist under $templateFolder." }
             Write-Host "Template '$TemplateName' not found. Creating it now..." -ForegroundColor Cyan
             return New-OrgTemplate -TemplateName $TemplateName -BasePath $BasePath
         }
@@ -29,18 +59,23 @@ function Get-OrgTemplate {
 
     if ($templates.Count -eq 0) {
         Write-Host ''
+        if ($cannotPrompt) { & $needChoice "No org template exists under $templateFolder." }
         Write-Host 'No org template found. Creating one now...' -ForegroundColor Cyan
         return New-OrgTemplate -BasePath $BasePath
     }
 
     if ($templates.Count -eq 1) {
         $t = Get-Content -Path $templates[0].FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-        $t = Update-OrgTemplateIfNeeded -Template $t -FilePath $templates[0].FullName
+        $t = Update-OrgTemplateIfNeeded -Template $t -FilePath $templates[0].FullName -BasePath $BasePath
+        Assert-LoadedTemplate $t
         Write-Host "✓ Loaded org template: $($t.TemplateName)" -ForegroundColor Green
         return $t
     }
 
     # Multiple templates — show picker
+    if ($cannotPrompt) {
+        & $needChoice ("Several org templates exist under $templateFolder (" + ((@($templates | ForEach-Object { $_.BaseName }) | Sort-Object) -join ', ') + ').')
+    }
     Write-Host ''
     Write-Host '  Multiple org templates found:' -ForegroundColor Cyan
     Write-Host ("  {0,-4} {1}" -f '#', 'Template') -ForegroundColor Gray
@@ -80,7 +115,8 @@ function Get-OrgTemplate {
     }
 
     $t = Get-Content -Path $templates[$parsed - 1].FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-    $t = Update-OrgTemplateIfNeeded -Template $t -FilePath $templates[$parsed - 1].FullName
+    $t = Update-OrgTemplateIfNeeded -Template $t -FilePath $templates[$parsed - 1].FullName -BasePath $BasePath
+    Assert-LoadedTemplate $t
     Write-Host "✓ Loaded org template: $($t.TemplateName)" -ForegroundColor Green
     return $t
 }

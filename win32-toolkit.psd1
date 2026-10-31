@@ -6,11 +6,11 @@
     CompanyName       = 'CloudFlow'
     Copyright         = '(c) 2026 CloudFlow. All rights reserved.'
     Description       = 'End-to-end Win32 app packaging automation: Winget discovery, download, PSADT V4 project creation, and Intune requirement script generation.'
-    PowerShellVersion = '7.2'
+    PowerShellVersion = '7.4'
 
     # Only the single entry-point command is exported to the caller.
     # All helper functions in Private\ remain invisible outside the module.
-    FunctionsToExport = @('Invoke-Win32Toolkit', 'Test-Win32ToolkitProject', 'Export-Win32ToolkitIntuneWin', 'Publish-Win32ToolkitIntuneApp', 'New-Win32ToolkitManualApp', 'Complete-Win32ToolkitManualApp', 'Show-Win32Toolkit', 'New-Win32ToolkitTestVM', 'Reset-Win32ToolkitTestVM', 'Remove-Win32ToolkitTestVM', 'Set-Win32ToolkitTestVMResource', 'Set-Win32ToolkitAppDependency', 'Sync-Win32ToolkitAppDependency', 'Export-Win32ToolkitDocumentation', 'Connect-Win32ToolkitIntune', 'Disconnect-Win32ToolkitIntune')
+    FunctionsToExport = @('Invoke-Win32Toolkit', 'Test-Win32ToolkitProject', 'Export-Win32ToolkitIntuneWin', 'Publish-Win32ToolkitIntuneApp', 'New-Win32ToolkitManualApp', 'Complete-Win32ToolkitManualApp', 'Show-Win32Toolkit', 'New-Win32ToolkitTestVM', 'Reset-Win32ToolkitTestVM', 'Remove-Win32ToolkitTestVM', 'Set-Win32ToolkitTestVMResource', 'Set-Win32ToolkitAppDependency', 'Sync-Win32ToolkitAppDependency', 'Export-Win32ToolkitDocumentation', 'Connect-Win32ToolkitIntune', 'Disconnect-Win32ToolkitIntune', 'Set-Win32ToolkitPriorInstall')
     CmdletsToExport   = @()
     VariablesToExport = @()
     AliasesToExport   = @()

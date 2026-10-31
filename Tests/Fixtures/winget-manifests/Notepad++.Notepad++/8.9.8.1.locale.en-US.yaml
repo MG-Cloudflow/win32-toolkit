@@ -1,0 +1,10 @@
+# Hand-made default-locale manifest (separate file, as winget-pkgs stores it); values from the public manifests.
+PackageIdentifier: Notepad++.Notepad++
+PackageVersion: 8.9.8.1
+PackageLocale: en-US
+Publisher: Notepad++ Team
+PackageName: Notepad++
+License: GPL-3.0
+ShortDescription: Free source code editor and Notepad replacement
+ManifestType: defaultLocale
+ManifestVersion: 1.12.0

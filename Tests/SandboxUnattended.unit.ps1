@@ -1,14 +1,16 @@
 <#
     R1 + R3 — Sandbox unattended mode, the guard-wait, and the mode-gated auto-close.
 
-      (a) Get-Win32ToolkitTestMode precedence: -Unattended > config Unattended > non-interactive host
-          (forced Unattended + warning) > Interactive default.
+      (a) Get-Win32ToolkitTestMode precedence: -Unattended > -TestMode > config Unattended > non-interactive host
+          (forced Unattended + warning, also over -TestMode Interactive) > Interactive default.
       (b) Wait-Win32ToolkitSandboxFree: free -> immediate $true; frees mid-wait -> $true; never ->
-          $false at the 90 s ceiling (no throw).
+          $false at the 90 s ceiling (no throw). Without a wsb answer (shadowed $null), as here, only the
+          process check decides; the wsb-based close of a leftover client window: SandboxStaleClient.unit.ps1.
       (c) New-CountdownScript -Seconds honored; the 120 s watched default unchanged.
       (d) The generated Sandbox LogonCommands: watched keeps -NoExit + Countdown + interactive PSADT;
           unattended drops all three, runs -DeployMode Silent, and ends with Stop-Computer (after a 5 s
-          VSMB flush) so a chained run's single-instance guard clears on its own.
+          VSMB flush) so a chained run's single-instance guard clears on its own. Both run every PSADT
+          package through the guest runner (Invoke-PsadtPackage.ps1, one process per package).
       (e) The capture script's auto-close: 30 s watched / 5 s unattended (SandboxTestMode).
 
     Run:  pwsh -File Tests\SandboxUnattended.unit.ps1
@@ -24,6 +26,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 
 . (Join-Path $repo 'Private\Get-Win32ToolkitTestMode.ps1')
 . (Join-Path $repo 'Private\Wait-Win32ToolkitSandboxFree.ps1')
+function Get-Win32ToolkitSandboxEnvironment { $null }   # C-9: no wsb answer -> the process check decides (test campaign F1)
 . (Join-Path $repo 'Private\New-CountdownScript.ps1')
 
 function New-TempDir { $p = Join-Path ([System.IO.Path]::GetTempPath()) ('sbu_' + [guid]::NewGuid().ToString('N').Substring(0, 8)); New-Item -ItemType Directory -Path $p -Force | Out-Null; $p }
@@ -33,6 +36,7 @@ Write-Host '[a] Get-Win32ToolkitTestMode precedence' -ForegroundColor Cyan
 $script:cfg = @{}
 function Get-Win32ToolkitConfigValue { param($Name, $Default) if ($script:cfg.ContainsKey($Name)) { $script:cfg[$Name] } else { $Default } }
 function Test-Win32ToolkitHostNonInteractive { $script:hostNonInteractive }
+function Test-Win32ToolkitNonInteractiveSwitch { [bool]$script:noniSwitch }   # C-9: the Update version choice (test campaign F5); -TestMode Interactive (G3); $false unless set
 $script:hostNonInteractive = $false
 
 if ((Get-Win32ToolkitTestMode -Backend Sandbox) -eq 'Interactive') { Ok 'default: Interactive (human-in-the-loop unchanged)' } else { Bad 'default not Interactive' }
@@ -42,12 +46,37 @@ if ((Get-Win32ToolkitTestMode -Backend Sandbox) -eq 'Unattended') { Ok 'SandboxT
 $script:cfg.Clear(); $script:cfg['HyperVTestMode'] = 'Unattended'
 if ((Get-Win32ToolkitTestMode -Backend HyperV) -eq 'Unattended') { Ok 'HyperVTestMode=Unattended honored' } else { Bad 'HyperV config ignored' }
 if ((Get-Win32ToolkitTestMode -Backend Sandbox) -eq 'Interactive') { Ok 'config values are PER BACKEND (HyperV setting does not leak to Sandbox)' } else { Bad 'config leaked across backends' }
+# -TestMode (TUI audit G3): the run's own choice, above the config value, below -Unattended.
+if ((Get-Win32ToolkitTestMode -Backend HyperV -TestMode Interactive) -eq 'Interactive') { Ok '-TestMode Interactive + HyperVTestMode=Unattended -> Interactive (the run''s choice wins over the config value)' } else { Bad '-TestMode Interactive lost to HyperVTestMode' }
+$script:cfg.Clear(); $script:cfg['SandboxTestMode'] = 'Unattended'
+if ((Get-Win32ToolkitTestMode -Backend Sandbox -TestMode Interactive) -eq 'Interactive') { Ok '-TestMode Interactive + SandboxTestMode=Unattended (Sandbox) -> Interactive' } else { Bad '-TestMode Interactive lost to SandboxTestMode' }
+$script:cfg.Clear()
+if ((Get-Win32ToolkitTestMode -Backend HyperV -TestMode Unattended) -eq 'Unattended' -and (Get-Win32ToolkitTestMode -Backend Sandbox -TestMode Unattended) -eq 'Unattended') { Ok '-TestMode Unattended without a config value -> Unattended (both backends)' } else { Bad '-TestMode Unattended ignored' }
+if ((Get-Win32ToolkitTestMode -Backend HyperV -Unattended -TestMode Interactive) -eq 'Unattended') { Ok '-Unattended -TestMode Interactive at the resolver -> Unattended (the switch wins; the command refuses the pair)' } else { Bad '-Unattended lost to -TestMode Interactive' }
+$script:hostNonInteractive = $true
+$warnTm = @()
+$m = Get-Win32ToolkitTestMode -Backend HyperV -TestMode Interactive -WarningVariable warnTm 3>$null
+if ($m -eq 'Unattended' -and @($warnTm).Count -eq 1 -and "$warnTm" -match 'non-interactive' -and "$warnTm" -match 'Intune-parity') { Ok '-TestMode Interactive on a non-interactive host -> Unattended with the existing warning, once' } else { Bad "non-interactive host + -TestMode Interactive: mode=$m warnings=$(@($warnTm).Count) '$warnTm'" }
+$script:hostNonInteractive = $false
+# Dv16: a console started with pwsh -NonInteractive cannot answer the Hyper-V host pause: for an EXPLICIT -TestMode
+# Interactive it counts as a host that cannot prompt; a run without -TestMode keeps today's resolution.
+$script:noniSwitch = $true
+$warnTm = @()
+$m = Get-Win32ToolkitTestMode -Backend HyperV -TestMode Interactive -WarningVariable warnTm 3>$null
+if ($m -eq 'Unattended' -and @($warnTm).Count -eq 1 -and "$warnTm" -match 'non-interactive') { Ok '-TestMode Interactive in a pwsh -NonInteractive console -> Unattended with the warning, once' } else { Bad "-NonInteractive console + -TestMode Interactive: mode=$m warnings=$(@($warnTm).Count) '$warnTm'" }
+$warnTm = @()
+$m = Get-Win32ToolkitTestMode -Backend HyperV -WarningVariable warnTm 3>$null
+if ($m -eq 'Interactive' -and @($warnTm).Count -eq 0) { Ok 'no -TestMode in a pwsh -NonInteractive console (config Interactive) -> Interactive, no warning (resolution unchanged)' } else { Bad "-NonInteractive console without -TestMode: mode=$m warnings=$(@($warnTm).Count)" }
+$script:noniSwitch = $false
 $script:cfg.Clear()
 $script:hostNonInteractive = $true
 $warnings = @()
 $m = Get-Win32ToolkitTestMode -Backend HyperV -WarningVariable warnings 3>$null
 if ($m -eq 'Unattended') { Ok 'non-interactive host -> forced Unattended (no forever-hang on Read-Host)' } else { Bad "host detect: $m" }
-if ("$warnings" -match 'Silent') { Ok 'the forced switch is LOUD (warns what changes)' } else { Bad "no warning: '$warnings'" }
+if ("$warnings" -match 'Intune-parity' -and "$warnings" -notmatch 'DeployMode Silent') { Ok 'the forced switch is LOUD and says what changes on Hyper-V (Intune-parity phase, not -DeployMode Silent)' } else { Bad "HyperV warning: '$warnings'" }
+$warnings = @()
+$m = Get-Win32ToolkitTestMode -Backend Sandbox -WarningVariable warnings 3>$null
+if ($m -eq 'Unattended' -and "$warnings" -match '-DeployMode Silent' -and "$warnings" -notmatch 'Intune-parity') { Ok 'Sandbox warning says PSADT runs -DeployMode Silent' } else { Bad "Sandbox warning: mode=$m '$warnings'" }
 $script:hostNonInteractive = $false
 
 # ── (b) guard-wait ─────────────────────────────────────────────────────────────────────────────────
@@ -87,24 +116,40 @@ Remove-Item $p -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host '[d] Sandbox LogonCommand shapes (watched vs unattended)' -ForegroundColor Cyan
 $src = Get-Content -LiteralPath (Join-Path $repo 'Public\Test-Win32ToolkitProject.ps1') -Raw
 
-# Watched IU: -NoExit + Countdown, no Silent, no shutdown.
-if ($src -match '(?s)if \(\$sbInteractive\) \{\s*\$logonCommandXml = "powershell\.exe -NoExit[^"]*Countdown\.ps1[^"]*"') { Ok 'watched IU keeps -NoExit + Countdown' } else { Bad 'watched IU LogonCommand changed' }
+# Watched IU: -NoExit + Countdown, no Silent, no shutdown (comment lines may sit above the assignment).
+$iuWatched = [regex]::Match($src, '(?s)if \(\$sbInteractive\) \{\s*(?:#[^\r\n]*\s*)*\$logonCommandXml = "(powershell\.exe -NoExit[^"]*Countdown\.ps1[^"]*)"').Groups[1].Value
+if ($iuWatched) { Ok 'watched IU keeps -NoExit + Countdown' } else { Bad 'watched IU LogonCommand changed' }
+if ($iuWatched -and $iuWatched -notmatch '-DeployMode' -and ([regex]::Matches($iuWatched, 'Invoke-PsadtPackage\.ps1')).Count -eq 2 -and $iuWatched -notmatch 'Invoke-AppDeployToolkit\.ps1') { Ok 'watched IU: install + uninstall through the runner (own process), PSADT Auto mode (no -DeployMode)' } else { Bad "watched IU shape: $iuWatched" }
 # Unattended IU: Silent x2, Stop-Computer, 5 s flush, no -NoExit, no Countdown.
 $iuUnattended = [regex]::Match($src, '(?s)else \{[^{]*?VSMB[^"]*?\$logonCommandXml = "(powershell\.exe -ExecutionPolicy[^"]+)"').Groups[1].Value
 if ($iuUnattended -and $iuUnattended -notmatch '-NoExit' -and $iuUnattended -notmatch 'Countdown\.ps1') { Ok 'unattended IU: no -NoExit, no countdown' } else { Bad "unattended IU shape: $iuUnattended" }
 if (([regex]::Matches($iuUnattended, '-DeployMode Silent')).Count -eq 2) { Ok 'unattended IU: install AND uninstall run Silent' } else { Bad 'missing Silent on a deploy' }
+# Process isolation (TST-01): two runner calls, each -DeployMode Silent; the deploy script is never called
+# directly in the LogonCommand process (a 'project:' dependency would already have loaded PSADT there).
+$runnerSilent = [regex]::Matches($iuUnattended, 'C:\\PSADT\\Sandbox\\Invoke-PsadtPackage\.ps1 -DeploymentType (Install|Uninstall) -DeployMode Silent -Label app')
+if ($runnerSilent.Count -eq 2 -and $runnerSilent[0].Groups[1].Value -eq 'Install' -and $runnerSilent[1].Groups[1].Value -eq 'Uninstall') { Ok 'unattended IU: two Invoke-PsadtPackage.ps1 ... -DeployMode Silent calls (install, then uninstall)' } else { Bad "runner calls: $($runnerSilent.Count) in $iuUnattended" }
+if ($iuUnattended -notmatch 'Invoke-AppDeployToolkit\.ps1') { Ok 'unattended IU: no direct Invoke-AppDeployToolkit.ps1 call' } else { Bad "direct .ps1 call left: $iuUnattended" }
 if ($iuUnattended -match 'Start-Sleep -Seconds 5; Stop-Computer -Force') { Ok 'unattended IU: 5 s VSMB flush then guest shutdown (guard clears for chained runs)' } else { Bad 'no flush+shutdown' }
 if ($iuUnattended -match 'finally \{ C:\\PSADT\\Sandbox\\CollectLogs\.ps1') { Ok 'unattended IU: logs still collected before shutdown' } else { Bad 'CollectLogs lost' }
 
 # Unattended Update: Silent on the PSADT update, shutdown, no countdown; assertions all still present.
 $updUnattended = [regex]::Match($src, '(?s)Unattended: no -NoExit, no countdown, the PSADT update runs Silent.*?\$logonCommandXml = "(powershell\.exe -ExecutionPolicy[^"]+)"').Groups[1].Value
-if ($updUnattended -and $updUnattended -notmatch 'Countdown\.ps1' -and $updUnattended -match "Invoke-AppDeployToolkit\.ps1' -DeployMode Silent") { Ok 'unattended Update: countdown dropped, update runs Silent' } else { Bad "unattended Update shape: $updUnattended" }
+if ($updUnattended -and $updUnattended -notmatch 'Countdown\.ps1' -and $updUnattended -match "Invoke-PsadtPackage\.ps1' -DeploymentType Install -DeployMode Silent -Label update") { Ok 'unattended Update: countdown dropped, update runs Silent through the runner' } else { Bad "unattended Update shape: $updUnattended" }
+if ($updUnattended -notmatch 'Invoke-AppDeployToolkit\.ps1') { Ok 'unattended Update: no direct deploy-script call in the LogonCommand process' } else { Bad "direct call left: $updUnattended" }
+if ($updUnattended -match 'Start-Sleep -Seconds 5; Stop-Computer -Force') { Ok 'unattended Update: flush + shutdown kept' } else { Bad 'Update flush+shutdown lost' }
 foreach ($phase in 'PreBaseline', 'PreUpdate', 'PostUpdate') {
     if ($updUnattended -match "-Phase $phase") { Ok "unattended Update still asserts $phase" } else { Bad "assertion $phase lost in unattended mode" }
 }
 
 # The guard now WAITS instead of throwing immediately.
 if ($src -match 'Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90') { Ok 'single-instance guard waits up to 90 s before failing' } else { Bad 'guard still throws immediately' }
+# -BaselineInstallerType Both on watched Sandbox (installer-identity PR 1): the next leg waits for the operator to close
+# the previous leg's sandbox, up to the helper's 600 s maximum.
+if ($src -match 'Wait-Win32ToolkitSandboxFree -TimeoutSeconds 600') { Ok 'a Both leg on watched Sandbox waits up to 600 s for the previous sandbox' } else { Bad 'no 600 s wait between Both legs' }
+# The documentation capture waits for a free Sandbox too, BEFORE it launches (test campaign 2026-10-21, S8-F4).
+$ntdSrc = Get-Content -LiteralPath (Join-Path $repo 'Private\New-TargetedDocumentation.ps1') -Raw
+$wIdx = $ntdSrc.IndexOf('Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90'); $lIdx = $ntdSrc.IndexOf('Invoke-Win32ToolkitTestRun -Backend Sandbox')
+if ($wIdx -ge 0 -and $lIdx -gt $wIdx) { Ok 'the capture waits for a free Sandbox (90 s) before Invoke-Win32ToolkitTestRun' } else { Bad "capture wait at $wIdx, launch at $lIdx" }
 
 # ── (e) capture auto-close is mode-gated ───────────────────────────────────────────────────────────
 # The duration now flows through the SHARED resolver (Get-Win32ToolkitTestMode), so -Unattended/config/
@@ -129,6 +174,20 @@ if ($gen2 -match "\[int\]'5'") { Ok 'unattended: 5 s auto-close (VSMB flush only
 $t=$null;$e=$null
 [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $proj 'SupportFiles\TargetedDocumentationScript.ps1'),[ref]$t,[ref]$e)
 if (-not $e) { Ok 'generated guest script still parses cleanly' } else { Bad "guest script parse errors: $($e[0].Message)" }
+
+# A non-interactive host forces Unattended (5 s), but the capture must NOT print the resolver's "this
+# changes what is tested" warning: the capture always runs -DeployMode Silent, and on Hyper-V the warning
+# would name the wrong backend.
+$script:cfg.Clear()
+$script:hostNonInteractive = $true
+# Check the warning STREAM (what the operator sees), not -WarningVariable: an outer -WarningVariable also
+# records nested warnings that were ignored and never displayed.
+$capWarn = @(New-TargetedDocumentation -ProjectPath $proj -ProjectName 'T' -Backend HyperV -SkipLaunch 3>&1 6>$null |
+    Where-Object { $_ -is [System.Management.Automation.WarningRecord] })
+$script:hostNonInteractive = $false
+$gen3 = Get-Content -LiteralPath (Join-Path $proj 'SupportFiles\TargetedDocumentationScript.ps1') -Raw
+if ($gen3 -match "\[int\]'5'" -and -not @($capWarn | Where-Object { "$_" -match 'changes what is tested' }).Count) { Ok 'non-interactive capture: 5 s auto-close, no misleading "changes what is tested" warning' }
+else { Bad "non-interactive capture: autoclose5=$($gen3 -match "\[int\]'5'") warnings=$(@($capWarn) -join ' | ')" }
 Remove-Item $proj -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''

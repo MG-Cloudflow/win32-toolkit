@@ -31,19 +31,28 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Set-Win32ToolkitAppConfig.ps1')
 . (Join-Path $repo 'Private\Add-Win32ToolkitInstallerFiles.ps1')
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitDependencyRef.ps1')
+. (Join-Path $repo 'Private\Assert-Win32ToolkitDependencyRef.ps1')   # C-9: -DependsOn pre-flight + Set-Win32ToolkitAppDependency (B3 r2.1)
 . (Join-Path $repo 'Private\Get-Win32ToolkitDependencies.ps1')
 . (Join-Path $repo 'Public\Set-Win32ToolkitAppDependency.ps1')
+. (Join-Path $repo 'Private\Initialize-Win32ToolkitRunResult.ps1')   # C-9: the result object (TUI audit G2, S8-F3)
+. (Join-Path $repo 'Private\Complete-Win32ToolkitRunResult.ps1')
+# C-9 (TUI audit G4): every error after the scaffold, before the end of the configure step, marks the project (temp folders).
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+. (Join-Path $repo 'Private\Write-Win32ToolkitNotConfiguredMarker.ps1')
 . (Join-Path $repo 'Public\New-Win32ToolkitManualApp.ps1')
 
 # --- shadow only what is NOT under test -----------------------------------------------------------
 $BASE = Join-Path ([System.IO.Path]::GetTempPath()) ('w32ma_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 function Get-Win32ToolkitBasePath { param($BasePath, [switch]$Reconfigure) $BASE }
 function Get-OrgTemplate { param($BasePath, $TemplateName) [pscustomobject]@{ TemplateName = 'Contoso'; AppScriptAuthor = 'IT' } }
-function Apply-OrgTemplate { param($ProjectPath, $Template) $true }
+$script:applyResult = $true
+function Apply-OrgTemplate { param($ProjectPath, $Template, $BasePath) $script:applyResult }
 
 # A real PSADT scaffold is a network/module dependency — fake the folder shape it produces.
+$script:createCalls = 0
 function Create-PSADTProject {
     param($ProjectPath, $AppName, $AppVersion, $Architecture, $Force)
+    $script:createCalls++
     New-Item -ItemType Directory -Path $ProjectPath -Force | Out-Null
     foreach ($d in 'Files', 'SupportFiles') { New-Item -ItemType Directory -Path (Join-Path $ProjectPath $d) -Force | Out-Null }
     Set-Content -LiteralPath (Join-Path $ProjectPath 'Invoke-AppDeployToolkit.ps1') -Value '## <Perform Installation tasks here>'
@@ -52,7 +61,10 @@ function Create-PSADTProject {
 $script:patched = $null
 function Set-PSADTDataDrivenScript { param($ScriptPath, [switch]$ManualInstall) $script:patched = [bool]$ManualInstall; $true }
 $script:finalized = $false
-function Invoke-Win32ToolkitFinalize { param($ProjectPath, $ProjectName, $AppInfo, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate) $script:finalized = $true }
+function Invoke-Win32ToolkitFinalize { param($ProjectPath, $ProjectName, $AppInfo, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate, $BasePath, $Result) $script:finalized = $true; $script:finalizeBase = $BasePath; $null = $Result }
+# Prior-install state (installer-identity PR 3, C-9): nothing to keep or carry in these runs.
+function Get-Win32ToolkitPriorInstallSnapshot { param($ProjectPath) $null = $ProjectPath; $null }
+function Copy-Win32ToolkitPriorInstallState { param($ProjectPath, $Snapshot, $SourceProjectPath) $null = $ProjectPath, $Snapshot, $SourceProjectPath; $null }
 
 function New-Src { param([string]$Name) $d = Join-Path $BASE ('src_' + [guid]::NewGuid().ToString('N').Substring(0, 6)); New-Item -ItemType Directory -Path $d -Force | Out-Null; $f = Join-Path $d $Name; Set-Content -LiteralPath $f 'binary'; $f }
 
@@ -86,7 +98,11 @@ if ($cfg2.Installer.SilentArgs -eq '/S /norestart') { Ok 'silent args stored as 
 Write-Host '[3] HARD: an EXE with NO silent args is automatically Advanced' -ForegroundColor Cyan
 $script:patched = $null; $script:finalized = $false
 $exe2 = New-Src 'legacy.exe'
-$r3 = New-Win32ToolkitManualApp -Name 'Legacy CAD' -Version '12.0' -Architecture x64 -SourcePath $exe2 -TemplateName 'Contoso' -Force 6>$null 3>$null
+$host3 = @(New-Win32ToolkitManualApp -Name 'Legacy CAD' -Version '12.0' -Architecture x64 -SourcePath $exe2 -TemplateName 'Contoso' -Force 6>&1 3>$null)
+$r3 = @($host3 | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] })[-1]
+$text3 = @($host3 | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$_" })
+# The next-step label matches the printed command (test, no upload); packaging/upload are named as opt-ins (S8-F10).
+if (($text3 -match '^\s+2\. Then finalise \(auto uninstall \+ test\):$') -and -not ($text3 -match 'package \+ upload') -and ($text3 -match '-PublishIntune to also upload it to Intune')) { Ok 'hard-app step 2 says test only; packaging/upload are named as extra switches' } else { Bad "next steps: $($text3 -join ' | ')" }
 if ($script:patched -eq $true) { Ok 'EXE without silent args => the MANUAL install region (you author it)' } else { Bad "ManualInstall=$script:patched" }
 if (-not $script:finalized) { Ok 'hard app does NOT finalize — deferred to Complete-Win32ToolkitManualApp' } else { Bad 'finalize ran for an advanced app' }
 if ($r3.Mode -eq 'Advanced' -and $r3.ProjectPath) { Ok 'returns { ProjectPath; Mode=Advanced } so the caller can finish later' } else { Bad ($r3 | Out-String) }
@@ -131,6 +147,30 @@ $deps = @(Get-Win32ToolkitDependencies -ProjectPath $p5)
 if ($deps.Count -eq 1 -and $deps[0].Ref -eq 'Microsoft.VCRedist.2015+.x64' -and $deps[0].Source -eq 'winget') {
     Ok 'a custom app can depend on the VC++ redistributable (declared into AppConfig)'
 } else { Bad ($deps | Out-String) }
+
+Write-Host '[7] an org template that cannot be applied stops the run (fail closed)' -ForegroundColor Cyan
+$script:applyResult = $false; $script:finalized = $false
+$msi3 = New-Src 'noapply.msi'
+$threw = $null
+try { $null = New-Win32ToolkitManualApp -Name 'No Apply' -Version '1.0' -Architecture x64 -SourcePath $msi3 -TemplateName 'Contoso' -Force -Continue 6>$null 3>$null }
+catch { $threw = $_.FullyQualifiedErrorId }
+$script:applyResult = $true
+if ($threw -eq 'W32T.PipelineAborted' -and -not $script:finalized) { Ok 'Apply-OrgTemplate $false -> W32T.PipelineAborted; the finalize tail never ran' } else { Bad "threw='$threw' finalized=$script:finalized" }
+
+Write-Host '[8] an invalid -DependsOn stops the run before the scaffold (re-verification 2026-10-21, B3 r2.1)' -ForegroundColor Cyan
+# Real Set-Win32ToolkitAppDependency and Assert-Win32ToolkitDependencyRef: the refusal used to come from the
+# declaration AFTER the scaffold, as a non-terminating 'New-Win32ToolkitManualApp failed: ...'.
+foreach ($case in @(@('project:..\EvilB3T', 'Evil_App', "must be '<Template>\<ProjectName>' under Projects\"), @('project:Contoso\Self_App_x64_1.0', 'Self_App', "An app cannot depend on itself ('Contoso\Self_App_x64_1.0')."))) {
+    $script:createCalls = 0; $script:finalized = $false
+    $msi4 = New-Src 'dep4.msi'
+    $e8 = $null
+    try { $null = New-Win32ToolkitManualApp -Name ($case[1] -replace '_', ' ') -Version '1.0' -Architecture x64 -SourcePath $msi4 -TemplateName 'Contoso' -Force -Continue -DependsOn $case[0] 6>$null 3>$null }
+    catch { $e8 = $_ }
+    $p8 = Join-Path $BASE "Projects\Contoso\$($case[1])_x64_1.0"
+    if ($e8 -and $e8.FullyQualifiedErrorId -eq 'W32T.InvalidDependencyReference' -and "$e8".Contains($case[2]) -and $script:createCalls -eq 0 -and -not (Test-Path -LiteralPath $p8) -and -not $script:finalized) {
+        Ok "-DependsOn '$($case[0])' -> W32T.InvalidDependencyReference; Create-PSADTProject never ran, no project folder"
+    } else { Bad "'$($case[0])': fqid='$(if ($e8) { $e8.FullyQualifiedErrorId })' $e8 create=$script:createCalls folder=$(Test-Path -LiteralPath $p8)" }
+}
 
 Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue
 

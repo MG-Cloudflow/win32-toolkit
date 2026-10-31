@@ -16,6 +16,15 @@ function New-InstallAssertionScript {
           -Phase PostUninstall  after the PSADT uninstall: asserts the same signal is GONE (tattoo key
                                 removed / ARP entry absent), then emits 'RESULT COMPLETE'.
 
+        MSI projects additionally assert Windows Installer's own record: the host reads the MSI's
+        ProductCode (validated GUID) into Sandbox\InstallAssertionData.json (DATA) as MsiProductCode, and
+        the guest checks the Uninstall\<ProductCode> key in either registry view
+        ('MsiProductInstalled-PostInstall' / 'MsiProductRemoved-PostUninstall') - a tattoo alone can be
+        written by a run whose MSI step never ran. A project whose capture recorded the app's own uninstall
+        entries (AppConfig Uninstall.PrimaryKeys) and whose deploy script has the hardened uninstall
+        (uninstall revision 2) also hands the guest UninstallKeys and gets 'AppArpGone-PostUninstall': each
+        of those entries must be gone after the uninstall (a co-installed product's entry is never checked).
+
         Results are appended as 'ASSERT <name> = PASS|FAIL|SKIP' lines to
         C:\PSADT\Sandbox\Logs\InstallAssertions.log (the mapped project folder, so the host sees them
         live), in the shared assertion-log format ('=== Phase: <X> ===', timestamped lines,
@@ -56,7 +65,23 @@ $logDir = 'C:\PSADT\Sandbox\Logs'
 if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $assertLog = Join-Path $logDir 'InstallAssertions.log'
 function Write-AssertLine([string]$Message) {
-    ('[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message) | Add-Content -Path $assertLog -Encoding UTF8
+    # UTC with a 'Z' (invariant culture), like PsadtExitCodes.log: in order whatever the guest's time zone.
+    # Appended with read sharing: the host reads this log while the guest writes it (Windows Sandbox maps the folder),
+    # and Windows PowerShell 5.1's Add-Content fails on a file another process holds open, which dropped the line.
+    # A short retry covers any other transient lock. UTF-8 with a BOM on a new file, as Add-Content wrote it.
+    $assertText = ('[{0}] {1}' -f ([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture) + 'Z'), $Message) + "`r`n"
+    $assertBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($assertText)
+    for ($assertTry = 1; $assertTry -le 100; $assertTry++) {
+        $assertStream = $null
+        try {
+            $assertStream = [System.IO.File]::Open($assertLog, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+            if ($assertStream.Length -eq 0) { $assertStream.Write([byte[]](0xEF, 0xBB, 0xBF), 0, 3) }
+            $assertStream.Write($assertBytes, 0, $assertBytes.Length)
+            return
+        }
+        catch { Start-Sleep -Milliseconds 100 }
+        finally { if ($null -ne $assertStream) { $assertStream.Dispose() } }
+    }
 }
 
 Write-AssertLine ('=== Phase: {0} ===' -f $Phase)
@@ -154,6 +179,89 @@ else {
     Write-AssertLine ('ASSERT {0} = SKIP (AppConfig.json has no tattoo fields and no DisplayName - nothing to detect against)' -f $assertName)
 }
 
+# ── MSI: Windows Installer's own record (DATA from Sandbox\InstallAssertionData.json, written by the host
+#    from the MSI's ProductCode). The tattoo alone can be written by a deploy script whose MSI step never
+#    ran, so an MSI project also asserts its Uninstall key: present after install, gone after uninstall. ──
+$msiCode = ''
+$assertData = $null
+$assertDataPath = 'C:\PSADT\Sandbox\InstallAssertionData.json'
+try {
+    if (Test-Path -LiteralPath $assertDataPath) {
+        $assertData = Get-Content -LiteralPath $assertDataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($assertData -and ($assertData.PSObject.Properties.Name -contains 'MsiProductCode') -and $null -ne $assertData.MsiProductCode) {
+            $msiCode = ("$($assertData.MsiProductCode)").Trim()
+        }
+    }
+} catch {
+    Write-AssertLine ('Failed to read InstallAssertionData.json: {0}' -f $_.Exception.Message)
+}
+if ($msiCode -ne '' -and $msiCode -notmatch '^\{[0-9A-Fa-f]{8}-([0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}\}$') {
+    Write-AssertLine 'InstallAssertionData.json MsiProductCode is not a GUID - MSI assertion skipped'
+    $msiCode = ''
+}
+if ($msiCode -ne '') {
+    $msiKeys = @(
+        ('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\' + $msiCode),
+        ('HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\' + $msiCode)
+    )
+    $msiPresent = $false
+    foreach ($mk in $msiKeys) {
+        # Same probe as the tattoo check: a missing key throws ('not installed'), an existing one does not.
+        try { $null = Get-ItemProperty -LiteralPath $mk -ErrorAction Stop; $msiPresent = $true } catch { }
+    }
+    Write-AssertLine ('MSI ProductCode {0} Uninstall key present=[{1}]' -f $msiCode, $msiPresent)
+    if ($Phase -eq 'PostInstall') {
+        if ($msiPresent) { Write-AssertLine 'ASSERT MsiProductInstalled-PostInstall = PASS' }
+        else             { Write-AssertLine 'ASSERT MsiProductInstalled-PostInstall = FAIL (MSI ProductCode not registered after install)' }
+    } else {
+        if (-not $msiPresent) { Write-AssertLine 'ASSERT MsiProductRemoved-PostUninstall = PASS' }
+        else                  { Write-AssertLine 'ASSERT MsiProductRemoved-PostUninstall = FAIL (MSI ProductCode still registered after uninstall)' }
+    }
+}
+
+# ── The app's OWN uninstall (Add/Remove Programs) entries: DATA from Sandbox\InstallAssertionData.json UninstallKeys,
+#    written by the host from AppConfig Uninstall.PrimaryKeys (the capture's primary keys, never a co-installed
+#    product's). After the uninstall each must be gone. A project captured before they were recorded has no
+#    UninstallKeys: no assertion (the detection checks above still run). ──
+$appKeyRoots = @{
+    'Registry64' = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\'
+    'Registry32' = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\'
+}
+$hasAppKeyData = $false
+$appKeys = @()
+if ($assertData -and ($assertData.PSObject.Properties.Name -contains 'UninstallKeys')) {
+    $hasAppKeyData = $true
+    foreach ($uk in @($assertData.UninstallKeys)) {
+        $ukName = ''
+        $ukView = ''
+        if ($uk -and ($uk.PSObject.Properties.Name -contains 'Name') -and $null -ne $uk.Name) { $ukName = "$($uk.Name)" }
+        if ($uk -and ($uk.PSObject.Properties.Name -contains 'View') -and $null -ne $uk.View) { $ukView = "$($uk.View)" }
+        if ($ukName -match '^[^\\/:*?"<>|\p{Cc}\p{Cf}\p{Zl}\p{Zp}]{1,255}\z' -and $ukName -ne '.' -and $ukName -ne '..' -and ($ukView -ceq 'Registry64' -or $ukView -ceq 'Registry32')) {
+            $appKeys += [pscustomobject]@{ Name = $ukName; View = $ukView }
+        } else {
+            Write-AssertLine 'InstallAssertionData.json UninstallKeys has an entry that is not a plain key name in Registry64 or Registry32 - not checked'
+        }
+    }
+}
+$presentKeys = @()
+foreach ($ak in $appKeys) {
+    $akPresent = $false
+    # The same probe as the tattoo and MSI checks: a missing key throws ('not there').
+    try { $null = Get-ItemProperty -LiteralPath ($appKeyRoots[$ak.View] + $ak.Name) -ErrorAction Stop; $akPresent = $true } catch { }
+    $akShown = '[' + $ak.View + '] ' + ($ak.Name -replace '[^\x20-\x7E]|=', '?')
+    Write-AssertLine ('App uninstall entry {0} present=[{1}]' -f $akShown, $akPresent)
+    if ($akPresent) { $presentKeys += $akShown }
+}
+if ($Phase -eq 'PostUninstall' -and $hasAppKeyData) {
+    if ($appKeys.Count -eq 0) {
+        Write-AssertLine 'ASSERT AppArpGone-PostUninstall = SKIP (InstallAssertionData.json UninstallKeys holds no valid key)'
+    } elseif ($presentKeys.Count -eq 0) {
+        Write-AssertLine 'ASSERT AppArpGone-PostUninstall = PASS'
+    } else {
+        Write-AssertLine ('ASSERT AppArpGone-PostUninstall = FAIL (the app''s own uninstall entry is still present after uninstall: {0})' -f ($presentKeys -join '; '))
+    }
+}
+
 Write-AssertLine ('=== End {0} ===' -f $Phase)
 if ($Phase -eq 'PostUninstall') { Write-AssertLine 'RESULT COMPLETE' }
 '@
@@ -169,6 +277,68 @@ if ($Phase -eq 'PostUninstall') { Write-AssertLine 'RESULT COMPLETE' }
         [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$errs) | Out-Null
         if ($errs -and $errs.Count) {
             throw "Generated InstallAssertions.ps1 has parse errors: $($errs[0].Message)"
+        }
+
+        # The guest's DATA (Sandbox\InstallAssertionData.json, BOM-less): an MSI project's ProductCode
+        # (MsiProductCode, a strict GUID) so the guest can also assert Windows Installer's own Uninstall key,
+        # and the app's own uninstall entries (UninstallKeys, from AppConfig Uninstall.PrimaryKeys: plain key
+        # names in Registry64 / Registry32) for AppArpGone-PostUninstall. Every value is validated here and
+        # again in the guest; none is spliced into the script. A project with neither gets no data file.
+        # Best-effort: never fails the tattoo assertions.
+        $dataPath = Join-Path $sandboxPath 'InstallAssertionData.json'
+        if (Test-Path -LiteralPath $dataPath) { Remove-Item -LiteralPath $dataPath -Force -ErrorAction SilentlyContinue }
+        try {
+            $assertData = [ordered]@{}
+            $cfg = Get-Win32ToolkitAppConfig -ProjectPath $ProjectPath
+            $inst = if ($cfg.PSObject.Properties.Name -contains 'Installer') { $cfg.Installer } else { $null }
+            if ($inst -and "$($inst.Type)" -eq 'msi') {
+                $msi = $null
+                if ($inst.PSObject.Properties.Name -contains 'FileName' -and $inst.FileName) {
+                    $named = Join-Path (Join-Path $ProjectPath 'Files') ([string]$inst.FileName)
+                    if ($named -like '*.msi' -and (Test-Path -LiteralPath $named -PathType Leaf)) { $msi = $named }
+                }
+                if (-not $msi) {
+                    $first = Get-ChildItem -LiteralPath (Join-Path $ProjectPath 'Files') -Filter '*.msi' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($first) { $msi = $first.FullName }
+                }
+                $productCode = if ($msi) { Get-Win32ToolkitMsiProperty -Path $msi -Property 'ProductCode' } else { '' }
+                if (Test-Win32ToolkitProductCode $productCode) {
+                    $assertData['MsiProductCode'] = $productCode
+                }
+                else {
+                    Write-Verbose 'MSI project without a readable ProductCode - the MSI install assertion is skipped.'
+                }
+            }
+
+            # The app's own uninstall entries (F13), only for a deploy script whose uninstall waits for the uninstaller's
+            # own processes (uninstall revision 2). An older block can return while an NSIS or Inno Setup uninstaller's
+            # copy is still removing the entry, so the check would fail falsely: such a project keeps today's checks.
+            $uninstallCfg = if ($cfg.PSObject.Properties.Name -contains 'Uninstall') { $cfg.Uninstall } else { $null }
+            if ($uninstallCfg -and ($uninstallCfg.PSObject.Properties.Name -contains 'PrimaryKeys')) {
+                $uninstallRevision = [int](Get-Win32ToolkitDeployScriptShape -Path (Join-Path $ProjectPath 'Invoke-AppDeployToolkit.ps1')).UninstallRevision
+                if ($uninstallRevision -lt 2) {
+                    Write-Verbose "Install assertion: the project's uninstall predates uninstall revision 2, so the app's own Add/Remove Programs entries are not checked (re-create the project to get the check)."
+                }
+                else {
+                    $uninstallKeyNameRule = '^[^\\/:*?"<>|\p{Cc}\p{Cf}\p{Zl}\p{Zp}]{1,255}\z'
+                    $uninstallKeys = @(foreach ($entry in @($uninstallCfg.PrimaryKeys | Where-Object { $_ })) {
+                            $keyName = [string]$entry.Name
+                            $keyView = [string]$entry.View
+                            if ($keyName -match $uninstallKeyNameRule -and $keyName -ne '.' -and $keyName -ne '..' -and $keyView -cin 'Registry64', 'Registry32') { [ordered]@{ Name = $keyName; View = $keyView } }
+                            else { Write-Verbose 'Install assertion: an Uninstall.PrimaryKeys entry is not a plain key name in Registry64 or Registry32 - not checked.' }
+                        })
+                    if ($uninstallKeys.Count -gt 0) { $assertData['UninstallKeys'] = $uninstallKeys }
+                }
+            }
+
+            if ($assertData.Count -gt 0) {
+                $dataJson = ConvertTo-Json -InputObject $assertData -Depth 4
+                [System.IO.File]::WriteAllText($dataPath, $dataJson, (New-Object System.Text.UTF8Encoding($false)))
+            }
+        }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            Write-Verbose "Install-assertion data skipped: $($_.Exception.Message)"
         }
         return $scriptPath
     }

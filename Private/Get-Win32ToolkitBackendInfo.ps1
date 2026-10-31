@@ -16,7 +16,9 @@ function Get-Win32ToolkitBackendInfo {
         PSCustomObject:
           Configured [string]  — 'Sandbox' | 'HyperV' (the stored preference)
           Resolved   [string]  — 'Sandbox' | 'HyperV' (what will actually run)
-          Label      [string]  — 'Windows Sandbox' | 'Hyper-V VM (<name>)'
+          Label      [string]  — 'Windows Sandbox' | 'Hyper-V VM (<name>)'; for a VM pinned by W32T_HYPERV_VM that
+                                 is not ready (the run stops instead of falling back): 'Hyper-V VM (<name>, pinned by
+                                 W32T_HYPERV_VM: not ready, no test will run)'
           FellBack   [bool]    — HyperV was requested but Sandbox will run
           Reasons    [string[]]— why it is not ready (empty unless FellBack)
     #>
@@ -25,13 +27,19 @@ function Get-Win32ToolkitBackendInfo {
     param()
 
     $configured = Get-Win32ToolkitConfigValue -Name 'TestBackend'  -Default 'Sandbox'
-    $vmName     = Get-Win32ToolkitConfigValue -Name 'HyperVVMName' -Default 'win32tk-golden'
-    $resolved   = Get-Win32ToolkitTestBackend -WarningAction SilentlyContinue
+    # The session's VM (speed-up PR 3, D11: a W32T_HYPERV_VM pin first); display only, so an invalid pin never throws here.
+    $target     = Get-Win32ToolkitHyperVTarget -NoThrow
+    $vmName     = $target.VMName
+    $resolved   = Get-Win32ToolkitTestBackend -NoPinThrow -WarningAction SilentlyContinue
 
     $label = if ($resolved -eq 'HyperV') { "Hyper-V VM ($vmName)" } else { 'Windows Sandbox' }
 
     $fellBack = [bool]($configured -eq 'HyperV' -and $resolved -ne 'HyperV')
     $reasons  = if ($fellBack) { @(Test-Win32ToolkitHyperVReady) } else { @() }
+    # A pinned session never falls back (the run stops with W32T.HyperVTargetNotReady): the label says so.
+    if ($fellBack -and $target.Pinned) {
+        $label = if ($target.Problem) { 'Hyper-V VM (W32T_HYPERV_VM is not valid: no test will run)' } else { "Hyper-V VM ($vmName, pinned by W32T_HYPERV_VM: not ready, no test will run)" }
+    }
 
     [pscustomobject]@{
         Configured = $configured

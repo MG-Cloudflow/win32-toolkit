@@ -7,7 +7,11 @@ function Wait-Win32ToolkitVMReady {
         Gate 1 — Heartbeat: poll (Get-VMIntegrationService … Heartbeat).PrimaryStatusDescription -eq 'OK'
         (guest OS is running; necessary but not sufficient).
         Gate 2 — PowerShell Direct: retry Invoke-Command -VMName -Credential until it succeeds (early
-        "credential invalid / remote session ended" errors are normal while the profile is created).
+        "credential invalid / remote session ended" errors are normal while the profile is created). Once
+        the guest is ready the retries leave no record in $Error; a refusal written as a non-terminating
+        error (the usual PSSessionOpenFailed) also stays out of a caller's -ErrorVariable, while one raised
+        as terminating can remain there. On a timeout one last attempt's error is kept and named in the
+        message.
         Gate 3 — Provisioning: because Win11 FirstLogonCommands are not awaited, apply + verify the guest
         execution policy host-side over PS-Direct before the caller checkpoints (don't race the answer
         file). Skippable with -SkipPrep.
@@ -74,36 +78,77 @@ function Wait-Win32ToolkitVMReady {
         }
     }
 
-    # Gate 2 — PowerShell Direct accepts the credential (profile exists). Retry backs off 1->2->4->8->10 s
-    # (was a flat 10 s: a warm memory-state revert is typically reachable in 1-2 s, and the flat quantum
-    # cost up to 10 s of dead tail). The 900 s ceiling is unchanged — the cold golden-image path needs it.
+    # Gate 2 — PowerShell Direct accepts the credential (profile exists). Retry backs off 1->2->4->8->10 s (the cold
+    # golden-image path); with -ReturnSession (a run's open, right after a checkpoint restore) it waits 1 s, then 2 s at
+    # most (speed-up PR 1, D22): a warm revert becomes reachable within seconds, and a longer back-off only added dead
+    # time after it. The 900 s ceiling is unchanged.
+    # An early refusal ('The credential is invalid.', 'A remote session might have ended.') is normal while the guest
+    # creates the profile, so the attempts run with -ErrorAction Ignore: a passing run leaves no record in $Error or in a
+    # caller's -ErrorVariable (live P4-ff-hv #3 / Q3-npp418-hv). An error PowerShell raises as terminating whatever
+    # -ErrorAction says is caught, and its record leaves the session's error list once the guest is ready. At the timeout
+    # one last attempt runs with -ErrorAction Stop: its error is kept ($Error and the message below).
     $session = $null
     $ready   = $false
     $gate2Delay = 1
+    $attempt = 0
+    $retryErrors = [System.Collections.Generic.List[object]]::new()
     $deadline2 = (Get-Date).AddSeconds($PSDirectTimeoutSec)
     do {
+        $attempt++
+        try {
+            if ($ReturnSession) {
+                $session = New-PSSession -VMName $VMName -Credential $Credential -ErrorAction Ignore
+                $ready   = $null -ne $session
+            }
+            else {
+                $ready = [bool](Invoke-Command -VMName $VMName -Credential $Credential -ScriptBlock { $true } -ErrorAction Ignore)
+            }
+        }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            $retryErrors.Add($_.Exception)
+            $ready = $false
+        }
+        if (-not $ready) {
+            Write-Verbose "PowerShell Direct is not ready yet (attempt $attempt at $([DateTime]::UtcNow.ToString('HH:mm:ss.fff', [Globalization.CultureInfo]::InvariantCulture))Z); retrying in $gate2Delay s."
+            Start-Sleep -Seconds $gate2Delay
+            $gate2Delay = if ($ReturnSession) { 2 } else { [Math]::Min($gate2Delay * 2, 10) }
+        }
+    } until ($ready -or (Get-Date) -gt $deadline2)
+    $lastError = ''
+    if (-not $ready) {
         try {
             if ($ReturnSession) {
                 $session = New-PSSession -VMName $VMName -Credential $Credential -ErrorAction Stop
-                $ready   = $true
+                $ready   = $null -ne $session
             }
             else {
                 $ready = [bool](Invoke-Command -VMName $VMName -Credential $Credential -ScriptBlock { $true } -ErrorAction Stop)
             }
         }
         catch {
-            Start-Sleep -Seconds $gate2Delay
-            $gate2Delay = [Math]::Min($gate2Delay * 2, 10)
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            $lastError = [string]$_.Exception.Message
         }
-    } until ($ready -or (Get-Date) -gt $deadline2)
+    }
+    if ($ready -and $retryErrors.Count -gt 0) {
+        # The retry loop's own records leave the session's error list (matched by their exception object, never by
+        # text). $global:Error, not $Error: inside the module $Error is the module's own list, which stays empty.
+        for ($i = $global:Error.Count - 1; $i -ge 0; $i--) {
+            $entry = $global:Error[$i]
+            $entryException = if ($entry -is [System.Management.Automation.ErrorRecord]) { $entry.Exception } else { $entry }
+            if ($null -ne $entryException -and $retryErrors.Contains($entryException)) { $global:Error.RemoveAt($i) }
+        }
+    }
     if (-not $ready) {
+        $lastText = if ($lastError) { " Last error: $lastError" } else { '' }
         # Preserve the specific boot-vs-session diagnostic even though the upfront heartbeat gate is
         # skipped in -ReturnSession mode.
         $hbNow = (Get-VMIntegrationService -VMName $VMName -Name 'Heartbeat' -ErrorAction SilentlyContinue).PrimaryStatusDescription
         if ($hbNow -ne 'OK') {
-            throw "PowerShell Direct did not become ready within $PSDirectTimeoutSec s and the heartbeat is '$hbNow' — the guest may not have booted."
+            throw ("PowerShell Direct did not become ready within $PSDirectTimeoutSec s and the heartbeat is '$hbNow' — the guest may not have booted." + $lastText)
         }
-        throw "PowerShell Direct did not become ready within $PSDirectTimeoutSec s — the guest booted but no interactive admin session appeared (check the unattend AutoLogon/OOBE-skip)."
+        throw ("PowerShell Direct did not become ready within $PSDirectTimeoutSec s — the guest booted but no interactive admin session appeared (check the unattend AutoLogon/OOBE-skip)." + $lastText)
     }
 
     # Gate 3 — apply + verify guest prep host-side (don't rely on FirstLogonCommands having finished).

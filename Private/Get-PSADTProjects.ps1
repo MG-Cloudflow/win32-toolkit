@@ -9,7 +9,8 @@ function Get-PSADTProjects {
     .PARAMETER BasePath
         Base folder containing the Projects tier.
     .OUTPUTS
-        PSCustomObject[] with properties: Template, Name, Path, ScriptPath.
+        PSCustomObject[] with properties: Template, Name, Path, ScriptPath, NotConfigured (Documentation\NotConfigured.json
+        exists: the project's build stopped after its folder was created; Export and Publish refuse it).
     #>
     [CmdletBinding()]
     param([string]$BasePath)
@@ -32,6 +33,8 @@ function Get-PSADTProjects {
                     Name       = $folder.Name
                     Path       = $folder.FullName
                     ScriptPath = $psadtScript
+                    # TUI audit G4: a half-built project (its build stopped after the folder was created).
+                    NotConfigured = (Test-Path -LiteralPath (Join-Path $folder.FullName 'Documentation\NotConfigured.json'))
                 }
             }
         }

@@ -11,7 +11,8 @@
           InstallDependencies.ps1 is removed (so the capture script skips deps too). A FAILED dep phase
           never freezes a checkpoint.
       (c) R12: the copy-in zip is PRE-BUILT concurrently and handed to the copy helper; consumed zips
-          are cleaned up.
+          are cleaned up. Test campaign F2: neither the prebuilt zip (the thread job rebuilds
+          New-Win32ToolkitProjectZip from its text) nor the inline one carries Sandbox\Logs\Runs\.
 
     Run:  pwsh -File Tests\HyperVDepsCheckpoint.unit.ps1
 #>
@@ -26,6 +27,25 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 
 . (Join-Path $repo 'Private\Get-Win32ToolkitDepsCheckpointName.ps1')
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitHyperVRun.ps1')
+. (Join-Path $repo 'Private\New-Win32ToolkitProjectZip.ps1')   # C-9: the zip prebuild rebuilds it in the thread job
+# C-9 (speed-up PR 3): the run resolves its VM / checkpoint through the real resolver (fed by the config shadow); no pin leaks in.
+. (Join-Path $repo 'Private\Get-Win32ToolkitHyperVTarget.ps1')
+Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue
+# C-9 (Hyper-V speed-up PR 1): the provider's record helpers, inert (no Lane, no copy-in hash); none reaches Hyper-V.
+function Get-Win32ToolkitHyperVLane { param($VMName, $CheckpointName, $VM) }
+function Get-Win32ToolkitZipContentHash { param($ZipPath) }
+function Get-Win32ToolkitCheckpointAttestation { param($Session, $VMName, $CheckpointName, $VMId, $CheckpointId, $CreationTimeUtcTicks, [switch]$AllowLive, [switch]$AllowStore, $SignedInAnswer) }
+function Write-Win32ToolkitCheckpointAdvisory { param($Kind, $Key, $Message) }
+function Test-Win32ToolkitVMConnectOpen { param($VMName, $VMId) $false }
+function Get-Win32ToolkitCheckpointAutoSetting { param($CheckpointId) }
+# C-9 (speed-up PR 3): the run takes the VM's lease first; inert doubles (a fake lease, a release that does nothing), never a lock file.
+function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose) [pscustomobject]@{ Kind = 'VM'; VMName = $VMName; Epoch = 'inert'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
+function Exit-Win32ToolkitHyperVLease { param($Lease) }
+# C-9 (speed-up PR 4): the asynchronous teardown's owner and background restore, inert (no owner; HyperVAsyncTeardown reads Off).
+function Get-Win32ToolkitAsyncTeardownOwner { $null }
+function Start-Win32ToolkitHyperVBackgroundRestore { param($VMName, $CheckpointName, $Mode, $Lease, $Kind, [switch]$NoStart, $Info) $false }
+# C-9 (speed-up PR 4): the park decision of the asynchronous teardown, inert (not parked).
+function Test-Win32ToolkitHyperVTeardownPark { $false }
 
 function New-Proj {
     param([switch]$WithDeps)
@@ -77,7 +97,10 @@ $script:reverted = @()
 function Remove-Win32ToolkitHyperVSession { param($Session, $VMName, $CheckpointName, [switch]$Revert) $script:reverted += $CheckpointName }
 $script:copyCalls = @()
 function Copy-Win32ToolkitProjectToGuest { param($Session, $ProjectPath, $GuestPath, [switch]$ReadOnly, $PrebuiltZip)
-    $script:copyCalls += [pscustomobject]@{ Guest = $GuestPath; Zip = $PrebuiltZip; ZipExists = [bool]($PrebuiltZip -and (Test-Path -LiteralPath $PrebuiltZip)) }
+    $exists = [bool]($PrebuiltZip -and (Test-Path -LiteralPath $PrebuiltZip))
+    $entries = @()
+    if ($exists) { $za = [System.IO.Compression.ZipFile]::OpenRead($PrebuiltZip); try { $entries = @($za.Entries | ForEach-Object { $_.FullName }) } finally { $za.Dispose() } }
+    $script:copyCalls += [pscustomobject]@{ Guest = $GuestPath; Zip = $PrebuiltZip; ZipExists = $exists; Entries = $entries }
 }
 $script:guestCmds = @()
 function Invoke-Command { [CmdletBinding()] param($Session, [scriptblock]$ScriptBlock, $ArgumentList, [Parameter(ValueFromRemainingArguments)]$Rest) $script:guestCmds += "$ArgumentList" }
@@ -88,7 +111,9 @@ function Copy-Win32ToolkitResultsFromGuest { param([Parameter(ValueFromRemaining
 $script:cpCreated = @()
 function Checkpoint-VM { param($VMName, $SnapshotName, [Parameter(ValueFromRemainingArguments)]$Rest) $script:cpCreated += $SnapshotName; if ($script:cpFail) { throw 'cp failed' } }
 $script:cpFail = $false
-function Set-VM { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+# Speed-up PR 1 (D5): records how the deps checkpoint's Set-VM was called.
+$script:setVm = @()
+function Set-VM { param($Name, $CheckpointType, $AutomaticCheckpointsEnabled, [Parameter(ValueFromRemainingArguments)]$Rest) $script:setVm += [pscustomobject]@{ CheckpointType = $CheckpointType; Auto = $AutomaticCheckpointsEnabled } }
 $script:cpRemoved = @()
 function Remove-VMCheckpoint { param([Parameter(ValueFromPipeline = $true)]$InputObject, [Parameter(ValueFromRemainingArguments)]$Rest) process { $script:cpRemoved += $InputObject.Name } }
 
@@ -119,6 +144,7 @@ if ($script:opened[0] -eq 'clean-base' -and $script:phasesRun -contains 'Install
 if (@($script:cpCreated) -contains $key) { Ok "ON+miss: '$key' created after the successful dep install" } else { Bad "created: $($script:cpCreated) expected $key" }
 if ($script:cpRemoved -contains 'clean-base+deps-oldoldoldold') { Ok 'ON+miss: stale deps checkpoints pruned (cap: one retained)' } else { Bad "removed: $($script:cpRemoved)" }
 if ($script:reverted[0] -eq $key) { Ok 'ON+miss: teardown reverts to the deps checkpoint (clean-with-deps)' } else { Bad "reverted: $($script:reverted)" }
+if (@($script:setVm).Count -ge 1 -and $script:setVm[-1].CheckpointType -eq 'Standard' -and $script:setVm[-1].Auto -eq $false) { Ok 'ON+miss: the deps checkpoint''s Set-VM is Standard with automatic checkpoints off (speed-up PR 1, D5)' } else { Bad "Set-VM: $($script:setVm | ConvertTo-Json -Compress)" }
 
 # b3: ON + existing checkpoint => opens it, dep phase skipped, guest installer script removed.
 Reset-Run
@@ -158,6 +184,66 @@ $r = Invoke-Win32ToolkitHyperVRun -ProjectPath $projD -Phase @(@{ Label = 'x'; C
 $projCopy = @($script:copyCalls | Where-Object { $_.Guest -eq 'C:\PSADT' })[0]
 if ($projCopy -and $projCopy.Zip -and $projCopy.ZipExists) { Ok 'copy-in received a prebuilt zip (built during the revert)' } else { Bad "copy call: $($projCopy | Out-String)" }
 if ($projCopy -and -not (Test-Path -LiteralPath $projCopy.Zip)) { Ok 'prebuilt zip cleaned up after the run' } else { Bad 'zip leaked' }
+
+# c1b (test campaign 2026-10-21): the REAL copy helper consumes (deletes) the prebuilt zip; the teardown
+#      must then not try to delete it again and leave a PathNotFound record in the caller's -ErrorVariable.
+${function:Copy-Win32ToolkitProjectToGuest_Recording} = ${function:Copy-Win32ToolkitProjectToGuest}
+function Copy-Win32ToolkitProjectToGuest { param($Session, $ProjectPath, $GuestPath, [switch]$ReadOnly, $PrebuiltZip)
+    Copy-Win32ToolkitProjectToGuest_Recording -Session $Session -ProjectPath $ProjectPath -GuestPath $GuestPath -ReadOnly:$ReadOnly -PrebuiltZip $PrebuiltZip
+    if ($PrebuiltZip -and (Test-Path -LiteralPath $PrebuiltZip)) { Remove-Item -LiteralPath $PrebuiltZip -Force }
+}
+Reset-Run
+$Error.Clear()
+$evZ = $null
+$r = Invoke-Win32ToolkitHyperVRun -ProjectPath $projD -Phase @(@{ Label = 'x'; Command = 'y' }) -ErrorVariable evZ 3>$null 6>$null
+$pathNotFound = @(@($evZ) + @($Error) | Where-Object { "$_" -match 'w32proj_.*\.zip' })
+if ($r -eq $true -and $pathNotFound.Count -eq 0) { Ok 'consumed prebuilt zip: no PathNotFound record in -ErrorVariable / $Error' } else { Bad "zip cleanup records: $(@($pathNotFound | ForEach-Object { "$_" }) -join ' | ')" }
+${function:Copy-Win32ToolkitProjectToGuest} = ${function:Copy-Win32ToolkitProjectToGuest_Recording}
+Remove-Item Function:\Copy-Win32ToolkitProjectToGuest_Recording
+
+# c2 (test campaign F2): the host's run logs (Sandbox\Logs\Runs\) never go into the guest; everything else does.
+Add-Type -AssemblyName 'System.IO.Compression.FileSystem'
+$projR = New-Proj
+New-Item -ItemType Directory -Path (Join-Path $projR 'Sandbox\Logs\Runs\20261020-221500_Update_msi'), (Join-Path $projR 'Files\Empty') -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $projR 'Sandbox\Logs\Runs\20261020-221500_Update_msi\UpdateAssertions.log') 'old run'
+Set-Content -LiteralPath (Join-Path $projR 'Sandbox\Logs\UpdateAssertions.log') 'latest'
+Set-Content -LiteralPath (Join-Path $projR 'Sandbox\Logs\RunsNotes.txt') 'a sibling whose name starts with Runs'
+$wantIn = @('file.txt', 'Sandbox/Logs/UpdateAssertions.log', 'Sandbox/Logs/RunsNotes.txt', 'Files/Empty/')
+Reset-Run
+$r = Invoke-Win32ToolkitHyperVRun -ProjectPath $projR -Phase @(@{ Label = 'x'; Command = 'y' }) 3>$null 6>$null
+$projCopy = @($script:copyCalls | Where-Object { $_.Guest -eq 'C:\PSADT' })[0]
+$runsIn = @($projCopy.Entries | Where-Object { $_ -like 'Sandbox/Logs/Runs/*' })
+$missing = @($wantIn | Where-Object { @($projCopy.Entries) -notcontains $_ })
+if ($projCopy.ZipExists -and $runsIn.Count -eq 0 -and $missing.Count -eq 0) { Ok 'the prebuilt (thread job) zip leaves out Sandbox\Logs\Runs\ and keeps everything else (empty folders too)' }
+else { Bad "prebuilt entries: $($projCopy.Entries -join ', ')" }
+$inline = New-Win32ToolkitProjectZip -ProjectPath $projR
+try {
+    $za = [System.IO.Compression.ZipFile]::OpenRead($inline); try { $inlineEntries = @($za.Entries | ForEach-Object { $_.FullName }) } finally { $za.Dispose() }
+    if (@($inlineEntries | Where-Object { $_ -like 'Sandbox/Logs/Runs/*' }).Count -eq 0 -and @($wantIn | Where-Object { $inlineEntries -notcontains $_ }).Count -eq 0 -and
+        (@($inlineEntries | Sort-Object) -join '|') -eq (@($projCopy.Entries | Sort-Object) -join '|')) { Ok 'the inline zip (New-Win32ToolkitProjectZip) has exactly the same entries' }
+    else { Bad "inline entries: $($inlineEntries -join ', ')" }
+}
+finally { Remove-Item -LiteralPath $inline -Force -ErrorAction SilentlyContinue }
+# A project whose Sandbox\Logs holds only Runs\ still gets an (empty) Sandbox\Logs in the guest.
+Remove-Item -LiteralPath (Join-Path $projR 'Sandbox\Logs\UpdateAssertions.log'), (Join-Path $projR 'Sandbox\Logs\RunsNotes.txt') -Force
+$zipPathWanted = Join-Path ([System.IO.Path]::GetTempPath()) ('dcp_zip_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.zip')
+$got = New-Win32ToolkitProjectZip -ProjectPath $projR -ZipPath $zipPathWanted
+try {
+    $za = [System.IO.Compression.ZipFile]::OpenRead($got); try { $e2 = @($za.Entries | ForEach-Object { $_.FullName }) } finally { $za.Dispose() }
+    if ($got -eq $zipPathWanted -and $e2 -contains 'Sandbox/Logs/' -and @($e2 | Where-Object { $_ -like 'Sandbox/Logs/Runs/*' }).Count -eq 0) { Ok '-ZipPath is honoured; Sandbox\Logs with only Runs\ in it is still created in the guest (empty)' }
+    else { Bad "only-runs entries: $($e2 -join ', ') path=$got" }
+}
+finally { Remove-Item -LiteralPath $zipPathWanted -Force -ErrorAction SilentlyContinue }
+# A failed build (a locked file) leaves no half-written zip.
+$locked = Join-Path $projR 'locked.bin'
+Set-Content -LiteralPath $locked 'x'
+$fs = [System.IO.File]::Open($locked, 'Open', 'Read', 'None')
+$zipFail = Join-Path ([System.IO.Path]::GetTempPath()) ('dcp_zip_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.zip')
+$threw = $false
+try { $null = New-Win32ToolkitProjectZip -ProjectPath $projR -ZipPath $zipFail } catch { $threw = $true } finally { $fs.Dispose() }
+if ($threw -and -not (Test-Path -LiteralPath $zipFail)) { Ok 'a locked file -> the build throws and leaves no zip behind' } else { Bad "locked: threw=$threw zipLeft=$(Test-Path -LiteralPath $zipFail)" }
+Remove-Item -LiteralPath $zipFail -Force -ErrorAction SilentlyContinue
+Remove-Item $projR -Recurse -Force -ErrorAction SilentlyContinue
 
 Remove-Item $projD, $projN -Recurse -Force -ErrorAction SilentlyContinue
 

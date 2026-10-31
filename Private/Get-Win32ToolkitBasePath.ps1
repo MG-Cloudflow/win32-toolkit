@@ -46,13 +46,17 @@ function Get-Win32ToolkitBasePath {
         return $BasePath.Trim().TrimEnd('\')
     }
 
-    # 2. Stored value.
+    # 2. Stored value. Read so an absent value leaves no record in $Error / -ErrorVariable / a transcript
+    #    (-ErrorAction Ignore + RegistryKey.GetValue, as Get-Win32ToolkitConfigValue does).
     if (-not $Reconfigure) {
-        try {
-            $stored = (Get-ItemProperty -Path $regKey -Name 'BasePath' -ErrorAction Stop).BasePath
-            if (-not [string]::IsNullOrWhiteSpace($stored)) { return $stored }
+        $stored = $null
+        $key = Get-Item -LiteralPath $regKey -ErrorAction Ignore
+        if ($key) {
+            try { $stored = $key.GetValue('BasePath') }
+            catch { $stored = $null }
+            finally { $key.Close() }
         }
-        catch { }
+        if (-not [string]::IsNullOrWhiteSpace([string]$stored)) { return [string]$stored }
     }
 
     # 3. Not configured. Non-interactive callers (e.g. the TUI health check) get $null.

@@ -24,6 +24,23 @@ function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
 . (Join-Path $repo 'Private\Invoke-Win32ToolkitHyperVRun.ps1')
+# C-9 (Hyper-V speed-up PR 1): the provider's record helpers, inert; none reaches Hyper-V.
+function Get-Win32ToolkitHyperVLane { param($VMName, $CheckpointName, $VM) }
+function Get-Win32ToolkitZipContentHash { param($ZipPath) }
+function Get-Win32ToolkitCheckpointAttestation { param($Session, $VMName, $CheckpointName, $VMId, $CheckpointId, $CreationTimeUtcTicks, [switch]$AllowLive, [switch]$AllowStore, $SignedInAnswer) }
+function Write-Win32ToolkitCheckpointAdvisory { param($Kind, $Key, $Message) }
+function Test-Win32ToolkitVMConnectOpen { param($VMName, $VMId) $false }
+function Get-Win32ToolkitCheckpointAutoSetting { param($CheckpointId) }
+# C-9 (speed-up PR 3): the run takes the VM's lease first; inert doubles (a fake lease, a release that does nothing), never a lock file.
+function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose) [pscustomobject]@{ Kind = 'VM'; VMName = $VMName; Epoch = 'inert'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
+function Exit-Win32ToolkitHyperVLease { param($Lease) }
+# C-9 (speed-up PR 4): the asynchronous teardown's owner and background restore, inert (no owner; HyperVAsyncTeardown reads Off).
+function Get-Win32ToolkitAsyncTeardownOwner { $null }
+function Start-Win32ToolkitHyperVBackgroundRestore { param($VMName, $CheckpointName, $Mode, $Lease, $Kind, [switch]$NoStart, $Info) $false }
+# C-9 (speed-up PR 4): the park decision of the asynchronous teardown, inert (not parked).
+function Test-Win32ToolkitHyperVTeardownPark { $false }
+# C-9 (speed-up PR 4, spec 7.5): the provider reads HyperVAsyncTeardown; no real HKCU read, the default (Off).
+function Get-Win32ToolkitConfigValue { param($Name, $Default) $Default }
 
 # ── (a) HOST guard: silenced DURING the run, restored AFTER — even when the run fails ───────────────
 Write-Host '[a] Invoke-Win32ToolkitHyperVRun silences $ProgressPreference during the run and restores it' -ForegroundColor Cyan
@@ -37,7 +54,12 @@ function Remove-Win32ToolkitHyperVSession { param($Session, $VMName, $Checkpoint
 $cred = New-Object System.Management.Automation.PSCredential('u', (ConvertTo-SecureString 'p' -AsPlainText -Force))
 $ProgressPreference = 'Continue'   # a distinctive non-default sentinel to prove exact restoration
 
-$result = Invoke-Win32ToolkitHyperVRun -ProjectPath $env:TEMP -Phase @(@{ Label = 'noop'; Command = 'noop' }) `
+# An empty project folder of this run's own: never %TEMP% itself, which other suites (and a second Run-All)
+# write to at the same time - a copy or zip helper reached by mistake would sweep all of it up.
+$proj = Join-Path ([System.IO.Path]::GetTempPath()) ('w32tps_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $proj -Force | Out-Null
+
+$result = Invoke-Win32ToolkitHyperVRun -ProjectPath $proj -Phase @(@{ Label = 'noop'; Command = 'noop' }) `
     -VMName 'no-such-vm' -Credential $cred -CheckpointName 'clean-base' 3>$null
 
 if ($script:insideProgress -eq 'SilentlyContinue') { Ok 'progress is SilentlyContinue INSIDE the run (host copy/checkpoint bars suppressed)' }
@@ -54,15 +76,16 @@ function New-Win32ToolkitHyperVSession { param($VMName, $Credential, $Checkpoint
 function Copy-Win32ToolkitProjectToGuest { param($Session, $ProjectPath, $GuestPath, [switch]$ReadOnly) }
 function Invoke-Win32ToolkitGuestPhase { param($Session, $Command, $Label) 0 }
 function Copy-Win32ToolkitResultsFromGuest { param($Session, $GuestPath, $Destination, $GuestRoot) }
-$okRun = Invoke-Win32ToolkitHyperVRun -ProjectPath $env:TEMP -Phase @(@{ Label = 'noop'; Command = 'noop' }) `
+$okRun = Invoke-Win32ToolkitHyperVRun -ProjectPath $proj -Phase @(@{ Label = 'noop'; Command = 'noop' }) `
     -VMName 'no-such-vm' -Credential $cred -CheckpointName 'clean-base' 3>$null
 if ($okRun -eq $true -and $ProgressPreference -eq 'Continue') { Ok 'restored on the success path too (and the run returns $true)' }
 else { Bad "success path: run=$okRun, ProgressPreference='$ProgressPreference'" }
+Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
 
 # ── (b) GUEST guards: each PS-Direct scriptblock self-silences (host preference doesn't cross runspaces) ─
 Write-Host '[b] the guest Invoke-Command scriptblocks set $ProgressPreference = SilentlyContinue' -ForegroundColor Cyan
 $guestGuards = @(
-    @{ File = 'Private\Copy-Win32ToolkitProjectToGuest.ps1'; Param = 'param($zip, $dest)' },
+    @{ File = 'Private\Copy-Win32ToolkitProjectToGuest.ps1'; Param = 'param($zip, $dest, $times)' },
     @{ File = 'Private\Copy-Win32ToolkitResultsFromGuest.ps1'; Param = 'param($globs, $rootPrefix)' }
 )
 foreach ($g in $guestGuards) {

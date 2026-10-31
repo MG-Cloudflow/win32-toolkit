@@ -3,9 +3,9 @@ name: Docs
 on:
   push:
     branches: [main]
-    paths: ['docs/**', 'mkdocs.yml', 'README.md']
+    paths: ['docs/**', 'mkdocs.yml', 'README.md', 'overrides/**']
   pull_request:
-    paths: ['Public/**', 'Private/**', '*.psd1', '*.psm1', 'docs/**', 'build/Update-Docs.ps1', 'mkdocs.yml', 'README.md']
+    paths: ['Public/**', 'Private/**', '*.psd1', '*.psm1', 'docs/**', 'build/Update-Docs.ps1', 'mkdocs.yml', 'README.md', 'overrides/**']
   workflow_dispatch:   # manual "redeploy the docs site" button (Actions tab, or: gh workflow run docs.yml)
 
 permissions:
@@ -40,8 +40,9 @@ jobs:
           }
           Write-Host 'Reference is in sync with the comment-based help.'
 
-  # Build the MkDocs Material site. Runs the STRICT build on PRs too — a site-breaking docs change
-  # (bad nav entry, unresolvable link) must fail the PR, not the post-merge Pages deploy.
+  # Build the site with Zensical (https://zensical.org, it reads mkdocs.yml). Runs the STRICT build on
+  # PRs too — a site-breaking docs change (bad nav entry, unresolvable link or anchor) must fail the PR,
+  # not the post-merge Pages deploy.
   # One-time repo setup for deployment: Settings > Pages > Source = 'GitHub Actions'.
   build-site:
     name: Build site
@@ -55,16 +56,27 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install MkDocs Material
-        run: pip install mkdocs-material
+      # Pinned: Zensical is still 0.0.x (alpha). Upgrade on purpose, then check the site locally.
+      - name: Install Zensical
+        run: pip install zensical==0.0.73
+
+      # zensical build --strict fails on links to a missing page or heading, but not on a nav entry
+      # whose file is missing (mkdocs build --strict did). Check the nav here.
+      - name: Check that every nav entry exists
+        run: |
+          missing=0
+          for f in $(sed -n '/^nav:/,$p' mkdocs.yml | grep -oE '[^ :]+\.md[[:space:]]*$'); do
+            if [ ! -f "docs/$f" ]; then echo "::error::nav entry not found: docs/$f"; missing=1; fi
+          done
+          exit $missing
 
       - name: Build (strict)
-        run: mkdocs build --strict
+        run: zensical build --clean --strict
         env:
           # GA4 Measurement ID from a repo variable OR secret (the ID is public/client-side, so either
           # works; a variable is slightly more conventional). Falls back to the secret when the variable
-          # is unset. Neither set => empty => the !ENV default in mkdocs.yml yields no analytics, and
-          # the strict build stays green.
+          # is unset. Neither set => an empty ID from the !ENV default in mkdocs.yml, and the strict
+          # build stays green.
           GOOGLE_ANALYTICS_KEY: ${{ vars.GOOGLE_ANALYTICS_KEY || secrets.GOOGLE_ANALYTICS_KEY }}
 
       - name: Upload Pages artifact

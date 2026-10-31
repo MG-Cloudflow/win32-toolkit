@@ -36,7 +36,10 @@ function Resolve-Win32ToolkitDependencies {
         [string]$ProjectPath,
 
         [string]$TenantId = 'unknown',
-        [string]$BaseUri  = 'https://graph.microsoft.com/beta/deviceAppManagement'
+        [string]$BaseUri  = 'https://graph.microsoft.com/beta/deviceAppManagement',
+
+        # Base folder a 'project:' dependency is resolved against; empty = the configured one (never prompts).
+        [string]$BasePath
     )
 
     $declared = @(Get-Win32ToolkitDependencies -ProjectPath $ProjectPath)
@@ -58,7 +61,10 @@ function Resolve-Win32ToolkitDependencies {
             'intune' { $id = $d.Ref; $how = 'explicit app id' }
 
             'project' {
-                $projects = (Get-Win32ToolkitPaths -BasePath (Get-Win32ToolkitBasePath)).Projects
+                # Never a prompt here (publish can run unattended): no base folder -> unresolved, warned below.
+                $base = Get-Win32ToolkitBasePath -BasePath $BasePath -NonInteractive
+                if ([string]::IsNullOrWhiteSpace($base)) { break }
+                $projects = (Get-Win32ToolkitPaths -BasePath $base).Projects
                 $depPath  = Join-Path $projects $d.Ref
 
                 $cached = @(Get-Win32ToolkitPublication -ProjectPath $depPath -TenantId $TenantId)

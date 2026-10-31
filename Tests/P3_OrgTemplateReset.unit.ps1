@@ -54,17 +54,25 @@ foreach ($rel in 'Public\Invoke-Win32Toolkit.ps1', 'Public\New-Win32ToolkitManua
 . (Join-Path $repo 'Private\Set-Win32ToolkitAppConfig.ps1')
 . (Join-Path $repo 'Private\Add-Win32ToolkitInstallerFiles.ps1')
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitDependencyRef.ps1')
+. (Join-Path $repo 'Private\Assert-Win32ToolkitDependencyRef.ps1')   # C-9: -DependsOn pre-flight + Set-Win32ToolkitAppDependency (B3 r2.1)
 . (Join-Path $repo 'Private\Get-Win32ToolkitDependencies.ps1')
 . (Join-Path $repo 'Public\Set-Win32ToolkitAppDependency.ps1')
+. (Join-Path $repo 'Private\Initialize-Win32ToolkitRunResult.ps1')   # C-9: the result object (TUI audit G2, S8-F3)
+. (Join-Path $repo 'Private\Complete-Win32ToolkitRunResult.ps1')
+# C-9 (TUI audit G4): every error after the scaffold, before the end of the configure step, marks the project (temp folders).
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+. (Join-Path $repo 'Private\Write-Win32ToolkitNotConfiguredMarker.ps1')
 . (Join-Path $repo 'Public\New-Win32ToolkitManualApp.ps1')
 
 # shadow only what is NOT under test (mirrors Tests\ManualApp.integration.ps1)
 $BASE = Join-Path ([System.IO.Path]::GetTempPath()) ('w32ot_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 function Get-Win32ToolkitBasePath { param($BasePath, [switch]$Reconfigure) $BASE }
 function Get-OrgTemplate { param($BasePath, $TemplateName) [pscustomobject]@{ TemplateName = 'Contoso'; AppScriptAuthor = 'IT' } }
-function Apply-OrgTemplate { param($ProjectPath, $Template) $true }
+function Apply-OrgTemplate { param($ProjectPath, $Template, $BasePath) $true }
+$script:createFails = $false
 function Create-PSADTProject {
     param($ProjectName, $ProjectPath, $Force)
+    if ($script:createFails) { return $false }
     $full = Join-Path $ProjectPath $ProjectName
     New-Item -ItemType Directory -Path $full -Force | Out-Null
     foreach ($d in 'Files', 'SupportFiles') { New-Item -ItemType Directory -Path (Join-Path $full $d) -Force | Out-Null }
@@ -72,7 +80,10 @@ function Create-PSADTProject {
     return $true
 }
 function Set-PSADTDataDrivenScript { param($ScriptPath, [switch]$ManualInstall) $true }
-function Invoke-Win32ToolkitFinalize { param($ProjectPath, $ProjectName, $AppInfo, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate) }
+function Invoke-Win32ToolkitFinalize { param($ProjectPath, $ProjectName, $AppInfo, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate, $BasePath, $Result) $null = $BasePath, $Result }
+# Prior-install state (installer-identity PR 3, C-9): nothing to keep or carry in these runs.
+function Get-Win32ToolkitPriorInstallSnapshot { param($ProjectPath) $null = $ProjectPath; $null }
+function Copy-Win32ToolkitPriorInstallState { param($ProjectPath, $Snapshot, $SourceProjectPath) $null = $ProjectPath, $Snapshot, $SourceProjectPath; $null }
 
 function New-Src { param([string]$Name) $d = Join-Path $BASE ('src_' + [guid]::NewGuid().ToString('N').Substring(0, 6)); New-Item -ItemType Directory -Path $d -Force | Out-Null; $f = Join-Path $d $Name; Set-Content -LiteralPath $f 'binary'; $f }
 
@@ -93,6 +104,16 @@ $script:OrgTemplate = $SENTINEL
 try { $null = New-Win32ToolkitManualApp -Name 'Boom' -Version '1.0' -Architecture x64 -SourcePath (Join-Path $BASE 'does-not-exist.msi') -TemplateName 'Contoso' -Force 6>$null 3>$null 2>$null } catch { }
 if ($null -eq $script:OrgTemplate) { Ok 'after a failed command $script:OrgTemplate is $null too' }
 else { Bad "stale template survived a failed run: $($script:OrgTemplate | Out-String)" }
+
+Write-Host '[4] BEHAVIOUR: a fail-closed (W32T.*) terminating error also clears $script:OrgTemplate' -ForegroundColor Cyan
+$script:OrgTemplate = $SENTINEL
+$script:createFails = $true
+$fqid = $null
+try { $null = New-Win32ToolkitManualApp -Name 'Fails' -Version '1.0' -Architecture x64 -SourcePath (New-Src 'fails.msi') -TemplateName 'Contoso' -Force 6>$null 3>$null }
+catch { $fqid = $_.FullyQualifiedErrorId }
+$script:createFails = $false
+if ($fqid -eq 'W32T.ProjectCreationFailed' -and $null -eq $script:OrgTemplate) { Ok 'W32T.ProjectCreationFailed propagates and $script:OrgTemplate is $null' }
+else { Bad "fqid='$fqid' template=$($script:OrgTemplate | Out-String)" }
 
 Remove-Item -LiteralPath $BASE -Recurse -Force -ErrorAction SilentlyContinue
 

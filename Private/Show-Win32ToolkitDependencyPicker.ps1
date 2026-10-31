@@ -13,6 +13,9 @@ function Show-Win32ToolkitDependencyPicker {
         Base folder, used to list already-packaged projects.
     .PARAMETER Existing
         References already declared, shown so the operator can see what is set and does not re-add it.
+    .PARAMETER ExcludeProject
+        Projects ('<Template>\<Name>') the packaged-project list leaves out: the project being edited or built
+        (an app cannot depend on itself; TUI audit G9). Compared case-insensitively.
     .OUTPUTS
         [string[]] the FULL dependency reference list (existing + newly chosen). Empty array if none.
     #>
@@ -20,7 +23,10 @@ function Show-Win32ToolkitDependencyPicker {
     [OutputType([string[]])]
     param(
         [string]$BasePath,
-        [string[]]$Existing = @()
+        [string[]]$Existing = @(),
+
+        # The project being edited or built ('<Template>\<Name>'): never offered (TUI audit G9). Declared last.
+        [string[]]$ExcludeProject = @()
     )
 
     $refs = [System.Collections.Generic.List[string]]::new()
@@ -54,21 +60,23 @@ function Show-Win32ToolkitDependencyPicker {
                     Write-SpectreHost "[yellow]No winget results for[/] $(Get-SpectreEscapedText -Text $term)."
                     break
                 }
+                # Labels render as Spectre markup: winget names and ids are escaped (Dv12).
                 $pick = Read-SpectreSelection -Message 'Which package?' -Choices @(
-                    $hits | ForEach-Object { [pscustomobject]@{ Key = $_.Id; Label = "$($_.Name)  [grey]($($_.Id))[/]" } }
+                    $hits | ForEach-Object { [pscustomobject]@{ Key = $_.Id; Label = "$(Get-SpectreEscapedText -Text $_.Name)  [grey]($(Get-SpectreEscapedText -Text $_.Id))[/]" } }
                 ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 12
                 # Store the winget ID VERBATIM — ids legitimately contain '.' and '+'.
                 $ref = "winget:$($pick.Key)"
                 if ($refs -notcontains $ref) { $refs.Add($ref) }
             }
             'project' {
-                $projects = @(Get-PSADTProjects -BasePath $BasePath)
+                # The project being edited or built is never offered (TUI audit G9: an app cannot depend on itself).
+                $projects = @(Get-PSADTProjects -BasePath $BasePath | Where-Object { "$($_.Template)\$($_.Name)" -notin $ExcludeProject })
                 if ($projects.Count -eq 0) {
-                    Write-SpectreHost '[yellow]No packaged projects found yet — package the dependency first, or pick it from winget.[/]'
+                    Write-SpectreHost '[yellow]No other packaged projects found — package the dependency first, or pick it from winget.[/]'
                     break
                 }
                 $pick = Read-SpectreSelection -Message 'Which packaged project?' -Choices @(
-                    $projects | ForEach-Object { [pscustomobject]@{ Key = "$($_.Template)\$($_.Name)"; Label = "$($_.Name)  [grey]($($_.Template))[/]" } }
+                    $projects | ForEach-Object { [pscustomobject]@{ Key = "$($_.Template)\$($_.Name)"; Label = "$(Get-SpectreEscapedText -Text $_.Name)  [grey]($(Get-SpectreEscapedText -Text $_.Template))[/]" } }
                 ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 12
                 $ref = "project:$($pick.Key)"
                 if ($refs -notcontains $ref) { $refs.Add($ref) }
@@ -92,7 +100,8 @@ function Show-Win32ToolkitDependencyPicker {
                 # microsoft.graph.mobileApp, which has no such property (isof() filters, it does not cast).
                 # So the label shows the publisher instead.
                 $pick = Read-SpectreSelection -Message 'Which published app?' -Choices @(
-                    $apps | ForEach-Object { [pscustomobject]@{ Key = $_.Id; Label = "$($_.DisplayName)  [grey]$($_.Publisher)[/]" } }
+                    # Escaped (Dv12); Get-SpectreEscapedText refuses an empty string, and a publisher can be empty.
+                    $apps | ForEach-Object { [pscustomobject]@{ Key = $_.Id; Label = "$(if ($_.DisplayName) { Get-SpectreEscapedText -Text $_.DisplayName })  [grey]$(if ($_.Publisher) { Get-SpectreEscapedText -Text $_.Publisher })[/]" } }
                 ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 12
                 $ref = "intune:$($pick.Key)"
                 if ($refs -notcontains $ref) { $refs.Add($ref) }

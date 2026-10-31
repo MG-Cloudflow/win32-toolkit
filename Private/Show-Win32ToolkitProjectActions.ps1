@@ -22,7 +22,8 @@ function Show-Win32ToolkitProjectActions {
         # Select a project (string label + lookup)
         $map = [ordered]@{}
         $labels = foreach ($p in ($projects | Sort-Object Template, Name)) {
-            $label = Get-SpectreEscapedText -Text ('{0}  /  {1}' -f $p.Template, $p.Name)
+            # A project whose build stopped after its folder was created (TUI audit G4): Package and Publish refuse it.
+            $label = Get-SpectreEscapedText -Text ('{0}  /  {1}{2}' -f $p.Template, $p.Name, $(if ($p.PSObject.Properties['NotConfigured'] -and $p.NotConfigured) { '  (not configured)' } else { '' }))
             $map[$label] = $p
             $label
         }
@@ -35,10 +36,30 @@ function Show-Win32ToolkitProjectActions {
             Clear-Host
             Write-SpectreRule -Title (Get-SpectreEscapedText -Text ('{0} / {1}' -f $project.Template, $project.Name)) -Color Blue
 
-            $depNow = @(Get-Win32ToolkitDependencies -ProjectPath $project.Path)
+            # An unreadable SupportFiles\AppConfig.json must not end the screen (TUI audit G7): one red line, and the
+            # action menu still comes up. Every error is handled the same way here (the TUI is the display sink, Dv8).
+            # -ErrorAction Stop: a file Get-Content cannot open (locked, access denied) is a non-terminating error,
+            # which would otherwise print raw on this screen and read as 'none'.
+            try {
+                $depNow = @(Get-Win32ToolkitDependencies -ProjectPath $project.Path -ErrorAction Stop)
+                $depText = if ($depNow.Count) { "$($depNow.Count) declared" } else { 'none' }
+            }
+            catch {
+                $depNow = @()
+                $depText = 'unknown: AppConfig.json cannot be read'
+                $depWhy = ([string]$_.Exception.Message).TrimEnd('.', ' ')
+                Write-SpectreHost "[red]$(Get-SpectreEscapedText -Text "SupportFiles\AppConfig.json of this project cannot be read: $depWhy. Fix the JSON or re-create the project; Package and Publish refuse it until then.")[/]"
+            }
+            # Prior installs (installer-identity PR 3b): the rules and how many are proven; an unreadable state is 'unknown'.
+            try {
+                $priorStates = @(Get-Win32ToolkitPriorProofState -ProjectPath $project.Path)
+                $priorText = "$($priorStates.Count) rule$(if ($priorStates.Count -ne 1) { 's' }), $(@($priorStates | Where-Object { $_.State -eq 'Proven' }).Count) proven"
+            }
+            catch { $priorText = 'unknown' }
             $act = Read-SpectreSelection -Message 'What would you like to do?' -Choices @(
                 [pscustomobject]@{ Key = 'test';    Label = 'Run a test (Windows Sandbox or Hyper-V VM)' }
-                [pscustomobject]@{ Key = 'deps';    Label = "Dependencies — apps installed BEFORE this one ($(if ($depNow.Count) { "$($depNow.Count) declared" } else { 'none' }))" }
+                [pscustomobject]@{ Key = 'deps';    Label = "Dependencies — apps installed BEFORE this one ($depText)" }
+                [pscustomobject]@{ Key = 'prior';   Label = "Prior installs - other technologies removed before install ($priorText)" }
                 [pscustomobject]@{ Key = 'finish';  Label = "Finalize / refresh ($((Get-Win32ToolkitBackendInfo).Label) capture -> auto uninstall)" }
                 [pscustomobject]@{ Key = 'package'; Label = 'Package to .intunewin' }
                 [pscustomobject]@{ Key = 'publish'; Label = 'Publish to Intune' }
@@ -46,14 +67,16 @@ function Show-Win32ToolkitProjectActions {
                 [pscustomobject]@{ Key = 'open';    Label = 'Open the project folder' }
                 [pscustomobject]@{ Key = 'another'; Label = 'Pick another project' }
                 [pscustomobject]@{ Key = 'back';    Label = 'Back to the main menu' }
-            ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 10
+            ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 11
 
             switch ($act.Key) {
+                'prior' { Show-Win32ToolkitPriorInstallScreen -ProjectPath $project.Path }
                 'deps' {
                     Clear-Host; Write-SpectreRule -Title 'Dependencies' -Color Blue
                     Write-SpectreHost '[grey]Intune installs these BEFORE this app. They are also installed first in the test/capture run, so the app is never tested without its runtime.[/]'
                     $current = @($depNow | ForEach-Object { "$($_.Source):$($_.Ref)" })
-                    $chosen  = @(Show-Win32ToolkitDependencyPicker -BasePath $BasePath -Existing $current)
+                    # The project being edited is never offered (TUI audit G9: an app cannot depend on itself).
+                    $chosen  = @(Show-Win32ToolkitDependencyPicker -BasePath $BasePath -Existing $current -ExcludeProject "$($project.Template)\$($project.Name)")
                     try {
                         # The picker returns the AUTHORITATIVE list, so -Clear first and re-declare it.
                         if ($chosen.Count -eq 0) { $null = Set-Win32ToolkitAppDependency -ProjectPath $project.Path -Clear }
@@ -80,13 +103,27 @@ function Show-Win32ToolkitProjectActions {
                     $sc = Read-SpectreSelection -Message 'Test scenario' -Choices $scenChoices -ChoiceLabelProperty 'Label' -Color Blue
 
                     $testSplat = @{ ProjectPath = $project.Path; Scenario = $sc.Key; Backend = $backend.Key }
-                    if ($backend.Key -eq 'HyperV') {
+                    # The run-mode question and -TestMode follow what will run (TUI audit G3): a Hyper-V pick that is not
+                    # ready falls back to Sandbox inside the test, which then follows SandboxTestMode (no question).
+                    $resolvedBackend = Get-Win32ToolkitTestBackend -Backend $backend.Key -WarningAction SilentlyContinue
+                    # Said on the run screen, after it is cleared (below); for the Update scenario also here, above the
+                    # baseline questions that follow on this screen.
+                    $notReadyLine = if ($backend.Key -eq 'HyperV' -and $resolvedBackend -ne 'HyperV') {
+                        '[yellow]Hyper-V is not ready, so Windows Sandbox runs this test (it follows SandboxTestMode). See Settings for the reasons.[/]'
+                    } else { $null }
+                    if ($notReadyLine -and $sc.Key -eq 'Update') { Write-SpectreHost $notReadyLine }
+                    if ($resolvedBackend -eq 'HyperV') {
                         $pauseWhat = if ($sc.Key -eq 'Update') { 'verify the OLD install, then update' } else { 'test the app, then uninstall' }
-                        $mode = Read-SpectreSelection -Message 'Hyper-V run mode' -Choices @(
-                            [pscustomobject]@{ Key = 'interactive'; Label = "Interactive — watch the PSADT GUI in the VM console, $pauseWhat" }
-                            [pscustomobject]@{ Key = 'unattended';  Label = 'Silent — run every phase back-to-back (no GUI, no pause)' }
-                        ) -ChoiceLabelProperty 'Label' -Color Blue
-                        if ($mode.Key -eq 'unattended') { $testSplat['Unattended'] = $true }
+                        $interactiveChoice = [pscustomobject]@{ Key = 'interactive'; Label = "Interactive — watch the PSADT GUI in the VM console, $pauseWhat" }
+                        $unattendedChoice  = [pscustomobject]@{ Key = 'unattended';  Label = 'Unattended — Intune parity: the published command line from a 32-bit parent, as SYSTEM (no pause)' }
+                        # The mode a run without -TestMode would get (HyperVTestMode) is listed first, so it is the
+                        # highlighted default: HyperVTestMode=Unattended keeps Intune parity as the menu's default.
+                        $modeChoices = if ((Get-Win32ToolkitTestMode -Backend HyperV -WarningAction SilentlyContinue) -eq 'Unattended') { @($unattendedChoice, $interactiveChoice) }
+                                       else { @($interactiveChoice, $unattendedChoice) }
+                        $mode = Read-SpectreSelection -Message 'Hyper-V run mode' -Choices $modeChoices -ChoiceLabelProperty 'Label' -Color Blue
+                        # The pick is this run's -TestMode: it overrides HyperVTestMode (a host that cannot prompt still
+                        # runs unattended).
+                        $testSplat['TestMode'] = if ($mode.Key -eq 'unattended') { 'Unattended' } else { 'Interactive' }
                     }
                     $abort = $false
                     if ($sc.Key -eq 'Update') {
@@ -126,7 +163,7 @@ function Show-Win32ToolkitProjectActions {
                             $bmap = [ordered]@{}
                             $blabels = foreach ($bp in ($baselineCandidates | Sort-Object Template, Name)) {
                                 $bver = $null
-                                try { $bver = (Get-Win32ToolkitAppConfig -ProjectPath $bp.Path).App.Version } catch { $bver = $null }
+                                try { $bver = (Get-Win32ToolkitAppConfig -ProjectPath $bp.Path -ErrorAction Stop).App.Version } catch { $bver = $null }
                                 $label = Get-SpectreEscapedText -Text ('{0}  /  {1}{2}' -f $bp.Template, $bp.Name, $(if ($bver) { "  (v$bver)" } else { '' }))
                                 $bmap[$label] = $bp
                                 $label
@@ -136,6 +173,64 @@ function Show-Win32ToolkitProjectActions {
                             if ($bproj) { $testSplat['BaselineProjectPath'] = $bproj.Path } else { $abort = $true }
                         }
 
+                        if (-not $abort -and $isWinget -and -not $useLocal) {
+                            # Baseline installer technology (D5, Dv5), resolved BEFORE the test so the operator knows
+                            # which technology the old version must ship. Asked only when winget ships another
+                            # technology that can be tested; otherwise one grey line names the only one.
+                            try {
+                                $legs = @(Resolve-Win32ToolkitBaselineFamily -ProjectPath $project.Path -Mode Both | Where-Object { $_ })
+                                if ($legs.Count -gt 1) {
+                                    $packagedLeg = @($legs | Where-Object { $_.Origin -eq 'Packaged' }) + @($legs) | Select-Object -First 1
+                                    $siblingLeg  = @($legs | Where-Object { $_ -ne $packagedLeg }) | Select-Object -First 1
+                                    $techPick = Read-SpectreSelection -Message 'Baseline installer technology' -Choices @(
+                                        [pscustomobject]@{ Key = 'Auto';     Label = Get-SpectreEscapedText -Text "Auto - start from the other technology ($($siblingLeg.Label))" }
+                                        [pscustomobject]@{ Key = 'Both';     Label = "Test both technologies ($($legs.Count) runs)" }
+                                        [pscustomobject]@{ Key = 'Packaged'; Label = Get-SpectreEscapedText -Text "Only the packaged technology ($($packagedLeg.Label))" }
+                                    ) -ChoiceLabelProperty 'Label' -Color Blue
+                                    $testSplat['BaselineInstallerType'] = $techPick.Key
+                                }
+                                elseif ($legs.Count -eq 1) {
+                                    Write-SpectreHost "[grey]Baseline technology: $(Get-SpectreEscapedText -Text ([string]$legs[0].Label))[/]"
+                                }
+                            }
+                            catch {
+                                if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                                Write-SpectreHost "[grey]Baseline technology: not resolved here ($(Get-SpectreEscapedText -Text $_.Exception.Message)); the test resolves it.[/]"
+                            }
+
+                            # Baseline VERSION, asked here: the test itself uses the previous version without asking
+                            # when the run is unattended (the Hyper-V run mode Unattended, -TestMode, SandboxTestMode / HyperVTestMode;
+                            # test campaign F5), but an operator at this menu can always choose. Newest first.
+                            $olderVersions = @()
+                            $versionError = $null
+                            try {
+                                $yamlInfo = Get-YAMLInstallerInfo -FilesPath (Join-Path $project.Path 'Files')
+                                $packagedVersion = if ($yamlInfo) { [string]$yamlInfo.PackageVersion } else { '' }
+                                $olderVersions = @(Get-WingetVersions -AppId $wingetId -CurrentVersion $packagedVersion | Where-Object { $_ })
+                            }
+                            catch {
+                                if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                                $versionError = $_.Exception.Message
+                            }
+                            if ($olderVersions.Count -gt 0) {
+                                $vmap = [ordered]@{}
+                                $vlabels = for ($vi = 0; $vi -lt $olderVersions.Count; $vi++) {
+                                    $vlabel = Get-SpectreEscapedText -Text ('{0}{1}' -f $olderVersions[$vi], $(if ($vi -eq 0) { '  (previous version)' } else { '' }))
+                                    $vmap[$vlabel] = [string]$olderVersions[$vi]
+                                    $vlabel
+                                }
+                                $vchosen = Read-SpectreSelection -Message 'Baseline version (the OLDER version to upgrade FROM)' -Choices @($vlabels) -Color Blue -EnableSearch -PageSize 15
+                                if ($vmap.Contains([string]$vchosen)) { $testSplat['SpecificVersion'] = $vmap[[string]$vchosen] } else { $abort = $true }
+                            }
+                            else {
+                                $why = if ($versionError) { "Could not list the older winget versions of $wingetId ($versionError)." }
+                                       else { "winget lists no version of $wingetId older than the packaged one." }
+                                Format-SpectrePanel -Data (Get-SpectreEscapedText -Text "$why Use a local packaged project as the baseline, or run Test-Win32ToolkitProject with -SpecificVersion.") -Header 'No baseline version' -Border Rounded -Color Yellow | Out-SpectreHost
+                                Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                                $abort = $true
+                            }
+                        }
+
                         if (-not $abort) {
                             if (-not (Read-SpectreConfirm -Message 'Also verify the update-app requirement rule during the test? (recommended)' -DefaultAnswer 'y')) {
                                 $testSplat['SkipRequirementCheck'] = $true
@@ -143,13 +238,82 @@ function Show-Win32ToolkitProjectActions {
                         }
                     }
                     if (-not $abort) {
-                        Clear-Host; Write-SpectreRule -Title "Running the $($backend.Key) test…" -Color Blue
+                        # Titled by what runs ($resolvedBackend), never by the pick.
+                        Clear-Host; Write-SpectreRule -Title "Running the $resolvedBackend test…" -Color Blue
+                        if ($notReadyLine) { Write-SpectreHost $notReadyLine }
+                        # The run's effective test mode (TUI audit G3), chosen by what runs ($resolvedBackend), never by
+                        # the pick. Constant texts only.
+                        $modeSplat = @{ Backend = $resolvedBackend }
+                        if ($testSplat.ContainsKey('TestMode')) { $modeSplat['TestMode'] = $testSplat['TestMode'] }
+                        $effMode = Get-Win32ToolkitTestMode @modeSplat -WarningAction SilentlyContinue
+                        $modeLine = if ($resolvedBackend -eq 'HyperV') {
+                            if ($testSplat['TestMode'] -eq 'Unattended') { '[grey]Test mode: Unattended (your choice for this run): the Intune command line as SYSTEM, no pause.[/]' }
+                            elseif ($effMode -eq 'Unattended') { '[yellow]Test mode: Unattended. This console cannot answer prompts, so the run cannot be watched.[/]' }
+                            else { '[grey]Test mode: Interactive (your choice for this run): watch the PSADT dialogs in the VM window.[/]' }
+                        }
+                        elseif ($effMode -eq 'Unattended') { '[grey]Test mode: Unattended (SandboxTestMode = Unattended): a silent run, the sandbox closes itself.[/]' }
+                        else { '[grey]Test mode: Interactive (watched: a 2-minute countdown, the sandbox stays open; SandboxTestMode changes the default).[/]' }
+                        Write-SpectreHost $modeLine
                         try {
+                            $testStartUtc = [datetime]::UtcNow
                             $verdict = Test-Win32ToolkitProject @testSplat
                             if ($sc.Key -eq 'Update') {
+                                # A failed Update test whose surviving registration belongs to another installer
+                                # technology (V42) gets its own panel: devices with that install must not get it.
+                                $switches = @()
+                                if ($verdict -eq $false) {
+                                    try { $switches = @(Get-Win32ToolkitTechnologySwitch -ProjectPath $project.Path | Where-Object { $_ }) }
+                                    catch {
+                                        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                                        Write-Verbose "Technology-switch check failed: $($_.Exception.Message)"
+                                        $switches = @()
+                                    }
+                                }
                                 if     ($verdict -eq $true)  { Format-SpectrePanel -Data 'All in-sandbox assertions passed.' -Header 'UPDATE TEST PASSED' -Border Rounded -Color Green }
-                                elseif ($verdict -eq $false) { Format-SpectrePanel -Data 'One or more assertions FAILED - see Sandbox\Logs\UpdateAssertions.log in the project folder.' -Header 'UPDATE TEST FAILED' -Border Rounded -Color Red }
-                                else                         { Format-SpectrePanel -Data 'No conclusive assertion results (sandbox closed early, timeout, or everything skipped).' -Header 'Inconclusive' -Border Rounded -Color Yellow }
+                                elseif ($switches.Count -gt 0) {
+                                    $switchText = @($switches | ForEach-Object { [string]$_.Message }) -join "`n`n"
+                                    Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $switchText) -Header 'TECHNOLOGY SWITCH' -Border Rounded -Color Red
+                                }
+                                elseif ($verdict -eq $false) {
+                                    # Name the failed run's own log folder (each leg of a Both run has one; test campaign F2).
+                                    $failedLogs = @(Get-Win32ToolkitTestRunLogFolder -ProjectPath $project.Path -Scenario 'Update' -SinceUtc $testStartUtc |
+                                            ForEach-Object { Join-Path $_ 'UpdateAssertions.log' })
+                                    $failedText = if ($failedLogs.Count) { 'One or more assertions FAILED - see ' + ($failedLogs -join ' and ') + '.' }
+                                                  else { 'One or more assertions FAILED - see Sandbox\Logs\UpdateAssertions.log in the project folder.' }
+                                    Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $failedText) -Header 'UPDATE TEST FAILED' -Border Rounded -Color Red
+                                }
+                                else {
+                                    $incText = 'No conclusive assertion results (sandbox closed early, timeout, or everything skipped).'
+                                    if ($testSplat['TestMode'] -eq 'Unattended') { $incText += "`nIf the Intune-parity pre-check did not start it, run it again with the Interactive Hyper-V run mode." }
+                                    Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $incText) -Header 'Inconclusive' -Border Rounded -Color Yellow
+                                }
+                            }
+                            else {
+                                # InstallUninstall (TUI audit G1): PASSED / FAILED (each failed check with its reason, and
+                                # the run's own log folder) / Inconclusive. Test-Win32ToolkitProject returns the verdict.
+                                if ($verdict -eq $true) { Format-SpectrePanel -Data 'All install and uninstall assertions passed.' -Header 'INSTALL/UNINSTALL TEST PASSED' -Border Rounded -Color Green }
+                                elseif ($verdict -eq $false) {
+                                    $iuLogs = @(Get-Win32ToolkitTestRunLogFolder -ProjectPath $project.Path -Scenario 'InstallUninstall' -SinceUtc $testStartUtc |
+                                            ForEach-Object { Join-Path $_ 'InstallAssertions.log' })
+                                    if ($iuLogs.Count) { $iuLog = $iuLogs[-1]; $iuLogText = $iuLog }
+                                    else { $iuLog = Join-Path $project.Path 'Sandbox\Logs\InstallAssertions.log'; $iuLogText = 'Sandbox\Logs\InstallAssertions.log in the project folder' }
+                                    $iuLines = [System.Collections.Generic.List[string]]::new()
+                                    $iuLines.Add("One or more assertions FAILED - see $iuLogText.")
+                                    # Name and Reason come from the guest log, already through ConvertTo-Win32ToolkitSafeText.
+                                    $iuFailures = @(Get-Win32ToolkitAssertionFailure -LogPath $iuLog)
+                                    foreach ($iuFailure in $iuFailures) {
+                                        $iuLines.Add(('- {0}: {1}' -f $iuFailure.Name, $(if ($iuFailure.Reason) { $iuFailure.Reason } else { 'no reason given' })))
+                                    }
+                                    if ($iuFailures.Count -eq 0) { $iuLines.Add("- no FAIL line was found in $iuLogText") }
+                                    $iuLines.Add('')
+                                    $iuLines.Add('Do not publish this package until you know why: Publish to Intune shows this failure again under "Review before you publish" (a warning; it does not block).')
+                                    Format-SpectrePanel -Data (Get-SpectreEscapedText -Text ($iuLines -join "`n")) -Header 'INSTALL/UNINSTALL TEST FAILED' -Border Rounded -Color Red
+                                }
+                                else {
+                                    $incText = 'No conclusive assertion results (the run was closed early, timed out, skipped every assertion, or was not started; see the messages above).'
+                                    if ($testSplat['TestMode'] -eq 'Unattended') { $incText += "`nIf the Intune-parity pre-check did not start it, run it again with the Interactive Hyper-V run mode." }
+                                    Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $incText) -Header 'Inconclusive' -Border Rounded -Color Yellow
+                                }
                             }
                         }
                         catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
@@ -158,7 +322,12 @@ function Show-Win32ToolkitProjectActions {
                 }
                 'finish' {
                     Clear-Host; Write-SpectreRule -Title 'Finalizing…' -Color Blue
-                    try { Complete-Win32ToolkitManualApp -ProjectPath $project.Path }
+                    try {
+                        # Its result object decides the panel (TUI audit G2); captured, so it never prints raw.
+                        # -NoPublishPrompt: nothing is packaged here, but the menu never asks 'Upload ... now?' (TUI audit G5).
+                        $out = @(Complete-Win32ToolkitManualApp -ProjectPath $project.Path -NoPublishPrompt)
+                        Show-Win32ToolkitRunResult -Result $out -Name $project.Name
+                    }
                     catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
                     Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
                 }
@@ -172,8 +341,15 @@ function Show-Win32ToolkitProjectActions {
                     Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
                 }
                 'publish' {
-                    $cfg = Get-Win32ToolkitAppConfig -ProjectPath $project.Path
-                    $app = if ($cfg.PSObject.Properties.Name -contains 'App') { $cfg.App } else { $null }
+                    # An unreadable AppConfig.json must not end the screen (TUI audit G7): the summary then shows the
+                    # project name only, and the advisory below reports UNSAFE-CLEANUP ('could not be read'). The same
+                    # reader drives that variant, read the same way (-ErrorAction Stop, as Get-Win32ToolkitCleanupPathFinding
+                    # does: a locked or access-denied file is a non-terminating Get-Content error), so $cfgUnreadable
+                    # tells the two UNSAFE-CLEANUP variants apart (G11).
+                    $cfgUnreadable = $false
+                    try { $cfg = Get-Win32ToolkitAppConfig -ProjectPath $project.Path -ErrorAction Stop }
+                    catch { $cfg = $null; $cfgUnreadable = $true }
+                    $app = if ($cfg -and $cfg.PSObject.Properties.Name -contains 'App') { $cfg.App } else { $null }
                     $summary = @(
                         "Application : $(if ($app.Name) { $app.Name } else { $project.Name })"
                         "Version     : $($app.Version)"
@@ -181,29 +357,98 @@ function Show-Win32ToolkitProjectActions {
                     ) -join "`n"
                     Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $summary) -Header 'About to PUBLISH to Intune' -Border Rounded -Color Yellow
 
-                    $which = Read-SpectreSelection -Message 'Publish which app?' -Choices @(
-                        [pscustomobject]@{ Key = 'install'; Label = 'Install app — normal deployment (assign to target devices)' }
-                        [pscustomobject]@{ Key = 'both';    Label = 'Install app + Update app (2nd app, only where already installed)' }
-                        [pscustomobject]@{ Key = 'update';  Label = 'Update app only — applies only where the app is already installed' }
-                        [pscustomobject]@{ Key = 'cancel';  Label = 'Cancel' }
-                    ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 10
+                    # A project marked not configured (TUI audit G4) is refused by Export and Publish: say so now and go
+                    # back to the action menu, before the advisory, "Publish which app?" and "Package and upload now?".
+                    $notConfigured = $false
+                    try { Assert-Win32ToolkitProjectConfigured -ProjectPath $project.Path -Operation Publish }
+                    catch {
+                        $notConfigured = $true
+                        $ncHeader = if ($_.FullyQualifiedErrorId -eq 'W32T.ProjectNotConfigured') { 'Not configured' } else { 'Error' }
+                        Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header $ncHeader -Border Rounded -Color Red
+                        Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                    }
 
-                    if ($which.Key -ne 'cancel') {
-                        Write-SpectreHost "[yellow]You will sign in to Microsoft Graph — the target tenant is shown during sign-in.[/]"
-                        if (Read-SpectreConfirm -Message 'Package and upload now?' -DefaultAnswer 'n') {
-                            Clear-Host; Write-SpectreRule -Title 'Publishing to Intune…' -Color Blue
+                    if (-not $notConfigured) {
+                        # Advisory run scope (L20): this action shows the package advisory once, as a panel, and the
+                        # Export / Publish calls below stay quiet for this project. Closed after Export returns.
+                        $ownsAdvisoryRun = $null -eq $script:W32TAdvisoryRun
+                        if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = @{} }
+                        $cleanupBlocked = $false
+                        try {
+                            # Package advisory (D1: warn, never block): red when an install/uninstall test failed or gave no
+                            # verdict, an Update test failed, a technology switch was seen or the uninstall cleanup paths are
+                            # unsafe (TUI audit G1); yellow for other warnings.
                             try {
-                                $splat = @{ ProjectPath = $project.Path }
-                                switch ($which.Key) {
-                                    'install' { $splat['PublishIntune'] = $true }
-                                    'update'  { $splat['PublishUpdate'] = $true }
-                                    'both'    { $splat['PublishIntune'] = $true; $splat['PublishUpdate'] = $true }
+                                $advisory = Get-Win32ToolkitPackageAdvisory -ProjectPath $project.Path -Context Tui -ProbeIfMissing
+                                $advWarnings = @($advisory.Findings | Where-Object { $_ -and $_.Severity -eq 'Warning' })
+                                if ($advWarnings.Count -gt 0) {
+                                    # Prior installs (installer-identity PR 3): a Block rule fails the install on every device that has the
+                                    # prior, an Enforce rule without the welcome dialog retries there, a published predecessor reinstalls.
+                                    $severe = @($advWarnings | Where-Object { $_.Code -in @('UNSAFE-CLEANUP', 'INSTALL-FAILED', 'UPDATE-FAILED', 'ID-TECH-SWITCH', 'INSTALL-INCONCLUSIVE', 'PRIOR-BLOCK-FLEET', 'PRIOR-NO-WELCOME', 'PRIOR-PREDECESSOR-PUBLISHED', 'ID-SIBLING-UNAPPLIED') }).Count -gt 0
+                                    $advText = @($advWarnings | ForEach-Object { [string]$_.Message }) -join "`n`n"
+                                    $advHeader = if ($severe) { 'Review before you publish' } else { 'Check before you publish' }
+                                    $advColor  = if ($severe) { 'Red' } else { 'Yellow' }
+                                    Format-SpectrePanel -Data (Get-SpectreEscapedText -Text $advText) -Header $advHeader -Border Rounded -Color $advColor | Out-SpectreHost
                                 }
-                                Export-Win32ToolkitIntuneWin @splat
-                                Format-SpectrePanel -Data 'Published. See the messages above for the app ID(s) and portal link.' -Header 'Done' -Border Rounded -Color Green
+                                # Unsafe cleanup paths (TUI audit G11): Export re-packages and refuses such a project
+                                # (W32T.PackageNotReady), so the publish stops here, before its prompts. The line names
+                                # the fix of the variant: an unreadable AppConfig.json cannot be fixed by Finalize / refresh
+                                # (it reads the same file), unsafe paths can (it re-runs the capture).
+                                if (@($advWarnings | Where-Object { $_.Code -eq 'UNSAFE-CLEANUP' }).Count -gt 0) {
+                                    $cleanupBlocked = $true
+                                    if ($cfgUnreadable) {
+                                        Write-SpectreHost '[red]Packaging refuses this project until SupportFiles\AppConfig.json can be read: fix the file or re-create the project (Finalize / refresh cannot, it reads the same file), so the publish cannot start.[/]'
+                                    }
+                                    else {
+                                        Write-SpectreHost '[red]Packaging refuses this project until its uninstall cleanup paths are fixed (Finalize / refresh re-runs the install capture), so the publish cannot start.[/]'
+                                    }
+                                }
+                                foreach ($advInfo in @($advisory.Findings | Where-Object { $_ -and $_.Severity -ne 'Warning' })) {
+                                    Write-SpectreHost "[grey]$(Get-SpectreEscapedText -Text ([string]$advInfo.Message))[/]"
+                                }
                             }
-                            catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
-                            Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                            catch {
+                                if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+                                Write-Warning "Could not check the Update test and identity warnings: $($_.Exception.Message)"
+                            }
+                            if ($script:W32TAdvisoryRun -is [hashtable]) {
+                                $script:W32TAdvisoryRun[[System.IO.Path]::GetFullPath($project.Path).TrimEnd('\')] = $true
+                            }
+
+                            if ($cleanupBlocked) {
+                                # Back to the action menu: no "Publish which app?", no "Package and upload now?", no Export.
+                                Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                            }
+                            else {
+                                $which = Read-SpectreSelection -Message 'Publish which app?' -Choices @(
+                                    [pscustomobject]@{ Key = 'install'; Label = 'Install app — normal deployment (assign to target devices)' }
+                                    [pscustomobject]@{ Key = 'both';    Label = 'Install app + Update app (2nd app, only where already installed)' }
+                                    [pscustomobject]@{ Key = 'update';  Label = 'Update app only — applies only where the app is already installed' }
+                                    [pscustomobject]@{ Key = 'cancel';  Label = 'Cancel' }
+                                ) -ChoiceLabelProperty 'Label' -Color Blue -PageSize 10
+
+                                if ($which.Key -ne 'cancel') {
+                                    Write-SpectreHost "[yellow]You will sign in to Microsoft Graph — the target tenant is shown during sign-in.[/]"
+                                    if (Read-SpectreConfirm -Message 'Package and upload now?' -DefaultAnswer 'n') {
+                                        Clear-Host; Write-SpectreRule -Title 'Publishing to Intune…' -Color Blue
+                                        try {
+                                            $splat = @{ ProjectPath = $project.Path }
+                                            switch ($which.Key) {
+                                                'install' { $splat['PublishIntune'] = $true }
+                                                'update'  { $splat['PublishUpdate'] = $true }
+                                                'both'    { $splat['PublishIntune'] = $true; $splat['PublishUpdate'] = $true }
+                                            }
+                                            Export-Win32ToolkitIntuneWin @splat
+                                            Format-SpectrePanel -Data 'Published. See the messages above for the app ID(s) and portal link.' -Header 'Done' -Border Rounded -Color Green
+                                        }
+                                        catch { Format-SpectrePanel -Data "[red]$(Get-SpectreEscapedText -Text $_.Exception.Message)[/]" -Header 'Error' -Border Rounded -Color Red }
+                                        Read-SpectrePause -Message 'Press any key to continue' -AnyKey | Out-Null
+                                    }
+                                }
+                            }
+                        }
+                        finally {
+                            if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = $null }
                         }
                     }
                 }

@@ -1,0 +1,35 @@
+# Hand-made in the shape `winget download` writes next to the installer: ONE merged manifest (version, default locale
+# and the chosen installer). Values from the public winget-pkgs manifests of Notepad++ 8.9.8.1.
+PackageIdentifier: Notepad++.Notepad++
+PackageVersion: 8.9.8.1
+PackageLocale: en-US
+Publisher: Notepad++ Team
+PublisherUrl: https://notepad-plus-plus.org/
+PackageName: Notepad++
+License: GPL-3.0
+ShortDescription: Free source code editor and Notepad replacement
+Description: |-
+  Notepad++ is a free (as in "free speech" and also as in "free beer") source code editor
+  and Notepad replacement that supports several languages.
+  InstallerType: decoy-inside-a-block-scalar
+Tags:
+- editor
+- notepad
+ReleaseDate: 2026-09-24
+Installers:
+- Architecture: x64
+  InstallerType: nullsoft
+  Scope: machine
+  InstallerUrl: https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.8.1/npp.8.9.8.1.Installer.x64.exe
+  InstallerSha256: 26F3BCCED788FADBAC4E7E577B430EA2CE6060CF3BCAD993EF4612ECD7D743DA
+  InstallerSwitches:
+    Silent: /S
+    SilentWithProgress: /S
+    Custom: /noUpdater
+  UpgradeBehavior: install
+  ProductCode: Notepad++
+  ElevationRequirement: elevatesSelf
+  InstallationMetadata:
+    DefaultInstallLocation: '%ProgramFiles%\Notepad++'
+ManifestType: merged
+ManifestVersion: 1.12.0

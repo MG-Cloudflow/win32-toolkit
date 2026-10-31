@@ -1,5 +1,5 @@
 site_name: win32-toolkit
-site_description: End-to-end Win32 app packaging for Microsoft Intune. winget or manual sources, PSADT v4, sandboxed capture & testing, .intunewin packaging, Graph publish.
+site_description: Turn an installer into a tested Intune Win32 app, then keep it up to date.
 site_url: https://win32toolkit.com/
 repo_url: https://github.com/MG-Cloudflow/win32-toolkit
 repo_name: MG-Cloudflow/win32-toolkit
@@ -11,12 +11,23 @@ copyright: >-
 
 docs_dir: docs
 
+# The site is built with Zensical (https://zensical.org), which reads this mkdocs.yml as is:
+#   pip install zensical==0.0.73   then   zensical serve   or   zensical build --clean --strict
+# Zensical has no MkDocs plugins or hooks, and renders templates with MiniJinja (see overrides/main.html).
+
+# Links to a missing page or heading are warnings, so 'zensical build --strict' (the CI gate) fails on
+# them: the pages link each other's sections, and a renamed heading must not leave a dead link behind.
+validation:
+  anchors: warn
+
 theme:
   name: material
+  # Zensical's own look. 'classic' would bring back the Material for MkDocs look.
+  variant: modern
   language: en
   custom_dir: overrides
-  logo: assets/logo.svg
-  favicon: assets/logo.svg
+  logo: assets/win32-toolkit-icon.svg
+  favicon: assets/win32-toolkit-icon.svg
   icon:
     repo: fontawesome/brands/github
   font:
@@ -67,7 +78,7 @@ extra:
     - icon: fontawesome/brands/github
       link: https://github.com/MG-Cloudflow/win32-toolkit
   # GA4 Measurement ID is supplied at build time via the GOOGLE_ANALYTICS_KEY repo variable, so it is
-  # not committed. Unset => empty => no analytics injected (the strict build stays green either way).
+  # not committed. Unset (local builds) => an empty ID; the strict build stays green either way.
   analytics:
     provider: google
     property: !ENV [GOOGLE_ANALYTICS_KEY, ""]
@@ -101,8 +112,15 @@ markdown_extensions:
   - pymdownx.tabbed:
       alternate_style: true
   - pymdownx.emoji:
-      emoji_index: !!python/name:material.extensions.emoji.twemoji
-      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+      emoji_index: !!python/name:zensical.extensions.emoji.twemoji
+      emoji_generator: !!python/name:zensical.extensions.emoji.to_svg
+  # Glossary terms are links to their entry. Hovering one previews the entry; a click opens the glossary.
+  - zensical.extensions.preview:
+      configurations:
+        - targets:
+            include: [glossary.md]
+          sources:
+            exclude: [glossary.md]
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
@@ -111,34 +129,62 @@ markdown_extensions:
 
 nav:
   - Home: README.md
-  - Learn:
-      - Getting started: getting-started.md
-      - Concepts: concepts.md
-  - Guides:
-      - Org templates: org-templates.md
-      - Connecting to Intune: intune-connection.md
-      - Manual (non-winget) apps: manual-apps.md
-      - Testing packages: testing.md
-      - The Hyper-V test VM: hyperv-vm.md
-      - App dependencies: dependencies.md
-      - Packaging (.intunewin): packaging.md
-      - Publishing to Intune: publishing.md
+  - Guide:
+      - Start here:
+          - How it works: how-it-works.md
+      - From zero to Intune:
+          - 1. Install the toolkit: install.md
+          - 2. Create your org template: org-templates.md
+          - 3. Package an app from winget: packaging.md
+          - 4. Test the package: testing.md
+          - 5. Build the package: build-intunewin.md
+          - 6. Connect to Intune: intune-connection.md
+          - 7. Publish to Intune: publishing.md
+      - Keep it running:
+          - Ship a new version: new-version.md
+          - Change or re-create a project: projects.md
+          - Update, move or remove the toolkit: maintain-toolkit.md
+  - Special cases:
+      - Apps that are not in winget: manual-apps.md
+      - Apps that need another app first: dependencies.md
+      - Logo, hook scripts and extension module: org-template-files.md
+      - Prior installs:
+          - Devices that already have the app: prior-installs.md
+          - Remove a prior install (Enforce): prior-installs-enforce.md
+          - Prior installs on devices: prior-installs-devices.md
+      - Hyper-V test VM:
+          - Set up the test VM: hyperv-vm.md
+          - Look after the test VM: hyperv-vm-care.md
+      - Use the commands in scripts: automation.md
+  - Help:
+      - Find a task: tasks.md
+      - Troubleshooting: troubleshooting.md
+      - Exit codes and logs: exit-codes.md
+      - Known limits: known-limits.md
+      - Glossary: glossary.md
   - Reference:
-      - Configuration values: configuration.md
+      - The menu at a glance: menu.md
+      - Settings and folders: settings.md
       - Commands: reference/README.md
-      - Command pages:
+      - Start and package:
           - Show-Win32Toolkit: reference/Show-Win32Toolkit.md
           - Invoke-Win32Toolkit: reference/Invoke-Win32Toolkit.md
           - New-Win32ToolkitManualApp: reference/New-Win32ToolkitManualApp.md
           - Complete-Win32ToolkitManualApp: reference/Complete-Win32ToolkitManualApp.md
+      - Test:
           - Test-Win32ToolkitProject: reference/Test-Win32ToolkitProject.md
+      - Build and publish:
           - Export-Win32ToolkitIntuneWin: reference/Export-Win32ToolkitIntuneWin.md
           - Publish-Win32ToolkitIntuneApp: reference/Publish-Win32ToolkitIntuneApp.md
           - Export-Win32ToolkitDocumentation: reference/Export-Win32ToolkitDocumentation.md
+      - Intune sign-in:
           - Connect-Win32ToolkitIntune: reference/Connect-Win32ToolkitIntune.md
           - Disconnect-Win32ToolkitIntune: reference/Disconnect-Win32ToolkitIntune.md
+      - Dependencies and prior installs:
           - Set-Win32ToolkitAppDependency: reference/Set-Win32ToolkitAppDependency.md
           - Sync-Win32ToolkitAppDependency: reference/Sync-Win32ToolkitAppDependency.md
+          - Set-Win32ToolkitPriorInstall: reference/Set-Win32ToolkitPriorInstall.md
+      - Hyper-V test VM:
           - New-Win32ToolkitTestVM: reference/New-Win32ToolkitTestVM.md
           - Set-Win32ToolkitTestVMResource: reference/Set-Win32ToolkitTestVMResource.md
           - Reset-Win32ToolkitTestVM: reference/Reset-Win32ToolkitTestVM.md

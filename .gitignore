@@ -3,3 +3,7 @@
 .claude/
 CLAUDE.md
 knowledge-base/
+
+# Built documentation site and Zensical's build cache (zensical build / zensical serve).
+site/
+.cache/

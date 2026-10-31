@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1230 400" role="img" aria-label="win32-toolkit dark theme logo">
+<title>win32-toolkit dark theme logo</title>
+<defs>
+  <linearGradient id="flapLeft" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#46B1FF"/><stop offset="1" stop-color="#137AFF"/></linearGradient>
+  <linearGradient id="flapRight" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#197FFF"/><stop offset="1" stop-color="#0751D5"/></linearGradient>
+  <linearGradient id="centerTop" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0E53C7"/><stop offset="1" stop-color="#168BFD"/></linearGradient>
+  <linearGradient id="frontLeft" x1="0" y1="0" x2="0.8" y2="1"><stop offset="0" stop-color="#167EFE"/><stop offset="1" stop-color="#044BC7"/></linearGradient>
+  <linearGradient id="frontRight" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#259DFF"/><stop offset="1" stop-color="#1065ED"/></linearGradient>
+  <linearGradient id="insideLeft" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#136FEE"/><stop offset="1" stop-color="#0743A4"/></linearGradient>
+  <linearGradient id="insideRight" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0D4AB8"/><stop offset="1" stop-color="#086DE7"/></linearGradient>
+  <symbol id="win32mark" viewBox="0 0 410 390">
+    <!-- Two open package flaps: source applications entering the pipeline -->
+    <path d="M19 103 Q15 96 24 91 L158 32 Q165 29 173 33 L218 73 L89 150 Z" fill="url(#flapLeft)" />
+    <path d="M233 73 L297 33 Q304 29 311 33 L386 90 Q394 96 386 103 L310 149 Z" fill="url(#flapRight)" />
+    <!-- Software core and its two packaged sides -->
+    <path d="M99 160 L205 108 L311 160 L205 216 Z" fill="url(#centerTop)"/>
+    <path d="M99 160 L205 216 L205 286 L99 231 Z" fill="url(#insideLeft)"/>
+    <path d="M205 216 L311 160 L311 231 L205 286 Z" fill="url(#insideRight)"/>
+    <!-- W ribbon: the product monogram and outer package sleeve -->
+    <path d="M23 162 Q18 164 18 175 L18 258 Q18 269 26 278 L100 349 Q114 362 131 348 L205 283 L205 188 L105 267 L37 169 Q30 159 23 162 Z" fill="url(#frontLeft)"/>
+    <path d="M205 188 L305 267 L373 169 Q380 159 387 162 Q392 164 392 175 L392 258 Q392 269 384 278 L310 349 Q296 362 279 348 L205 283 Z" fill="url(#frontRight)"/>
+    <path d="M24 163 L105 267 L205 188 L305 267 L386 163" stroke="#64C1FF" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" opacity=".50" fill="none"/>
+    <!-- inner spine: a verified package, not a generic toolbox -->
+  </symbol>
+</defs>
+
+<use xlink:href="#win32mark" x="21" y="16" width="399" height="379"/>
+<g font-family="Inter, Inter Display, Arial, sans-serif" font-weight="800" letter-spacing="-7">
+  <text x="443" y="188" font-size="151" fill="#FFFFFF">win32</text>
+  <text x="447" y="337" font-size="141" fill="#61B4FF">toolkit</text>
+</g>
+</svg>

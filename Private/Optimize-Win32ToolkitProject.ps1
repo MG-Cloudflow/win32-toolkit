@@ -75,8 +75,14 @@ function Optimize-Win32ToolkitProject {
 
         # A folder that could NOT be stripped would ship inside the .intunewin. Never claim success over it:
         # 'Intune' holds Publications.json (tenant + app ids that must never reach a device), so a surviving
-        # 'Intune' folder is fatal; the rest are bloat and warned (re-run once the lock clears to fix).
+        # 'Intune' folder is fatal; so is 'Documentation' (installer-identity PR 3, L16: the operator's prior-install
+        # decisions and guest-derived capture records); the rest are bloat and warned (re-run once the lock clears).
         if ($failed.Count -gt 0) {
+            if ($failed -contains 'Documentation' -and $failed -notcontains 'Intune') {
+                throw ("Refusing to package: could not remove the 'Documentation' folder from the Staging copy at '$ProjectPath' " +
+                    '(a file is locked). It holds the prior-install decisions and the guest-derived capture records of this project, which never ship to a device. ' +
+                    'Close whatever is using that folder and re-run.')
+            }
             if ($failed -contains 'Intune') {
                 throw ("Refusing to package: could not remove the 'Intune' folder from the Staging copy at '$ProjectPath' " +
                     '(a file is locked). It holds Publications.json — tenant + app ids that must never ship to a device. ' +

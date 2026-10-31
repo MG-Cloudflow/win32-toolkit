@@ -1,24 +1,38 @@
 function Disconnect-Win32ToolkitIntune {
 <#
 .SYNOPSIS
-    Signs out of Microsoft Intune (Entra) for this toolkit's Graph session.
+    Signs out of the Intune session that win32-toolkit uses.
 .DESCRIPTION
-    Clears the Microsoft Graph token this session was using, so the next publish must sign in again
-    rather than silently reusing whichever customer you were last connected to.
+    Disconnect-Win32ToolkitIntune ends the Microsoft Graph session that win32-toolkit uses for
+    Intune, and prints the tenant that you signed out of. The next connect or publish starts a new
+    sign-in.
 
-    BE CLEAR ABOUT WHAT THIS DOES NOT DO. It signs out of the Graph SDK, not out of Entra. Your
-    BROWSER (or Windows account manager) is still signed in, so the next connect can complete with no
-    prompt and land straight back on the same tenant. That is a property of the identity provider, not
-    something this command can revoke.
+    Use it when you finish the work for a customer. In the menu: Microsoft Intune connection >
+    Sign out. The menu shows Sign out only when you are connected.
 
-    So do not treat disconnect as the thing that keeps customers apart. The controls that actually do
-    that are pinning a tenant on the org template (which publish then verifies and refuses to violate)
-    and connecting with -ContextScope Process so no token outlives the session. This command is an
-    honest convenience, not a security boundary.
+    Your browser stays signed in to Microsoft Entra, so the next connect may not ask you to sign
+    in. It can land on the same tenant again. Signing out is a convenience, not a safety control.
+    The tenant ID on each org template keeps customers apart. Also, by default a sign-in with
+    Connect-Win32ToolkitIntune ends when you close the PowerShell window.
+
+    If you are not connected, the command prints "Not connected to Microsoft Intune." and changes
+    nothing. If the sign-out fails, it shows a warning that starts with "Disconnect failed:" and
+    does not stop.
 .EXAMPLE
     Disconnect-Win32ToolkitIntune
+
+    This signs out and prints the tenant. Your browser stays signed in.
+.EXAMPLE
+    Disconnect-Win32ToolkitIntune -WhatIf
+
+    This shows the tenant that the command would sign out of, and changes nothing.
 .OUTPUTS
-    [pscustomobject] Disconnected (bool) / TenantId / DisplayName of the session that was ended.
+    An object with Disconnected, TenantId and DisplayName.
+    Disconnected is False when you were not connected, when the sign-out failed, or with -WhatIf.
+.LINK
+    https://win32toolkit.com/reference/Disconnect-Win32ToolkitIntune/
+.LINK
+    https://win32toolkit.com/intune-connection/
 #>
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType([pscustomobject])]

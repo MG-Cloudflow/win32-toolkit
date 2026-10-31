@@ -16,6 +16,12 @@ function Copy-Win32ToolkitProjectToGuest {
         'Cannot convert value "524320" to type "System.IO.FileAttributes"'. Zipping sidesteps attribute
         replay entirely, is faster (one transfer instead of hundreds), and leaves the raw Projects\ copy
         untouched — we never mutate the source to work around it.
+
+        Each extracted file gets the host file's exact UTC LastWriteTime (a Times map read on the host from the
+        zip's entries): a zip entry stores local DOS time (2 s, no time zone), so the guest, which runs UTC, would
+        date every file by the host's UTC offset - and the copy-back (which keeps the guest's exact time) would then
+        carry that shift back to the host, one offset per run, for every file the guest did not rewrite
+        (re-verification 2026-10-21, A1/A2/A3 hv#1).
     .PARAMETER Session
         An open PowerShell Direct PSSession (from New-Win32ToolkitHyperVSession).
     .PARAMETER ProjectPath
@@ -53,10 +59,34 @@ function Copy-Win32ToolkitProjectToGuest {
     $guestZip = 'C:\Windows\Temp\' + (Split-Path -Leaf $hostZip)
 
     try {
+        # Exact UTC write time per FILE entry of the zip that goes in (prebuilt or built here): entry name
+        # ('/' separators) -> the host file's LastWriteTimeUtc ticks. Read from the zip itself, so the map always
+        # matches what is extracted (the thread-job builder is unchanged). Best effort: an entry whose host file
+        # cannot be read keeps the zip's own stamp in the guest.
+        $times = @{}
+        try {
+            Add-Type -AssemblyName 'System.IO.Compression.FileSystem' -ErrorAction SilentlyContinue
+            $projRoot = [System.IO.Path]::GetFullPath($ProjectPath)
+            $za = [System.IO.Compression.ZipFile]::OpenRead($hostZip)
+            try {
+                foreach ($entry in $za.Entries) {
+                    if (-not $entry.Name) { continue }   # a folder entry
+                    $hostFile = Join-Path $projRoot ($entry.FullName -replace '/', '\')
+                    if ([System.IO.File]::Exists($hostFile)) { $times[$entry.FullName] = [System.IO.File]::GetLastWriteTimeUtc($hostFile).Ticks }
+                }
+            }
+            finally { $za.Dispose() }
+        }
+        catch {
+            if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
+            $times = @{}
+            Write-Verbose "Could not read the copy-in write times ($($_.Exception.Message)): the guest keeps the zip's stamps."
+        }
+
         Copy-Item -ToSession $Session -Path $hostZip -Destination $guestZip -Force -ErrorAction Stop
 
-        Invoke-Command -Session $Session -ScriptBlock {
-            param($zip, $dest)
+        $unset = Invoke-Command -Session $Session -ScriptBlock {
+            param($zip, $dest, $times)
             # PS Direct does NOT inherit the host's $ProgressPreference — each Invoke-Command is its own
             # runspace. Silence at the source so the guest 'Removed N of M files' bar from Remove-Item
             # -Recurse isn't relayed back and painted over the host's Spectre TUI. (5.1-safe assignment.)
@@ -72,7 +102,24 @@ function Copy-Win32ToolkitProjectToGuest {
             Add-Type -AssemblyName 'System.IO.Compression.FileSystem' -ErrorAction SilentlyContinue
             [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $dest)
             Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
-        } -ArgumentList $guestZip, $GuestPath -ErrorAction Stop
+            # The host file's exact UTC write time (the zip holds local DOS time and this guest runs UTC). Set
+            # here, before any -ReadOnly ACL. Only a tick count inside DateTime's range, only inside $dest.
+            $unset = 0
+            if ($times -is [System.Collections.IDictionary]) {
+                $root = [System.IO.Path]::GetFullPath($dest).TrimEnd('\') + '\'
+                foreach ($k in @($times.Keys)) {
+                    $t = [long]0
+                    if (-not [long]::TryParse([string]$times[$k], [ref]$t)) { $unset++; continue }
+                    if ($t -lt [datetime]::MinValue.Ticks -or $t -gt [datetime]::MaxValue.Ticks) { $unset++; continue }
+                    $p = [System.IO.Path]::GetFullPath((Join-Path $dest ([string]$k -replace '/', '\')))
+                    if (-not $p.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) { $unset++; continue }
+                    try { [System.IO.File]::SetLastWriteTimeUtc($p, (New-Object System.DateTime -ArgumentList $t, ([System.DateTimeKind]::Utc))) }
+                    catch { $unset++ }
+                }
+            }
+            $unset
+        } -ArgumentList $guestZip, $GuestPath, $times -ErrorAction Stop
+        if ("$unset" -match '^[1-9]\d*$') { Write-Verbose "Copy-in: $unset file(s) in '$GuestPath' keep the zip's local time stamp." }
     }
     finally {
         if (Test-Path -LiteralPath $hostZip) { Remove-Item -LiteralPath $hostZip -Force -ErrorAction SilentlyContinue }

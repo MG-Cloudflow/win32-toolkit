@@ -1,0 +1,798 @@
+<#
+    Installer-identity PR 1 (spec 2.13, WP-5): Get-Win32ToolkitPackageAdvisory and
+    Write-Win32ToolkitPackageAdvisory, and their call sites (Export, Publish, the TUI publish action).
+
+      Update    : the latest judged record per baseline family -> UPDATE-FAILED (Warning) or
+                  UPDATE-INCONCLUSIVE (Info); an Unavailable record never hides an older failure; the
+                  legacy (pre-PR-1) record and its Sandbox\OldVersion conditions.
+      Install   : the latest InstallUninstall record -> INSTALL-FAILED or INSTALL-INCONCLUSIVE (both Warning; NotRun
+                  never judged, no record no finding) and their rank (TUI audit G1).
+      Identity  : the REAL Get-Win32ToolkitIdentityDelta over a stored IdentityDelta.json built from the
+                  Tests\Fixtures\winget-manifests manifests (Invoke-WebRequest shadowed: no network);
+                  ID-SIBLING-UNTESTED and the Info downgrade of ID-SIBLING-FAMILY.
+      WP-4      : Get-Win32ToolkitTechnologySwitch is SHADOWED (its spec 2.12 contract).
+      Cleanup   : UNSAFE-CLEANUP at Publish / Tui only (Get-Win32ToolkitCleanupPathFinding shadowed), also
+                  for an AppConfig.json PowerShell 7 cannot read ('+1': Windows PowerShell 5.1 still reads it).
+      Fail-open : a corrupt TestResults.json or a throwing helper -> warnings, never a throw.
+      Writer    : prefixes, the run scope (printed once, at most one probe request), nothing written; a
+                  relative -ProjectPath is resolved against the PowerShell location (prefix and scope key).
+      Source    : K1 / K4 first statements; Export / Publish / TUI call order and run scope (AST);
+                  D1 (no W32T.UpdateTestFailed, no -AllowFailedUpdateTest).
+
+    Fixtures are built under %TEMP% and removed at the end; nothing is installed or run.
+
+    Run:  pwsh -File Tests\PackageAdvisory.unit.ps1
+#>
+# Test shadows keep the real command names and signatures (C-4: new files carry no PSSA warning).
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'test shadows mirror the real signatures')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidOverwritingBuiltInCmdlets', '', Justification = 'Invoke-WebRequest is shadowed: the suite never touches the network')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'test fixture builders')]
+[CmdletBinding()]
+param()
+
+$ErrorActionPreference = 'Stop'
+$repo = Split-Path -Parent $PSScriptRoot
+$fail = 0
+function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
+function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
+
+# Every Private helper is real (each file defines only its function), then the shadows below win.
+Get-ChildItem (Join-Path $repo 'Private') -Filter *.ps1 | ForEach-Object { . $_.FullName }
+# The deploy-script shape (read for the remove-prior slots of a candidate's advice) checks the PSADT range the module sets.
+$script:PsadtSupportedRange = [pscustomobject]@{ Min = [version]'4.1.0'; MaxExclusive = [version]'4.3.0'; Display = '4.1.x and 4.2.x' }
+$realCleanup = ${function:Get-Win32ToolkitCleanupPathFinding}
+$realDeltaFile = Join-Path $repo 'Private\Get-Win32ToolkitIdentityDelta.ps1'
+
+# --- Network: the sibling probe's only request, counted ----------------------------------------------
+$fx = Join-Path $repo 'Tests\Fixtures\winget-manifests'
+$script:gets = 0
+$script:body = ''
+function Invoke-WebRequest {
+    [CmdletBinding()]
+    param([string]$Uri, [int]$TimeoutSec, [int]$MaximumRedirection, [switch]$SkipHttpErrorCheck)
+    $script:gets++
+    [pscustomobject]@{ StatusCode = 200; Content = $script:body }
+}
+
+# --- WP-4 contract (spec 2.12), shadowed: the technology switches the Update tests saw ----------------
+$script:switches = @()
+$script:switchArgs = $null
+function Get-Win32ToolkitTechnologySwitch {
+    [CmdletBinding()]
+    param([string]$ProjectPath, [string]$PackageType, [string]$PackageFamily)
+    $script:switchArgs = [pscustomobject]$PSBoundParameters
+    if ($script:switches -is [scriptblock]) { return & $script:switches }
+    $script:switches
+}
+
+# --- WP-1 finding helper, shadowed ($script:cleanupReal = $true runs the real one) --------------------
+$script:cleanup = @()
+$script:cleanupReal = $false
+$script:cleanupCalls = 0
+function Get-Win32ToolkitCleanupPathFinding {
+    [CmdletBinding()]
+    param([string]$ProjectPath)
+    $script:cleanupCalls++
+    if ($script:cleanupReal) { return & $realCleanup -ProjectPath $ProjectPath }
+    $script:cleanup
+}
+
+# --- Fixture builders ----------------------------------------------------------------------------------
+$tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('w32adv_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$script:n = 0
+function Set-TestResultFile([string]$Project, [object[]]$Entries) {
+    $doc = Join-Path $Project 'Documentation'
+    New-Item -ItemType Directory -Path $doc -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $doc 'TestResults.json'), (ConvertTo-Json -InputObject @($Entries) -Depth 6), [System.Text.UTF8Encoding]::new($false))
+}
+# One Update record in the spec 2.11 shape (or, with -Legacy, the pre-PR-1 shape without Baseline).
+function New-Record {
+    param([string]$Verdict = 'Failed', [string]$Type = 'nullsoft', [string]$Family = 'exe', [string]$Version = '8.8.9',
+          [string]$When = '2026-10-19T11:03:09Z', [string[]]$Fail = @('OldArpGone-PostUpdate'), [string[]]$Pass = @('Tattoo-PostUpdate'),
+          [switch]$Unavailable, [switch]$Legacy, [string]$Mode = 'Auto', [string]$Origin = 'Sibling')
+    $assertions = @(@($Pass | ForEach-Object { [ordered]@{ Name = $_; Result = 'PASS' } }) + @($Fail | ForEach-Object { [ordered]@{ Name = $_; Result = 'FAIL' } }))
+    $r = [ordered]@{ Scenario = 'Update'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = $When; Verdict = $Verdict; Assertions = $assertions; Notes = '' }
+    if ($Unavailable) { $r.Verdict = 'Inconclusive'; $r.Assertions = @(); $r.Notes = 'Baseline unavailable: winget offers no installer' }
+    if (-not $Legacy) {
+        $r['Baseline'] = [ordered]@{
+            Version = $Version; Mode = $Mode; Origin = $Origin; RequestedInstallerType = $Type; InstallerType = $(if ($Unavailable) { '' } else { $Type })
+            Family = $Family; UsedFallback = $false; FallbackReason = ''; RequestedScope = 'machine'; Scope = 'machine'; ScopeRelaxed = $false
+            Unavailable = [bool]$Unavailable; Locale = 'en-US'; Source = 'winget'; ProjectName = ''
+        }
+    }
+    [pscustomobject]$r
+}
+# A project with a persisted AppConfig.Source; -Manifest stores Documentation\IdentityDelta.json from a
+# real (shadowed-network) sibling probe of that fixture, exactly as configure time writes it.
+function New-AdvProject {
+    param([string]$Name = 'Notepad++_x64_8.9.8.1', [hashtable]$Source = @{}, [hashtable]$App = @{}, [object[]]$Results, [string]$Manifest = '')
+    $script:n++
+    $p = Join-Path $tmpRoot ('Projects\T{0}\{1}' -f $script:n, $Name)
+    New-Item -ItemType Directory -Path (Join-Path $p 'SupportFiles') -Force | Out-Null
+    $src = [ordered]@{
+        SchemaVersion = '1.0'; WingetId = 'Notepad++.Notepad++'; Version = '8.9.8.1'; InstallerType = 'wix'; Family = 'msi'; Scope = 'machine'
+        Architecture = 'x64'; Locale = 'en-US'; PinnedBy = 'winget-default'; RequestedInstallerType = ''; WingetClient = '1.29.380'
+        ProductCode = ''; UpgradeCode = ''; UpgradeBehavior = 'install'
+    }
+    foreach ($k in $Source.Keys) { $src[$k] = $Source[$k] }
+    $appCfg = [ordered]@{ Vendor = 'Notepad++ Team'; Name = 'Notepad++'; DisplayName = 'Notepad++'; Version = $src.Version; Arch = 'x64'; ScriptAuthor = 'Contoso IT' }
+    foreach ($k in $App.Keys) { $appCfg[$k] = $App[$k] }
+    $cfg = [ordered]@{ SchemaVersion = '1.0'; App = $appCfg; Installer = [ordered]@{ Type = $src.InstallerType }; Source = $src }
+    [System.IO.File]::WriteAllText((Join-Path $p 'SupportFiles\AppConfig.json'), ($cfg | ConvertTo-Json -Depth 6), [System.Text.UTF8Encoding]::new($false))
+    if ($null -ne $Results) { Set-TestResultFile $p $Results }
+    if ($Manifest) {
+        $script:body = Get-Content -LiteralPath (Join-Path $fx $Manifest) -Raw -Encoding UTF8
+        $script:W32TSiblingProbeMemo = $null
+        $null = Write-Win32ToolkitIdentityDelta -ProjectPath $p -Quiet
+        $script:W32TSiblingProbeMemo = $null
+    }
+    $script:gets = 0
+    $p
+}
+function Get-Advisory([string]$Project, [string]$Context = 'Publish', [switch]$Probe) {
+    Get-Win32ToolkitPackageAdvisory -ProjectPath $Project -Context $Context -ProbeIfMissing:$Probe 3>$null
+}
+$allMessages = [System.Collections.Generic.HashSet[string]]::new()
+function Codes($a) { foreach ($f in @($a.Findings)) { [void]$allMessages.Add([string]$f.Message) }; (@($a.Findings) | ForEach-Object Code) -join ',' }
+function Find($a, [string]$Code) { @($a.Findings) | Where-Object Code -eq $Code | Select-Object -First 1 }
+# Every entry by name, every file by size and time. A folder's own time is left out: Windows updates it a
+# moment after the fixture files are created, whoever reads the folder.
+function Get-Listing([string]$Path) {
+    @(Get-ChildItem -LiteralPath $Path -Recurse -Force | Sort-Object FullName | ForEach-Object {
+            if ($_.PSIsContainer) { '{0}|d' -f $_.FullName } else { '{0}|{1}|{2}' -f $_.FullName, $_.Length, $_.LastWriteTimeUtc.Ticks }
+        }) -join "`n"
+}
+
+try {
+    # ======================== [1] Update records ========================
+    Write-Host '[1] Notepad++ 8.9.8.1 wix: a Failed nullsoft (exe) Update record -> UPDATE-FAILED + the identity warnings' -ForegroundColor Cyan
+    $npp = New-AdvProject -Results @(New-Record) -Manifest 'Notepad++.Notepad++\8.9.8.1.installer.yaml'
+    if (Test-Path -LiteralPath (Join-Path $npp 'Documentation\IdentityDelta.json')) { Ok 'fixture: IdentityDelta.json stored from the Notepad++ 8.9.8.1 manifest' } else { Bad 'fixture: no IdentityDelta.json' }
+    $a = Get-Advisory $npp
+    if ((Codes $a) -eq 'UPDATE-FAILED,ID-SIBLING-UNTESTED,ID-SIBLING-FAMILY,ID-NO-ANCHOR') { Ok 'codes = UPDATE-FAILED, ID-SIBLING-UNTESTED, ID-SIBLING-FAMILY, ID-NO-ANCHOR (in that order)' } else { Bad "codes = $(Codes $a)" }
+    $uf = Find $a 'UPDATE-FAILED'
+    $want = 'The latest Update test with a nullsoft (vendor EXE, NSIS) baseline (v8.8.9, HyperV/Unattended, 2026-10-19) FAILED: OldArpGone-PostUpdate. This only warns: publishing continues. Review Sandbox\Logs\UpdateAssertions.log before you assign it.'
+    if ($uf.Severity -eq 'Warning' -and $uf.Source -eq 'UpdateTest' -and $uf.Message -ceq $want) { Ok 'UPDATE-FAILED (Warning) names the baseline technology, version, backend, date and OldArpGone-PostUpdate' } else { Bad "UPDATE-FAILED = $($uf | ConvertTo-Json -Compress)" }
+    $u = @($a.Update)
+    if ($u.Count -eq 1 -and $u[0].BaselineFamily -eq 'exe' -and $u[0].BaselineType -eq 'nullsoft' -and $u[0].BaselineVersion -eq '8.8.9' -and $u[0].Verdict -eq 'Failed' -and
+        (@($u[0].FailedAssertions) -join ',') -eq 'OldArpGone-PostUpdate' -and $u[0].Legacy -eq $false -and $u[0].Backend -eq 'HyperV' -and $u[0].Mode -eq 'Unattended' -and $u[0].TimestampUtc -like '2026-10-19T11:03:09*') {
+        Ok 'Update = one entry (exe, nullsoft, 8.8.9, Failed, OldArpGone-PostUpdate, HyperV/Unattended, not legacy)'
+    } else { Bad "Update = $($a.Update | ConvertTo-Json -Compress -Depth 4)" }
+    if ($a.SchemaVersion -eq '1.0' -and $a.PackageType -eq 'wix' -and $a.PackageFamily -eq 'msi') { Ok 'SchemaVersion 1.0, PackageType wix, PackageFamily msi' } else { Bad "header: $($a.SchemaVersion) $($a.PackageType) $($a.PackageFamily)" }
+    $su = Find $a 'ID-SIBLING-UNTESTED'
+    # Live check KILL-NATIVE (2026-10-26): with a run of that family on record, the line names the latest one ("no Update test has
+    # passed" was false when an older run had passed).
+    # Live row MSIBUSY (round 2): the run is named by its own baseline type ("ships nullsoft ..., but ... from an exe install").
+    $wantSu = "winget also ships nullsoft (vendor EXE, NSIS), but the latest Update test from a nullsoft install failed (on 2026-10-19). Run: Test-Win32ToolkitProject -ProjectPath '$npp' -Scenario Update -BaselineInstallerType Both"
+    if ($su.Severity -eq 'Warning' -and $su.Message -ceq $wantSu) { Ok 'ID-SIBLING-UNTESTED (Warning) names the technology and the -BaselineInstallerType Both command' } else { Bad "ID-SIBLING-UNTESTED = $($su.Message)" }
+    if ((Find $a 'ID-SIBLING-FAMILY').Severity -eq 'Warning' -and (Find $a 'ID-SIBLING-FAMILY').Source -eq 'IdentityDelta') { Ok 'ID-SIBLING-FAMILY stays a Warning (no passed exe record), Source IdentityDelta' } else { Bad 'ID-SIBLING-FAMILY severity/source' }
+    if ($script:switchArgs.PackageType -eq 'wix' -and $script:switchArgs.PackageFamily -eq 'msi' -and $script:switchArgs.ProjectPath -eq $npp) { Ok 'Get-Win32ToolkitTechnologySwitch gets the project and the packaged type/family' } else { Bad "switch args $($script:switchArgs | ConvertTo-Json -Compress)" }
+    if ($script:gets -eq 0) { Ok 'the stored probe is reused: no request' } else { Bad "$($script:gets) request(s)" }
+    $ae = Get-Advisory $npp -Context Export
+    # Worded so it also holds for Export -WhatIf, which packages nothing (re-verification 2026-10-21, A2 sb#1).
+    $aeMsg = (Find $ae 'UPDATE-FAILED').Message
+    if ($aeMsg -match 'This only warns: it does not stop packaging\.' -and $aeMsg -notmatch 'is still packaged') { Ok "-Context Export words it 'it does not stop packaging' (no claim that a package was built)" } else { Bad "Export wording: $aeMsg" }
+
+    Write-Host '[1b] the failed run''s own cause decides the advice (installer-identity PR 3 live checks)' -ForegroundColor Cyan
+    $withRules = {
+        param([object[]]$Rules, [object]$Record)
+        $pr = New-AdvProject -Results @($Record) -Manifest 'Notepad++.Notepad++\8.9.8.1.installer.yaml'
+        $cf = Join-Path $pr 'SupportFiles\AppConfig.json'
+        $c = Get-Content -LiteralPath $cf -Raw | ConvertFrom-Json
+        $c | Add-Member -NotePropertyName PriorInstalls -NotePropertyValue ([pscustomobject]@{ SchemaVersion = '1.0'; Entries = @($Rules) }) -Force
+        [System.IO.File]::WriteAllText($cf, ($c | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
+        $pr
+    }
+    $rule = { param([string]$Mode) [pscustomobject]@{ Id = 'nsis-x64'; Kind = 'ArpKey'; Mode = $Mode; Key = 'Notepad++'; View = 'Native'; Publisher = 'Notepad++ Team'; UninstallerType = 'nullsoft' } }
+    $recWith = {
+        param([int]$Code, [string]$Meaning)
+        $r = New-Record -Fail @('Requirement-PreUpdate', 'OldArpGone-PostUpdate', 'UpdateExitCode-PostUpdate')
+        $r.Notes = "Intune-parity phase 'Update (Intune parity)' exited with code ${Code}$(if ($Meaning) { ": $Meaning" })."
+        $r
+    }
+    # Live rows OP-BLOCK, RC2-BLOCK: a deliberate Block refusal gave UPDATE-FAILED and ID-SIBLING-UNTESTED warnings, the latter
+    # asking for a run that refuses again while the rule is Block.
+    $a = Get-Advisory (& $withRules @((& $rule 'Block')) (& $recWith 69101 'a Block prior-install rule refused the install: the prior install it declares is present'))
+    $uf = Find $a 'UPDATE-FAILED'; $su = Find $a 'ID-SIBLING-UNTESTED'
+    if ($uf.Severity -eq 'Info' -and $uf.Message -match 'ended as intended: the Block prior-install rule\(s\) nsis-x64 refused the update \(exit code 69101\)' -and
+        $su.Severity -eq 'Info' -and $su.Message -match 'ended with the refusal of the Block rule\(s\) nsis-x64 \(69101\) \(on 2026-10-19\), as intended: while the rule is Block that test cannot pass' -and $su.Message -match '-Id nsis-x64 -Mode Enforce' -and $su.Message -notmatch 'BaselineInstallerType Both' -and
+        @($a.Findings | Where-Object { $_.Severity -eq 'Warning' -and $_.Code -in 'UPDATE-FAILED', 'ID-SIBLING-UNTESTED' }).Count -eq 0) {
+        Ok 'a Block rule''s 69101 refusal: UPDATE-FAILED and ID-SIBLING-UNTESTED are Info, as intended, naming the rule and the step to Enforce (no re-run advice)'
+    } else { Bad "block refusal: $($uf.Severity) $($uf.Message) // $($su.Severity) $($su.Message)" }
+    # Live rows OP-BLOCK, RC2-BLOCK (round 2): "Its failed assertions follow from that refusal: Requirement-PreUpdate, ..." - but
+    # Requirement-PreUpdate is judged before the update and fails because the update requirement holds Enforce rules only (D28).
+    if ($uf.Message -match 'The failed assertions after it follow from that refusal: OldArpGone-PostUpdate, UpdateExitCode-PostUpdate\. Requirement-PreUpdate was judged before the update and fails by design: the update requirement detects only installs an Enforce rule names' -and
+        $uf.Message -notmatch 'follow from that refusal: Requirement-PreUpdate') { Ok 'the 69101 Info separates Requirement-PreUpdate (judged before the update, by design) from the assertions the refusal explains' } else { Bad "block pre-update: $($uf.Message)" }
+    # Live rows DEMOTE, MSIBUSY: a retry code of the test VM asked for a technology-switch test.
+    $a = Get-Advisory (& $withRules @() (& $recWith 69107 'a restart is pending, or the removal of the prior install needs one: nothing was removed, the install runs after the restart'))
+    $uf = Find $a 'UPDATE-FAILED'; $su = Find $a 'ID-SIBLING-UNTESTED'
+    if ($uf.Severity -eq 'Warning' -and $uf.Message -match 'judged nothing: the update exited with the retry code 69107 \(on the test VM: a restart was pending' -and $uf.Message -match 'Run it again' -and
+        $su.Message -match 'judged nothing: it ended with the retry code 69107 \(on the test VM: a restart was pending' -and $su.Message -match 'Run it again: Test-Win32ToolkitProject') { Ok 'a retry code (69107): both say the run judged nothing, why (a pending restart) and to run it again' } else { Bad "retry: $($uf.Message) // $($su.Message)" }
+    # Live rows APP-RUNNING, MSIBUSY (round 2): one cause list for both retry codes named "a restart pending" for 1618 (only
+    # 69107 means that) and repeated it after the code's own meaning.
+    $a = Get-Advisory (& $withRules @() (& $recWith 1618 'Intune retries it later: the prior app was still running after the close-apps dialog, Windows Installer was busy, or the prior install changed while the dialog was open'))
+    $uf = Find $a 'UPDATE-FAILED'; $su = Find $a 'ID-SIBLING-UNTESTED'
+    $c1618 = 'on the test VM: the prior app was still running after the close-apps dialog, Windows Installer was busy, or the prior install changed while the dialog was open'
+    if ($uf.Message.Contains("the update exited with the retry code 1618 ($c1618)") -and $su.Message.Contains("the retry code 1618 ($c1618)") -and
+        @($uf, $su | Where-Object { $_.Message -match 'restart' }).Count -eq 0 -and ([regex]::Matches($uf.Message, 'Windows Installer')).Count -eq 1) { Ok '1618: the causes of 1618 only, once (no "restart pending")' } else { Bad "1618: $($uf.Message) // $($su.Message)" }
+    # Live row OP-NEWER: after a 69102 the advice was the same run (round 1), then "the same run fails again" followed by that run
+    # with no widen command (round 2). The widen command keeps the rule's mode and floor and covers the observed version.
+    $r102 = & $rule 'Enforce'; $r102 | Add-Member -NotePropertyName VersionMin -NotePropertyValue '8.9.0'; $r102 | Add-Member -NotePropertyName VersionMax -NotePropertyValue '8.9.7'
+    $p102 = & $withRules @($r102) (& $recWith 69102 'a newer version of the prior install is present than its rule covers (VersionMax)')
+    [System.IO.File]::WriteAllText((Join-Path $p102 'Documentation\PriorInstallCandidates.json'), (ConvertTo-Json -InputObject ([ordered]@{ SchemaVersion = '1.0'; Baseline = [ordered]@{ Version = '8.9.8'; InstallerType = 'nullsoft'; Family = 'exe' }
+                Candidates = @([ordered]@{ ProposedId = 'nsis-x64'; Confidence = 'High'; Key = 'Notepad++'; View = 'Native'; ObservedVersion = '8.9.8'; WindowsInstaller = $false }) }) -Depth 5), [System.Text.UTF8Encoding]::new($false))
+    $a = Get-Advisory $p102
+    $uf = Find $a 'UPDATE-FAILED'; $su = Find $a 'ID-SIBLING-UNTESTED'; $sf = Find $a 'ID-SIBLING-FAMILY'
+    if ($uf.Message -match 'FAILED \(the update exited with code 69102: a newer version of the prior install is present than its rule covers \(VersionMax\)\)' -and
+        $su.Message.Contains("ended with 69102: the install on the test VM (8.9.8) was newer than the VersionMax of the rule(s) nsis-x64, so the same run fails again. Widen the window: Set-Win32ToolkitPriorInstall -ProjectPath '$p102' -FromUpdateTest -Id nsis-x64 -Mode Enforce -VersionMin '8.9.0' -VersionMax '8.9.8'; or run from a baseline inside it: Test-Win32ToolkitProject -ProjectPath '$p102' -Scenario Update -BaselineInstallerType nullsoft -SpecificVersion <version>.")) {
+        Ok '69102: UPDATE-FAILED names the code and meaning; ID-SIBLING-UNTESTED gives the widen command (mode and floor kept, the observed version covered) and a baseline inside the window'
+    } else { Bad "69102: $($uf.Message) // $($su.Message)" }
+    # Live row OP-NEWER (round 2): ID-SIBLING-FAMILY stayed Info and said the Enforce rule removes that install.
+    if ($sf.Severity -eq 'Warning' -and $sf.Message -match 'The prior-install rule\(s\) nsis-x64 name that install, but the latest Update test found a newer one on the test VM than their VersionMax \(69102\): devices with it FAIL this package until the window is widened\.$' -and
+        $sf.Message -notmatch 'do not get two registrations|an Enforce rule removes it') { Ok '69102: ID-SIBLING-FAMILY is a Warning saying devices with the newer install FAIL (the coverage sentence replaced)' } else { Bad "69102 family: $($sf.Severity) $($sf.Message)" }
+    # Live row KILL-NATIVE (round 2): after a kill-switch refusal the advice was the same run (or a proof).
+    $a = Get-Advisory (& $withRules @((& $rule 'Enforce')) (& $recWith 69111 'removal of prior installs is switched off on this device (RemovePriorDisabled)'))
+    $su = Find $a 'ID-SIBLING-UNTESTED'
+    if ($su.Message -match 'ended with 69111: removal of prior installs was switched off on the test VM \(RemovePriorDisabled = 1 under HKLM\\SOFTWARE\\Contoso IT\\win32-toolkit, set by the package itself - an org hook - or by the test VM''s checkpoint\), so the same run refuses again\. Remove what sets it, then run it again: Test-Win32ToolkitProject .* -Backend HyperV -TestMode Unattended$' -and
+        $su.Message -notmatch 'BaselineInstallerType Both') { Ok '69111: ID-SIBLING-UNTESTED names the kill switch on the test VM (its key with the ScriptAuthor) and what to remove before the run' } else { Bad "69111: $($su.Message)" }
+    # Live row OP-REPORT: a Report rule's side-by-side install fails OldArpGone by design every time.
+    $a = Get-Advisory (& $withRules @((& $rule 'Report')) (New-Record))
+    $su = Find $a 'ID-SIBLING-UNTESTED'
+    if ($su.Severity -eq 'Warning' -and $su.Message -match 'the Report rule\(s\) nsis-x64 leave that install next to this package by design \(OldArpGone fails while it is Report\)' -and $su.Message -match '-Id nsis-x64 -Mode Enforce' -and $su.Message -notmatch 'BaselineInstallerType Both') { Ok 'a Report rule of that family: the side-by-side install is by design; the step is Enforce (no re-run advice)' } else { Bad "report: $($su.Message)" }
+    # Live rows OP-CONTROL, RC2-BUILD: the Update test's candidate was named only in that run's own output.
+    $pc = & $withRules @() (New-Record)
+    [System.IO.File]::WriteAllText((Join-Path $pc 'Documentation\PriorInstallCandidates.json'), (ConvertTo-Json -InputObject ([ordered]@{ SchemaVersion = '1.0'; Baseline = [ordered]@{ Version = '8.8.9'; InstallerType = 'nullsoft'; Family = 'exe' }
+                Candidates = @([ordered]@{ ProposedId = 'nsis-x64'; Confidence = 'High'; Key = 'Notepad++'; View = 'Native'; WindowsInstaller = $false }) }) -Depth 5), [System.Text.UTF8Encoding]::new($false))
+    $su = Find (Get-Advisory $pc) 'ID-SIBLING-UNTESTED'
+    if ($su.Message -match "left a prior-install candidate \(Notepad\+\+ \[Native\]\): declare it \(Block first\): Set-Win32ToolkitPriorInstall -ProjectPath '.*' -FromUpdateTest -Mode Block;" -and $su.Message -notmatch 'CandidateKey') { Ok 'a declarable candidate from that run: ID-SIBLING-UNTESTED names it and the -FromUpdateTest -Mode Block command' } else { Bad "candidate: $($su.Message)" }
+    # Live row OP-CONTROL (round 2): the same advice for a project whose remove-prior blocks are another catalog revision; the
+    # command was refused (W32T.PriorInstallSlotsMissing), and re-creating the project drops the candidates.
+    $oldRev = [int](Get-Win32ToolkitDeployScriptBlock -Name RemovePriorRevision) - 1
+    [System.IO.File]::WriteAllText((Join-Path $pc 'Invoke-AppDeployToolkit.ps1'), "## win32-toolkit:Pre-Install:prior-check (begin)`n## remove-prior catalog revision $oldRev (win32-toolkit)`n## win32-toolkit:Pre-Install:prior-check (end)`n## win32-toolkit:Pre-Install:remove-prior (begin)`n## win32-toolkit:Pre-Install:remove-prior (end)`n", [System.Text.UTF8Encoding]::new($true))
+    $su = Find (Get-Advisory $pc) 'ID-SIBLING-UNTESTED'
+    if ($su.Message -match "left a prior-install candidate \(Notepad\+\+ \[Native\]\), and this project cannot take a rule: its remove-prior blocks are catalog revision $oldRev, this version writes revision $($oldRev + 1)\. " -and $su.Message -match 'Re-create it with this win32-toolkit version .*run this Update test again \(Test-Win32ToolkitProject .*; re-creating drops the candidates\), then declare it \(Block first\)' -and
+        $su.Message -notmatch 'make it Enforce and prove it') { Ok 'a candidate in a project that cannot take a rule: re-create it, run the Update test again, then declare (not the refused command alone)' } else { Bad "candidate, old slots: $($su.Message)" }
+    # Live row OP-UNPROVEN: an Enforce rule whose identity did not match on the test VM still made ID-SIBLING-FAMILY say
+    # "devices that have it do not get two registrations" (round 1), then kept that sentence and appended "But ..." (round 2);
+    # ID-SIBLING-UNTESTED advised the same run (round 2), which fails the same way.
+    $script:switches = @([pscustomobject]@{ Code = 'ID-TECH-SWITCH'; Message = 'Technology switch: test.'; BaselineFamily = 'exe'; UnmatchedRules = @('nsis-x64') })
+    $pu = & $withRules @((& $rule 'Enforce')) (New-Record -Fail @('OldArpGone-PostUpdate', 'PriorPresent-PreUpdate.nsis-x64'))
+    [System.IO.File]::WriteAllText((Join-Path $pu 'Documentation\PriorInstallCandidates.json'), (ConvertTo-Json -InputObject ([ordered]@{ SchemaVersion = '1.0'; Baseline = [ordered]@{ Version = '8.8.9'; InstallerType = 'nullsoft'; Family = 'exe' }
+                Candidates = @([ordered]@{ ProposedId = 'nsis-x64'; Confidence = 'High'; Key = 'Notepad++'; View = 'Native'; ObservedVersion = '8.8.9'; WindowsInstaller = $false }) }) -Depth 5), [System.Text.UTF8Encoding]::new($false))
+    $a = Get-Advisory $pu
+    $script:switches = @()
+    $sf = Find $a 'ID-SIBLING-FAMILY'; $su = Find $a 'ID-SIBLING-UNTESTED'
+    if ($sf.Severity -eq 'Warning' -and $sf.Message -match '^winget also ships nullsoft .*\. The prior-install rule\(s\) nsis-x64 name that install, but the latest Update test found it on the test VM and they did not match it \(see ID-TECH-SWITCH\): devices like it keep that install next to this package until the rule is replaced\.$' -and
+        $sf.Message -notmatch 'do not get two registrations|an Enforce rule removes it') { Ok 'rules the technology switch names as unmatched: ID-SIBLING-FAMILY is a Warning whose coverage sentence is replaced, not contradicted' } else { Bad "unmatched: $($sf.Severity) $($sf.Message)" }
+    if ($su.Severity -eq 'Warning' -and $su.Message.Contains("found that install on the test VM, but the rule(s) nsis-x64 did not match it (see ID-TECH-SWITCH), so devices like it keep that install next to this package, and running the test again or proving the rule fails the same way. Replace the rule from that test's candidate: Set-Win32ToolkitPriorInstall -ProjectPath '$pu' -FromUpdateTest -Id nsis-x64 -Mode Enforce -VersionMin '' -VersionMax '8.8.9'.") -and
+        $su.Message -notmatch 'BaselineInstallerType Both') { Ok 'unmatched: ID-SIBLING-UNTESTED names the replacement from the candidate (mode kept), not the same run' } else { Bad "unmatched untested: $($su.Message)" }
+
+    Write-Host '[2] Passed / Inconclusive / two families (Both) / Unavailable records' -ForegroundColor Cyan
+    Set-TestResultFile $npp @(New-Record -Verdict Passed -Fail @())
+    $a = Get-Advisory $npp
+    $sf = Find $a 'ID-SIBLING-FAMILY'
+    if ((Codes $a) -eq 'ID-NO-ANCHOR,ID-SIBLING-FAMILY' -and $sf.Severity -eq 'Info' -and $sf.Message -cmatch ' \(tested: Update from exe passed on 2026-10-19\)$') {
+        Ok 'Passed exe record -> no UPDATE-FAILED, no ID-SIBLING-UNTESTED; ID-SIBLING-FAMILY downgraded to Info (tested: ... passed on <date>)'
+    } else { Bad "Passed -> $(Codes $a) / $($sf.Severity) / $($sf.Message)" }
+
+    Set-TestResultFile $npp @(New-Record -Verdict Inconclusive -Fail @())
+    $a = Get-Advisory $npp
+    $ui = Find $a 'UPDATE-INCONCLUSIVE'
+    if ((Codes $a) -eq 'ID-SIBLING-UNTESTED,ID-SIBLING-FAMILY,ID-NO-ANCHOR,UPDATE-INCONCLUSIVE' -and $ui.Severity -eq 'Info' -and $ui.Message -match '^The latest Update test with a nullsoft .* gave no verdict \(Inconclusive\)') {
+        Ok 'Inconclusive -> UPDATE-INCONCLUSIVE (Info, last); the exe family is still untested'
+    } else { Bad "Inconclusive -> $(Codes $a) / $($ui.Message)" }
+
+    Set-TestResultFile $npp @(
+        (New-Record -Mode Both -Origin Packaged -Type wix -Family msi -Verdict Passed -Fail @() -When '2026-10-20T08:00:00Z'),
+        (New-Record -Mode Both -Origin Sibling -When '2026-10-20T08:30:00Z'))
+    $a = Get-Advisory $npp
+    $failed = @($a.Findings | Where-Object Code -eq 'UPDATE-FAILED')
+    if ($failed.Count -eq 1 -and $failed[0].Message -match 'with a nullsoft \(vendor EXE, NSIS\) baseline' -and @($a.Update).Count -eq 2 -and
+        (@($a.Update | ForEach-Object BaselineFamily) -join ',') -eq 'msi,exe' -and (Find $a 'ID-SIBLING-UNTESTED')) {
+        Ok 'Both: msi Passed + exe Failed -> one UPDATE-FAILED (the exe leg), two Update entries, exe still untested'
+    } else { Bad "Both -> $(Codes $a) / Update $(($a.Update | ConvertTo-Json -Compress -Depth 4))" }
+    # Test campaign F2: each run keeps its own logs (LogFolder); UPDATE-FAILED names the failed leg's folder, not the shared top-level log.
+    $legPass = New-Record -Mode Both -Origin Packaged -Type wix -Family msi -Verdict Passed -Fail @() -When '2026-10-20T08:00:00Z'
+    $legPass | Add-Member -NotePropertyName LogFolder -NotePropertyValue 'Sandbox\Logs\Runs\20261020-100000_Update_msi'
+    $legFail = New-Record -Mode Both -Origin Sibling -When '2026-10-20T08:30:00Z'
+    $legFail | Add-Member -NotePropertyName LogFolder -NotePropertyValue 'Sandbox\Logs\Runs\20261020-103000_Update_exe'
+    Set-TestResultFile $npp @($legPass, $legFail)
+    $a = Get-Advisory $npp
+    $wantLf = 'The latest Update test with a nullsoft (vendor EXE, NSIS) baseline (v8.8.9, HyperV/Unattended, 2026-10-20) FAILED: OldArpGone-PostUpdate. This only warns: publishing continues. Review Sandbox\Logs\Runs\20261020-103000_Update_exe\UpdateAssertions.log before you assign it.'
+    if ((Find $a 'UPDATE-FAILED').Message -ceq $wantLf -and (@($a.Update | ForEach-Object LogFolder) -join ',') -eq 'Sandbox\Logs\Runs\20261020-100000_Update_msi,Sandbox\Logs\Runs\20261020-103000_Update_exe') {
+        Ok "a record with its own LogFolder -> UPDATE-FAILED names that run's UpdateAssertions.log; Update entries carry LogFolder"
+    } else { Bad "LogFolder -> $((Find $a 'UPDATE-FAILED').Message) / $(@($a.Update | ForEach-Object LogFolder) -join ',')" }
+    foreach ($badFolder in 'Sandbox\Logs\Runs\..\..\..\Windows', 'C:\Windows', "Sandbox\Logs\Runs\x`e[2J") {
+        $legFail.LogFolder = $badFolder
+        Set-TestResultFile $npp @($legFail)
+        $a = Get-Advisory $npp
+        if ((Find $a 'UPDATE-FAILED').Message -cmatch 'Review Sandbox\\Logs\\UpdateAssertions\.log before you assign it\.$' -and $a.Update[0].LogFolder -eq '') { Ok "a LogFolder outside Sandbox\Logs\Runs\<name> ('$($badFolder -replace "`e", '<ESC>')') is ignored (the record is data)" }
+        else { Bad "bad LogFolder -> $((Find $a 'UPDATE-FAILED').Message)" }
+    }
+    Set-TestResultFile $npp @((New-Record -When '2026-10-19T09:00:00Z'), (New-Record -Unavailable -When '2026-10-20T09:00:00Z'))
+    $a = Get-Advisory $npp
+    if ((Find $a 'UPDATE-FAILED').Message -match '2026-10-19\) FAILED' -and @($a.Update).Count -eq 1 -and $a.Update[0].Verdict -eq 'Failed') {
+        Ok 'a newer Unavailable record of the same family does not hide the older FAIL (UPDATE-FAILED still raised)'
+    } else { Bad "Unavailable after Failed -> $(Codes $a)" }
+    Set-TestResultFile $npp @((New-Record -Unavailable))
+    $a = Get-Advisory $npp
+    if (@($a.Update).Count -eq 0 -and -not (Find $a 'UPDATE-FAILED') -and -not (Find $a 'UPDATE-INCONCLUSIVE') -and (Find $a 'ID-SIBLING-UNTESTED')) { Ok 'an Unavailable record alone is never judged (no Update entry, no UPDATE-* finding)' } else { Bad "Unavailable only -> $(Codes $a)" }
+    if ((Find $a 'ID-SIBLING-UNTESTED').Message -match 'but no Update test has passed from an exe install\. Run:') { Ok 'no judged run of that family -> ID-SIBLING-UNTESTED says no Update test has passed from it' } else { Bad "untested wording: $((Find $a 'ID-SIBLING-UNTESTED').Message)" }
+    # Installer-identity PR 2: a test the Intune-parity pre-check did not start (NotRun: Inconclusive, no assertions, no
+    # Baseline) is listed but never judged - it would otherwise read as the newest (legacy) record and hide the FAIL.
+    $notRun = [pscustomobject][ordered]@{ Scenario = 'Update'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-22T09:00:00Z'; Verdict = 'Inconclusive'
+        Assertions = @(); Notes = 'Not run (Intune-parity pre-check): x'
+        NotRun = [ordered]@{ Code = 'PARITY-DIALOG-WAIT'; Shape = 'Psadt41'; ProcessesToClose = 0; Welcome = 'OrgUi'; SignedInSessions = 1 } }
+    Set-TestResultFile $npp @((New-Record -When '2026-10-19T09:00:00Z'), $notRun)
+    $a = Get-Advisory $npp
+    if ((Find $a 'UPDATE-FAILED').Message -match '2026-10-19\) FAILED' -and -not (Find $a 'UPDATE-INCONCLUSIVE') -and @($a.Update).Count -eq 1 -and -not $a.Update[0].Legacy) {
+        Ok 'a FAILED Update record followed by a NotRun one -> UPDATE-FAILED still reported, no UPDATE-INCONCLUSIVE'
+    } else { Bad "Failed then NotRun -> $(Codes $a) / Update $(($a.Update | ConvertTo-Json -Compress -Depth 4))" }
+    Set-TestResultFile $npp @($notRun)
+    $a = Get-Advisory $npp
+    if (@($a.Update).Count -eq 0 -and -not (Find $a 'UPDATE-FAILED') -and -not (Find $a 'UPDATE-INCONCLUSIVE')) { Ok 'a NotRun record alone is never judged (no Update entry, no UPDATE-* finding)' } else { Bad "NotRun only -> $(Codes $a)" }
+    Set-TestResultFile $npp @((New-Record -When '2026-10-19T09:00:00Z'), (New-Record -Verdict Passed -Fail @() -When '2026-10-20T09:00:00Z'))
+    $a = Get-Advisory $npp
+    if (-not (Find $a 'UPDATE-FAILED') -and (Find $a 'ID-SIBLING-FAMILY').Severity -eq 'Info') { Ok 'an older FAIL followed by a newer PASS of the same family -> no UPDATE-FAILED' } else { Bad "Failed then Passed -> $(Codes $a)" }
+    Set-TestResultFile $npp @((New-Record -Verdict Passed -Fail @() -When '2026-10-19T09:00:00Z'), (New-Record -When '2026-10-20T09:00:00Z'))
+    $a = Get-Advisory $npp
+    $sf = Find $a 'ID-SIBLING-FAMILY'
+    if ((Codes $a) -eq 'UPDATE-FAILED,ID-SIBLING-UNTESTED,ID-SIBLING-FAMILY,ID-NO-ANCHOR' -and (Find $a 'UPDATE-FAILED').Message -match '2026-10-20\) FAILED' -and
+        $sf.Severity -eq 'Warning' -and $sf.Message -notmatch '\(tested: ') {
+        Ok 'an older PASS followed by a newer FAIL of the same family -> UPDATE-FAILED; ID-SIBLING-FAMILY stays a Warning, no (tested: ...) suffix'
+    } else { Bad "Passed then Failed -> $(Codes $a) / $($sf.Severity) / $($sf.Message)" }
+    $install = [pscustomobject]@{ Scenario = 'InstallUninstall'; Backend = 'Sandbox'; Mode = 'Unattended'; TimestampUtc = '2026-10-21T09:00:00Z'; Verdict = 'Failed'
+                                  Assertions = @([pscustomobject]@{ Name = 'Installed'; Result = 'FAIL' }); Notes = '' }
+    Set-TestResultFile $npp @($install)
+    $a = Get-Advisory $npp
+    # TUI audit G1 (S8-F1): a failed install/uninstall test is no Update test, but it now warns as INSTALL-FAILED.
+    $if1 = Find $a 'INSTALL-FAILED'
+    $wantIf1 = 'The latest install/uninstall test (Sandbox/Unattended, 2026-10-21) FAILED: Installed. This only warns: publishing continues. Review Sandbox\Logs\InstallAssertions.log before you assign it.'
+    if (-not (Find $a 'UPDATE-FAILED') -and @($a.Update).Count -eq 0 -and $if1 -and $if1.Severity -eq 'Warning' -and $if1.Source -eq 'InstallTest' -and $if1.Message -ceq $wantIf1 -and
+        $a.Install.Verdict -eq 'Failed' -and (@($a.Install.FailedAssertions) -join ',') -eq 'Installed' -and $a.Install.Backend -eq 'Sandbox' -and $a.Install.Mode -eq 'Unattended' -and
+        (Codes $a) -eq 'INSTALL-FAILED,ID-SIBLING-UNTESTED,ID-SIBLING-FAMILY,ID-NO-ANCHOR') {
+        Ok 'an InstallUninstall record is not an Update test (no UPDATE-FAILED, no Update entry); its failure is INSTALL-FAILED (Warning, InstallTest), first'
+    } else { Bad "InstallUninstall -> $(Codes $a) / $($if1 | ConvertTo-Json -Compress) / Install $($a.Install | ConvertTo-Json -Compress)" }
+
+    Write-Host '[2b] the latest install/uninstall test -> INSTALL-FAILED / INSTALL-INCONCLUSIVE (TUI audit G1)' -ForegroundColor Cyan
+    function New-IuRecord {
+        param([string]$Verdict = 'Failed', [string]$When = '2026-10-23T10:15:00Z', [string[]]$Fail = @('AppArpGone-PostUninstall'), [string[]]$Pass = @('Detected-PostInstall'),
+              [string]$LogFolder = '', [switch]$NotRun)
+        $assertions = @(@($Pass | ForEach-Object { [ordered]@{ Name = $_; Result = 'PASS' } }) + @($Fail | ForEach-Object { [ordered]@{ Name = $_; Result = 'FAIL' } }))
+        $r = [ordered]@{ Scenario = 'InstallUninstall'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = $When; Verdict = $Verdict; Assertions = $assertions; Notes = '' }
+        if ($LogFolder) { $r['LogFolder'] = $LogFolder }
+        if ($NotRun) {
+            $r.Verdict = 'Inconclusive'; $r.Assertions = @(); $r.Notes = 'Not run (Intune-parity pre-check): x'
+            $r['NotRun'] = [ordered]@{ Code = 'PARITY-DIALOG-WAIT'; Shape = 'Psadt41'; ProcessesToClose = 0; Welcome = 'OrgUi'; SignedInSessions = 1 }
+        }
+        [pscustomobject]$r
+    }
+    $installCodes = { param($a) (@($a.Findings) | Where-Object { $_.Code -like 'INSTALL-*' } | ForEach-Object Code) -join ',' }
+    Set-TestResultFile $npp @((New-IuRecord -When '2026-10-22T09:00:00Z'), (New-IuRecord -Verdict Passed -Fail @()))
+    $a = Get-Advisory $npp
+    if ((& $installCodes $a) -eq '' -and $a.Install.Verdict -eq 'Passed') { Ok 'an older FAIL followed by a newer PASS -> no INSTALL-* finding (Install.Verdict Passed)' } else { Bad "Failed then Passed -> $(Codes $a)" }
+    Set-TestResultFile $npp @((New-IuRecord -Verdict Passed -Fail @() -When '2026-10-22T09:00:00Z'), (New-IuRecord))
+    $a = Get-Advisory $npp
+    $wantIf = 'The latest install/uninstall test (HyperV/Unattended, 2026-10-23) FAILED: AppArpGone-PostUninstall. This only warns: publishing continues. Review Sandbox\Logs\InstallAssertions.log before you assign it.'
+    if ((& $installCodes $a) -eq 'INSTALL-FAILED' -and (Find $a 'INSTALL-FAILED').Message -ceq $wantIf) { Ok 'an older PASS never hides a newer FAIL -> INSTALL-FAILED names AppArpGone-PostUninstall' } else { Bad "Passed then Failed -> $(Codes $a) / $((Find $a 'INSTALL-FAILED').Message)" }
+    Set-TestResultFile $npp @((New-IuRecord -Verdict Inconclusive -Fail @() -Pass @()))
+    $a = Get-Advisory $npp
+    $ii = Find $a 'INSTALL-INCONCLUSIVE'
+    $wantIi = "The latest install/uninstall test (HyperV/Unattended, 2026-10-23) gave no verdict (Inconclusive): it did not show that the package installs and uninstalls. This only warns: publishing continues. Run it again before you assign it: Test-Win32ToolkitProject -ProjectPath '$npp' -Scenario InstallUninstall"
+    if ((& $installCodes $a) -eq 'INSTALL-INCONCLUSIVE' -and $ii.Severity -eq 'Warning' -and $ii.Source -eq 'InstallTest' -and $ii.Message -ceq $wantIi -and $a.Install.Verdict -eq 'Inconclusive') {
+        Ok 'the latest record Inconclusive -> INSTALL-INCONCLUSIVE (Warning) with the command to run it again'
+    } else { Bad "Inconclusive -> $(Codes $a) / $($ii | ConvertTo-Json -Compress)" }
+    Set-TestResultFile $npp @((New-IuRecord -When '2026-10-22T09:00:00Z'), (New-IuRecord -NotRun))
+    $a = Get-Advisory $npp
+    if ((& $installCodes $a) -eq 'INSTALL-FAILED' -and (Find $a 'INSTALL-FAILED').Message -match '2026-10-22\) FAILED' -and $a.Install.Verdict -eq 'Failed') { Ok 'a FAILED record followed by a NotRun one -> INSTALL-FAILED still reported (NotRun is never judged)' } else { Bad "Failed then NotRun -> $(Codes $a)" }
+    Set-TestResultFile $npp @((New-IuRecord -NotRun))
+    $a = Get-Advisory $npp
+    if ((& $installCodes $a) -eq '' -and $null -eq $a.Install) { Ok 'a NotRun record alone -> no INSTALL-* finding, Install $null' } else { Bad "NotRun only -> $(Codes $a) / $($a.Install | ConvertTo-Json -Compress)" }
+    Set-TestResultFile $npp @((New-Record))
+    $a = Get-Advisory $npp
+    if ((& $installCodes $a) -eq '' -and $null -eq $a.Install) { Ok 'no install/uninstall record at all (an untested package) -> no INSTALL-* finding, Install $null' } else { Bad "no IU record -> $(Codes $a)" }
+    Set-TestResultFile $npp @((New-IuRecord -LogFolder 'Sandbox\Logs\Runs\20261023-101500_InstallUninstall'))
+    $a = Get-Advisory $npp -Context Tui
+    if ((Find $a 'INSTALL-FAILED').Message -cmatch 'Review Sandbox\\Logs\\Runs\\20261023-101500_InstallUninstall\\InstallAssertions\.log before you assign it\.$' -and $a.Install.LogFolder -eq 'Sandbox\Logs\Runs\20261023-101500_InstallUninstall') {
+        Ok "-Context Tui: INSTALL-FAILED names the run's own InstallAssertions.log (Install.LogFolder)"
+    } else { Bad "LogFolder -> $((Find $a 'INSTALL-FAILED').Message)" }
+    foreach ($badFolder in '..\x', 'Sandbox\Logs\Runs\..\..\..\Windows') {
+        Set-TestResultFile $npp @((New-IuRecord -LogFolder $badFolder))
+        $a = Get-Advisory $npp
+        if ((Find $a 'INSTALL-FAILED').Message -cmatch 'Review Sandbox\\Logs\\InstallAssertions\.log before you assign it\.$' -and $a.Install.LogFolder -eq '') { Ok "a forged LogFolder ('$badFolder') -> Sandbox\Logs\InstallAssertions.log" } else { Bad "forged LogFolder -> $((Find $a 'INSTALL-FAILED').Message)" }
+    }
+    Set-TestResultFile $npp @((New-IuRecord))
+    $ae = Get-Advisory $npp -Context Export
+    if ((Find $ae 'INSTALL-FAILED').Message -match 'This only warns: it does not stop packaging\.') { Ok "-Context Export: INSTALL-FAILED says 'it does not stop packaging'" } else { Bad "Export wording: $((Find $ae 'INSTALL-FAILED').Message)" }
+    $esc0 = [char]0x1B
+    Set-TestResultFile $npp @((New-IuRecord -Fail @("Evil${esc0}[2J[red]X$([char]0x202E)")))
+    $a = Get-Advisory $npp
+    $hm = (Find $a 'INSTALL-FAILED').Message
+    if ($hm -and $hm.Contains('FAILED: Evil?[2J[red]X?.') -and $hm.IndexOf([char]0x1B) -lt 0 -and $hm.IndexOf([char]0x202E) -lt 0 -and (@($a.Install.FailedAssertions) -join '') -eq 'Evil?[2J[red]X?') {
+        Ok 'a hostile assertion name (ESC, U+202E) is sanitised in the message and in Install.FailedAssertions'
+    } else { Bad "hostile name -> $hm" }
+
+    Write-Host '[3] Legacy record (no Baseline): the spec 2.12 conditions decide its technology' -ForegroundColor Cyan
+    $old = Join-Path $npp 'Sandbox\OldVersion'
+    New-Item -ItemType Directory -Path $old -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $fx 'Notepad++.Notepad++\8.8.9.installer.yaml') -Destination (Join-Path $old 'Notepad++_8.8.9_Machine_X64_nullsoft_en-US.yaml')
+    $assertPs1 = Join-Path $npp 'Sandbox\UpdateAssertions.ps1'
+    [System.IO.File]::WriteAllText($assertPs1, "# generated (test fixture, never run)`r`n`$expectedOldVersion = '8.8.9'`r`n", [System.Text.UTF8Encoding]::new($true))
+    $legacy = New-Record -Legacy -Pass @('Requirement-PreUpdate', 'Tattoo-PostUpdate')
+    Set-TestResultFile $npp @($legacy)
+    $a = Get-Advisory $npp
+    $u = @($a.Update)
+    if ($u.Count -eq 1 -and $u[0].Legacy -eq $true -and $u[0].BaselineFamily -eq 'exe' -and $u[0].BaselineType -eq 'nullsoft' -and $u[0].BaselineVersion -eq '8.8.9' -and
+        (Find $a 'UPDATE-FAILED').Message -match 'with a nullsoft \(vendor EXE, NSIS\) baseline \(v8\.8\.9,' -and (Find $a 'ID-SIBLING-UNTESTED')) {
+        Ok 'legacy winget baseline + OldVersion PackageVersion 8.8.9 = $expectedOldVersion -> exe / nullsoft / 8.8.9, Legacy'
+    } else { Bad "legacy -> $(Codes $a) / $($a.Update | ConvertTo-Json -Compress -Depth 4)" }
+    Set-TestResultFile $npp @(New-Record -Legacy -Pass @('TattooBaseline-PreUpdate'))
+    $a = Get-Advisory $npp
+    if ($a.Update[0].BaselineFamily -eq '' -and (Find $a 'UPDATE-FAILED').Message -cmatch '^The latest Update test \(HyperV/Unattended, 2026-10-19\) FAILED: OldArpGone-PostUpdate\.') {
+        Ok 'legacy record with TattooBaseline-PreUpdate (a project baseline) -> technology unknown, UPDATE-FAILED still raised (D1)'
+    } else { Bad "legacy project baseline -> $(Codes $a) / $((Find $a 'UPDATE-FAILED').Message)" }
+    [System.IO.File]::WriteAllText($assertPs1, "`$expectedOldVersion = '8.8.8'`r`n", [System.Text.UTF8Encoding]::new($true))
+    Set-TestResultFile $npp @($legacy)
+    $a = Get-Advisory $npp
+    if ($a.Update[0].BaselineFamily -eq '' -and $a.Update[0].Legacy -and (Find $a 'UPDATE-FAILED')) { Ok "`$expectedOldVersion '8.8.8' <> OldVersion 8.8.9 -> technology unknown (a stale OldVersion is never trusted)" } else { Bad "stale OldVersion -> $($a.Update | ConvertTo-Json -Compress -Depth 4)" }
+    [System.IO.File]::WriteAllText($assertPs1, "`$expectedOldVersion = '8.8.9'`r`n", [System.Text.UTF8Encoding]::new($true))
+    Set-TestResultFile $npp @($legacy, (New-Record -Type wix -Family msi -Verdict Passed -Fail @() -When '2026-10-20T09:00:00Z'))
+    $a = Get-Advisory $npp
+    if (@($a.Update).Count -eq 1 -and $a.Update[0].BaselineFamily -eq 'msi' -and -not (Find $a 'UPDATE-FAILED')) { Ok 'a legacy record that is not the newest Update record is ignored' } else { Bad "legacy not newest -> $(Codes $a)" }
+    Set-TestResultFile $npp @($legacy, (New-Record -Unavailable -When '2026-10-20T09:00:00Z'))
+    $a = Get-Advisory $npp
+    if (@($a.Update).Count -eq 1 -and $a.Update[0].Legacy -and (Find $a 'UPDATE-FAILED')) { Ok 'a newer Unavailable record does not hide the legacy FAIL' } else { Bad "legacy + Unavailable -> $(Codes $a)" }
+    # The legacy lookup only names the technology: when it cannot, the FAIL is still reported (D1).
+    [System.IO.File]::WriteAllText($assertPs1, '', [System.Text.UTF8Encoding]::new($false))
+    Set-TestResultFile $npp @($legacy)
+    $a = Get-Advisory $npp
+    if (@($a.Update).Count -eq 1 -and $a.Update[0].Legacy -and $a.Update[0].BaselineFamily -eq '' -and
+        (Find $a 'UPDATE-FAILED').Message -cmatch '^The latest Update test \(HyperV/Unattended, 2026-10-19\) FAILED: OldArpGone-PostUpdate\.' -and -not (Find $a 'ADVISORY-UNAVAILABLE')) {
+        Ok 'an empty Sandbox\UpdateAssertions.ps1 -> technology unknown; the newest legacy FAIL still raises UPDATE-FAILED (no Could-not-check finding)'
+    } else { Bad "legacy + empty UpdateAssertions.ps1 -> $(Codes $a) / $($a.Update | ConvertTo-Json -Compress -Depth 4)" }
+    [System.IO.File]::WriteAllText($assertPs1, "`$expectedOldVersion = '8.8.9'`r`n", [System.Text.UTF8Encoding]::new($true))
+    function Get-WingetManifestFile { [CmdletBinding()] param([string]$Path, [string]$Kind) throw [System.IO.IOException]::new('manifest folder exploded') }
+    $verbose = @(Get-Win32ToolkitPackageAdvisory -ProjectPath $npp -Verbose 4>&1 3>$null)
+    $a = @($verbose | Where-Object { $_ -isnot [System.Management.Automation.VerboseRecord] }) | Select-Object -First 1
+    if (@($a.Update).Count -eq 1 -and $a.Update[0].Legacy -and $a.Update[0].BaselineFamily -eq '' -and (Find $a 'UPDATE-FAILED') -and -not (Find $a 'ADVISORY-UNAVAILABLE') -and
+        @($verbose | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] -and "$_" -match 'legacy Update record; its technology is unknown: manifest folder exploded' }).Count -eq 1) {
+        Ok 'a throwing legacy lookup -> Write-Verbose, technology unknown, UPDATE-FAILED still raised (no Could-not-check finding)'
+    } else { Bad "legacy + throwing lookup -> $(Codes $a)" }
+    . (Join-Path $repo 'Private\Get-WingetManifestFile.ps1')
+
+    # ======================== [4] Technology switch (WP-4 shadow) ========================
+    Write-Host '[4] ID-TECH-SWITCH: every Get-Win32ToolkitTechnologySwitch result, sanitised' -ForegroundColor Cyan
+    Set-TestResultFile $npp @(New-Record)
+    $esc = [char]0x1B; $rlo = [char]0x202E
+    $script:switches = @([pscustomobject]@{ Code = 'ID-TECH-SWITCH'; Message = "Technology switch: the vendor nullsoft install of v8.8.9 (Notepad++ ${esc}[2J(64-bit x64)${rlo}, ARP key 'Notepad++') was still registered after the wix package installed." })
+    $a = Get-Advisory $npp
+    $ts = Find $a 'ID-TECH-SWITCH'
+    if ((Codes $a) -eq 'UPDATE-FAILED,ID-TECH-SWITCH,ID-SIBLING-UNTESTED,ID-SIBLING-FAMILY,ID-NO-ANCHOR' -and $ts.Severity -eq 'Warning' -and $ts.Source -eq 'UpdateTest') { Ok 'ID-TECH-SWITCH (Warning, UpdateTest) right after UPDATE-FAILED' } else { Bad "switch -> $(Codes $a)" }
+    if ($ts.Message -notmatch '[\x00-\x1F\u202E]' -and $ts.Message -match 'Notepad\+\+ \?\[2J\(64-bit x64\)\?, ARP key') { Ok 'control / bidi characters in a switch message are replaced' } else { Bad "switch message: $($ts.Message)" }
+    $script:switches = @()
+
+    # ======================== [5] Fixture deltas ========================
+    Write-Host '[5] TeamViewer (zip-wrapped msi only) and Paint.NET (registers as its own wix)' -ForegroundColor Cyan
+    $tv = New-AdvProject -Name 'TeamViewer_x64_15.82.6' -Source @{ WingetId = 'TeamViewer.TeamViewer'; Version = '15.82.6'; InstallerType = 'nullsoft'; Family = 'exe' } `
+        -App @{ Vendor = 'TeamViewer'; Name = 'TeamViewer'; DisplayName = 'TeamViewer' } -Manifest 'TeamViewer.TeamViewer\15.82.6.installer.yaml'
+    $a = Get-Advisory $tv
+    $un = Find $a 'ID-SIBLING-UNTESTABLE'
+    if ((Codes $a) -eq 'ID-SIBLING-UNTESTABLE' -and $un.Severity -eq 'Info' -and $un.Message -match 'wix \(MSI\), zip-wrapped') { Ok 'TeamViewer -> one ID-SIBLING-UNTESTABLE (Info), no ID-SIBLING-UNTESTED, no ID-SIBLING-FAMILY' } else { Bad "TeamViewer -> $(Codes $a)" }
+    $pdn = New-AdvProject -Name 'Paint.NET_x64_5.1' -Source @{ WingetId = 'dotPDN.PaintDotNet'; Version = '5.1' } `
+        -App @{ Vendor = 'dotPDN LLC'; Name = 'Paint.NET'; DisplayName = 'Paint.NET' } -Manifest 'dotPDN.PaintDotNet\5.1.installer.yaml'
+    $a = Get-Advisory $pdn
+    if ((Codes $a) -eq '') { Ok 'Paint.NET wix -> no sibling finding at all' } else { Bad "Paint.NET -> $(Codes $a)" }
+
+    Write-Host '[6] No files -> no findings; a corrupt TestResults.json -> the reader''s own warning only' -ForegroundColor Cyan
+    $bare = Join-Path $tmpRoot 'Projects\Bare\Empty_x64_1.0'
+    New-Item -ItemType Directory -Path $bare -Force | Out-Null
+    $script:cleanupReal = $true
+    $a = Get-Advisory $bare
+    if ((Codes $a) -eq '' -and @($a.Update).Count -eq 0 -and $a.PackageType -eq '') { Ok 'an empty project folder -> no findings, no Update entry (no AppConfig.json: the real cleanup helper reads the empty seed config, so there is nothing to check)' } else { Bad "bare -> $(Codes $a)" }
+    $script:cleanupReal = $false
+    [System.IO.File]::WriteAllText((Join-Path $npp 'Documentation\TestResults.json'), '{ corrupt json', [System.Text.UTF8Encoding]::new($false))
+    $warn = @(); $threw = $false
+    try { $a = Get-Win32ToolkitPackageAdvisory -ProjectPath $npp -WarningVariable warn -ErrorAction Stop 3>$null } catch { $threw = $true }
+    if (-not $threw -and @($warn | Where-Object { "$_" -like 'TestResults.json is unparseable; returning no results.*' }).Count -eq 1 -and
+        @($a.Update).Count -eq 0 -and -not (Find $a 'UPDATE-FAILED') -and -not (Find $a 'ADVISORY-UNAVAILABLE')) {
+        Ok "corrupt TestResults.json -> 'TestResults.json is unparseable; returning no results.', no Update finding, no throw"
+    } else { Bad "corrupt -> threw=$threw warn=$($warn -join ' | ') codes=$(Codes $a)" }
+
+    Write-Host '[7] Fail-open: a throwing helper -> one Could-not-check warning finding, the rest still reported' -ForegroundColor Cyan
+    Set-TestResultFile $npp @(New-Record)
+    $script:switches = { throw [System.InvalidOperationException]::new('switch exploded') }
+    $threw = $false
+    try { $a = Get-Win32ToolkitPackageAdvisory -ProjectPath $npp -ErrorAction Stop } catch { $threw = $true }
+    $cn = @($a.Findings | Where-Object Code -eq 'ADVISORY-UNAVAILABLE')
+    if (-not $threw -and $cn.Count -eq 1 -and $cn[0].Severity -eq 'Warning' -and $cn[0].Message -ceq 'Could not check the Update test and identity warnings: switch exploded' -and (Find $a 'UPDATE-FAILED') -and (Find $a 'ID-SIBLING-FAMILY')) {
+        Ok "a throwing Get-Win32ToolkitTechnologySwitch -> one 'Could not check ...' finding; UPDATE-FAILED and the identity findings still there; no throw under -ErrorAction Stop"
+    } else { Bad "throwing switch -> threw=$threw codes=$(Codes $a)" }
+    $warn = @(); $threw = $false
+    try { $r = Write-Win32ToolkitPackageAdvisory -ProjectPath $npp -Context Export -WarningVariable warn -ErrorAction Stop 3>$null } catch { $threw = $true }
+    if (-not $threw -and $r -and @($warn | Where-Object { "$_" -match 'Could not check the Update test and identity warnings: switch exploded' }).Count -eq 1) { Ok 'Write-...: the failure is printed once as a warning, the advisory is returned' } else { Bad "writer fail-open: threw=$threw warn=$($warn -join ' | ')" }
+    $script:switches = @()
+    function Get-Win32ToolkitIdentityDelta { [CmdletBinding()] param([string]$ProjectPath, [switch]$NoProbe, [switch]$ReuseProbe) throw 'delta exploded' }
+    $threw = $false
+    try { $a = Get-Win32ToolkitPackageAdvisory -ProjectPath $npp -ErrorAction Stop } catch { $threw = $true }
+    $cn = @($a.Findings | Where-Object Code -eq 'ADVISORY-UNAVAILABLE')
+    if (-not $threw -and $cn.Count -eq 1 -and $cn[0].Source -eq 'IdentityDelta' -and $cn[0].Message -match 'delta exploded' -and (Find $a 'UPDATE-FAILED')) { Ok 'a throwing identity check -> one finding (Source IdentityDelta), the Update finding is kept' } else { Bad "throwing delta -> threw=$threw codes=$(Codes $a)" }
+    . $realDeltaFile
+
+    # ======================== [8] UNSAFE-CLEANUP ========================
+    Write-Host '[8] UNSAFE-CLEANUP at Publish / Tui only (the Export gate already refuses the project)' -ForegroundColor Cyan
+    $script:cleanup = @(
+        [pscustomobject]@{ Kind = 'CleanupPath'; Path = 'C:\Program Files (x86)'; Reasons = @('ShellFolder', 'OutsideInstallRoot'); Explanation = 'it is a Windows system folder itself; it is outside the app''s own install folder(s): C:\Program Files\Mozilla Firefox'; Message = 'x' }
+        [pscustomobject]@{ Kind = 'CleanupPath'; Path = 'C:\Program Files (x86)\Mozilla Maintenance Service'; Reasons = @('OutsideInstallRoot'); Explanation = 'outside'; Message = 'y' }
+    )
+    $wantUc = "UNSAFE-CLEANUP: this project's uninstall would delete 2 folder(s) outside the app's own install folder as SYSTEM (first: 'C:\Program Files (x86)' - it is a Windows system folder itself; it is outside the app's own install folder(s): C:\Program Files\Mozilla Firefox). A package exported before this check carries them: re-export it (Export refuses it until the paths are fixed: re-run the install capture) before you publish."
+    foreach ($ctx in 'Publish', 'Tui') {
+        $a = Get-Advisory $npp -Context $ctx
+        $uc = Find $a 'UNSAFE-CLEANUP'
+        if ((Codes $a) -like 'UNSAFE-CLEANUP,UPDATE-FAILED,*' -and $uc.Severity -eq 'Warning' -and $uc.Source -eq 'AppConfig' -and $uc.Message -ceq $wantUc) { Ok "-Context $ctx -> UNSAFE-CLEANUP first, with the count, the first path and why" } else { Bad "$ctx -> $(Codes $a) / $($uc.Message)" }
+    }
+    $before = $script:cleanupCalls
+    $a = Get-Advisory $npp -Context Export
+    if (-not (Find $a 'UNSAFE-CLEANUP') -and $script:cleanupCalls -eq $before) { Ok '-Context Export -> no UNSAFE-CLEANUP and the cleanup helper is not even called' } else { Bad "Export -> $(Codes $a), calls $($script:cleanupCalls - $before)" }
+    $script:cleanup = @([pscustomobject]@{ Kind = 'InstallRoot'; Path = 'C:\Program Files'; Reasons = @('ShellFolder'); Explanation = 'it is a Windows system folder itself'; Message = 'z' })
+    if ((Find (Get-Advisory $npp) 'UNSAFE-CLEANUP').Message -match "delete 1 folder\(s\) .*first: 'C:\\Program Files' - it is a Windows system folder itself") { Ok 'an unsafe install root alone also raises it' } else { Bad 'InstallRoot finding not reported' }
+    # Unreadable is no all-clear: Windows PowerShell 5.1 on the device may still read the file and delete its
+    # cleanup paths (Export refuses it), so a package exported earlier is flagged too.
+    $script:cleanup = @([pscustomobject]@{ Kind = 'Unreadable'; Path = ''; Reasons = @(); Explanation = 'bad json'; Message = 'AppConfig.json could not be read' })
+    $uc = Find (Get-Advisory $npp) 'UNSAFE-CLEANUP'
+    $wantUnread = "UNSAFE-CLEANUP: this project's uninstall cleanup paths could not be checked: SupportFiles\AppConfig.json could not be read (bad json). Windows PowerShell 5.1 on the device may still read it and delete them as SYSTEM. A package exported before this check carries them: fix the file (or re-create the project), re-export it (Export refuses it until the file can be read) before you publish."
+    if ($uc -and $uc.Severity -eq 'Warning' -and $uc.Source -eq 'AppConfig' -and $uc.Message -ceq $wantUnread) { Ok "an Unreadable finding -> UNSAFE-CLEANUP worded 'cleanup paths could not be checked'" } else { Bad "Unreadable -> $($uc.Message)" }
+    if (-not (Find (Get-Advisory $npp -Context Export) 'UNSAFE-CLEANUP')) { Ok '... but not at -Context Export (the gate errors there)' } else { Bad 'Unreadable reported at Export' }
+    $script:cleanup = @(
+        [pscustomobject]@{ Kind = 'Unreadable'; Path = ''; Reasons = @(); Explanation = 'bad json'; Message = 'u' }
+        [pscustomobject]@{ Kind = 'CleanupPath'; Path = 'C:\Program Files (x86)'; Reasons = @('ShellFolder'); Explanation = 'it is a Windows system folder itself'; Message = 'c' }
+    )
+    $ucs = @((Get-Advisory $npp).Findings | Where-Object Code -eq 'UNSAFE-CLEANUP')
+    if ($ucs.Count -eq 1 -and $ucs[0].Message -match "delete 1 folder\(s\) .*first: 'C:\\Program Files \(x86\)'") { Ok 'an unsafe path wins over Unreadable: one UNSAFE-CLEANUP, about the path' } else { Bad "both -> $(@($ucs.Message) -join ' | ')" }
+    # The real helper over a real '+1' AppConfig (PowerShell 7 rejects it, Windows PowerShell 5.1 reads it).
+    $plus = New-AdvProject -Name 'Plus_x64_1.0' -Source @{ WingetId = ''; InstallerType = 'exe'; Family = 'exe'; PinnedBy = 'parameter' } -App @{ Vendor = 'Plus'; Name = 'Plus'; DisplayName = 'Plus' }
+    [System.IO.File]::WriteAllText((Join-Path $plus 'SupportFiles\AppConfig.json'), '{ "SchemaVersion": "1.0", "Revision": +1, "Uninstall": { "CleanupPaths": [ "C:\\Program Files (x86)" ] } }', [System.Text.UTF8Encoding]::new($false))
+    $script:cleanupReal = $true
+    $uc = Find (Get-Advisory $plus) 'UNSAFE-CLEANUP'
+    $script:cleanupReal = $false
+    if ($uc -and $uc.Message -match "^UNSAFE-CLEANUP: this project's uninstall cleanup paths could not be checked: SupportFiles\\AppConfig\.json could not be read \(") { Ok "real helper: a '+1' AppConfig.json -> UNSAFE-CLEANUP (could not be checked)" } else { Bad "'+1' -> $($uc.Message)" }
+    $script:cleanup = @()
+
+    # ======================== [9] Order ========================
+    Write-Host '[9] Order: UNSAFE-CLEANUP, UPDATE-FAILED, ID-TECH-SWITCH, ID-FAMILY, ... ID-PREDECESSOR-AMBIGUOUS, other warnings, then Info' -ForegroundColor Cyan
+    $script:cleanup = @([pscustomobject]@{ Kind = 'CleanupPath'; Path = 'C:\Program Files (x86)'; Reasons = @('ShellFolder'); Explanation = 'system'; Message = 'm' })
+    $script:switches = @([pscustomobject]@{ Message = 'Technology switch: test' })
+    function Get-Win32ToolkitIdentityDelta {
+        [CmdletBinding()] param([string]$ProjectPath, [switch]$NoProbe, [switch]$ReuseProbe)
+        $f = { param($c, $s) [pscustomobject]@{ Code = $c; Severity = $s; Message = "$c message"; Data = $null } }
+        [pscustomobject]@{
+            Siblings = @([pscustomobject]@{ EffectiveType = 'nullsoft'; Family = 'exe'; Registers = $true; Testable = $true; Label = 'nullsoft (vendor EXE, NSIS)' })
+            Findings = @((& $f 'ID-VARIANT-SUBSTITUTE' 'Info'), (& $f 'ID-PREDECESSOR-AMBIGUOUS' 'Warning'), (& $f 'ID-FUTURE-CODE' 'Warning'), (& $f 'ID-PROBE-UNAVAILABLE' 'Warning'),
+                         (& $f 'ID-SCOPE' 'Warning'), (& $f 'ID-SIBLING-UNTESTABLE' 'Info'), (& $f 'ID-TATTOO' 'Warning'), (& $f 'ID-NO-ANCHOR' 'Warning'),
+                         (& $f 'ID-SIBLING-FAMILY' 'Warning'), (& $f 'ID-FAMILY' 'Warning'))
+        }
+    }
+    $a = Get-Advisory $npp
+    $wantOrder = 'UNSAFE-CLEANUP,UPDATE-FAILED,ID-TECH-SWITCH,ID-FAMILY,ID-SIBLING-UNTESTED,ID-SIBLING-FAMILY,ID-NO-ANCHOR,ID-TATTOO,ID-SCOPE,ID-PROBE-UNAVAILABLE,ID-PREDECESSOR-AMBIGUOUS,ID-FUTURE-CODE,ID-VARIANT-SUBSTITUTE,ID-SIBLING-UNTESTABLE'
+    if ((Codes $a) -eq $wantOrder) { Ok 'the spec 2.13 order; an unknown warning code after the known ones; Info last in arrival order' } else { Bad "order = $(Codes $a)" }
+    # TUI audit G1 (Dv2): INSTALL-FAILED right after UNSAFE-CLEANUP, INSTALL-INCONCLUSIVE right after ID-TECH-SWITCH (one
+    # install/uninstall track: the latest record gives one of them).
+    $iuFail = [pscustomobject]@{ Scenario = 'InstallUninstall'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-23T10:15:00Z'; Verdict = 'Failed'
+                                 Assertions = @([pscustomobject]@{ Name = 'AppArpGone-PostUninstall'; Result = 'FAIL' }); Notes = '' }
+    Set-TestResultFile $npp @((New-Record), $iuFail)
+    $a = Get-Advisory $npp -Context Tui
+    $wantIuOrder = 'UNSAFE-CLEANUP,INSTALL-FAILED,UPDATE-FAILED,ID-TECH-SWITCH,ID-FAMILY,ID-SIBLING-UNTESTED,ID-SIBLING-FAMILY,ID-NO-ANCHOR,ID-TATTOO,ID-SCOPE,ID-PROBE-UNAVAILABLE,ID-PREDECESSOR-AMBIGUOUS,ID-FUTURE-CODE,ID-VARIANT-SUBSTITUTE,ID-SIBLING-UNTESTABLE'
+    if ((Codes $a) -eq $wantIuOrder) { Ok 'Tui: UNSAFE-CLEANUP, INSTALL-FAILED, UPDATE-FAILED, ID-TECH-SWITCH, ...' } else { Bad "order with INSTALL-FAILED = $(Codes $a)" }
+    $iuInc = [pscustomobject]@{ Scenario = 'InstallUninstall'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-23T10:15:00Z'; Verdict = 'Inconclusive'; Assertions = @(); Notes = '' }
+    Set-TestResultFile $npp @((New-Record), $iuInc)
+    $a = Get-Advisory $npp -Context Tui
+    $wantIncOrder = 'UNSAFE-CLEANUP,UPDATE-FAILED,ID-TECH-SWITCH,INSTALL-INCONCLUSIVE,ID-FAMILY,ID-SIBLING-UNTESTED,ID-SIBLING-FAMILY,ID-NO-ANCHOR,ID-TATTOO,ID-SCOPE,ID-PROBE-UNAVAILABLE,ID-PREDECESSOR-AMBIGUOUS,ID-FUTURE-CODE,ID-VARIANT-SUBSTITUTE,ID-SIBLING-UNTESTABLE'
+    if ((Codes $a) -eq $wantIncOrder) { Ok 'Tui: ..., ID-TECH-SWITCH, INSTALL-INCONCLUSIVE, ID-FAMILY, ...' } else { Bad "order with INSTALL-INCONCLUSIVE = $(Codes $a)" }
+    Set-TestResultFile $npp @((New-Record))
+    . $realDeltaFile
+    $script:cleanup = @(); $script:switches = @()
+
+    # ======================== [10] Probe only with -ProbeIfMissing ========================
+    Write-Host '[10] No stored probe: -ProbeIfMissing absent -> no request; present -> one request, then the memo' -ForegroundColor Cyan
+    $fresh = New-AdvProject -Results @(New-Record)
+    $script:body = Get-Content -LiteralPath (Join-Path $fx 'Notepad++.Notepad++\8.9.8.1.installer.yaml') -Raw -Encoding UTF8
+    $script:W32TSiblingProbeMemo = $null; $script:gets = 0
+    $listing = Get-Listing $fresh
+    $a = Get-Advisory $fresh
+    if ($script:gets -eq 0 -and -not (Find $a 'ID-SIBLING-FAMILY') -and -not (Find $a 'ID-SIBLING-UNTESTED') -and (Find $a 'UPDATE-FAILED')) { Ok 'without -ProbeIfMissing: no request, no sibling finding, the Update finding still shown' } else { Bad "no probe -> gets $($script:gets), $(Codes $a)" }
+    $a = Get-Advisory $fresh -Probe
+    if ($script:gets -eq 1 -and (Find $a 'ID-SIBLING-FAMILY') -and (Find $a 'ID-SIBLING-UNTESTED')) { Ok '-ProbeIfMissing: one request, sibling findings' } else { Bad "probe -> gets $($script:gets), $(Codes $a)" }
+    $null = Get-Advisory $fresh -Probe
+    if ($script:gets -eq 1) { Ok 'a second -ProbeIfMissing in the same process makes no request (memo)' } else { Bad "memo -> gets $($script:gets)" }
+    if ((Get-Listing $fresh) -ceq $listing -and -not (Test-Path -LiteralPath (Join-Path $fresh 'Documentation\IdentityDelta.json'))) { Ok 'nothing is written under the project (no IdentityDelta.json either, L6)' } else { Bad 'the advisory wrote under the project' }
+
+    # ======================== [11] Writer ========================
+    Write-Host '[11] Write-Win32ToolkitPackageAdvisory: prefixes, Warning -> Write-Warning, Info -> Write-Verbose' -ForegroundColor Cyan
+    $script:W32TAdvisoryRun = $null
+    Set-TestResultFile $npp @(New-Record)
+    $warn = @()
+    $r = Write-Win32ToolkitPackageAdvisory -ProjectPath $npp -Context Export -WarningVariable warn 3>$null
+    $leaf = Split-Path $npp -Leaf
+    $nWarn = @($r.Findings | Where-Object Severity -eq 'Warning').Count
+    if ($nWarn -ge 4 -and @($warn).Count -eq $nWarn -and @($warn | Where-Object { -not "$_".StartsWith("${leaf}: ") }).Count -eq 0 -and "$($warn[0])" -ceq "${leaf}: $((Find $r 'UPDATE-FAILED').Message)") {
+        Ok "Export: one warning per Warning finding ($nWarn), each prefixed '${leaf}: ', in order"
+    } else { Bad "Export warnings: $($warn -join ' | ')" }
+    # No run scope variable at all (a first call in the process): no VariableNotFound record in $Error or -ErrorVariable.
+    Remove-Variable -Name W32TAdvisoryRun -Scope Script -ErrorAction Ignore
+    $errBefore = $Error.Count; $advErr = $null
+    $null = Write-Win32ToolkitPackageAdvisory -ProjectPath $npp -Context Export -ErrorVariable advErr 3>$null
+    if (@($advErr).Count -eq 0 -and $Error.Count -eq $errBefore) { Ok 'no run scope variable yet -> no error record ($Error and -ErrorVariable stay empty)' }
+    else { Bad "error records: -ErrorVariable $(@($advErr).Count), `$Error +$($Error.Count - $errBefore): $(@($advErr)[0])" }
+    $script:W32TAdvisoryRun = $null
+    $warn = @()
+    $null = Write-Win32ToolkitPackageAdvisory -ProjectPath $npp -Context Publish -AppLabel 'Notepad++ (Update)' -WarningVariable warn 3>$null
+    if (@($warn).Count -eq $nWarn -and @($warn | Where-Object { -not "$_".StartsWith("Publishing 'Notepad++ (Update)': ") }).Count -eq 0) { Ok "Publish: prefixed `"Publishing '<AppLabel>': `"" } else { Bad "Publish warnings: $($warn -join ' | ')" }
+    $warn = @()
+    $null = Write-Win32ToolkitPackageAdvisory -ProjectPath $npp -Context Publish -AppLabel "Evil${esc}[31m" -WarningVariable warn 3>$null
+    if (@($warn | Where-Object { "$_" -match '[\x00-\x1F]' }).Count -eq 0 -and "$($warn[0])".StartsWith("Publishing 'Evil?[31m': ")) { Ok 'a hostile AppLabel is sanitised in the prefix' } else { Bad "hostile label: $($warn[0])" }
+    $warn = @()
+    $null = Write-Win32ToolkitPackageAdvisory -ProjectPath $npp -Context Publish -WarningVariable warn 3>$null
+    if ("$($warn[0])".StartsWith("Publishing '${leaf}': ")) { Ok 'Publish without -AppLabel -> the project folder name' } else { Bad "no label: $($warn[0])" }
+    $warn = @()
+    $verbose = @(Write-Win32ToolkitPackageAdvisory -ProjectPath $tv -Context Export -WarningVariable warn -Verbose 4>&1 3>$null | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] })
+    if (@($warn).Count -eq 0 -and @($verbose | Where-Object { "$_" -match '^TeamViewer_x64_15\.82\.6: winget also ships wix \(MSI\), zip-wrapped' }).Count -eq 1) { Ok 'an Info finding (ID-SIBLING-UNTESTABLE) goes to Write-Verbose, not Write-Warning' } else { Bad "Info routing: warn=$(@($warn).Count) verbose=$(@($verbose).Count)" }
+
+    Write-Host '[12] Run scope (L20): printed once per project per action, at most one probe request' -ForegroundColor Cyan
+    $scoped = New-AdvProject -Results @(New-Record)
+    $other  = New-AdvProject -Name 'Other_x64_1.0' -Source @{ WingetId = ''; InstallerType = 'exe'; Family = 'exe'; PinnedBy = 'parameter' } -App @{ Vendor = 'Other'; Name = 'Other'; DisplayName = 'Other' } -Results @(New-Record)
+    $script:body = Get-Content -LiteralPath (Join-Path $fx 'Notepad++.Notepad++\8.9.8.1.installer.yaml') -Raw -Encoding UTF8
+    $script:W32TSiblingProbeMemo = $null; $script:gets = 0
+    $listing = (Get-Listing $scoped) + (Get-Listing $other)
+    $script:W32TAdvisoryRun = @{}
+    $warn = @()
+    $r1 = Write-Win32ToolkitPackageAdvisory -ProjectPath $scoped -Context Export -ProbeIfMissing -WarningVariable +warn 3>$null
+    $r2 = Write-Win32ToolkitPackageAdvisory -ProjectPath $scoped -Context Publish -AppLabel 'Notepad++' -ProbeIfMissing -WarningVariable +warn 3>$null
+    $r3 = Write-Win32ToolkitPackageAdvisory -ProjectPath ($scoped.ToUpperInvariant() + '\') -Context Publish -AppLabel 'Notepad++ (Update)' -ProbeIfMissing -WarningVariable +warn 3>$null
+    $first = @($r1.Findings | Where-Object Severity -eq 'Warning').Count
+    if ($r1 -and $null -eq $r2 -and $null -eq $r3 -and $first -ge 4 -and @($warn).Count -eq $first) { Ok "Export -> Publish -> Publish -AsUpdate in one scope: $first warnings printed once; the later calls return `$null (path compared case-insensitively, trailing \ ignored)" } else { Bad "scope: r2=$r2 r3=$r3 first=$first warnings=$(@($warn).Count)" }
+    if ($script:gets -eq 1) { Ok 'one probe request for the whole action' } else { Bad "$($script:gets) probe requests" }
+    $warn = @()
+    $ro = Write-Win32ToolkitPackageAdvisory -ProjectPath $other -Context Publish -WarningVariable warn 3>$null
+    if ($ro -and @($warn).Count -ge 1) { Ok 'another project in the same scope is printed' } else { Bad 'another project was suppressed' }
+    $script:W32TAdvisoryRun = $null
+    $warn = @()
+    $r4 = Write-Win32ToolkitPackageAdvisory -ProjectPath $scoped -Context Export -ProbeIfMissing -WarningVariable warn 3>$null
+    if ($r4 -and @($warn).Count -eq $first -and $script:gets -eq 1) { Ok 'after the scope closes, the next action prints again (and the probe memo still answers: no new request)' } else { Bad "after scope: r4=$([bool]$r4) warnings=$(@($warn).Count) gets=$($script:gets)" }
+    $warn = @()
+    $null = Write-Win32ToolkitPackageAdvisory -ProjectPath $scoped -Context Export -ProbeIfMissing -WarningVariable +warn 3>$null
+    $null = Write-Win32ToolkitPackageAdvisory -ProjectPath $scoped -Context Export -ProbeIfMissing -WarningVariable +warn 3>$null
+    if (@($warn).Count -eq 2 * $first -and $script:gets -eq 1) { Ok 'without an open scope every call prints (the memo still answers the probe)' } else { Bad "no scope: $(@($warn).Count) warnings, gets $($script:gets)" }
+    if (((Get-Listing $scoped) + (Get-Listing $other)) -ceq $listing) { Ok 'nothing written under either project by the writer' } else { Bad 'the writer wrote under a project' }
+
+    # A relative -ProjectPath (Export / Publish forward the caller's): resolved against the PowerShell
+    # location, never the process directory, for the prefix, the run-scope key and the advisory itself.
+    $savedCwd = [Environment]::CurrentDirectory
+    $script:W32TAdvisoryRun = @{}
+    Push-Location -LiteralPath $scoped
+    try {
+        [Environment]::CurrentDirectory = $tmpRoot
+        $warn = @()
+        $rd = Write-Win32ToolkitPackageAdvisory -ProjectPath '.' -Context Export -WarningVariable warn 3>$null
+        $leafS = Split-Path $scoped -Leaf
+        $absKey = [System.IO.Path]::GetFullPath($scoped).TrimEnd('\')
+        if ($rd -and (Find $rd 'UPDATE-FAILED') -and @($warn).Count -ge 1 -and @($warn | Where-Object { -not "$_".StartsWith("${leafS}: ") }).Count -eq 0) { Ok "-ProjectPath '.' inside the project -> the project's own findings, prefixed '${leafS}: '" } else { Bad "'.' -> warnings: $($warn -join ' | ')" }
+        if ($script:W32TAdvisoryRun.ContainsKey($absKey) -and $script:W32TAdvisoryRun.Count -eq 1) { Ok "the run-scope key is the absolute project path ($absKey)" } else { Bad "scope keys: $(@($script:W32TAdvisoryRun.Keys) -join ' | ')" }
+        $warn = @()
+        $ra = Write-Win32ToolkitPackageAdvisory -ProjectPath $scoped -Context Publish -AppLabel 'Notepad++' -WarningVariable warn 3>$null
+        if ($null -eq $ra -and @($warn).Count -eq 0) { Ok 'the same project by its absolute path in the same scope prints nothing (one key for both spellings)' } else { Bad "absolute after '.': r=$([bool]$ra) warnings=$(@($warn).Count)" }
+    }
+    finally {
+        [Environment]::CurrentDirectory = $savedCwd
+        Pop-Location
+        $script:W32TAdvisoryRun = $null
+    }
+
+    # ======================== [13] D1 + messages ========================
+    Write-Host '[13] D1: no W32T.UpdateTestFailed / -AllowFailedUpdateTest; every message printable ASCII' -ForegroundColor Cyan
+    $d1 = @(Get-ChildItem -Path (Join-Path $repo 'Public'), (Join-Path $repo 'Private') -Filter *.ps1 -File | Select-String -Pattern 'UpdateTestFailed|AllowFailedUpdateTest')
+    if ($d1.Count -eq 0) { Ok 'no UpdateTestFailed / AllowFailedUpdateTest in Public\ or Private\' } else { Bad "found: $(($d1 | ForEach-Object { "$($_.Filename):$($_.LineNumber)" }) -join ', ')" }
+    $nonAscii = @($allMessages | Where-Object { $_ -match '[^\x20-\x7E]' })
+    if ($allMessages.Count -ge 15 -and $nonAscii.Count -eq 0) { Ok "every advisory message is printable ASCII ($($allMessages.Count) checked)" } else { Bad "non-ASCII messages: $($nonAscii -join ' | ')" }
+    $named = @($allMessages | Where-Object { $_ -match 'CaptureSiblingTechnologies' })
+    if ($named.Count -ge 1 -and @($named | Where-Object { ([regex]::Matches($_, 'CaptureSiblingTechnologies')).Count -ne 1 -or $_ -notmatch 'winget also ships ' }).Count -eq 0) { Ok '-CaptureSiblingTechnologies is named once, only by the ID-SIBLING-FAMILY text (SV31)' } else { Bad "SV31: $($named -join ' | ')" }
+}
+finally {
+    $script:W32TAdvisoryRun = $null
+    Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# ======================== [14] Source checks (AST) ========================
+Write-Host '[14] K1: every catch of the two new files starts with the C-2 line; ASCII; one function, no top-level code' -ForegroundColor Cyan
+$c2 = "if (`$_.FullyQualifiedErrorId -like 'W32T.*') { throw }"
+foreach ($name in 'Get-Win32ToolkitPackageAdvisory', 'Write-Win32ToolkitPackageAdvisory') {
+    $file = Join-Path $repo "Private\$name.ps1"
+    $errs = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$errs)
+    $catches = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CatchClauseAst] }, $true))
+    $badCatch = @($catches | Where-Object { $_.Body.Statements.Count -eq 0 -or (($_.Body.Statements[0].Extent.Text -replace '\s+', ' ') -ne $c2) })
+    $ascii = @([System.IO.File]::ReadAllBytes($file) | Where-Object { $_ -gt 127 }).Count -eq 0
+    $top = @($ast.EndBlock.Statements)
+    $oneFunction = $top.Count -eq 1 -and $top[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $top[0].Name -eq $name -and
+                   -not $ast.BeginBlock -and -not $ast.ProcessBlock -and -not $ast.ParamBlock
+    if (@($errs).Count -eq 0 -and $catches.Count -ge 1 -and $badCatch.Count -eq 0 -and $ascii -and $oneFunction) { Ok "$name : $($catches.Count) catch(es) with the C-2 line, ASCII, one function" }
+    else { Bad "$name : parse errors $(@($errs).Count), catches $($catches.Count), bad $($badCatch.Count), ascii $ascii, oneFunction $oneFunction" }
+}
+
+Write-Host '[15] K4 at the three call sites; Export / Publish / TUI order and run scope' -ForegroundColor Cyan
+function Get-Ast([string]$Rel) { [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repo $Rel), [ref]$null, [ref]$null) }
+function Get-Call($Ast, [string]$Name) { @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq $Name }.GetNewClosure(), $true)) }
+# The innermost try (with catch clauses) around a node.
+function Get-GuardingTry($Node) {
+    $p = $Node.Parent
+    while ($p) {
+        if ($p -is [System.Management.Automation.Language.TryStatementAst] -and $p.CatchClauses.Count -gt 0 -and
+            $Node.Extent.StartOffset -ge $p.Body.Extent.StartOffset -and $Node.Extent.EndOffset -le $p.Body.Extent.EndOffset) { return $p }
+        $p = $p.Parent
+    }
+    $null
+}
+function Test-K4($Ast, [string]$Name, [string]$Label) {
+    $calls = @(Get-Call $Ast $Name)
+    if ($calls.Count -ne 1) { Bad "$Label : $($calls.Count) call(s) of $Name"; return $null }
+    $try = Get-GuardingTry $calls[0]
+    $catch = if ($try) { $try.CatchClauses[0] } else { $null }
+    if ($catch -and (($catch.Body.Statements[0].Extent.Text -replace '\s+', ' ') -eq $c2) -and $catch.Body.Extent.Text -match 'Write-Warning "Could not check the Update test and identity warnings:') {
+        Ok "$Label : $Name sits in a try whose catch starts with the C-2 line and warns 'Could not check ...' (K4)"
+    } else { Bad "$Label : K4 catch = $($catch.Extent.Text)" }
+    $calls[0]
+}
+# The run scope: opened (= @{}) before the function's outer try, closed (= $null) in that try's finally.
+function Test-RunScope($Ast, [string]$FunctionName, [string]$Label) {
+    $fn = $Ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $FunctionName }.GetNewClosure(), $true)
+    $outer = @($fn.Body.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.TryStatementAst] }) | Select-Object -First 1
+    $opens = @($fn.Body.EndBlock.Statements | Where-Object { $_.Extent.Text -match '^if \(\$ownsAdvisoryRun\) \{ \$script:W32TAdvisoryRun = @\{\} \}$' })
+    $owns  = @($fn.Body.EndBlock.Statements | Where-Object { $_.Extent.Text -ceq '$ownsAdvisoryRun = $null -eq $script:W32TAdvisoryRun' })
+    $closed = $outer -and $outer.Finally -and $outer.Finally.Extent.Text -match 'if \(\$ownsAdvisoryRun\) \{ \$script:W32TAdvisoryRun = \$null \}'
+    if ($outer -and $opens.Count -eq 1 -and $owns.Count -eq 1 -and $opens[0].Extent.EndOffset -lt $outer.Extent.StartOffset -and $closed) {
+        Ok "$Label : the run scope is opened before the outer try (only when none is open) and closed in its finally"
+    } else { Bad "$Label : run scope open=$($opens.Count) owns=$($owns.Count) closedInFinally=$closed" }
+    $outer
+}
+
+$expPath = 'Public\Export-Win32ToolkitIntuneWin.ps1'
+$expAst = Get-Ast $expPath
+$expText = [System.IO.File]::ReadAllText((Join-Path $repo $expPath))
+$expCall = Test-K4 $expAst 'Write-Win32ToolkitPackageAdvisory' 'Export'
+$null = Test-RunScope $expAst 'Export-Win32ToolkitIntuneWin' 'Export'
+$s6 = $expText.IndexOf('Step 6: Rename output'); $s7 = $expText.IndexOf('Step 7: Publish to Intune')
+$pubCalls = @(Get-Call $expAst 'Publish-Win32ToolkitIntuneApp')
+if ($expCall -and $s6 -gt 0 -and $expCall.Extent.StartOffset -gt $s6 -and $expCall.Extent.StartOffset -lt $s7 -and @($pubCalls | Where-Object { $_.Extent.StartOffset -lt $expCall.Extent.StartOffset }).Count -eq 0 -and
+    $expCall.Extent.Text -match '-Context Export' -and $expCall.Extent.Text -match '-ProbeIfMissing') {
+    Ok 'Export: Write-Win32ToolkitPackageAdvisory -Context Export -ProbeIfMissing after Step 6, before Step 7 (and before every Publish call)'
+} else { Bad 'Export: the advisory call is not between Step 6 and Step 7' }
+$paths = @(Get-Call $expAst 'Get-Win32ToolkitPaths')
+if ($paths.Count -ge 1 -and $expCall -and $paths[0].Extent.StartOffset -lt $expCall.Extent.StartOffset) { Ok 'Export: the call comes after Get-Win32ToolkitPaths (the gate suites'' sentinel)' } else { Bad 'Export: the call precedes the Get-Win32ToolkitPaths sentinel' }
+
+$pubPath = 'Public\Publish-Win32ToolkitIntuneApp.ps1'
+$pubAst = Get-Ast $pubPath
+$pubCall = Test-K4 $pubAst 'Write-Win32ToolkitPackageAdvisory' 'Publish'
+$null = Test-RunScope $pubAst 'Publish-Win32ToolkitIntuneApp' 'Publish'
+$f05 = @(Get-Call $pubAst 'Get-Win32ToolkitProjectPsadtVersion')
+$should = $pubAst.Find({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Member.Extent.Text -eq 'ShouldProcess' }, $true)
+$connect = @(Get-Call $pubAst 'Connect-Win32ToolkitGraph')
+if ($pubCall -and $f05.Count -eq 1 -and $should -and $pubCall.Extent.StartOffset -gt $f05[0].Extent.StartOffset -and $pubCall.Extent.StartOffset -lt $should.Extent.StartOffset -and
+    $connect.Count -ge 1 -and $pubCall.Extent.StartOffset -lt $connect[0].Extent.StartOffset -and $pubCall.Extent.Text -match '-Context Publish' -and $pubCall.Extent.Text -match '-AppLabel \$displayName' -and $pubCall.Extent.Text -match '-ProbeIfMissing') {
+    Ok 'Publish: -Context Publish -AppLabel $displayName -ProbeIfMissing after the F-05 block, before the -WhatIf gate and the Graph sign-in'
+} else { Bad 'Publish: the advisory call is misplaced' }
+
+$tuiPath = 'Private\Show-Win32ToolkitProjectActions.ps1'
+$tuiAst = Get-Ast $tuiPath
+$tuiText = [System.IO.File]::ReadAllText((Join-Path $repo $tuiPath))
+$tuiCall = Test-K4 $tuiAst 'Get-Win32ToolkitPackageAdvisory' 'TUI'
+$which = $tuiText.IndexOf("'Publish which app?'")
+$tuiExport = @(Get-Call $tuiAst 'Export-Win32ToolkitIntuneWin' | Where-Object { $_.Extent.StartOffset -gt $which })
+$open  = $tuiText.IndexOf('if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = @{} }')
+$mark  = $tuiText.IndexOf('$script:W32TAdvisoryRun[[System.IO.Path]::GetFullPath($project.Path).TrimEnd(''\'')] = $true')
+$close = $tuiText.IndexOf('if ($ownsAdvisoryRun) { $script:W32TAdvisoryRun = $null }')
+if ($tuiCall -and $tuiCall.Extent.Text -match '-Context Tui' -and $open -gt 0 -and $open -lt $tuiCall.Extent.StartOffset -and $tuiCall.Extent.StartOffset -lt $mark -and $mark -lt $which -and
+    $tuiExport.Count -eq 1 -and $tuiExport[0].Extent.StartOffset -lt $close) {
+    Ok 'TUI publish: scope opened, advisory panel, project marked shown, then "Publish which app?" and Export, scope closed after Export'
+} else { Bad "TUI publish order: open=$open call=$($tuiCall.Extent.StartOffset) mark=$mark which=$which close=$close" }
+
+Write-Host ''
+if ($fail -eq 0) { Write-Host 'All PackageAdvisory tests passed.' -ForegroundColor Green; exit 0 }
+else { Write-Host "$fail PackageAdvisory test(s) FAILED." -ForegroundColor Red; exit 1 }

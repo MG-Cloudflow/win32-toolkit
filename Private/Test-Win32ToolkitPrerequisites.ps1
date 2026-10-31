@@ -9,20 +9,21 @@ function Test-Win32ToolkitPrerequisites {
     .PARAMETER BasePath
         Optional explicit base folder; otherwise the registry-stored value is checked.
     .OUTPUTS
-        PSCustomObject[] with: Name, Ok (bool), Detail, Fixable (bool), Purpose.
+        PSCustomObject[] with: Name, Ok (bool), Detail, Fixable (bool), Purpose, Warn (bool - usable but
+        worth a look, e.g. a prerelease PSAppDeployToolkit or an ignored unsupported version).
     #>
     [CmdletBinding()]
     [OutputType([System.Object[]])]
     param([string]$BasePath)
 
     $results = [System.Collections.Generic.List[object]]::new()
-    function Add-Check($Name, $Ok, $Detail, $Fixable, $Purpose) {
-        $results.Add([pscustomobject]@{ Name = $Name; Ok = [bool]$Ok; Detail = "$Detail"; Fixable = [bool]$Fixable; Purpose = $Purpose })
+    function Add-Check($Name, $Ok, $Detail, $Fixable, $Purpose, $Warn = $false) {
+        $results.Add([pscustomobject]@{ Name = $Name; Ok = [bool]$Ok; Detail = "$Detail"; Fixable = [bool]$Fixable; Purpose = $Purpose; Warn = [bool]$Warn })
     }
 
-    # PowerShell 7.2+
-    $psOk = $PSVersionTable.PSVersion -ge [version]'7.2'
-    Add-Check 'PowerShell 7.2+' $psOk $PSVersionTable.PSVersion $false 'core'
+    # PowerShell 7.4+ (PSAppDeployToolkit 4.2 needs .NET 8 on the host)
+    $psOk = $PSVersionTable.PSVersion -ge [version]'7.4'
+    Add-Check 'PowerShell 7.4+' $psOk $PSVersionTable.PSVersion $false 'core'
 
     # Rich UI component
     $spectre = Get-Module -ListAvailable PwshSpectreConsole | Sort-Object Version -Descending | Select-Object -First 1
@@ -36,10 +37,38 @@ function Test-Win32ToolkitPrerequisites {
     $winget = [bool](Get-Command winget -ErrorAction SilentlyContinue)
     Add-Check 'winget' $winget ($(if ($winget) { 'available' } else { 'not on PATH' })) $false 'packaging from winget'
 
-    # PSAppDeployToolkit v4
-    $psadt   = Get-Module -ListAvailable PSAppDeployToolkit | Sort-Object Version -Descending | Select-Object -First 1
-    $psadtOk = $psadt -and $psadt.Version.Major -ge 4
-    Add-Check 'PSAppDeployToolkit v4' $psadtOk ($(if ($psadt) { "v$($psadt.Version)" } else { 'not installed' })) $true 'packaging'
+    # PSAppDeployToolkit - the SUPPORTED range, via the same selector new projects use (SCF-05/06):
+    # a prerelease shows its label, and a newer unsupported install is named instead of hidden.
+    $psadtName = "PSAppDeployToolkit ($($script:PsadtSupportedRange.Display))"
+    try {
+        $sel     = Select-Win32ToolkitPsadtModule
+        $psadtOk = $sel.Status -eq 'Selected'
+        $psadtWarn = $false
+        if ($psadtOk) {
+            $psadtDetail = "v$($sel.VersionText)"
+            if ($sel.IsPrerelease) { $psadtDetail += ' (prerelease - testing only)'; $psadtWarn = $true }
+            if (-not $sel.NewestInstalledInRange) { $psadtDetail += "; $($sel.NewestInstalledText) installed but unsupported"; $psadtWarn = $true }
+            # A pin is a deliberate choice (no Warn), but say it is active - a session env pin is easy to forget
+            # - and name a newer supported copy it hides (test campaign 2026-10-21, S6-F2).
+            if ($sel.IsPinned) {
+                $pinBy = switch ($sel.PreferredSource) {
+                    'Environment' { '$env:W32T_PSADT_VERSION (this session)' }
+                    'Registry'    { 'PreferredPsadtVersion (registry)' }
+                    default       { '-PreferredVersion' }
+                }
+                $psadtDetail += "; pinned by $pinBy"
+                $top = @($sel.Candidates | Where-Object { $_.InRange }) | Select-Object -First 1
+                if ($top -and $top.VersionText -ne $sel.VersionText) { $psadtDetail += "; $($top.VersionText) also installed" }
+            }
+        }
+        else { $psadtDetail = $sel.Reason }
+        # A pin that is not installed is NOT fixable from Settings or on first use (nothing installs a pinned
+        # version): the Detail (the selector's Reason) names the pin to clear instead (S6-F1).
+        Add-Check $psadtName $psadtOk $psadtDetail ($sel.Status -ne 'PreferredNotFound') 'packaging' $psadtWarn
+    }
+    catch {
+        Add-Check $psadtName $false "could not check: $($_.Exception.Message)" $true 'packaging'
+    }
 
     # Windows Sandbox feature
     $sandbox = Test-Path (Join-Path $env:WinDir 'System32\WindowsSandbox.exe')

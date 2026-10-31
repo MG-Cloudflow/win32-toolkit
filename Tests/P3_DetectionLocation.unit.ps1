@@ -43,84 +43,108 @@ function Get-Win32ToolkitAppConfig { param($ProjectPath) $script:appConfig }
 $script:captureFile = $null
 function Get-LatestInstallationCapture { param($ProjectPath) $script:captureFile }
 
+# Every temp file is registered here and removed at the end, pass or fail (test campaign 2026-10-21, H7-F12).
+$script:tmp = [System.Collections.Generic.List[string]]::new()
 function New-Capture($obj) {
     $p = Join-Path ([System.IO.Path]::GetTempPath()) ('w32cap_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
+    $script:tmp.Add($p)
     ($obj | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $p -Encoding UTF8
     $script:captureFile = Get-Item -LiteralPath $p
 }
 
-# ══ Case 1a ═════════════════════════════════════════════════════════════════════════════════════
-Write-Host '[1a] NewFiles under a MACHINE-WIDE non-Program-Files path -> a file rule is produced (was: @())' -ForegroundColor Cyan
+try {
+    # ══ Case 0: warnings (test campaign 2026-10-21, S9-F4) ═════════════════════════════════════════════
+    # No leading spaces; the tattoo reason never promises a capture fallback that does not exist.
+    Write-Host '[0] tattoo-unavailable warning follows what the capture really allows' -ForegroundColor Cyan
+    $script:appConfig = [pscustomobject]@{ App = [pscustomobject]@{ Name = 'Tool'; Vendor = 'Acme'; Version = '1.0'; ScriptAuthor = '' } }
+    $script:captureFile = $null
+    $w0 = $null
+    $null = @(Get-Win32DetectionRules -ProjectPath 'X' -WarningVariable w0 -WarningAction SilentlyContinue)
+    $w0s = @($w0 | ForEach-Object { "$_" })
+    if ($w0s.Count -eq 2 -and $w0s[0] -like 'Tattoo/version detection unavailable — missing App.ScriptAuthor*' -and $w0s[0] -notmatch 'capture' -and $w0s[1] -like 'No InstallationChanges_*.json capture found*') { Ok 'no capture: the reason, then "No InstallationChanges_*.json capture found" (no promised fallback, no leading spaces)' } else { Bad "no-capture warnings: $($w0s -join ' | ')" }
+    New-Capture ([pscustomobject]@{ NewRegistryKeys = @(); NewFiles = @('C:\Tools\Widget\widget.exe') })
+    $w0 = $null
+    $null = @(Get-Win32DetectionRules -ProjectPath 'X' -WarningVariable w0 -WarningAction SilentlyContinue)
+    $w0s = @($w0 | ForEach-Object { "$_" })
+    if ($w0s.Count -ge 1 -and $w0s[0] -like 'Tattoo/version detection unavailable — missing App.ScriptAuthor*Using the newest install capture instead (w32cap_*.json).' -and @($w0s | Where-Object { $_ -match '^\s' }).Count -eq 0) { Ok 'with a capture: one warning naming the capture it falls back to' } else { Bad "capture warnings: $($w0s -join ' | ')" }
+    Remove-Item -LiteralPath $script:captureFile.FullName -Force -ErrorAction SilentlyContinue
+    $script:appConfig = [pscustomobject]@{ SchemaVersion = '1.0' }
+    $script:captureFile = $null
 
-$toolsApp = 'C:\Tools\Widget\widget.exe'
-New-Capture ([pscustomobject]@{
-    NewRegistryKeys = @()
-    NewFiles        = @(
-        'C:\Windows\Temp\setup12345.tmp',   # noise — must be dropped
-        $toolsApp
-    )
-})
+    # ══ Case 1a ═════════════════════════════════════════════════════════════════════════════════════
+    Write-Host '[1a] NewFiles under a MACHINE-WIDE non-Program-Files path -> a file rule is produced (was: @())' -ForegroundColor Cyan
 
-$rules = @(Get-Win32DetectionRules -ProjectPath 'X' -WarningAction SilentlyContinue)
-if ($rules.Count -eq 1) { Ok 'exactly one rule returned' } else { Bad "expected 1 rule, got $($rules.Count) (old code returned 0)" }
-if ($rules.Count -eq 1) {
-    $r = $rules[0]
-    if ($r['@odata.type'] -eq '#microsoft.graph.win32LobAppFileSystemDetection') { Ok 'rule is a file-system detection' } else { Bad "wrong @odata.type: $($r['@odata.type'])" }
-    if ($r['path'] -eq (Split-Path $toolsApp -Parent) -and $r['fileOrFolderName'] -eq (Split-Path $toolsApp -Leaf)) {
-        Ok 'rule points at the C:\Tools file (temp noise ignored)'
+    $toolsApp = 'C:\Tools\Widget\widget.exe'
+    New-Capture ([pscustomobject]@{
+        NewRegistryKeys = @()
+        NewFiles        = @(
+            'C:\Windows\Temp\setup12345.tmp',   # noise — must be dropped
+            $toolsApp
+        )
+    })
+
+    $rules = @(Get-Win32DetectionRules -ProjectPath 'X' -WarningAction SilentlyContinue)
+    if ($rules.Count -eq 1) { Ok 'exactly one rule returned' } else { Bad "expected 1 rule, got $($rules.Count) (old code returned 0)" }
+    if ($rules.Count -eq 1) {
+        $r = $rules[0]
+        if ($r['@odata.type'] -eq '#microsoft.graph.win32LobAppFileSystemDetection') { Ok 'rule is a file-system detection' } else { Bad "wrong @odata.type: $($r['@odata.type'])" }
+        if ($r['path'] -eq (Split-Path $toolsApp -Parent) -and $r['fileOrFolderName'] -eq (Split-Path $toolsApp -Leaf)) {
+            Ok 'rule points at the C:\Tools file (temp noise ignored)'
+        } else {
+            Bad "rule points at path=$($r['path']) file=$($r['fileOrFolderName'])"
+        }
+    }
+
+    # ══ Case 1b ═════════════════════════════════════════════════════════════════════════════════════
+    Write-Host '[1b] NewFiles ONLY under a per-user profile path -> @() (a SYSTEM-context file rule could never match)' -ForegroundColor Cyan
+
+    New-Capture ([pscustomobject]@{
+        NewRegistryKeys = @()
+        NewFiles        = @(
+            'C:\Users\WDAGUtilityAccount\AppData\Local\Programs\Widget\widget.exe',
+            'C:\Users\jdoe\AppData\Roaming\Widget\widget.exe'
+        )
+    })
+
+    $rules = @(Get-Win32DetectionRules -ProjectPath 'X' -WarningAction SilentlyContinue)
+    if ($rules.Count -eq 0) { Ok 'no rule emitted for a per-user-only capture (avoids the perpetual-reinstall footgun)' }
+    else { Bad "expected @() for per-user paths, got a rule pointing at $($rules[0]['path']) (SYSTEM can't see it)" }
+
+    # ══ Case 2 ══════════════════════════════════════════════════════════════════════════════════════
+    Write-Host '[2] Program Files present alongside C:\Tools -> Program Files is preferred' -ForegroundColor Cyan
+
+    $pf    = 'C:\Program Files\Contoso\App\app.exe'
+    $tools = 'C:\Tools\contoso\app.exe'
+    New-Capture ([pscustomobject]@{
+        NewRegistryKeys = @()
+        NewFiles        = @($tools, $pf)   # order deliberately puts the non-PF path first
+    })
+
+    $rules = @(Get-Win32DetectionRules -ProjectPath 'X' -WarningAction SilentlyContinue)
+    if ($rules.Count -eq 1 -and $rules[0]['path'] -eq (Split-Path $pf -Parent) -and $rules[0]['fileOrFolderName'] -eq (Split-Path $pf -Leaf)) {
+        Ok 'Program Files path chosen over C:\Tools'
     } else {
-        Bad "rule points at path=$($r['path']) file=$($r['fileOrFolderName'])"
+        Bad "expected Program Files, got path=$($rules[0]['path']) file=$($rules[0]['fileOrFolderName'])"
+    }
+
+    # ══ Case 3 (regression) ═════════════════════════════════════════════════════════════════════════
+    Write-Host '[3] Registry candidate present -> still returns the registry rule (unchanged branch)' -ForegroundColor Cyan
+
+    New-Capture ([pscustomobject]@{
+        NewRegistryKeys = @(
+            [pscustomobject]@{ Path = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{ABC-123}'; Values = @() }
+        )
+        NewFiles        = @('C:\Tools\contoso\app.exe')  # would also match the file fallback, but registry wins
+    })
+
+    $rules = @(Get-Win32DetectionRules -ProjectPath 'X' -WarningAction SilentlyContinue)
+    if ($rules.Count -eq 1 -and $rules[0]['@odata.type'] -eq '#microsoft.graph.win32LobAppRegistryDetection') {
+        Ok 'registry detection returned (file fallback not reached)'
+    } else {
+        Bad "expected registry rule, got count=$($rules.Count) type=$($rules[0]['@odata.type'])"
     }
 }
-
-# ══ Case 1b ═════════════════════════════════════════════════════════════════════════════════════
-Write-Host '[1b] NewFiles ONLY under a per-user profile path -> @() (a SYSTEM-context file rule could never match)' -ForegroundColor Cyan
-
-New-Capture ([pscustomobject]@{
-    NewRegistryKeys = @()
-    NewFiles        = @(
-        'C:\Users\WDAGUtilityAccount\AppData\Local\Programs\Widget\widget.exe',
-        'C:\Users\jdoe\AppData\Roaming\Widget\widget.exe'
-    )
-})
-
-$rules = @(Get-Win32DetectionRules -ProjectPath 'X' -WarningAction SilentlyContinue)
-if ($rules.Count -eq 0) { Ok 'no rule emitted for a per-user-only capture (avoids the perpetual-reinstall footgun)' }
-else { Bad "expected @() for per-user paths, got a rule pointing at $($rules[0]['path']) (SYSTEM can't see it)" }
-
-# ══ Case 2 ══════════════════════════════════════════════════════════════════════════════════════
-Write-Host '[2] Program Files present alongside C:\Tools -> Program Files is preferred' -ForegroundColor Cyan
-
-$pf    = 'C:\Program Files\Contoso\App\app.exe'
-$tools = 'C:\Tools\contoso\app.exe'
-New-Capture ([pscustomobject]@{
-    NewRegistryKeys = @()
-    NewFiles        = @($tools, $pf)   # order deliberately puts the non-PF path first
-})
-
-$rules = @(Get-Win32DetectionRules -ProjectPath 'X' -WarningAction SilentlyContinue)
-if ($rules.Count -eq 1 -and $rules[0]['path'] -eq (Split-Path $pf -Parent) -and $rules[0]['fileOrFolderName'] -eq (Split-Path $pf -Leaf)) {
-    Ok 'Program Files path chosen over C:\Tools'
-} else {
-    Bad "expected Program Files, got path=$($rules[0]['path']) file=$($rules[0]['fileOrFolderName'])"
-}
-
-# ══ Case 3 (regression) ═════════════════════════════════════════════════════════════════════════
-Write-Host '[3] Registry candidate present -> still returns the registry rule (unchanged branch)' -ForegroundColor Cyan
-
-New-Capture ([pscustomobject]@{
-    NewRegistryKeys = @(
-        [pscustomobject]@{ Path = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{ABC-123}'; Values = @() }
-    )
-    NewFiles        = @('C:\Tools\contoso\app.exe')  # would also match the file fallback, but registry wins
-})
-
-$rules = @(Get-Win32DetectionRules -ProjectPath 'X' -WarningAction SilentlyContinue)
-if ($rules.Count -eq 1 -and $rules[0]['@odata.type'] -eq '#microsoft.graph.win32LobAppRegistryDetection') {
-    Ok 'registry detection returned (file fallback not reached)'
-} else {
-    Bad "expected registry rule, got count=$($rules.Count) type=$($rules[0]['@odata.type'])"
-}
+finally { foreach ($tp in $script:tmp) { Remove-Item -LiteralPath $tp -Recurse -Force -ErrorAction SilentlyContinue } }
 
 # ── Summary ──────────────────────────────────────────────────────────────────────────────────────
 Write-Host ''

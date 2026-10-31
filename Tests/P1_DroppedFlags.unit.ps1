@@ -11,14 +11,21 @@
     -PublishUpdate and -DependsOn.
 
     These tests assert the failure path now NAMES every option the caller actually supplied, names ONLY
-    those (no false noise about flags they never passed), and still returns instead of throwing — the
-    project folder is deliberately kept so the run can be retried.
+    those (no false noise about flags they never passed), and then stops with the terminating error
+    W32T.DownloadFailed (TUI audit G2) after those warnings — the project folder is deliberately kept so
+    the run can be retried.
 
-    Nothing heavy runs: winget, the base-path/template resolution, the scaffolder, the downloader and the
-    finalize step are all shadowed. No network, no PSADT, no Intune.
+    Also (installer-identity PR 1): -InstallerType reaches the download as the pin (parameter); without it
+    the download is unpinned (winget-default). The rebuild self-anchor is read before Create-PSADTProject
+    (which removes an existing project folder) and the pin is resolved after it.
+
+    Nothing heavy runs: winget, the base-path/template resolution, the scaffolder, the installer pin, the
+    downloader and the finalize step are all shadowed. No network, no PSADT, no Intune.
 
     Run:  pwsh -File Tests\P1_DroppedFlags.unit.ps1
 #>
+# Test shadows keep the real command names and signatures.
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification = 'test shadows mirror the real signatures')]
 [CmdletBinding()]
 param()
 
@@ -30,6 +37,14 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 
 # System under test + the one real helper it needs for naming.
 . (Join-Path $repo 'Private\Sanitize-ProjectName.ps1')
+# C-9: a -DependsOn run validates its references before anything is downloaded or created (B3 r2.1; real, pure).
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitDependencyRef.ps1')
+. (Join-Path $repo 'Private\Assert-Win32ToolkitDependencyRef.ps1')
+. (Join-Path $repo 'Private\Initialize-Win32ToolkitRunResult.ps1')   # C-9: the result object (TUI audit G2, S8-F3)
+. (Join-Path $repo 'Private\Complete-Win32ToolkitRunResult.ps1')
+# C-9 (TUI audit G4): every error after the scaffold, before the end of the configure step, marks the project (temp folders).
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+. (Join-Path $repo 'Private\Write-Win32ToolkitNotConfiguredMarker.ps1')
 . (Join-Path $repo 'Public\Invoke-Win32Toolkit.ps1')
 
 # ── shadows: everything that would touch winget / the registry / the disk / Intune ───────────────
@@ -39,6 +54,12 @@ New-Item -ItemType Directory -Path $script:tmpBase -Force | Out-Null
 function Test-WingetInstalled { $true }
 function Get-Win32ToolkitBasePath { param($BasePath, [switch]$Reconfigure) $script:tmpBase }
 function Get-OrgTemplate { param($TemplateName, $BasePath) [pscustomobject]@{ TemplateName = 'TestTpl' } }
+# C-9 (speed-up PR 4, V-14): Invoke-Win32Toolkit registers as the asynchronous-teardown owner and joins in its finally;
+# inert doubles: no live owner, a join that emits nothing.
+function Get-Win32ToolkitAsyncTeardownOwner { $null }
+function Wait-Win32ToolkitHyperVTeardown { param($VMName, $ReleaseOwner, [switch]$Prewarm) }
+# ...and the capture pre-warm it starts after the base folder (HyperVCapturePrewarm), inert.
+function Start-Win32ToolkitHyperVPrewarm { }
 
 # The -Id fast path resolves via Resolve-Win32ToolkitWingetId. This test is about the DOWNLOAD failure,
 # not id resolution, so shadow the resolver to a valid app and let the pipeline reach the failing download.
@@ -55,15 +76,42 @@ function Get-Win32ToolkitPaths {
         IntuneWin = Join-Path $script:tmpBase 'IntuneWin'
     }
 }
-function Create-PSADTProject { param($ProjectName, $ProjectPath, [switch]$Force) $true }
+$script:order = [System.Collections.Generic.List[string]]::new()
+function Create-PSADTProject { param($ProjectName, $ProjectPath, [switch]$Force) $script:order.Add('create'); $true }
 
-# THE FAILURE UNDER TEST: the download does not succeed.
-function Download-WingetApp { param($AppId, $AppName, $DownloadPath, $Architecture) $false }
+# Rebuild self-anchor (installer-identity PR 1, C-9): read before Create-PSADTProject removes an old folder.
+$script:selfSeen = $null
+function Get-Win32ToolkitSelfAnchor { param($ProjectPath, $TenantId) $script:order.Add('self'); $script:selfSeen = $PSBoundParameters; $null }
+# Prior-install state (installer-identity PR 3, C-9): read before Create-PSADTProject; never carried when the download fails.
+$script:snapAt = $null; $script:snapPath = $null
+function Get-Win32ToolkitPriorInstallSnapshot { param($ProjectPath) $script:snapAt = @($script:order); $script:snapPath = $ProjectPath; $null }
+function Copy-Win32ToolkitPriorInstallState { param($ProjectPath, $Snapshot, $SourceProjectPath) $null = $ProjectPath, $Snapshot, $SourceProjectPath; throw 'Copy-Win32ToolkitPriorInstallState ran even though the download failed' }
+
+# Installer technology (installer-identity PR 1, C-9): the pin is resolved before the download. The shadow
+# mirrors the real resolver for an explicit -InstallerType (parameter) and for none (winget-default).
+function Resolve-Win32ToolkitInstallerPin {
+    param($TemplateDirectory, $WingetId, $Version, $InstallerType, $ExcludePath, $TenantId, $SelfAnchor)
+    $script:order.Add('pin')
+    [pscustomobject]@{
+        InstallerType = [string]$InstallerType; Family = ''; Predecessor = $null; WingetClient = '1.29.380'
+        PinnedBy      = if ($InstallerType) { 'parameter' } else { 'winget-default' }
+        Reason        = if ($InstallerType) { 'requested' } else { "winget's choice" }
+    }
+}
+
+# THE FAILURE UNDER TEST: the download does not succeed. It records what it was asked to download.
+$script:dlSeen = $null
+function Download-WingetApp { param($AppId, $AppName, $DownloadPath, $Architecture, $InstallerType, $PinnedBy, $PinReason) $script:dlSeen = $PSBoundParameters; $false }
 
 # Anything downstream of the download must never run on this path — if it does, the test explodes loudly.
 function Invoke-Win32ToolkitFinalize {
-    param($ProjectPath, $ProjectName, $AppInfo, $RunTest, [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate)
+    param($ProjectPath, $ProjectName, $AppInfo, $RunTest, $UpdateVersionsBack, $UpdateSpecificVersion, $UpdateBaselineInstallerType,
+        [switch]$PackageIntune, [switch]$PublishIntune, [switch]$PublishUpdate, $BasePath, $Result)
     throw 'Invoke-Win32ToolkitFinalize ran even though the download failed'
+}
+function Write-Win32ToolkitIdentityDelta {
+    param($ProjectPath, $TenantId, [switch]$Quiet, [switch]$CapturingSiblings)
+    throw 'Write-Win32ToolkitIdentityDelta ran even though the download failed'
 }
 function Set-Win32ToolkitAppDependency {
     param($ProjectPath, $DependsOn, $DependencyType)
@@ -95,8 +143,20 @@ $r = Invoke-Failing -ExtraArgs @{
     RunTest       = @('InstallUninstall')
 }
 
-if ($null -eq $r.Threw) { Ok 'the download-failure path returns without throwing (project folder is kept for a retry)' }
-else { Bad "it threw: $($r.Threw.Exception.Message)" }
+if ($r.Threw -and $r.Threw.FullyQualifiedErrorId -eq 'W32T.DownloadFailed') { Ok 'the download-failure path stops with W32T.DownloadFailed (terminating; the project folder is kept for a retry)' }
+else { Bad "expected W32T.DownloadFailed, got: $(if ($r.Threw) { "$($r.Threw.FullyQualifiedErrorId): $($r.Threw.Exception.Message)" } else { 'no error' })" }
+$wantStart = "Download FAILED for 'Git.Git' (x64): nothing was configured, tested, packaged or published."
+if ($r.Threw -and $r.Threw.Exception.Message.StartsWith($wantStart) -and $r.Threw.Exception.Message.Contains((Join-Path $script:tmpBase 'Projects\TestTpl\Git_x64_2.45.0'))) { Ok 'the error message names the app, the architecture and the kept project folder' }
+else { Bad "message: $(if ($r.Threw) { $r.Threw.Exception.Message })" }
+if ($r.Threw -and [string]$r.Threw.TargetObject -eq (Join-Path $script:tmpBase 'Projects\TestTpl\Git_x64_2.45.0')) { Ok 'its TargetObject is the project path' } else { Bad "TargetObject: $(if ($r.Threw) { $r.Threw.TargetObject })" }
+# TUI audit G4: the kept folder is marked not configured (Stage Download, the W32T id), and the message says so.
+$markerFile = Join-Path $script:tmpBase 'Projects\TestTpl\Git_x64_2.45.0\Documentation\NotConfigured.json'
+$marker = if (Test-Path -LiteralPath $markerFile) { Get-Content -LiteralPath $markerFile -Raw | ConvertFrom-Json } else { $null }
+if ($marker -and $marker.Stage -eq 'Download' -and $marker.ErrorId -eq 'W32T.DownloadFailed' -and ([string]$marker.Reason).StartsWith("Download FAILED for 'Git.Git' (x64)")) { Ok 'the kept project folder is marked not configured: Stage Download, ErrorId W32T.DownloadFailed' }
+else { Bad "marker: $(if ($marker) { $marker | ConvertTo-Json -Compress } else { 'none' })" }
+if ($r.Threw -and $r.Threw.Exception.Message.Contains('The project folder was kept for a retry and marked not configured: ')) { Ok "the message says 'kept for a retry and marked not configured'" } else { Bad "message: $(if ($r.Threw) { $r.Threw.Exception.Message })" }
+if ($r.Text -match '(?i)download\s+failed' -and $r.Text -match [regex]::Escape('-PublishIntune')) { Ok 'the warnings were written before the error (the error does not replace them)' }
+else { Bad "warnings before the error:`n$($r.Text)" }
 
 if ($r.Text -match '(?i)download\s+failed') { Ok 'the warning still says the download failed' }
 else { Bad "no download-failure warning. Got:`n$($r.Text)" }
@@ -126,9 +186,11 @@ else { Bad "dependency refs not echoed:`n$($r2.Text)" }
 # ══ 2. NO false noise ════════════════════════════════════════════════════════════════════════════
 Write-Host '[P1] a run that supplied NO such flags must not name them' -ForegroundColor Cyan
 
+$script:OrgTemplate = [pscustomobject]@{ TemplateName = 'stale' }
 $bare = Invoke-Failing
-if ($null -eq $bare.Threw) { Ok 'the bare run also returns without throwing' }
-else { Bad "bare run threw: $($bare.Threw.Exception.Message)" }
+if ($bare.Threw -and $bare.Threw.FullyQualifiedErrorId -eq 'W32T.DownloadFailed') { Ok 'the bare run also stops with W32T.DownloadFailed' }
+else { Bad "bare run: $(if ($bare.Threw) { "$($bare.Threw.FullyQualifiedErrorId): $($bare.Threw.Exception.Message)" } else { 'no error' })" }
+if ($null -eq $script:OrgTemplate) { Ok 'the finally still clears $script:OrgTemplate after W32T.DownloadFailed' } else { Bad 'org template leaked after W32T.DownloadFailed' }
 
 $noise = @()
 foreach ($flag in '-PackageIntune', '-PublishIntune', '-PublishUpdate', '-RunTest', '-DependsOn') {
@@ -144,6 +206,26 @@ else { Bad "bare run lost the download-failure warning:`n$($bare.Text)" }
 $off = Invoke-Failing -ExtraArgs @{ PackageIntune = $false }
 if ($off.Text -notmatch [regex]::Escape('-PackageIntune')) { Ok '-PackageIntune:$false is bound but NOT reported as skipped' }
 else { Bad "reported -PackageIntune even though it was explicitly `$false:`n$($off.Text)" }
+
+# ══ 3. installer technology reaches the download (installer-identity PR 1) ═════════════════════════
+Write-Host '[P1] -InstallerType reaches the download; without it winget chooses' -ForegroundColor Cyan
+$script:dlSeen = $null
+$t = Invoke-Failing -ExtraArgs @{ InstallerType = 'nullsoft'; UpdateBaselineInstallerType = 'Both'; RunTest = @('Update') }
+if ($t.Threw -and $t.Threw.FullyQualifiedErrorId -eq 'W32T.DownloadFailed' -and $script:dlSeen -and $script:dlSeen['InstallerType'] -eq 'nullsoft' -and $script:dlSeen['PinnedBy'] -eq 'parameter' -and $script:dlSeen['PinReason'] -eq 'requested') {
+    Ok '-InstallerType nullsoft -> Download-WingetApp -InstallerType nullsoft -PinnedBy parameter -PinReason requested'
+} else { Bad "threw=$($t.Threw) download saw: $(if ($script:dlSeen) { ($script:dlSeen.Keys | ForEach-Object { "$_=$($script:dlSeen[$_])" }) -join '; ' })" }
+if ($t.Text -match [regex]::Escape('-RunTest (Update)')) { Ok 'the failed download still names the skipped -RunTest' } else { Bad "warnings:`n$($t.Text)" }
+$script:dlSeen = $null
+$null = Invoke-Failing
+if ($script:dlSeen -and $script:dlSeen['InstallerType'] -eq '' -and $script:dlSeen['PinnedBy'] -eq 'winget-default') { Ok "no -InstallerType -> the download gets -InstallerType '' (winget chooses, unpinned arguments)" } else { Bad "download saw: $(if ($script:dlSeen) { ($script:dlSeen.Keys | ForEach-Object { "$_=$($script:dlSeen[$_])" }) -join '; ' })" }
+
+$script:order.Clear(); $script:selfSeen = $null
+$null = Invoke-Failing
+$wantSelf = Join-Path $script:tmpBase 'Projects\TestTpl\Git_x64_2.45.0'
+if (($script:order -join ',') -eq 'self,create,pin' -and $script:selfSeen -and $script:selfSeen['ProjectPath'] -eq $wantSelf) { Ok 'the rebuild self-anchor is read for the project path BEFORE Create-PSADTProject, the pin after it' }
+else { Bad "order=[$($script:order -join ',')] self path=[$(if ($script:selfSeen) { $script:selfSeen['ProjectPath'] })]" }
+if ($null -ne $script:snapAt -and (@($script:snapAt) -join ',') -eq 'self' -and $script:snapPath -eq $wantSelf) { Ok 'the prior-install snapshot is read for the project path BEFORE Create-PSADTProject; nothing is carried after a failed download' }
+else { Bad "snapshot at [$(@($script:snapAt) -join ',')] path [$script:snapPath]" }
 
 Remove-Item -LiteralPath $script:tmpBase -Recurse -Force -ErrorAction SilentlyContinue
 

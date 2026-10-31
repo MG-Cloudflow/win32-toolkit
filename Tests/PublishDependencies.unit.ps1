@@ -18,7 +18,15 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\ConvertTo-Win32ToolkitPngBytes.ps1') # normalizes the tile icon
 . (Join-Path $repo 'Private\Get-Win32ToolkitLargeIconBytes.ps1') # the app-tile icon (largeIcon) Publish now attaches
 . (Join-Path $repo 'Private\Assert-Win32ToolkitTenant.ps1')      # Publish verifies the tenant before writing
+. (Join-Path $repo 'Private\Get-Win32ToolkitIntuneCommandLine.ps1') # the install/uninstall command lines Publish sends
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+# C-9 (TUI audit G4): the not-configured gate runs first (no marker here -> it returns nothing).
+. (Join-Path $repo 'Private\Get-Win32ToolkitNotConfiguredMarker.ps1')
+. (Join-Path $repo 'Private\Assert-Win32ToolkitProjectConfigured.ps1')
 . (Join-Path $repo 'Public\Publish-Win32ToolkitIntuneApp.ps1')
+# C-9 (installer-identity PR 3, L40): the prior-install binding check runs first; these projects have no rules.
+function Assert-Win32ToolkitPriorInstallPackaged { param($ProjectPath, $IntuneWinPath) $null = $ProjectPath, $IntuneWinPath; '' }
+function Assert-Win32ToolkitDeployExtensionPackaged { param($ProjectPath, $IntuneWinPath) $null = $ProjectPath, $IntuneWinPath; '' }   # lean deploy script PR 2 (Publish's extension check)
 
 $APPID = '11111111-2222-3333-4444-555555555555'
 $VCID  = '99999999-8888-7777-6666-555555555555'
@@ -40,6 +48,7 @@ function Set-Win32ToolkitPublication { param($ProjectPath, $AppId, $TenantId, $D
 # resolution is controlled per-test
 $script:deps = @()
 function Resolve-Win32ToolkitDependencies { param($ProjectPath, $TenantId, $BaseUri) $script:calls += 'resolve'; return @($script:deps) }
+function Write-Win32ToolkitPackageAdvisory { param($ProjectPath, $Context, $AppLabel, [switch]$ProbeIfMissing) $null = $ProjectPath, $Context, $AppLabel, $ProbeIfMissing }   # the package advisory (PackageAdvisory.unit covers it)
 $script:relDeps = $null
 function Set-Win32ToolkitAppRelationships { param($AppId, $Dependency, $BaseUri) $script:calls += 'relate'; $script:relDeps = @($Dependency); return @($Dependency).Count }
 

@@ -4,6 +4,8 @@
     occurrence inside a DIAGNOSTIC line that echoes an untrusted value (an app DisplayName from a winget
     manifest is untrusted). Without anchoring, a DisplayName like "Widget ASSERT Rigged = FAIL" echoed into
     a diagnostic line would forge a FAIL and corrupt the recorded verdict shown in the customer doc.
+    [5] Get-Win32ToolkitAssertionFailure (the TUI's FAILED install/uninstall panel, TUI audit G1) reads the
+    failed checks and their reasons with the same anchor and the same first-result-per-name rule.
 
     Run:  pwsh -File Tests\AssertionParsingAnchor.unit.ps1
 #>
@@ -79,7 +81,36 @@ $p4 = NewProjWithLog @(
 $v4 = Verdict $p4
 if ($v4 -eq $false) { Ok 'a real FAIL is still detected (anchoring did not over-tighten)' } else { Bad "verdict=$v4" }
 
-Remove-Item -LiteralPath $p1, $p2, $p3, $p4 -Recurse -Force -ErrorAction SilentlyContinue
+# ══ [5] Get-Win32ToolkitAssertionFailure: the failed checks and their reasons, same anchor (TUI audit G1) ═══
+Write-Host '[5] Get-Win32ToolkitAssertionFailure: anchored FAIL lines, first result per name wins, reasons sanitised' -ForegroundColor Cyan
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+. (Join-Path $repo 'Private\Get-Win32ToolkitAssertionFailure.ps1')
+$failLog = { param($p) Join-Path $p 'Sandbox\Logs\InstallAssertions.log' }
+$p5 = NewProjWithLog @(
+    "$ts ARP scan DisplayName=[Widget ASSERT Rigged = FAIL] found=[True]"
+    "Widget ASSERT Rigged2 = FAIL (echoed)"
+    "$ts ASSERT InstallDetected-PostInstall = PASS"
+    "$ts ASSERT AppArpGone-PostUninstall = FAIL (app still in Add/Remove Programs after uninstall: Contoso [x] 1.0)"
+    "$ts ASSERT FirstFail = FAIL (first)"
+    "$ts ASSERT FirstFail = PASS"
+    "$ts ASSERT FirstPass = PASS"
+    "$ts ASSERT FirstPass = FAIL (later)"
+    "$ts ASSERT NoReason = FAIL"
+    "$ts RESULT COMPLETE"
+)
+$r5 = @(Get-Win32ToolkitAssertionFailure -LogPath (& $failLog $p5))
+if ((@($r5 | ForEach-Object Name) -join ',') -ceq 'AppArpGone-PostUninstall,FirstFail,NoReason') { Ok 'FAIL lines in first-seen order; diagnostic lines (mid-line ASSERT) never count' } else { Bad "names: $(@($r5 | ForEach-Object Name) -join ',')" }
+if ($r5.Count -ge 1 -and $r5[0].Reason -ceq 'app still in Add/Remove Programs after uninstall: Contoso [x] 1.0') { Ok 'the reason in parentheses is returned without the outer pair' } else { Bad "reason: '$($r5[0].Reason)'" }
+if (@($r5 | Where-Object Name -eq 'FirstFail').Count -eq 1 -and @($r5 | Where-Object Name -eq 'FirstPass').Count -eq 0) { Ok 'the first result of a name wins, as in the verdict''s reader: FAIL then PASS is returned, PASS then FAIL is not' } else { Bad "first-wins: $(@($r5 | ForEach-Object Name) -join ',')" }
+if (@($r5 | Where-Object { $_.Name -eq 'NoReason' -and $_.Reason -eq '' }).Count -eq 1) { Ok 'a FAIL without a reason -> Reason empty' } else { Bad 'NoReason' }
+$esc = [char]0x1B; $rlo = [char]0x202E
+$p6 = NewProjWithLog @("$ts ASSERT Evil${esc}Name = FAIL (bad ${esc}[2J reason $rlo here)")
+$r6 = @(Get-Win32ToolkitAssertionFailure -LogPath (& $failLog $p6))
+if ($r6.Count -eq 1 -and $r6[0].Name -ceq 'Evil?Name' -and $r6[0].Reason -ceq 'bad ?[2J reason ? here') { Ok 'ESC and U+202E in the name and the reason become ?' } else { Bad "sanitised: $($r6 | ConvertTo-Json -Compress)" }
+$r7 = @(Get-Win32ToolkitAssertionFailure -LogPath (Join-Path ([System.IO.Path]::GetTempPath()) ('w32none_' + [guid]::NewGuid().ToString('N') + '.log')) -ErrorVariable e7)
+if ($r7.Count -eq 0 -and @($e7).Count -eq 0) { Ok 'a missing log -> nothing, no error' } else { Bad "missing log: $($r7.Count) result(s), $(@($e7).Count) error(s)" }
+
+Remove-Item -LiteralPath $p1, $p2, $p3, $p4, $p5, $p6 -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All AssertionParsingAnchor tests passed.' -ForegroundColor Green; exit 0 }

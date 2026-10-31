@@ -1,9 +1,9 @@
-#Requires -Version 7.2
+#Requires -Version 7.4
 <#
 .SYNOPSIS
     Stage the win32-toolkit module payload and publish it to the PowerShell Gallery.
 .DESCRIPTION
-    The repo root mixes the module (win32-toolkit.psd1/.psm1, Public\, Private\) with things that must
+    The repo root mixes the module (win32-toolkit.psd1/.psm1, Public\, Private\, DeployExtension\) with things that must
     NOT ship: docs\, Tests\, build\, .github\, mkdocs.yml, CLAUDE.md, PSScriptAnalyzerSettings.psd1,
     the release-please files, and so on. Publish-PSResource has no -Exclude and a manifest FileList
     does NOT filter the package, so this stages a clean folder named exactly 'win32-toolkit' holding
@@ -41,57 +41,63 @@ if ([string]::IsNullOrWhiteSpace($ApiKey) -and -not $DryRun) {
 }
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
-# The leaf name MUST equal the module / manifest base name or Publish-PSResource rejects it.
-$staging = Join-Path ([System.IO.Path]::GetTempPath()) 'win32-toolkit'
-if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
+# The leaf name MUST equal the module / manifest base name or Publish-PSResource rejects it. Its parent is
+# unique per run, so two runs at once (two test runners, a rehearsal next to a release) never share it.
+$stagingRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('w32t-publish-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$staging = Join-Path $stagingRoot 'win32-toolkit'
 New-Item -ItemType Directory -Path $staging | Out-Null
-
-# Copy ONLY the module payload - never the repo root.
-foreach ($file in 'win32-toolkit.psd1', 'win32-toolkit.psm1', 'LICENSE', 'README.md') {
-    Copy-Item -Path (Join-Path $repoRoot $file) -Destination $staging
-}
-Copy-Item -Path (Join-Path $repoRoot 'Public')  -Destination $staging -Recurse
-Copy-Item -Path (Join-Path $repoRoot 'Private') -Destination $staging -Recurse
-if ($IncludeTools) { Copy-Item -Path (Join-Path $repoRoot 'Tools') -Destination $staging -Recurse }
-
-Write-Host "Staged module payload at: $staging" -ForegroundColor Cyan
-Get-ChildItem $staging -Recurse -File |
-    ForEach-Object { Write-Verbose ("  {0}" -f $_.FullName.Substring($staging.Length + 1)) }
-
-# Validate the STAGED copy so a bad manifest fails here, not at the Gallery.
-$null = Test-ModuleManifest -Path (Join-Path $staging 'win32-toolkit.psd1')
-
-# Lint gate: the Gallery scans server-side anyway; failing in CI is faster and clearer. Mirrors the
-# repo's own PSScriptAnalyzerSettings and fails only on Error severity.
-if (Get-Module -ListAvailable -Name PSScriptAnalyzer) {
-    $settings = Join-Path $repoRoot 'PSScriptAnalyzerSettings.psd1'
-    $issues = if (Test-Path $settings) {
-        Invoke-ScriptAnalyzer -Path $staging -Recurse -Settings $settings
-    } else {
-        Invoke-ScriptAnalyzer -Path $staging -Recurse -Severity Error
+try {
+    # Copy ONLY the module payload - never the repo root.
+    foreach ($file in 'win32-toolkit.psd1', 'win32-toolkit.psm1', 'LICENSE', 'README.md') {
+        Copy-Item -Path (Join-Path $repoRoot $file) -Destination $staging
     }
-    $errors = @($issues | Where-Object { $_.Severity -eq 'Error' })
-    if ($errors.Count -gt 0) {
-        $errors | Format-Table RuleName, ScriptName, Line, Message -AutoSize | Out-String | Write-Host
-        throw "PSScriptAnalyzer found $($errors.Count) error(s) in the staged module - refusing to publish."
+    Copy-Item -Path (Join-Path $repoRoot 'Public')  -Destination $staging -Recurse
+    Copy-Item -Path (Join-Path $repoRoot 'Private') -Destination $staging -Recurse
+    # win32-toolkit's PSADT extension module: copied into every package the module builds, byte for byte (its SHA-256 is
+    # pinned in Private\Get-Win32ToolkitDeployExtension.ps1; a gallery install without it cannot create a project).
+    Copy-Item -Path (Join-Path $repoRoot 'DeployExtension') -Destination $staging -Recurse
+    if ($IncludeTools) { Copy-Item -Path (Join-Path $repoRoot 'Tools') -Destination $staging -Recurse }
+
+    Write-Host "Staged module payload at: $staging" -ForegroundColor Cyan
+    Get-ChildItem $staging -Recurse -File |
+        ForEach-Object { Write-Verbose ("  {0}" -f $_.FullName.Substring($staging.Length + 1)) }
+
+    # Validate the STAGED copy so a bad manifest fails here, not at the Gallery.
+    $null = Test-ModuleManifest -Path (Join-Path $staging 'win32-toolkit.psd1')
+
+    # Lint gate: the Gallery scans server-side anyway; failing in CI is faster and clearer. Mirrors the
+    # repo's own PSScriptAnalyzerSettings and fails only on Error severity.
+    if (Get-Module -ListAvailable -Name PSScriptAnalyzer) {
+        $settings = Join-Path $repoRoot 'PSScriptAnalyzerSettings.psd1'
+        $issues = if (Test-Path $settings) {
+            Invoke-ScriptAnalyzer -Path $staging -Recurse -Settings $settings
+        } else {
+            Invoke-ScriptAnalyzer -Path $staging -Recurse -Severity Error
+        }
+        $errors = @($issues | Where-Object { $_.Severity -eq 'Error' })
+        if ($errors.Count -gt 0) {
+            $errors | Format-Table RuleName, ScriptName, Line, Message -AutoSize | Out-String | Write-Host
+            throw "PSScriptAnalyzer found $($errors.Count) error(s) in the staged module - refusing to publish."
+        }
+        Write-Host 'PSScriptAnalyzer: no errors in the staged module.' -ForegroundColor Green
     }
-    Write-Host 'PSScriptAnalyzer: no errors in the staged module.' -ForegroundColor Green
-}
 
-# PSResourceGet ships with PS 7.4+, but install it if the runner is older.
-if (-not (Get-Module -ListAvailable -Name Microsoft.PowerShell.PSResourceGet)) {
-    Install-Module -Name Microsoft.PowerShell.PSResourceGet -Scope CurrentUser -Force -AllowClobber
-}
-Import-Module -Name Microsoft.PowerShell.PSResourceGet
+    # PSResourceGet ships with PS 7.4+, but install it if the runner is older.
+    if (-not (Get-Module -ListAvailable -Name Microsoft.PowerShell.PSResourceGet)) {
+        Install-Module -Name Microsoft.PowerShell.PSResourceGet -Scope CurrentUser -Force -AllowClobber
+    }
+    Import-Module -Name Microsoft.PowerShell.PSResourceGet
 
-if ($DryRun) {
-    Write-Host 'DRY RUN: previewing Publish-PSResource -WhatIf (nothing is uploaded).' -ForegroundColor Yellow
-    $key = if ([string]::IsNullOrWhiteSpace($ApiKey)) { 'DRYRUN-PLACEHOLDER' } else { $ApiKey }
-    Publish-PSResource -Path $staging -Repository PSGallery -ApiKey $key -WhatIf -Verbose
+    if ($DryRun) {
+        Write-Host 'DRY RUN: previewing Publish-PSResource -WhatIf (nothing is uploaded).' -ForegroundColor Yellow
+        $key = if ([string]::IsNullOrWhiteSpace($ApiKey)) { 'DRYRUN-PLACEHOLDER' } else { $ApiKey }
+        Publish-PSResource -Path $staging -Repository PSGallery -ApiKey $key -WhatIf -Verbose
+    }
+    else {
+        Publish-PSResource -Path $staging -Repository PSGallery -ApiKey $ApiKey -Verbose
+        Write-Host 'Published win32-toolkit to the PowerShell Gallery.' -ForegroundColor Green
+    }
 }
-else {
-    Publish-PSResource -Path $staging -Repository PSGallery -ApiKey $ApiKey -Verbose
-    Write-Host 'Published win32-toolkit to the PowerShell Gallery.' -ForegroundColor Green
+finally {
+    Remove-Item $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
-
-Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue

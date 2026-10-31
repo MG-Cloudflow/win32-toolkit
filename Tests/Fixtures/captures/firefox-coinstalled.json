@@ -1,0 +1,47 @@
+{
+  "DocumentationInfo": { "ProjectName": "Fixture_firefox-coinstalled", "Timestamp": "20260101_120000", "PsadtExitCode": 0, "DependencyExitCode": null },
+  "NewFiles": [
+    { "Path": "C:\\Program Files\\Mozilla Firefox", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Mozilla Firefox\\browser", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Mozilla Firefox\\browser\\features", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Mozilla Firefox\\browser\\VisualElements", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Mozilla Firefox\\defaults", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Mozilla Firefox\\defaults\\pref", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Mozilla Firefox\\distribution", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Mozilla Firefox\\fonts", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Mozilla Firefox\\gmp-clearkey", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Mozilla Firefox\\gmp-clearkey\\0.1", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Mozilla Firefox\\tobedeleted", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Mozilla Firefox\\uninstall", "Type": "Directory" },
+    { "Path": "C:\\Program Files\\Mozilla Firefox\\firefox.exe", "Type": "File" },
+    { "Path": "C:\\Program Files\\Mozilla Firefox\\uninstall\\helper.exe", "Type": "File" },
+    { "Path": "C:\\Program Files (x86)\\Mozilla Maintenance Service", "Type": "Directory" },
+    { "Path": "C:\\Program Files (x86)\\Mozilla Maintenance Service\\logs", "Type": "Directory" },
+    { "Path": "C:\\Program Files (x86)\\Mozilla Maintenance Service\\maintenanceservice.exe", "Type": "File" },
+    { "Path": "C:\\Program Files (x86)\\Mozilla Maintenance Service\\logs\\maintenanceservice-install.log", "Type": "File" }
+  ],
+  "NewRegistryKeys": [
+    {
+      "Path": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Mozilla Firefox",
+      "KeyName": "Mozilla Firefox",
+      "Values": {
+        "DisplayName": "Mozilla Firefox (x64 en-US)",
+        "DisplayVersion": "152.0.5",
+        "InstallLocation": "C:\\Program Files\\Mozilla Firefox",
+        "UninstallString": "\"C:\\Program Files\\Mozilla Firefox\\uninstall\\helper.exe\"",
+        "DisplayIcon": "C:\\Program Files\\Mozilla Firefox\\firefox.exe,0"
+      }
+    },
+    {
+      "Path": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MozillaMaintenanceService",
+      "KeyName": "MozillaMaintenanceService",
+      "Values": {
+        "DisplayName": "Mozilla Maintenance Service",
+        "UninstallString": "\"C:\\Program Files (x86)\\Mozilla Maintenance Service\\uninstall.exe\"",
+        "DisplayIcon": "\"C:\\Program Files (x86)\\Mozilla Maintenance Service\\maintenanceservice.exe\",0"
+      }
+    }
+  ],
+  "NewServices": [],
+  "NewPrograms": []
+}

@@ -78,8 +78,11 @@ if ($threw -and $msg -match 'wrong customer') { Ok 'the error says why it matter
 if ($script:disconnects -ge 1) { Ok 'the wrong-tenant session is torn down, not left signed in' } else { Bad 'left the user connected to the wrong tenant' }
 
 # ── Assert-Win32ToolkitTenant ────────────────────────────────────────────────────────────────────
+# Every temp folder is registered here and removed at the end, pass or fail (test campaign 2026-10-21, H7-F12).
+$script:tmp = [System.Collections.Generic.List[string]]::new()
 function New-Proj { param([string]$Tenant)
     $p = Join-Path ([System.IO.Path]::GetTempPath()) ('tg_' + [guid]::NewGuid().ToString('N').Substring(0,8))
+    $script:tmp.Add($p)
     New-Item -ItemType Directory -Path (Join-Path $p 'SupportFiles') -Force | Out-Null
     $cfg = [ordered]@{ App = [ordered]@{ Name = 'App'; Version = '1.0' } }
     if ($Tenant) { $cfg['Intune'] = [ordered]@{ TenantId = $Tenant } }
@@ -87,32 +90,35 @@ function New-Proj { param([string]$Tenant)
     $p
 }
 
-Write-Host "`n[5] Assert: pinned project + WRONG live tenant -> refuses to publish" -ForegroundColor Cyan
-$script:ctx = [pscustomobject]@{ TenantId = $ARXUS; Account = 'mg@cloudflow.be'; Scopes = @(); ContextScope = 'Process'; AuthType = 'Delegated' }
-$proj = New-Proj -Tenant $VLOOT
-$threw = $false
-try { Assert-Win32ToolkitTenant -ProjectPath $proj -Operation 'publish' 3>$null } catch { $threw = $true; $m2 = $_.Exception.Message }
-if ($threw) { Ok 'publish REFUSED against the wrong customer tenant' } else { Bad 'the guard let a wrong-tenant publish through' }
-if ($threw -and $m2 -match "different customer's tenant") { Ok 'the refusal explains the consequence' } else { Bad "weak message: [$m2]" }
+try {
+    Write-Host "`n[5] Assert: pinned project + WRONG live tenant -> refuses to publish" -ForegroundColor Cyan
+    $script:ctx = [pscustomobject]@{ TenantId = $ARXUS; Account = 'mg@cloudflow.be'; Scopes = @(); ContextScope = 'Process'; AuthType = 'Delegated' }
+    $proj = New-Proj -Tenant $VLOOT
+    $threw = $false
+    try { Assert-Win32ToolkitTenant -ProjectPath $proj -Operation 'publish' 3>$null } catch { $threw = $true; $m2 = $_.Exception.Message }
+    if ($threw) { Ok 'publish REFUSED against the wrong customer tenant' } else { Bad 'the guard let a wrong-tenant publish through' }
+    if ($threw -and $m2 -match "different customer's tenant") { Ok 'the refusal explains the consequence' } else { Bad "weak message: [$m2]" }
 
-Write-Host "`n[6] Assert: pinned project + matching tenant -> proceeds" -ForegroundColor Cyan
-$script:ctx = [pscustomobject]@{ TenantId = $VLOOT; Account = 'mg@cloudflow.be'; Scopes = @(); ContextScope = 'Process'; AuthType = 'Delegated' }
-$res = Assert-Win32ToolkitTenant -ProjectPath $proj -Operation 'publish' 3>$null
-if ($res.Pinned -and $res.TenantId -eq $VLOOT) { Ok 'matching tenant proceeds, reported as pinned' } else { Bad "unexpected: $($res | ConvertTo-Json -Compress)" }
+    Write-Host "`n[6] Assert: pinned project + matching tenant -> proceeds" -ForegroundColor Cyan
+    $script:ctx = [pscustomobject]@{ TenantId = $VLOOT; Account = 'mg@cloudflow.be'; Scopes = @(); ContextScope = 'Process'; AuthType = 'Delegated' }
+    $res = Assert-Win32ToolkitTenant -ProjectPath $proj -Operation 'publish' 3>$null
+    if ($res.Pinned -and $res.TenantId -eq $VLOOT) { Ok 'matching tenant proceeds, reported as pinned' } else { Bad "unexpected: $($res | ConvertTo-Json -Compress)" }
 
-Write-Host "`n[7] Assert: UNPINNED project warns but does not block (honest, not silent)" -ForegroundColor Cyan
-$projU = New-Proj -Tenant ''
-$script:OrgTemplate = $null
-$wv = $null
-$resU = Assert-Win32ToolkitTenant -ProjectPath $projU -Operation 'publish' -WarningVariable wv -WarningAction SilentlyContinue
-if ($resU -and -not $resU.Pinned) { Ok 'unpinned -> proceeds' } else { Bad 'unpinned project blocked' }
-if ($wv) { Ok 'unpinned -> warns that nothing can be verified' } else { Bad 'unpinned passed silently' }
+    Write-Host "`n[7] Assert: UNPINNED project warns but does not block (honest, not silent)" -ForegroundColor Cyan
+    $projU = New-Proj -Tenant ''
+    $script:OrgTemplate = $null
+    $wv = $null
+    $resU = Assert-Win32ToolkitTenant -ProjectPath $projU -Operation 'publish' -WarningVariable wv -WarningAction SilentlyContinue
+    if ($resU -and -not $resU.Pinned) { Ok 'unpinned -> proceeds' } else { Bad 'unpinned project blocked' }
+    if ($wv) { Ok 'unpinned -> warns that nothing can be verified' } else { Bad 'unpinned passed silently' }
 
-Write-Host "`n[8] Assert: no session at all -> throws" -ForegroundColor Cyan
-$script:ctx = $null
-$threw = $false
-try { Assert-Win32ToolkitTenant -ProjectPath $proj 3>$null } catch { $threw = $true }
-if ($threw) { Ok 'no Graph session -> throws' } else { Bad 'passed with no session' }
+    Write-Host "`n[8] Assert: no session at all -> throws" -ForegroundColor Cyan
+    $script:ctx = $null
+    $threw = $false
+    try { Assert-Win32ToolkitTenant -ProjectPath $proj 3>$null } catch { $threw = $true }
+    if ($threw) { Ok 'no Graph session -> throws' } else { Bad 'passed with no session' }
+}
+finally { foreach ($tp in $script:tmp) { Remove-Item -LiteralPath $tp -Recurse -Force -ErrorAction SilentlyContinue } }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All IntuneTenantGuard tests passed.' -ForegroundColor Green; exit 0 }

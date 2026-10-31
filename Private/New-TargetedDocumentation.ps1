@@ -14,7 +14,10 @@ function New-TargetedDocumentation {
         [string]$Backend = 'Sandbox',
 
         # Tests only: prepare everything (incl. clearing stale captures) but do not launch the sandbox.
-        [switch]$SkipLaunch
+        [switch]$SkipLaunch,
+
+        # The base folder a 'project:' dependency is staged from (the run's -BasePath); empty = the configured one.
+        [string]$BasePath
     )
 
     try {
@@ -70,7 +73,10 @@ Write-Host "======================================"
 
 # The settle wait is a Windows Sandbox artifact (services still coming up at logon). Under Hyper-V
 # the provider already gated readiness (heartbeat + PS Direct) before this script runs, so skip it.
+# The log then records what really happened (no settle wait under Hyper-V) and how long it took.
+$settleSeconds = $null
 if ($backend -eq 'Sandbox') {
+    $settleTotal = [System.Diagnostics.Stopwatch]::StartNew()
     Write-Host "`nWaiting for Windows Sandbox to fully initialize..." -ForegroundColor Yellow
     Write-Host "This ensures all system services are ready before documentation begins." -ForegroundColor Gray
 
@@ -86,7 +92,8 @@ if ($backend -eq 'Sandbox') {
         # so the churn condition watches BOTH profile roots at the snapshot's own depth ballpark and
         # demands TWO consecutive stable comparisons — the desktop being up alone proves nothing about
         # first-logon profile churn. Earliest exit ~9 s; the 60 s cap keeps the worst case identical.
-        $settleDeadline = (Get-Date).AddSeconds(60)
+        # Monotonic (Stopwatch), never the wall clock: a guest clock can jump while this runs (H1).
+        $settleClock = [System.Diagnostics.Stopwatch]::StartNew()
         $prevCount = -1
         $stableRuns = 0
         do {
@@ -101,7 +108,7 @@ if ($backend -eq 'Sandbox') {
             } catch { $ok = $false }
             if ($ok) { break }
             Start-Sleep -Seconds 3
-        } until ((Get-Date) -gt $settleDeadline)
+        } until ($settleClock.Elapsed.TotalSeconds -gt 60)
     }
     else {
         Write-Host "Please wait 60 seconds..." -ForegroundColor Cyan
@@ -112,6 +119,7 @@ if ($backend -eq 'Sandbox') {
         Write-Progress -Activity "Initializing Windows Sandbox" -Completed
     }
     Write-Host "Sandbox initialization complete!" -ForegroundColor Green
+    $settleSeconds = [int]$settleTotal.Elapsed.TotalSeconds
 }
 
 # Create documentation output folder
@@ -132,9 +140,12 @@ Write-Log "Project: $projectName" "INFO"
 Write-Log "Timestamp: $timestamp" "INFO"
 Write-Log "Output Path: $outputPath" "INFO"
 Write-Log "Log Path: $logPath" "INFO"
-Write-Log "Windows Sandbox initialization wait started (60 seconds)" "INFO"
-Write-Log "Waiting for system services to stabilize before baseline capture" "INFO"
-Write-Log "Windows Sandbox initialization completed successfully" "INFO"
+if ($backend -eq 'Sandbox') {
+    Write-Log "Windows Sandbox settle wait completed after $settleSeconds s (scope: $installerScope; machine scope probes readiness, capped at 60 s)" "INFO"
+}
+else {
+    Write-Log "Hyper-V backend: guest readiness already gated by the host (heartbeat + PowerShell Direct); no settle wait" "INFO"
+}
 Write-Log "========================================" "INFO"
 
 # Function to export data with error handling and proper formatting
@@ -156,6 +167,14 @@ function Export-DataSafely {
 }
 
 # Function to scan targeted directories
+# Capture noise left out of BOTH snapshots (so PRE and POST are filtered alike): files the capture's own PSADT
+# child powershell.exe writes, never the app's install - .NET Framework's BreadcrumbStore entries and
+# PowerShell's per-user startup/analysis caches (test campaign 2026-10-21, S7-F7: 8 to 22 of every capture's
+# NewFiles). Static literals only, no host data.
+$snapshotNoise = @()
+if ($env:ProgramData)  { $snapshotNoise += (Join-Path $env:ProgramData 'Microsoft\NetFramework\BreadcrumbStore') }
+if ($env:LOCALAPPDATA) { $snapshotNoise += (Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\PowerShell') }
+
 function Get-TargetedDirectorySnapshot {
     param([string]$Description, [string[]]$Paths, [int]$Depth = 3)
     
@@ -171,8 +190,16 @@ function Get-TargetedDirectorySnapshot {
                 Write-Log "Scanning path: $path" "INFO"
                 $items = @(Get-ChildItem -Path $path -Recurse -Depth $Depth -ErrorAction SilentlyContinue |
                          Select-Object FullName, Name, Length, CreationTime, LastWriteTime, Attributes)
-                foreach ($it in $items) { $results.Add($it) }
-                Write-Log "Found $($items.Count) items in $path" "INFO"
+                $kept = 0
+                foreach ($it in $items) {
+                    $noise = $false
+                    foreach ($n in $snapshotNoise) {
+                        if ([string]::Equals([string]$it.FullName, $n, [System.StringComparison]::OrdinalIgnoreCase) -or
+                            ([string]$it.FullName).StartsWith($n + '\', [System.StringComparison]::OrdinalIgnoreCase)) { $noise = $true; break }
+                    }
+                    if (-not $noise) { $results.Add($it); $kept++ }
+                }
+                Write-Log "Found $($items.Count) items in $path ($($items.Count - $kept) capture-noise items left out)" "INFO"
             } catch {
                 Write-Log "Error scanning $path - $($_.Exception.Message)" "WARNING"
             }
@@ -245,15 +272,31 @@ function Get-TargetedRegistrySnapshot {
 # too. Critically this runs BEFORE the pre-install baseline: if the dependency went in afterwards, its own
 # files / registry keys / services would show up in the diff as changes made by THIS app — poisoning the
 # generated detection rule, uninstall logic and processes-to-close.
+# The dependency script EXITS with the first failing dependency's code (it never throws for a failed
+# install), so read $LASTEXITCODE: the result is recorded as InstallationInfo.DependencyExitCode and the
+# host refuses a capture whose dependencies failed ($null = none declared / pre-installed checkpoint).
+$dependencyExitCode = $null
 if (Test-Path -LiteralPath 'C:\PSADT\Sandbox\InstallDependencies.ps1') {
     Write-Host "`nInstalling declared dependencies (before the baseline)..." -ForegroundColor Yellow
     Write-Log "Installing declared dependencies BEFORE the baseline capture" "INFO"
     try {
+        $global:LASTEXITCODE = 0
         & 'C:\PSADT\Sandbox\InstallDependencies.ps1'
-        Write-Log "Declared dependencies installed" "SUCCESS"
+        $dependencyExitCode = $LASTEXITCODE
+        if ($null -eq $dependencyExitCode) { $dependencyExitCode = 0 }
+        if (@(0, 1707, 3010, 1641) -contains $dependencyExitCode) {
+            Write-Log "Declared dependencies installed (exit code $dependencyExitCode)" "SUCCESS"
+        }
+        else {
+            Write-Host "Dependency install FAILED (exit code $dependencyExitCode) - the capture is unreliable." -ForegroundColor Red
+            Write-Log "Dependency install FAILED with exit code $dependencyExitCode" "ERROR"
+        }
     }
     catch {
-        Write-Host "Dependency install FAILED - the capture may be unreliable." -ForegroundColor Red
+        # A terminating error inside the script (e.g. Add-AppxPackage): record it as a failure (1, the code
+        # powershell.exe itself reports for an uncaught error) so the host refuses the capture.
+        $dependencyExitCode = 1
+        Write-Host "Dependency install FAILED - the capture is unreliable." -ForegroundColor Red
         Write-Log "Dependency install FAILED: $($_.Exception.Message)" "ERROR"
     }
 }
@@ -363,8 +406,18 @@ Write-Host "Waiting for installation to complete (this may take several minutes)
 
 $installProcess = Start-Process -FilePath "powershell.exe" -ArgumentList "-ExecutionPolicy", "Bypass", "-File", ".\Invoke-AppDeployToolkit.ps1", "-DeployMode", "Silent" -PassThru -Wait
 
-Write-Host "Installation process completed with exit code: $($installProcess.ExitCode)" -ForegroundColor Green
-Write-Log "PSADT installation process completed with exit code: $($installProcess.ExitCode)" "INFO"
+# Recorded as InstallationInfo.PsadtExitCode: the host refuses to derive detection / uninstall data from a
+# capture whose PSADT run failed (60001 = script error, 60008 = session/launch failure, ...).
+$psadtExitCode = $null
+if ($installProcess) { $psadtExitCode = $installProcess.ExitCode }
+if (@(0, 1707, 3010, 1641) -contains $psadtExitCode) {
+    Write-Host "Installation process completed with exit code: $psadtExitCode" -ForegroundColor Green
+    Write-Log "PSADT installation process completed with exit code: $psadtExitCode" "INFO"
+}
+else {
+    Write-Host "Installation process FAILED with exit code: $psadtExitCode" -ForegroundColor Red
+    Write-Log "PSADT installation process FAILED with exit code: $psadtExitCode" "ERROR"
+}
 
 Write-Host "`nWaiting for installation to fully finalize..." -ForegroundColor Yellow
 Write-Host "Allowing time for background processes, registry updates, and file operations to complete." -ForegroundColor Gray
@@ -454,8 +507,9 @@ try {
         Write-Host "No registry changes detected — polling the Uninstall hives for late writers (up to 90 s)..." -ForegroundColor Yellow
         Write-Log "Registry diff empty - polling Uninstall hives every 5 s (90 s budget) for delayed writes" "INFO"
         $uninstallHives = @($targetRegistryPaths | Where-Object { $_ -like '*CurrentVersion\Uninstall*' })
-        $retryStart  = Get-Date
-        $retryBudget = $retryStart.AddSeconds(90)
+        # Monotonic (Stopwatch), never the wall clock: after a Hyper-V checkpoint revert the guest clock
+        # jumps days ahead (or back) when time sync catches up - a wall-clock budget then ends at once or never.
+        $retryClock = [System.Diagnostics.Stopwatch]::StartNew()
         do {
             Start-Sleep -Seconds 5
             $probe = @(Get-TargetedRegistrySnapshot -Description "Uninstall-hive probe" -RegistryPaths $uninstallHives)
@@ -464,13 +518,13 @@ try {
                 Write-Log "Uninstall-hive probe detected $($probeNew.Count) new key(s) - running the full rescan" "INFO"
                 break
             }
-        } until ((Get-Date) -gt $retryBudget)
+        } until ($retryClock.Elapsed.TotalSeconds -gt 90)
 
         # The final rescan is a ONE-SHOT diff — never before t=30 s into the budget. The old loop's
         # earliest full rescan was its first 30 s retry; a probe hit at t=6 s must not pull the single
         # rescan earlier than that, or writes landing between the early hit and t=30 (which the old
         # code caught) would be permanently lost.
-        $elapsed = ((Get-Date) - $retryStart).TotalSeconds
+        $elapsed = $retryClock.Elapsed.TotalSeconds
         if ($elapsed -lt 30) { Start-Sleep -Seconds ([int][Math]::Ceiling(30 - $elapsed)) }
 
         # Final full-hive rescan + full diff (runs on probe hit AND on budget exhaustion).
@@ -514,6 +568,10 @@ $jsonData = @{
         ProjectName = $projectName
         Timestamp = $timestamp
         DocumentationDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        # Exit codes of the PSADT install and of the dependency script ($null = no dependencies ran);
+        # Wait-ForDocumentationAndProcess refuses a capture whose run failed.
+        PsadtExitCode = $psadtExitCode
+        DependencyExitCode = $dependencyExitCode
     }
     NewFiles = @()
     ModifiedFiles = @()
@@ -913,8 +971,9 @@ if ($backend -eq 'Sandbox') {
     Write-Host "`nClosing Windows Sandbox..." -ForegroundColor Red
     Write-Log "Sandbox auto-close initiated after $autoClose-second countdown" "INFO"
 
-    # Gracefully shut down the sandbox so the host client can disconnect cleanly
-    Stop-Computer
+    # Shut the sandbox down with -Force, like the unattended test guests: a bare Stop-Computer left the
+    # Windows Sandbox 0.8 client window on 'The remote environment is shutting down', which blocked the next run.
+    Stop-Computer -Force
 }
 '@
 
@@ -929,10 +988,12 @@ if ($backend -eq 'Sandbox') {
         # Auto-close: 30 s watched (the operator's Ctrl+C inspect window) / 5 s unattended (VSMB flush
         # only). Mode comes from the SHARED resolver so the -Unattended/config/non-interactive-host
         # precedence cannot drift from the test scenarios. Fail-safe to 30: a resolver hiccup must never
-        # leave the placeholder empty or shorten the operator's window.
+        # leave the placeholder empty or shorten the operator's window. The resolver's "this changes what
+        # is tested" warning is suppressed: the capture always runs -DeployMode Silent, only the auto-close
+        # value comes from here, and on Hyper-V the warning would also name the wrong backend.
         $autoCloseSeconds = 30
         try {
-            if ((Get-Win32ToolkitTestMode -Backend Sandbox) -eq 'Unattended') { $autoCloseSeconds = 5 }
+            if ((Get-Win32ToolkitTestMode -Backend Sandbox -WarningAction Ignore) -eq 'Unattended') { $autoCloseSeconds = 5 }
         } catch { $autoCloseSeconds = 30 }
         $documentationScript = $documentationScript.Replace('__AUTOCLOSE__', [string]$autoCloseSeconds)
 
@@ -946,12 +1007,16 @@ if ($backend -eq 'Sandbox') {
         # Create the log collector used inside the sandbox (Sandbox\CollectLogs.ps1),
         # so the documentation run's PSADT/MSI install logs are copied back to the project.
         $null = New-LogCollectorScript -ProjectPath $ProjectPath
-        Write-Verbose "Log collector created for documentation sandbox"
+        Write-Verbose "Log collector created for the documentation capture ($Backend)"
 
         # Stage declared dependencies into Sandbox\Dependencies\ so the guest can install them BEFORE the
         # baseline. Without this the capture runs on a machine missing the app's runtime, and the detection
         # / uninstall rules would be derived from a broken install. No-op when none are declared.
-        $null = Initialize-Win32ToolkitDependencyStaging -ProjectPath $ProjectPath
+        # A 'project:' dependency resolves against the run's -BasePath when one was passed (re-verification
+        # 2026-10-21, B3 #4); a dependency that cannot be staged throws W32T.DependencyNotStaged (re-thrown below).
+        $depArgs = @{ ProjectPath = $ProjectPath }
+        if ($BasePath) { $depArgs['BasePath'] = $BasePath }
+        $null = Initialize-Win32ToolkitDependencyStaging @depArgs
 
         # Create the sandbox configuration (Sandbox backend only — Hyper-V runs the same generated script
         # over PowerShell Direct with no .wsb). Built via the shared .wsb builder (test-backend seam, Phase 0).
@@ -1043,6 +1108,14 @@ if ($backend -eq 'Sandbox') {
             return $expectedJson
         }
 
+        # Only one Windows Sandbox may run. A test sandbox that is still shutting down (or was left open to
+        # watch) made this launch race it, and a refused launch left the caller waiting 30 min for a capture
+        # that never comes (test campaign 2026-10-21, S8-F4). Wait like the test runs do, then fail fast.
+        if (-not (Wait-Win32ToolkitSandboxFree -TimeoutSeconds 90)) {
+            Write-Warning "Another Windows Sandbox is still running after waiting 90 s (only one instance is allowed) - the documentation capture was NOT launched. Close it (for example a test sandbox left open for verification) and re-run, or start the capture manually: $sandboxConfigFile"
+            return $false
+        }
+
         # Stale captures were just cleared, so nothing will satisfy the wait until a capture from THIS
         # run appears — if the operator doesn't launch manually, the wait times out (30 min).
         if ((Invoke-Win32ToolkitTestRun -Backend Sandbox -SandboxConfigPath $sandboxConfigFile).Launched) {
@@ -1058,6 +1131,10 @@ if ($backend -eq 'Sandbox') {
         return $expectedJson
     }
     catch {
+        # Fail closed (C-2): a W32T.* error (a declared dependency that cannot be staged: W32T.DependencyNotStaged)
+        # stops Invoke-Win32Toolkit / the manual-app flow instead of a warning and a skipped capture
+        # (re-verification 2026-10-21, B3 #1).
+        if ($_.FullyQualifiedErrorId -like 'W32T.*') { throw }
         Write-Warning "Failed to create targeted documentation: $($_.Exception.Message)"
         return $false
     }

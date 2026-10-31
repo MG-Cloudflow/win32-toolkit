@@ -4,18 +4,20 @@ function Test-Win32ToolkitPS51Syntax {
         Parses a .ps1/.psm1 under Windows PowerShell 5.1 and returns any syntax errors (as strings).
 
     .DESCRIPTION
-        Org hook scripts and extension modules (A1/A3) run ON THE DEVICE under Windows PowerShell 5.1
-        (Intune's powershell.exe), but this module's host is PowerShell 7. Parsing a file with the PS7
-        Language.Parser is USELESS as a 5.1 check: PS7-only syntax (ternary `a ? b : c`, null-coalescing
-        `??`/`??=`, pipeline chains `&&`/`||`) parses cleanly under PS7 and would never warn.
+        Generated deploy scripts, org hook scripts and extension modules (A1/A3) run ON THE DEVICE under
+        Windows PowerShell 5.1 (Intune's powershell.exe), but this module's host is PowerShell 7. Parsing a
+        file with the PS7 Language.Parser is USELESS as a 5.1 check: PS7-only syntax (ternary `a ? b : c`,
+        null-coalescing `??`/`??=`, pipeline chains `&&`/`||`) parses cleanly under PS7 and would never warn.
 
         So we shell out to the real Windows PowerShell 5.1 (powershell.exe) and parse there — its grammar
-        rejects those constructs, which is exactly what we want to surface to the operator at apply time.
+        rejects those constructs, which is exactly what we want to catch at generate / apply time.
         The target path is passed via an environment variable to sidestep every command-line quoting
         pitfall (paths with spaces/quotes/brackets).
 
-        Fail-OPEN: if 5.1 can't be located (non-Windows CI, stripped image) this returns no errors rather
-        than blocking. The check is an operator warning, never a hard gate.
+        Fail-OPEN: if 5.1 can't be located (non-Windows CI, stripped image) or the checker can't run, this
+        returns no errors rather than blocking. Callers decide the policy: org hooks and extension modules
+        only warn; Write-Win32ToolkitDeployScript treats any returned error as fatal (restores the
+        original bytes and throws W32T.GeneratedScriptInvalid).
 
     .PARAMETER Path
         Full path to the .ps1/.psm1 to check.
@@ -36,11 +38,13 @@ function Test-Win32ToolkitPS51Syntax {
     if (-not (Test-Path -LiteralPath $psExe)) { return @() }   # no 5.1 here → fail open
 
     # Parse-only in a 5.1 child. Path travels via env var (no quoting hazards). The child prints one
-    # line per parse error; ParseFile never executes the script, so this is side-effect free.
+    # 'PARSEERR:<message>' line per parse error (the message flattened to one line); ParseFile never
+    # executes the script, so this is side-effect free. Only those lines are returned: anything else the
+    # child or the launcher prints (profile or console noise, a stray warning) is never a parse error.
     $checker = @'
 $e = $null
 [void][System.Management.Automation.Language.Parser]::ParseFile($env:W32T_HOOKCHECK, [ref]$null, [ref]$e)
-if ($e) { $e | ForEach-Object { $_.Message } }
+if ($e) { $e | ForEach-Object { 'PARSEERR:' + ($_.Message -replace '\s*[\r\n]+\s*', ' ') } }
 '@
     $prev = $env:W32T_HOOKCHECK
     try {
@@ -54,5 +58,6 @@ if ($e) { $e | ForEach-Object { $_.Message } }
         $env:W32T_HOOKCHECK = $prev
     }
 
-    return @($out | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+    return @($out | ForEach-Object { "$_".Trim() } | Where-Object { $_.StartsWith('PARSEERR:') } |
+            ForEach-Object { $_.Substring(9).Trim() })
 }

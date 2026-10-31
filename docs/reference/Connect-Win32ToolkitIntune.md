@@ -1,56 +1,78 @@
 # Connect-Win32ToolkitIntune
 
 ## SYNOPSIS
-Signs in to Microsoft Intune (Entra) and shows which tenant you are connected to.
+Signs in to Intune and shows which tenant you are connected to.
 
 ## SYNTAX
 
 ```
 Connect-Win32ToolkitIntune [[-TenantId] <String>] [[-Template] <String>] [[-ContextScope] <String>]
  [-UseDeviceAuthentication] [[-Scopes] <String[]>] [[-BasePath] <String>] [-Force]
- [-ProgressAction <ActionPreference>] [<CommonParameters>]
+ [<CommonParameters>]
 ```
 
 ## DESCRIPTION
-Publishing already connects on demand, so this exists for the two things that flow could not do:
-choose the tenant up front, and SEE which one you are on before anything is written.
+Connect-Win32ToolkitIntune signs you in to Microsoft Intune and shows a banner with the tenant
+name, the tenant ID and your account.
+You see the tenant before anything is written.
+If you
+are already signed in to that tenant, the command uses that sign-in.
+If your account may not
+read the tenant name, the banner shows "(name unavailable)" and the tenant ID.
 
-That matters when you package for several customers.
-The signed-in account is not identity: your
-UPN looks the same in every tenant you are a guest in.
-The tenant is what decides whose Intune
-receives the app, so this command leads with the tenant name.
+Use it before you publish, and always when you work for more than one customer.
+Publishing
+can sign in by itself, but it then saves the sign-in on disk.
+In the menu: Microsoft Intune
+connection \> Connect using an org template's tenant.
 
-Pass -Template to connect to the tenant pinned on an org template.
-That is the recommended way:
-the same pin is then enforced at publish time, and a session for the wrong tenant is refused
-rather than used.
+The command writes nothing to Intune.
+By default the sign-in is kept in this PowerShell window
+only.
+If the sign-in lands on another tenant than the one you asked for, the command signs you
+out again and stops.
 
-The toolkit requests the least privilege it needs (DeviceManagementApps.ReadWrite.All).
-The tenant
-NAME shown in the banner comes from a directory read that your account may or may not be allowed;
-when it is not, the GUID is shown instead and nothing else changes.
+Use the tenant ID, not a domain name.
+win32-toolkit compares tenant IDs, so a domain name never
+matches.
 
 ## EXAMPLES
 
 ### EXAMPLE 1
 ```
 Connect-Win32ToolkitIntune -Template 'Contoso'
-Connects to the tenant pinned on the Contoso template and prints the connection banner.
 ```
+
+This signs in to the tenant ID saved on the Contoso org template and shows the tenant banner.
 
 ### EXAMPLE 2
 ```
-Connect-Win32ToolkitIntune -TenantId 'contoso.onmicrosoft.com' -ContextScope CurrentUser
-Connects to a named tenant and keeps the token for later sessions.
+Connect-Win32ToolkitIntune -TenantId '11111111-2222-3333-4444-555555555555'
 ```
+
+This signs in to one tenant by its tenant ID, without an org template.
+
+### EXAMPLE 3
+```
+Connect-Win32ToolkitIntune -Template 'Contoso' -UseDeviceAuthentication
+```
+
+This signs in with a device code, on a PC without a browser.
+
+### EXAMPLE 4
+```
+Connect-Win32ToolkitIntune -Template 'Contoso' -Force -ErrorAction Stop
+```
+
+This is the form for scripts.
+A connect error does not stop a script unless you add
+-ErrorAction Stop.
 
 ## PARAMETERS
 
 ### -TenantId
-Tenant to connect to (GUID or domain).
-The connection is verified afterwards: if it lands on a
-different tenant, the command throws instead of leaving you signed in to the wrong one.
+The tenant ID to connect to.
+If you also give -Template, this value wins.
 
 ```yaml
 Type: String
@@ -65,8 +87,10 @@ Accept wildcard characters: False
 ```
 
 ### -Template
-Org template whose pinned TenantId to use.
-Ignored if -TenantId is given.
+The org template whose tenant ID you connect to.
+This is the recommended way to connect.
+If
+the template has no tenant ID, the command warns and signs in without one.
 
 ```yaml
 Type: String
@@ -81,9 +105,10 @@ Accept wildcard characters: False
 ```
 
 ### -ContextScope
-'Process' (default) keeps the token in this session only.
-'CurrentUser' caches it on disk for
-later sessions, which is convenient for one tenant and risky across several.
+Where the sign-in is kept.
+Default: Process (this PowerShell window only).
+Use CurrentUser only
+if you work for one tenant: the sign-in is then saved on disk for later windows.
 
 ```yaml
 Type: String
@@ -98,7 +123,9 @@ Accept wildcard characters: False
 ```
 
 ### -UseDeviceAuthentication
-Use the device-code flow (no browser on this host).
+Signs in with a code that you enter on a web page on any device.
+Use it when this PC has no
+browser, or when the browser keeps signing in to the wrong tenant.
 
 ```yaml
 Type: SwitchParameter
@@ -113,7 +140,10 @@ Accept wildcard characters: False
 ```
 
 ### -Scopes
-Override the requested delegated permissions.
+The Graph permissions to ask for.
+Default: DeviceManagementApps.ReadWrite.All.
+Leave it
+unchanged.
 
 ```yaml
 Type: String[]
@@ -128,7 +158,9 @@ Accept wildcard characters: False
 ```
 
 ### -BasePath
-Base folder (registry-backed default), used to find the template.
+The base folder to read the org template from, for this command only.
+Default: your saved base
+folder.
 
 ```yaml
 Type: String
@@ -143,7 +175,8 @@ Accept wildcard characters: False
 ```
 
 ### -Force
-Install the Microsoft.Graph.Authentication prerequisite without prompting.
+Installs the Microsoft.Graph.Authentication module without asking.
+Use it in scripts.
 
 ```yaml
 Type: SwitchParameter
@@ -157,21 +190,6 @@ Accept pipeline input: False
 Accept wildcard characters: False
 ```
 
-### -ProgressAction
-{{ Fill ProgressAction Description }}
-
-```yaml
-Type: ActionPreference
-Parameter Sets: (All)
-Aliases: proga
-
-Required: False
-Position: Named
-Default value: None
-Accept pipeline input: False
-Accept wildcard characters: False
-```
-
 ### CommonParameters
 This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable, -InformationAction, -InformationVariable, -OutVariable, -OutBuffer, -PipelineVariable, -Verbose, -WarningAction, and -WarningVariable. For more information, see [about_CommonParameters](http://go.microsoft.com/fwlink/?LinkID=113216).
 
@@ -179,7 +197,14 @@ This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable
 
 ## OUTPUTS
 
-### [pscustomobject] TenantId / DisplayName / Account / Scopes.
+### An object with TenantId, DisplayName, Account and Scopes.
+### If the connect fails, the command returns nothing.
+### The error that it writes starts with "Connect failed:".
 ## NOTES
 
 ## RELATED LINKS
+
+[https://win32toolkit.com/reference/Connect-Win32ToolkitIntune/](https://win32toolkit.com/reference/Connect-Win32ToolkitIntune/)
+
+[https://win32toolkit.com/intune-connection/](https://win32toolkit.com/intune-connection/)
+

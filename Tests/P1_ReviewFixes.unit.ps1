@@ -11,7 +11,9 @@
           fallback yielded null and NO requirement script was written at all.
       [3] FALSE ABORT. Create-PSADTProject's post-update guard tested whether PSADT was INSTALLED, not whether
           it was LOADED. PSADT is imported later in that same function, so in a fresh session nothing is loaded
-          and accepting the update killed a perfectly good run.
+          and accepting the update killed a perfectly good run. (Now the guarded import of the PSADT version
+          policy: Get-Module -All for loaded copies, Import-Module by the selected path without -Force, no
+          Update-Module.)
       [4] HARMFUL ADVICE. The download-failure warning told the user to drop an installer into Files\ and
           re-run — but a re-run recreates the project folder, deleting exactly what they put there.
       [5] SILENT INSTALLER GUESS. Get-InstallerFileInfo takes the first file BY NAME with no content
@@ -114,6 +116,47 @@ if (Test-Path $req2) {
     else { Bad 'fallback produced a script but without the manifest DisplayName' }
 } else { Bad 'no requirement script written from the manifest fallback (dead fallback regression)' }
 
+# ══ [2b] one product code, every fragment on its own line, parses with and without a version ══════════
+#     (test campaign 2026-10-21, H7-F9: the key path AND the UninstallString name the same GUID; the fragments
+#     were glued: "@(        '{GUID}'" and, with no DisplayVersion, "exit 0                        break" = parse error.)
+Write-Host '[2b] New-IntuneRequirementScript: duplicate product code, glued fragments' -ForegroundColor Cyan
+$guid = '{3B0346D3-155D-43E5-9561-B9BE51CF2EB6}'
+foreach ($withVersion in @($true, $false)) {
+    $p3 = NewTmp
+    New-Item -ItemType Directory -Path (Join-Path $p3 'SupportFiles'), (Join-Path $p3 'Files') -Force | Out-Null
+    $vals = @{ DisplayName = 'PuTTY release 0.85 (64-bit)'; Publisher = 'Simon Tatham'; UninstallString = "MsiExec.exe /X$($guid.ToLowerInvariant())" }
+    if ($withVersion) { $vals.DisplayVersion = '0.85.0.0' }
+    $cap3 = Join-Path $p3 'InstallationChanges_dup.json'
+    @{ NewRegistryKeys = @(@{ Path = "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$guid"; Values = $vals }) } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $cap3
+    $null = New-IntuneRequirementScript -ProjectPath $p3 -JsonFilePath $cap3 6>$null 3>$null
+    $tag = if ($withVersion) { 'with DisplayVersion' } else { 'without DisplayVersion' }
+    $rq = Join-Path $p3 'SupportFiles\RequirementScript.ps1'
+    if (-not (Test-Path -LiteralPath $rq)) { Bad "${tag}: no script"; continue }
+    $t3 = Get-Content -LiteralPath $rq -Raw
+    $perr3 = $null
+    [void][System.Management.Automation.Language.Parser]::ParseInput($t3, [ref]$null, [ref]$perr3)
+    if (-not $perr3 -or $perr3.Count -eq 0) { Ok "${tag}: the generated script parses" } else { Bad "${tag}: parse error: $($perr3[0].Message)" }
+    $hits = ([regex]::Matches($t3, [regex]::Escape($guid), 'IgnoreCase')).Count
+    if ($hits -eq 1) { Ok "${tag}: the product code is listed once (the key path and a lower-case UninstallString name the same GUID)" } else { Bad "${tag}: product code listed $hits times" }
+    if ($t3 -notmatch "exit 0[ \t]+break" -and $t3 -notmatch "@\([ \t]+'\{" -and $t3 -notmatch "\}[ \t]+break" -and $t3 -notmatch '(?m)^ {8}# Check specific') { Ok "${tag}: every fragment starts on its own line" } else { Bad "${tag}: glued fragments left" }
+    $ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (Test-Path -LiteralPath $ps51) {
+        $o51 = & $ps51 -NoProfile -Command "`$e = `$null; [void][System.Management.Automation.Language.Parser]::ParseFile('$rq', [ref]`$null, [ref]`$e); `$e.Count"
+        if ("$o51".Trim() -eq '0') { Ok "${tag}: parses under Windows PowerShell 5.1" } else { Bad "${tag}: 5.1 parse errors: $o51" }
+    }
+}
+
+# ══ [2c] the console never tells the operator to paste the script as a requirement (H5-F7) ═════════════
+Write-Host '[2c] New-IntuneRequirementScript: neutral reference note, no paste-as-requirement steps' -ForegroundColor Cyan
+$p4 = NewTmp
+New-Item -ItemType Directory -Path (Join-Path $p4 'SupportFiles'), (Join-Path $p4 'Files') -Force | Out-Null
+$cap4 = Join-Path $p4 'InstallationChanges_note.json'
+@{ NewRegistryKeys = @(@{ Path = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\7-Zip'; Values = @{ DisplayName = '7-Zip 26.04 (x64)'; DisplayVersion = '26.04' } }) } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $cap4
+$host4 = @(New-IntuneRequirementScript -ProjectPath $p4 -JsonFilePath $cap4 6>&1 3>$null | ForEach-Object { "$_" })
+$ret4 = @($host4 | Where-Object { $_ -eq 'True' })
+if ($ret4.Count -eq 1) { Ok 'still returns $true (callers rely on it)' } else { Bad "return: $($host4 -join ' | ')" }
+if (-not ($host4 -match 'Paste the script|Add requirement rule|SUCCESS: Requirement script') -and ($host4 -match 'not uploaded') -and ($host4 -match 'Do not add it as a requirement of the install app')) { Ok 'a neutral reference note: not uploaded, never a requirement of the install app' } else { Bad "host text: $($host4 -join ' | ')" }
+
 # ══ [5] Get-InstallerFileInfo warns when it is guessing between same-extension files ════════════════
 Write-Host '[5] Get-InstallerFileInfo: an ambiguous installer folder produces a warning, not a silent guess' -ForegroundColor Cyan
 $fx = NewTmp
@@ -154,12 +197,20 @@ if ($yi.InformationUrl -eq 'https://acme.example') { Ok 'InformationUrl read fro
 if ($yi.PackageIdentifier -eq 'Acme.App') { Ok 'PackageIdentifier is exposed (Publish reads it for the winget id)' } else { Bad "PackageIdentifier = '$($yi.PackageIdentifier)'" }
 
 # ══ [3]+[4] source-level guards (behaviour proven in P1_SelfRelaunch / P1_DroppedFlags) ════════════
-Write-Host '[3] Create-PSADTProject: the post-update guard keys off a LOADED module, not an installed one' -ForegroundColor Cyan
+Write-Host '[3] Create-PSADTProject: the import guard keys off a LOADED module, not an installed one' -ForegroundColor Cyan
 $cpText = Get-Content -LiteralPath (Join-Path $repo 'Private\Create-PSADTProject.ps1') -Raw
-# the abort must be gated on a bare Get-Module (loaded), and must re-read the module after the update
-if ($cpText -match '\$loaded\s*=\s*Get-Module\s+-Name\s+PSAppDeployToolkit(?!\s+-ListAvailable)') {
-    Ok 'the abort is gated on a bare Get-Module (loaded), not -ListAvailable (installed)'
+# Guarded-import shape (PSADT version policy): the abort is gated on the LOADED copies - Get-Module -All,
+# which also sees a copy imported into win32-toolkit's own scope - never on -ListAvailable (installed).
+if ($cpText -match '\$loaded\s*=\s*@\(\s*Get-Module\s+-Name\s+PSAppDeployToolkit\s+-All\b') {
+    Ok 'the abort is gated on Get-Module -All (loaded, any scope), not -ListAvailable (installed)'
 } else { Bad 'the loaded-vs-installed guard is missing' }
+# ...then the SELECTED copy is imported by path, never by name and never with -Force (#2371)...
+$importLines = @(($cpText -split "\r?\n") | Where-Object { $_ -match '^\s*[^#]*\bImport-Module\b' } | ForEach-Object { ($_ -replace '#.*$', '').Trim() })
+if ($importLines.Count -eq 1 -and $importLines[0] -match '^Import-Module -Name \$sel\.Module\.Path\b' -and $importLines[0] -notmatch '-Force') {
+    Ok 'the only Import-Module is "Import-Module -Name $sel.Module.Path" without -Force'
+} else { Bad "Import-Module lines: $($importLines -join ' | ')" }
+# ...and an update is an in-range side-by-side install, never Update-Module.
+if ($cpText -notmatch 'Update-Module') { Ok 'no Update-Module anywhere in the helper' } else { Bad 'Update-Module is still present' }
 
 Write-Host '[4] Invoke-Win32Toolkit: the download-failure advice no longer says "drop into Files\ and re-run"' -ForegroundColor Cyan
 $ivText = Get-Content -LiteralPath (Join-Path $repo 'Public\Invoke-Win32Toolkit.ps1') -Raw

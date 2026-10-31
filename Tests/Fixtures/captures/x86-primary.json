@@ -1,0 +1,21 @@
+{
+  "DocumentationInfo": { "ProjectName": "Fixture_x86-primary", "Timestamp": "20260101_120000", "PsadtExitCode": 0, "DependencyExitCode": null },
+  "NewFiles": [
+    { "Path": "C:\\Program Files (x86)\\Acme Tool", "Type": "Directory" },
+    { "Path": "C:\\Program Files (x86)\\Acme Tool\\uninstall.exe", "Type": "File" }
+  ],
+  "NewRegistryKeys": [
+    {
+      "Path": "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Acme Tool",
+      "KeyName": "Acme Tool",
+      "Values": {
+        "DisplayName": "Acme Tool",
+        "DisplayVersion": "1.0.0",
+        "InstallLocation": "C:\\Program Files (x86)\\Acme Tool",
+        "UninstallString": "\"C:\\Program Files (x86)\\Acme Tool\\uninstall.exe\" /S"
+      }
+    }
+  ],
+  "NewServices": [],
+  "NewPrograms": []
+}

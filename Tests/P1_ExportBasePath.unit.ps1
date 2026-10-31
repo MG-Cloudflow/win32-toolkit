@@ -23,6 +23,10 @@ $fail = 0
 function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+# C-9 (TUI audit G4): the not-configured gate runs first (no marker here -> it returns nothing).
+. (Join-Path $repo 'Private\Get-Win32ToolkitNotConfiguredMarker.ps1')
+. (Join-Path $repo 'Private\Assert-Win32ToolkitProjectConfigured.ps1')
 . (Join-Path $repo 'Public\Export-Win32ToolkitIntuneWin.ps1')
 
 # ── Shadows: nothing real may run ────────────────────────────────────────────────────────────────
@@ -31,6 +35,15 @@ $script:seenBase = $null
 
 # The choke point. Record the base Export decided on, then abort the run.
 function Get-Win32ToolkitPaths { param([string]$BasePath) $script:seenBase = $BasePath; throw $SENTINEL }
+
+# The package gate (D15/PKG-04) runs before the layout is resolved; its own suite is PackageReady.unit.
+# Here it only has to let these stub projects through (and record that it was asked, for Export).
+$script:gateCalls = @()
+function Assert-Win32ToolkitPackageReady {
+    param([string]$ProjectPath, [string]$Stage, [switch]$AllowLegacyScript)
+    $script:gateCalls += [pscustomobject]@{ ProjectPath = $ProjectPath; Stage = $Stage; AllowLegacyScript = [bool]$AllowLegacyScript }
+    [pscustomobject]@{ Ready = $true; Shape = 'Psadt41'; VersionText = '4.1.8'; Warnings = [string[]]@() }
+}
 
 # Belt and braces: if any of these were ever reached, the test would rather fail loudly than act.
 function Assert-Win32ToolkitTrustedBinary { throw 'Assert-Win32ToolkitTrustedBinary must not be reached' }
@@ -155,6 +168,12 @@ Write-Host '[d] The parameter help no longer advertises the bug' -ForegroundColo
 $src = Get-Content -LiteralPath (Join-Path $repo 'Public\Export-Win32ToolkitIntuneWin.ps1') -Raw
 if ($src -notmatch 'Ignored when ProjectPath is supplied') { Ok 'help no longer says -BasePath is ignored' }
 else { Bad 'help still documents -BasePath as ignored' }
+
+# Every run above went through the package gate, at the Export stage, before the layout was resolved.
+if ($script:gateCalls.Count -ge 5 -and @($script:gateCalls | Where-Object Stage -ne 'Export').Count -eq 0) {
+    Ok "every Export run passed the package gate first (-Stage Export, $($script:gateCalls.Count) calls)"
+}
+else { Bad "package gate calls: $(($script:gateCalls | ForEach-Object { $_.Stage }) -join ', ')" }
 
 Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 

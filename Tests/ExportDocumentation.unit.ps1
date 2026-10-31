@@ -22,6 +22,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 # Real readers — safe, read only files we create.
 . (Join-Path $repo 'Private\Get-Win32ToolkitAppConfig.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitPublication.ps1')
+# The real command-line source: the doc must print exactly what Publish sends to Intune.
+. (Join-Path $repo 'Private\Get-Win32ToolkitIntuneCommandLine.ps1')
 
 # ── A raw sandbox host path we must NEVER see echoed into the doc ──────────────────
 $rawSandboxPath = 'C:\Users\WDAGUtilityAccount\AppData\Local\FakeApp\fake.exe'
@@ -112,10 +114,20 @@ $md = Get-Content -LiteralPath $outPath -Raw
 
 if ($md -match '# Widget Pro 3\.2\.1') { Ok 'title has DisplayName + Version' } else { Bad 'title missing' }
 
-$installLine = 'powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Install'
-if ($md.Contains($installLine)) { Ok 'exact install command line present' } else { Bad 'install command line missing/wrong' }
-$uninstallLine = 'powershell.exe -ExecutionPolicy Bypass -File "Invoke-AppDeployToolkit.ps1" -DeploymentType Uninstall'
-if ($md.Contains($uninstallLine)) { Ok 'exact uninstall command line present' } else { Bad 'uninstall command line missing/wrong' }
+# Expected lines come from the SAME helper Publish uses (TST-06/DOC-06: the doc printed a command line
+# Intune never ran once the launcher changed).
+$cl = Get-Win32ToolkitIntuneCommandLine
+$mdLines = @($md -split "\r?\n")
+if ($mdLines -ccontains "  $($cl.Install)") { Ok "exact install command line present ($($cl.Install))" } else { Bad 'install command line missing/wrong' }
+if ($mdLines -ccontains "  $($cl.Uninstall)") { Ok "exact uninstall command line present ($($cl.Uninstall))" } else { Bad 'uninstall command line missing/wrong' }
+if ($md -notmatch 'powershell\.exe') { Ok 'no powershell.exe command line (the 32-bit IME launch, PKG-01)' } else { Bad 'powershell.exe still documented' }
+
+# Interaction wording: true on PSADT 4.1 and 4.2 (no more "silently ... no user interaction required").
+$runsLine = '- Runs **as SYSTEM** via `Invoke-AppDeployToolkit.exe` (64-bit PowerShell). Whether the signed-in user sees dialogs (close the app, defer, progress) depends on the organisation template and on whether the app is running at install time.'
+if ($mdLines -ccontains $runsLine) { Ok 'interaction line: as SYSTEM via the launcher; dialogs depend on the template and running apps' } else { Bad 'interaction line missing/wrong' }
+if ($md -notmatch 'silently, as SYSTEM' -and $md -notmatch 'no user interaction required') { Ok 'the "silent, no user interaction" claim is gone' } else { Bad 'still claims a silent install' }
+$runsBytes = [System.Text.Encoding]::UTF8.GetBytes((@($mdLines | Where-Object { $_ -match 'Runs \*\*as SYSTEM' }) -join ''))
+if (@($runsBytes | Where-Object { $_ -gt 127 }).Count -eq 0) { Ok 'interaction line is ASCII' } else { Bad 'interaction line has non-ASCII characters' }
 
 if ($md -match 'version marker in the registry \(HKLM\\SOFTWARE\\Contoso IT\\Vendorly\\Widget Pro\\Version = 3\.2\.1\)') {
     Ok 'plain-English registry-version detection sentence'
@@ -170,13 +182,145 @@ if (-not $threw) {
     $mdBare = Get-Content -LiteralPath $outBare -Raw
     if ($mdBare -match 'No automated tests recorded yet') { Ok 'no-tests fallback line' } else { Bad 'no-tests fallback missing' }
     if ($mdBare -match 'not captured' -or $mdBare -match 'were not captured') { Ok 'no-capture fallback line' } else { Bad 'no-capture fallback missing' }
+    # No description -> the fallback Overview sentence must not claim a silent install either (DOC-06).
+    if (@($mdBare -split "\r?\n") -ccontains 'Application packaged for deployment via Microsoft Intune.') { Ok 'no-description fallback is version-neutral' } else { Bad 'no-description fallback sentence missing/wrong' }
+    if ($mdBare -notmatch '(?i)\bsilent') { Ok 'no "silent" wording anywhere in the fallback doc' } else { Bad 'the fallback doc still says silent' }
 }
+if ($md -notmatch '(?i)\bsilent') { Ok 'no "silent" wording anywhere in the default doc' } else { Bad 'the default doc still says silent' }
 
 # ══ Manifest ══════════════════════════════════════════════════════════════════════
 Write-Host '[5] Manifest export' -ForegroundColor Cyan
 $psd1 = Get-Content -LiteralPath (Join-Path $repo 'win32-toolkit.psd1') -Raw
 if ($psd1 -match "'Export-Win32ToolkitDocumentation'") { Ok 'Export-Win32ToolkitDocumentation is in FunctionsToExport' } else { Bad 'not exported in the manifest' }
 
+# ══ Test 6: Update rows name their baseline technology (installer-identity PR 1, spec 2.13) ═══════
+# A 'Both' run records one Update entry per technology (spec 2.11 Baseline); the customer doc must tell them
+# apart and name the failing one. An Unavailable baseline is listed as such; a pre-PR-1 record keeps 'Update'.
+Write-Host '[6] Update rows: baseline technology + version; Both legs told apart; unavailable baseline' -ForegroundColor Cyan
+function Get-BaselineFixture([string]$Type, [string]$Family, [string]$Requested, [switch]$Unavailable) {
+    [ordered]@{ Version = '8.8.9'; Mode = 'Both'; Origin = $(if ($Family -eq 'msi') { 'Packaged' } else { 'Sibling' }); RequestedInstallerType = $Requested; InstallerType = $Type
+                Family = $Family; UsedFallback = $false; FallbackReason = ''; RequestedScope = 'machine'; Scope = 'machine'; ScopeRelaxed = $false
+                Unavailable = [bool]$Unavailable; Locale = 'en-US'; Source = 'winget'; ProjectName = '' }
+}
+@(
+    [ordered]@{ Scenario = 'Update'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-20T09:00:00Z'; Verdict = 'Failed'
+                Assertions = @(@{ Name = 'Tattoo-PostUpdate'; Result = 'PASS' }, @{ Name = 'OldArpGone-PostUpdate'; Result = 'FAIL' }); Notes = ''
+                Baseline = (Get-BaselineFixture 'nullsoft' 'exe' 'nullsoft') }
+    [ordered]@{ Scenario = 'Update'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-20T09:30:00Z'; Verdict = 'Passed'
+                Assertions = @(@{ Name = 'OldArpGone-PostUpdate'; Result = 'PASS' }); Notes = ''; Baseline = (Get-BaselineFixture 'wix' 'msi' 'wix') }
+    [ordered]@{ Scenario = 'Update'; Backend = 'Sandbox'; Mode = 'Unattended'; TimestampUtc = '2026-10-20T10:00:00Z'; Verdict = 'Inconclusive'
+                Assertions = @(); Notes = 'Baseline unavailable: winget offers no vendor EXE installer'; Baseline = (Get-BaselineFixture '' 'exe' 'nullsoft' -Unavailable) }
+    [ordered]@{ Scenario = 'Update'; Backend = 'HyperV'; Mode = 'Interactive'; TimestampUtc = '2026-10-19T09:00:00Z'; Verdict = 'Failed'
+                Assertions = @(@{ Name = 'VersionBumped'; Result = 'FAIL' }); Notes = '' }
+) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $proj 'Documentation\TestResults.json') -Encoding UTF8
+$out6 = Join-Path $proj 'Documentation_both.md'
+$null = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath $out6 3>$null
+$md6 = Get-Content -LiteralPath $out6 -Raw
+$rows6 = @($md6 -split "\r?\n" | Where-Object { $_ -like '| Update*' })
+if (@($rows6 | Where-Object { $_ -match '^\| Update \(baseline: nullsoft exe, v8\.8\.9\) \| HyperV \|.*\| Failed \|$' }).Count -eq 1) { Ok 'the nullsoft leg: | Update (baseline: nullsoft exe, v8.8.9) | HyperV | ... | Failed |' } else { Bad "nullsoft row missing: $($rows6 -join ' / ')" }
+if (@($rows6 | Where-Object { $_ -match '^\| Update \(baseline: wix msi, v8\.8\.9\) \| HyperV \|.*\| Passed \|$' }).Count -eq 1) { Ok 'the wix leg: | Update (baseline: wix msi, v8.8.9) | HyperV | ... | Passed |' } else { Bad "wix row missing: $($rows6 -join ' / ')" }
+if (@($rows6 | Where-Object { $_ -match '^\| Update \(baseline unavailable: nullsoft\) \| Sandbox \|.*\| Inconclusive \|$' }).Count -eq 1) { Ok 'an unavailable baseline: | Update (baseline unavailable: nullsoft) | ... | Inconclusive |' } else { Bad "unavailable row missing: $($rows6 -join ' / ')" }
+if (@($rows6 | Where-Object { $_ -match '^\| Update \| HyperV \|.*\| Failed \|$' }).Count -eq 1) { Ok 'a record without Baseline keeps the plain | Update | row' } else { Bad "legacy row missing: $($rows6 -join ' / ')" }
+$notes6 = @($md6 -split "\r?\n" | Where-Object { $_ -like '- **Update*' })
+if ($notes6 -ccontains '- **Update (baseline: nullsoft exe, v8.8.9) / HyperV** - issues: OldArpGone-PostUpdate (FAIL)' -and @($notes6 | Where-Object { $_ -match 'wix msi' }).Count -eq 0 -and
+    @($notes6 | Where-Object { $_ -match 'unavailable' }).Count -eq 0) {
+    Ok 'the fail note names the nullsoft leg (not the passing wix leg, not the unavailable one)'
+} else { Bad "fail notes: $($notes6 -join ' / ')" }
+if (@(($rows6 + $notes6) -join '' | ForEach-Object { $_.ToCharArray() } | Where-Object { [int]$_ -gt 127 }).Count -eq 0) { Ok 'the Update rows and notes are ASCII' } else { Bad 'non-ASCII characters in the Update rows' }
+
+# ══ Test 7: a test the Intune-parity pre-check did not start (installer-identity PR 2, L17) ════════
+# A NotRun record (Verdict Inconclusive, no assertions) is shown as 'Not run (Intune-parity pre-check)', never as a bare
+# 'Inconclusive' (a test that ran without a verdict). An ordinary Inconclusive record renders as before.
+Write-Host '[7] NotRun records: Result cell ''Not run (Intune-parity pre-check)''; an ordinary Inconclusive is unchanged' -ForegroundColor Cyan
+$notRun7 = [ordered]@{ Code = 'PARITY-DIALOG-WAIT'; Shape = 'Psadt41'; ProcessesToClose = 0; Welcome = 'OrgUi'; SignedInSessions = 1 }
+@(
+    [ordered]@{ Scenario = 'InstallUninstall'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-22T09:00:00.0000000Z'; Verdict = 'Inconclusive'
+                Assertions = @(); Notes = 'Not run (Intune-parity pre-check): a PSADT 4.1 package ...'; NotRun = $notRun7 }
+    [ordered]@{ Scenario = 'Update'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-22T09:05:00Z'; Verdict = 'Inconclusive'
+                Assertions = @(); Notes = 'Not run (Intune-parity pre-check): x'; NotRun = $notRun7 }
+    [ordered]@{ Scenario = 'InstallUninstall'; Backend = 'Sandbox'; Mode = 'Unattended'; TimestampUtc = '2026-10-22T10:00:00Z'; Verdict = 'Inconclusive'
+                Assertions = @(@{ Name = 'InstallDetected-PostInstall'; Result = 'SKIP' }); Notes = '' }
+) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $proj 'Documentation\TestResults.json') -Encoding UTF8
+$out7 = Join-Path $proj 'Documentation_notrun.md'
+$null = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath $out7 3>$null
+$lines7 = @((Get-Content -LiteralPath $out7 -Raw) -split "\r?\n")
+$rows7 = @($lines7 | Where-Object { $_ -like '| InstallUninstall *' -or $_ -like '| Update *' })
+if ($rows7 -ccontains '| InstallUninstall | HyperV | 2026-10-22 09:00 UTC | Not run (Intune-parity pre-check) |') { Ok 'the InstallUninstall NotRun row: | InstallUninstall | HyperV | 2026-10-22 09:00 UTC | Not run (Intune-parity pre-check) |' } else { Bad "IU NotRun row: $($rows7 -join ' / ')" }
+if ($rows7 -ccontains '| Update | HyperV | 2026-10-22 09:05 UTC | Not run (Intune-parity pre-check) |') { Ok 'the Update NotRun row has the same Result text' } else { Bad "Update NotRun row: $($rows7 -join ' / ')" }
+if (@($rows7 | Where-Object { $_ -like '*| HyperV |*' -and $_ -like '*| Inconclusive |' }).Count -eq 0) { Ok 'no bare | Inconclusive | for a NotRun record' } else { Bad "bare Inconclusive: $($rows7 -join ' / ')" }
+if ($rows7 -ccontains '| InstallUninstall | Sandbox | 2026-10-22 10:00 UTC | Inconclusive |') { Ok 'an ordinary Inconclusive record (no NotRun) renders unchanged' } else { Bad "ordinary row: $($rows7 -join ' / ')" }
+if (@($lines7 | Where-Object { $_ -like '- ***' -and $_ -match 'issues:' }).Count -eq 0) { Ok 'no FAIL note for the NotRun records' } else { Bad "fail notes: $(@($lines7 | Where-Object { $_ -match 'issues:' }) -join ' / ')" }
+
+# ══ Test 8: a Hyper-V record whose Notes say how its Intune-parity phases ended (installer-identity PR 2, R6 #3) ═══
+# Test-Win32ToolkitProject now writes one sentence per failed parity phase into Notes (69113 vs 1460). The customer
+# documentation never shows Notes: the same records with and without those Notes render the same document.
+Write-Host '[8] Notes naming the parity exit codes (R6 #3) do not change the customer documentation' -ForegroundColor Cyan
+$parityNotes8 = "Intune-parity phase 'Install (Intune parity)' exited with code 1460: the test's own 25-minute limit for this phase was reached and the package was stopped. " +
+                "Intune-parity phase 'Uninstall (Intune parity)' exited with code 69113: the app's own uninstaller was still running at the device's 30-minute limit and was stopped."
+$records8 = {
+    param([string]$Notes)
+    @(
+        [ordered]@{ Scenario = 'InstallUninstall'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-22T19:00:00Z'; Verdict = 'Failed'
+                    Assertions = @(@{ Name = 'InstallDetected-PostInstall'; Result = 'PASS' }, @{ Name = 'UninstallClean-PostUninstall'; Result = 'FAIL' }); Notes = $Notes
+                    LogFolder = 'Sandbox\Logs\Runs\20261022-190000_InstallUninstall' }
+        [ordered]@{ Scenario = 'InstallUninstall'; Backend = 'Sandbox'; Mode = 'Unattended'; TimestampUtc = '2026-10-22T18:00:00Z'; Verdict = 'Passed'
+                    Assertions = @(@{ Name = 'InstallDetected-PostInstall'; Result = 'PASS' }); Notes = '' }
+    ) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $proj 'Documentation\TestResults.json') -Encoding UTF8
+}
+& $records8 $parityNotes8
+$out8 = Join-Path $proj 'Documentation_paritynotes.md'
+$null = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath $out8 3>$null
+$md8 = Get-Content -LiteralPath $out8 -Raw
+& $records8 ''
+$out8b = Join-Path $proj 'Documentation_nonotes.md'
+$null = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath $out8b 3>$null
+$md8b = Get-Content -LiteralPath $out8b -Raw
+$lines8 = @($md8 -split "\r?\n")
+if ($lines8 -ccontains '| InstallUninstall | HyperV | 2026-10-22 19:00 UTC | Failed |' -and $lines8 -ccontains '- **InstallUninstall / HyperV** - issues: UninstallClean-PostUninstall (FAIL)') { Ok 'the Failed Hyper-V row and its issue line render as before' } else { Bad "rows: $(@($lines8 | Where-Object { $_ -like '| Install*' -or $_ -like '- **Install*' }) -join ' / ')" }
+if ($md8 -cnotmatch 'Intune-parity phase' -and $md8 -cnotmatch 'device''s 30-minute limit') { Ok 'the Notes sentences are not shown to the customer' } else { Bad 'the Notes leaked into the customer documentation' }
+if ($md8 -ceq $md8b) { Ok 'the document is identical with and without the parity Notes' } else { Bad 'the parity Notes changed the document' }
+
+# ══ Test 9: a Hyper-V record's Timing and Lane (Hyper-V speed-up PR 1, D12) never reach the customer documentation ═══
+# (guard: it passes before PR 1 too; the document reads record fields by name and must keep ignoring these two objects.)
+Write-Host '[9] Timing / Lane on a Hyper-V record do not change the customer documentation' -ForegroundColor Cyan
+$records9 = {
+    param([switch]$WithRunFacts)
+    $hv = [ordered]@{ Scenario = 'InstallUninstall'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-23T19:00:00Z'; Verdict = 'Failed'
+                      Assertions = @(@{ Name = 'InstallDetected-PostInstall'; Result = 'PASS' }, @{ Name = 'UninstallClean-PostUninstall'; Result = 'FAIL' }); Notes = '' }
+    if ($WithRunFacts) {
+        $hv['Timing'] = [ordered]@{ TotalSeconds = 412.3; OpenSeconds = 61.2; OpenRevertSkipped = $false; SecondsSinceTeardown = $null; CopyInSeconds = 8.1; CopyInSha256 = ('AB' * 32)
+                                    Phases = @(@{ Label = 'Install (Intune parity)'; Seconds = 95.4 }); TeardownSeconds = 58.7; RevertMode = 'Legacy'; PrecheckSeconds = 1.1; PrecheckFromCache = $true }
+        $hv['Lane'] = [ordered]@{ VMName = 'win32tk-measure'; VMId = '0e5f9e66-1111-2222-3333-444455556666'; CheckpointName = 'clean-base'; CheckpointId = '29613cba-d62f-4998-a421-df2e124a2b4f'
+                                  CheckpointCreatedUtc = '2026-10-23T15:29:00.0000000Z'; CheckpointAgeDays = 0; ProcessorCount = 4; MemoryGB = 8; ConcurrentLanes = 1
+                                  Attestation = [ordered]@{ SignedIn = $true; DefenderRealTime = $true; DefenderExclusionCount = 0; SignatureAgeDays = 1; FromCache = $false } }
+    }
+    @($hv) | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $proj 'Documentation\TestResults.json') -Encoding UTF8
+}
+& $records9 -WithRunFacts
+$out9 = Join-Path $proj 'Documentation_runfacts.md'
+$null = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath $out9 3>$null
+$md9 = Get-Content -LiteralPath $out9 -Raw
+& $records9
+$out9b = Join-Path $proj 'Documentation_norunfacts.md'
+$null = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath $out9b 3>$null
+$md9b = Get-Content -LiteralPath $out9b -Raw
+if ($md9 -ceq $md9b) { Ok 'the document is byte-identical with and without Timing / Lane' } else { Bad 'Timing / Lane changed the customer documentation' }
+if ($md9 -cnotmatch 'win32tk-measure' -and $md9 -cnotmatch 'CopyInSha256|Attestation|SecondsSinceTeardown') { Ok 'no VM name, hash or timing key is shown' } else { Bad 'run facts leaked into the document' }
+
+# ══ Test 10: an Update record with a prior-install Proof (installer-identity PR 3) renders as before ══════════════
+Write-Host '[10] a record with a Proof renders exactly as the same record without it' -ForegroundColor Cyan
+$rec10 = [ordered]@{ Scenario = 'Update'; Backend = 'HyperV'; Mode = 'Unattended'; TimestampUtc = '2026-10-25T09:00:00Z'; Verdict = 'Passed'
+    Assertions = @(@{ Name = 'PriorPresent-PreUpdate.nsis-x64'; Result = 'PASS' }, @{ Name = 'PriorAbsent-PostUpdate.nsis-x64'; Result = 'PASS' }); Notes = '' }
+@($rec10) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $proj 'Documentation\TestResults.json') -Encoding UTF8
+$out10a = Join-Path $proj 'Documentation_noproof.md'
+$null = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath $out10a 3>$null
+$rec10['Proof'] = [ordered]@{ SchemaVersion = '1.0'; PriorInstallsHash = ('AB' * 32); ScriptSha256 = ('AB' * 32); FilesSha256 = ('AB' * 32); SupportFilesSha256 = ('AB' * 32)
+    BaselineInstallerSha256 = ('CD' * 32); CatalogVersion = '1a2cadc16dec5c3b'; EntryIds = @('nsis-x64'); CaptureIds = @(); RequirementChecked = $true; ObservedVersions = [ordered]@{ 'nsis-x64' = '8.9.5' }; DataLoss = @('nsis-x64') }
+@($rec10) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $proj 'Documentation\TestResults.json') -Encoding UTF8
+$out10b = Join-Path $proj 'Documentation_proof.md'
+$null = Export-Win32ToolkitDocumentation -ProjectPath $proj -OutputPath $out10b 3>$null
+$md10a = Get-Content -LiteralPath $out10a -Raw; $md10b = Get-Content -LiteralPath $out10b -Raw
+if ($md10a -ceq $md10b -and $md10b -notmatch 'ABABABAB|CDCDCDCD|1a2cadc16dec5c3b') { Ok 'byte-identical with and without the Proof; no hash is shown' } else { Bad 'the Proof changed the customer documentation' }
 # ── Cleanup ───────────────────────────────────────────────────────────────────────
 Remove-Item -LiteralPath $proj, $bare -Recurse -Force -ErrorAction SilentlyContinue
 

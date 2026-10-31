@@ -22,6 +22,10 @@ function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
 . (Join-Path $repo 'Private\Repair-Win32ToolkitTestVMCheckpoint.ps1')
+# C-9 (speed-up PR 3): the defaults come from the real resolver (fed by the config shadow); A-10 prints the VM as safe text.
+. (Join-Path $repo 'Private\Get-Win32ToolkitHyperVTarget.ps1')
+. (Join-Path $repo 'Private\ConvertTo-Win32ToolkitSafeText.ps1')
+Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue
 
 # --- shadowed toolkit + Hyper-V surface, logging the call sequence --------------------------------
 $script:calls      = @()
@@ -42,7 +46,7 @@ function Set-Win32ToolkitConfigValue { param($Name, $Value) $script:cfg[$Name] =
 function Get-Win32ToolkitGuestCredential { $script:storedCred }
 function Get-Win32ToolkitGuestCredentialInteractive { param($UserName, $Message) Log 'Prompt'; $typedCred }
 function Set-Win32ToolkitGuestCredential { param($Credential) Log 'PersistCred' }
-function Clear-Win32ToolkitHyperVStateCache { Log 'ClearCache' }
+function Clear-Win32ToolkitHyperVStateCache { param([switch]$MarkerOnly) Log 'ClearCache' }   # speed-up PR 1 (A-6): accepts -MarkerOnly
 function Reset-Win32ToolkitTestVM { param($Name, $CheckpointName) Log 'Reset' }
 function Wait-Win32ToolkitVMReady { param($VMName, $Credential) Log 'Wait'; if ($script:waitThrows) { throw "Heartbeat not 'OK' within 300 s" }; $true }
 function Set-Win32ToolkitGuestAutoLogon { param($VMName, $Credential) Log 'AutoLogon' }
@@ -54,8 +58,21 @@ function Get-VMCheckpoint { param($VMName, $Name, $ErrorAction) if ($script:cpEx
 # an explicit $ErrorAction alongside it is a "defined multiple times" bind error).
 function Remove-VMCheckpoint { param([Parameter(ValueFromPipeline)]$InputObject) process { if ($null -ne $InputObject) { Log 'Remove-VMCheckpoint' } } }
 function Start-VM { param($Name, $ErrorAction) Log 'Start-VM' }
-function Set-VM { param($Name, $CheckpointType) Log "Set-VM:CheckpointType=$CheckpointType" }
+# Speed-up PR 1 (D5): -AutomaticCheckpointsEnabled is logged as its own entry; the checkpoint-time call logs both.
+function Set-VM { param($Name, $CheckpointType, $AutomaticCheckpointsEnabled, $ErrorAction)
+    if ($CheckpointType) { Log "Set-VM:CheckpointType=$CheckpointType" }
+    if ($null -ne $AutomaticCheckpointsEnabled) { Log "Set-VM:Auto=$AutomaticCheckpointsEnabled$(if ($CheckpointType) { '+CheckpointType' })" } }
 function Checkpoint-VM { param($VMName, $SnapshotName) Log "Checkpoint-VM:$SnapshotName" }
+# C-9 (speed-up PR 3): steps 2-5 hold the VM's lease; the doubles log it and hand out a fake lease ([9] makes it time out).
+$script:leaseThrows = $false
+function Enter-Win32ToolkitHyperVLease { param($VMName, $VMId, $ProjectPath, $Purpose)
+    Log "Lease:enter:${VMName}:$Purpose"
+    if ($script:leaseThrows) {
+        throw [System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new("Another process kept the test VM '$VMName' for more than 60 minutes."),
+            'W32T.HyperVLeaseTimeout', [System.Management.Automation.ErrorCategory]::ResourceBusy, $VMName)
+    }
+    [pscustomobject]@{ Kind = 'VM'; VMName = $VMName; Epoch = 'e'; Generation = 1; PreviousGeneration = 0; Nested = $false } }
+function Exit-Win32ToolkitHyperVLease { param($Lease) Log 'Lease:exit'; [pscustomobject]@{ Leak = 'exit' } }
 
 # 6> silences the helper's Write-Host progress without eating the [bool] return value (Ok/Bad keep Write-Host).
 function Run {
@@ -122,6 +139,113 @@ Run
 if ($script:err -like "*does not exist*") { Ok 'clear error pointing at provisioning' } else { Bad "err='$script:err'" }
 if ($script:calls.Count -eq 0) { Ok 'nothing else ran' } else { Bad "calls=$($script:calls -join ',')" }
 $script:vmExists = $true
+
+# ══ [7] speed-up PR 1 (D5, V-19): automatic checkpoints off before a start from Off; every re-take carries it ════════
+Write-Host '[7] automatic checkpoints: off before Start-VM from Off, never Set-VM on a Saved/Paused VM, every re-take carries it' -ForegroundColor Cyan
+$script:cpExists = $false; $script:storedCred = $typedCred; $script:desktopUp = $true; $script:waitThrows = $false
+$script:vmState = 'Off'
+$out7 = $null
+$script:calls = @(); $script:cfg = @{}; $script:err = $null
+try { $out7 = @(Repair-Win32ToolkitTestVMCheckpoint 6>$null 3>$null) } catch { $script:err = $_.Exception.Message }
+$iAuto = Index 'Set-VM:Auto=False'; $iStart = Index 'Start-VM'
+if (-not $script:err -and $iAuto -ge 0 -and $iStart -gt $iAuto) { Ok 'no checkpoint + VM Off: Set-VM -AutomaticCheckpointsEnabled $false before Start-VM' } else { Bad "off: err='$script:err' calls=$($script:calls -join ' > ')" }
+if ((Index 'Set-VM:Auto=False+CheckpointType') -gt $iStart -and (Index 'Checkpoint-VM:clean-base') -gt (Index 'Set-VM:Auto=False+CheckpointType')) { Ok 'the re-take''s Set-VM carries -AutomaticCheckpointsEnabled $false' } else { Bad "re-take: $($script:calls -join ' > ')" }
+if ($out7.Count -eq 1 -and $out7[0] -is [bool] -and $out7[0]) { Ok 'the repair returns exactly one [bool] $true (C-12)' } else { Bad "output: $(@($out7 | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ')" }
+foreach ($state in 'Saved', 'Paused') {
+    $script:vmState = $state
+    $script:calls = @(); $script:cfg = @{}; $script:err = $null
+    $all7 = @(Repair-Win32ToolkitTestVMCheckpoint -Verbose 4>&1 6>$null 3>$null)
+    $verb7 = @($all7 | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] -and $_.Message -like "*is $state*automatic checkpoints are turned off when the checkpoint is re-taken*" })
+    $ret7 = @($all7 | Where-Object { $_ -isnot [System.Management.Automation.VerboseRecord] })
+    $iStart = Index 'Start-VM'
+    $before = @($script:calls | Select-Object -First ([Math]::Max(0, $iStart)) | Where-Object { $_ -like 'Set-VM*' })
+    if ($iStart -ge 0 -and $before.Count -eq 0 -and $verb7.Count -eq 1 -and $ret7.Count -eq 1 -and $ret7[0] -eq $true -and (Index 'Set-VM:Auto=False+CheckpointType') -gt $iStart) {
+        Ok "no checkpoint + VM ${state}: no Set-VM before Start-VM (resume), one verbose line, the re-take still sets it, `$true"
+    } else { Bad "${state}: calls=$($script:calls -join ' > ') verbose=$($verb7.Count) ret=$($ret7 -join ',')" }
+}
+$script:cpExists = $true; $script:vmState = 'Running'
+Run
+if ($script:ret -eq $true -and (Index 'Set-VM:Auto=False+CheckpointType') -ge 0 -and @($script:calls | Where-Object { $_ -eq 'Set-VM:Auto=False' }).Count -eq 0) { Ok 'checkpoint present (Reset path): no start from Off, the re-take carries the setting' } else { Bad "reset path: $($script:calls -join ' > ')" }
+$script:vmState = 'Running'; $script:cpExists = $false; $script:storedCred = $null
+
+# == [8] speed-up PR 2 (V-Fe11): a checkpoint that could not be re-taken stops the repair ==========================
+Write-Host '[8] Checkpoint-VM fails -> the repair throws: no success line, no settings written' -ForegroundColor Cyan
+# The real cmdlet reports the failure as a non-terminating error. The double does the same (an advanced function, so
+# -ErrorAction Stop turns it into a throw), and the call runs with the session default $ErrorActionPreference Continue.
+${function:Checkpoint-VM_Saved} = ${function:Checkpoint-VM}
+function Checkpoint-VM { [CmdletBinding()] param($VMName, $SnapshotName) Log "Checkpoint-VM:$SnapshotName"; Write-Error 'Simulated: the checkpoint operation failed.' }
+$script:cpExists = $true; $script:storedCred = $typedCred; $script:desktopUp = $true; $script:waitThrows = $false; $script:vmState = 'Running'
+$script:calls = @(); $script:cfg = @{}
+$r8 = & {
+    $ErrorActionPreference = 'Continue'
+    $iv = $null; $t = $null; $out = $null
+    try { $out = @(Repair-Win32ToolkitTestVMCheckpoint -InformationVariable iv 2>$null 3>$null 6>$null) } catch { $t = $_ }
+    [pscustomobject]@{ Threw = $t; Out = $out; Info = @($iv | ForEach-Object { "$_" }) }
+}
+${function:Checkpoint-VM} = ${function:Checkpoint-VM_Saved}
+Remove-Item Function:\Checkpoint-VM_Saved
+if ($r8.Threw -and "$($r8.Threw)" -like '*checkpoint operation failed*' -and $null -eq $r8.Out) { Ok 'the repair throws the checkpoint error (no $true)' } else { Bad "no throw: threw=$($r8.Threw) out=$($r8.Out -join ',')" }
+if (@($r8.Info | Where-Object { $_ -like '*checkpoint re-taken*' }).Count -eq 0) { Ok 'no "checkpoint re-taken" success line' } else { Bad "success line printed: $($r8.Info -join ' | ')" }
+if (@($script:calls | Where-Object { $_ -like 'cfg:*' }).Count -eq 0 -and ($script:calls -contains 'Checkpoint-VM:clean-base')) { Ok 'no setting written after the failed checkpoint' } else { Bad "after a failed checkpoint: $($script:calls -join ' > ')" }
+$script:vmState = 'Running'; $script:cpExists = $false; $script:storedCred = $null
+
+# == [9] speed-up PR 3 (D10): steps 2-5 hold the VM's lease (the credential prompt does not) ==========================
+Write-Host '[9] the VM lease: after the credential step, before the first VM call, released last; a lease timeout changes nothing' -ForegroundColor Cyan
+# checkpoint present: the lease before the (nested) Reset, released after the settings; exactly one [bool]
+$script:cpExists = $true; $script:storedCred = $typedCred; $script:desktopUp = $true; $script:waitThrows = $false; $script:vmState = 'Running'
+$script:calls = @(); $script:cfg = @{}; $script:err = $null
+$out9 = $null
+try { $out9 = @(Repair-Win32ToolkitTestVMCheckpoint 6>$null 3>$null) } catch { $script:err = $_.Exception.Message }
+$iEnter = Index 'Lease:enter:win32tk-golden:checkpoint repair'
+if (-not $script:err -and $iEnter -ge 0 -and $iEnter -lt (Index 'Reset') -and $script:calls[-1] -eq 'Lease:exit' -and (Index 'Lease:exit') -gt (Index 'cfg:HyperVCheckpoint=clean-base')) {
+    Ok 'checkpoint present: the lease before the Reset, released after the settings (last call)'
+} else { Bad "present: err='$script:err' calls=$($script:calls -join ' > ')" }
+if ($out9.Count -eq 1 -and $out9[0] -is [bool] -and $out9[0]) { Ok 'the repair still returns exactly one [bool] $true (C-12)' } else { Bad "output: $(@($out9 | ForEach-Object { "$($_.GetType().Name):$_" }) -join ', ')" }
+# no credential stored: the prompt happens before the lease; the lease before the first VM call (Start-VM from Off)
+$script:cpExists = $false; $script:storedCred = $null; $script:vmState = 'Off'
+Run
+if ($script:ret -eq $true -and (Index 'Prompt') -lt (Index 'Lease:enter:win32tk-golden:checkpoint repair') -and (Index 'Lease:enter:win32tk-golden:checkpoint repair') -lt (Index 'Start-VM') -and $script:calls[-1] -eq 'Lease:exit') {
+    Ok 'no stored credential: the prompt first, then the lease, then Start-VM; released last'
+} else { Bad "prompt: ret=$script:ret calls=$($script:calls -join ' > ')" }
+# a failure inside the lease (the readiness gate) still releases it
+$script:waitThrows = $true
+Run
+$script:waitThrows = $false
+if ($script:err -and $script:calls[-1] -eq 'Lease:exit') { Ok 'a failed readiness gate: the error surfaces and the lease is released' } else { Bad "gate: err='$script:err' calls=$($script:calls -join ' > ')" }
+# a lease timeout: nothing is changed
+$script:cpExists = $true; $script:storedCred = $typedCred; $script:vmState = 'Running'; $script:leaseThrows = $true
+$script:calls = @(); $script:cfg = @{}; $err9 = $null
+try { $null = Repair-Win32ToolkitTestVMCheckpoint 6>$null 3>$null } catch { $err9 = $_ }
+$script:leaseThrows = $false
+if ($err9.FullyQualifiedErrorId -eq 'W32T.HyperVLeaseTimeout' -and ($script:calls -join ' > ') -eq 'Lease:enter:win32tk-golden:checkpoint repair') { Ok 'a lease timeout: W32T.HyperVLeaseTimeout, no reset, no checkpoint, no setting' } else { Bad "timeout: $($err9.FullyQualifiedErrorId) calls=$($script:calls -join ' > ')" }
+$script:vmState = 'Running'; $script:cpExists = $false; $script:storedCred = $null
+
+# == [10] speed-up PR 3 (D11, A-10): under a W32T_HYPERV_VM pin the pinned VM is repaired and nothing is saved =======
+Write-Host '[10] pinned by W32T_HYPERV_VM: the pinned VM and checkpoint by default; no HKCU identity written, one line; a typed credential still saved' -ForegroundColor Cyan
+try {
+    $env:W32T_HYPERV_VM = 'lane-vm'; $env:W32T_HYPERV_CHECKPOINT = 'clean-auto'
+    $script:cpExists = $true; $script:storedCred = $typedCred; $script:desktopUp = $true; $script:waitThrows = $false; $script:vmState = 'Running'
+    $script:calls = @(); $script:cfg = @{}; $iv10 = $null; $r10 = $null
+    $r10 = @(Repair-Win32ToolkitTestVMCheckpoint -InformationVariable iv10 6>$null 3>$null)
+    $line10 = "VM 'lane-vm' is pinned by W32T_HYPERV_VM for this session only: its name and checkpoint were not saved as your defaults."
+    if ($r10.Count -eq 1 -and $r10[0] -eq $true -and @($script:calls | Where-Object { $_ -like 'cfg:*' }).Count -eq 0 -and ($script:calls -contains 'Checkpoint-VM:clean-auto') -and
+        ($script:calls -contains 'Lease:enter:lane-vm:checkpoint repair') -and @($iv10 | Where-Object { "$_" -ceq $line10 }).Count -eq 1) {
+        Ok 'the pinned VM and checkpoint are repaired, no cfg: write, the one host line, exactly $true'
+    } else { Bad "pinned: ret=$($r10 -join ',') calls=$($script:calls -join ' > ') info=$(@($iv10) -join ' | ')" }
+    # no stored credential: the typed one is still verified and saved under the pin
+    $script:cpExists = $false; $script:storedCred = $null
+    Run
+    if ($script:ret -eq $true -and ($script:calls -contains 'PersistCred') -and @($script:calls | Where-Object { $_ -like 'cfg:*' }).Count -eq 0) { Ok 'no stored credential under the pin: the typed credential is still saved after PowerShell Direct proved it; no identity value' } else { Bad "pinned cred: $($script:calls -join ' > ')" }
+    Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT
+    $script:cpExists = $true; $script:storedCred = $typedCred
+    Run
+    if ($script:ret -eq $true -and ($script:calls -contains 'cfg:HyperVVMName=win32tk-golden') -and ($script:calls -contains 'cfg:HyperVCheckpoint=clean-base')) { Ok 'no pin: the VM and checkpoint are saved, as before' } else { Bad "no pin: $($script:calls -join ' > ')" }
+}
+finally { Remove-Item Env:\W32T_HYPERV_VM, Env:\W32T_HYPERV_CHECKPOINT -ErrorAction SilentlyContinue }
+$script:vmState = 'Running'; $script:cpExists = $false; $script:storedCred = $null
+# Safety net (speed-up PR 3): no real Hyper-V cmdlet was reached (it would have imported the Hyper-V module, whose aliases
+# Get-VMCheckpoint / Remove-VMCheckpoint then win over the shadows above).
+if (-not (Microsoft.PowerShell.Core\Get-Module -Name Hyper-V)) { Ok 'the Hyper-V module was never imported (no real Hyper-V cmdlet reached)' } else { Bad 'the Hyper-V module was imported: a real Hyper-V cmdlet was reached' }
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'All TestVMCheckpointRepair tests passed.' -ForegroundColor Green; exit 0 }
