@@ -221,7 +221,7 @@ installs and uninstalls the app on a device. The toolkit keeps its own code in [
 | `Files\` | The installer, and the winget manifest of a winget app. | Yes | No. Never add another installer. |
 | `Intune\Publications.json` | The Intune app ID of the install app, for each tenant that you published to. | No | No |
 | `PSAppDeployToolkit\` | The PSADT version this project was built with. | Yes | No |
-| `PSAppDeployToolkit.Win32Toolkit\` | The [toolkit extension](glossary.md#toolkit-extension): the install, uninstall, tattoo and dialog code that the deploy script calls. | Yes | No. The package check refuses a changed copy. |
+| `PSAppDeployToolkit.Win32Toolkit\` | The [toolkit extension](glossary.md#toolkit-extension): the install, uninstall, tattoo, dialog and prior-install code that the deploy script calls. | Yes | No. The package check refuses a changed copy. |
 | `PSAppDeployToolkit.Extensions\`, `PSAppDeployToolkit.<name>\` | The empty extension folder of PSADT, and your org extension module. | Yes | Change your module in the org template. |
 | `Sandbox\` | Test files, test logs and old versions for update tests. | No | No |
 | `SupportFiles\AppConfig.json` | The app data the deploy script reads: names, switches, processes to close, uninstall. | Yes | With care. The main safe edit is `Installer.SilentArgs` of an EXE. |

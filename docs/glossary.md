@@ -614,7 +614,7 @@ See: [Apps not in winget](manual-apps.md#write-the-install-code).
 ### Toolkit extension
 
 The toolkit's own PSADT extension module, in the folder `PSAppDeployToolkit.Win32Toolkit\` of each project. It holds
-the install, uninstall, install tattoo and dialog code, and the toolkit blocks call it. It is the same in every
+the install, uninstall, install tattoo, dialog and prior-install code, and the toolkit blocks call it. It is the same in every
 project, so never change it.
 See: [Inside a project](settings.md#inside-a-project).
 
