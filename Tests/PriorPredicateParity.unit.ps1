@@ -30,7 +30,7 @@ function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
 foreach ($f in 'Get-Win32ToolkitAppConfig', 'ConvertTo-PSSingleQuoted', 'Test-Win32ToolkitProductCode', 'Get-Win32ToolkitRequirementRule', 'Test-Win32ToolkitPriorInstallEntry',
-    'ConvertTo-Win32ToolkitPriorVersion', 'Get-Win32ToolkitDeployScriptBlock', 'Get-Win32ToolkitDeployScriptShape', 'Test-Win32ToolkitPsadtVersionSupported', 'ConvertTo-Win32ToolkitSafeText',
+    'ConvertTo-Win32ToolkitPriorVersion', 'Get-Win32ToolkitDeployScriptBlock', 'Get-Win32ToolkitDeployExtension', 'Get-Win32ToolkitDeployScriptShape', 'Test-Win32ToolkitPsadtVersionSupported', 'ConvertTo-Win32ToolkitSafeText',
     'New-UpdateAssertionScript') {
     . (Join-Path $repo "Private\$f.ps1")
 }

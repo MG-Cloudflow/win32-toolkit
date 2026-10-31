@@ -18,8 +18,9 @@ function Test-Win32ToolkitDeployExtension {
           PLAN-MISMATCH       a GeneratorVersion 3 script whose blocks are not the ones Get-Win32ToolkitDeployBlockPlan names
                               for the project (AppConfig Installer.Type, manual = its manual-install block, the hook files in
                               SupportFiles\OrgHooks): a block missing or extra, a call block whose code lines are not this
-                              toolkit's call (the prior-install pair and hooks: presence only), or an Uninstall section in
-                              AppConfig while the plan has no uninstall call.
+                              toolkit's call (hooks: presence only; the prior-install pair too when the script's extension
+                              version does not hold it, 1.0.0), or an Uninstall section in AppConfig while the plan has no
+                              uninstall call.
           EXTENSION-STAGING   (-StagingPath) the Staging copy of the folder differs from the project's.
 
         The extension checks apply to a GeneratorVersion 3 deploy script (the shape's ExtensionVersion); the stray rule
@@ -150,12 +151,16 @@ function Test-Win32ToolkitDeployExtension {
                 $wanted = @($plan | ForEach-Object { "$($_.Phase):$($_.Slot)" })
                 $extra = @($present.Keys | Where-Object { $wanted -notcontains $_ } | Sort-Object)
                 $missing = @($wanted | Where-Object { -not $present.ContainsKey($_) })
-                # A call block must hold this toolkit's call (its code lines; comments may differ between versions). The
-                # prior-install pair and the hooks are inline texts: present is enough.
+                # A call block must hold this toolkit's call (its code lines; comments may differ between versions). The hooks
+                # are inline texts, and so is the prior-install pair of a script whose extension version does not hold it
+                # (1.0.0, lean deploy script PR 2; RemovePriorRevision 0): present is enough there.
                 $codeLines = { param([string]$Body) @(($Body -split "`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') }) -join "`n" }
+                $scriptRow = if ($Shape.PSObject.Properties['ExtensionVersion'] -and $Shape.ExtensionVersion) { Get-Win32ToolkitDeployExtension -Version $Shape.ExtensionVersion } else { $null }
+                $inlineOnly = @('Hook')
+                if (-not $scriptRow -or $scriptRow.RemovePriorRevision -lt 1) { $inlineOnly += 'RemovePriorCheck', 'RemovePrior' }
                 $wrong = @(foreach ($row in $plan) {
                         $key = "$($row.Phase):$($row.Slot)"
-                        if (-not $present.ContainsKey($key) -or $row.Block -in @('RemovePriorCheck', 'RemovePrior', 'Hook')) { continue }
+                        if (-not $present.ContainsKey($key) -or $row.Block -in $inlineOnly) { continue }
                         $want = if ($row.Technology) { Get-Win32ToolkitDeployScriptBlock -Name $row.Block -Technology $row.Technology } else { Get-Win32ToolkitDeployScriptBlock -Name $row.Block }
                         if ((& $codeLines $present[$key]) -cne (& $codeLines $want)) { $key }
                     })

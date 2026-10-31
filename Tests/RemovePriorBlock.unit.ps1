@@ -1,13 +1,18 @@
 <#
-    Installer-identity PR 3 (spec 2.6, L6-L11, D10-D16, D22, D26, D27): the remove-prior catalog texts
-    'RemovePriorCheck' (slot Pre-Install:prior-check) and 'RemovePrior' (slot Pre-Install:remove-prior).
+    Installer-identity PR 3 (spec 2.6, L6-L11, D10-D16, D22, D26, D27): remove-prior. Since lean deploy script PR 3 the code
+    is Assert-W32TPriorInstall (slot Pre-Install:prior-check) and Remove-W32TPriorInstall (slot Pre-Install:remove-prior)
+    of the toolkit extension module, with its module-level regions PriorPredicate, PriorEvaluate and PriorRuntime; the
+    catalog blocks 'RemovePriorCheck' / 'RemovePrior' are one call each (catalog revision 3).
 
-      [1] static checks: both texts parse (host); ASCII-only; 'New-TimeSpan -Minutes 30' once; one Start-ADTProcess with
-          -WaitForChildProcesses, -Timeout and -PassThru; no KillChildProcessesWithParent, NoTerminateOnTimeout,
-          Get-ADTApplication, Uninstall-ADTApplication or here-string; every assigned / foreach / parameter variable is
-          $w32t*; RemovePriorCheck starts with the PriorPredicate text and then the PriorEvaluate text (byte identity);
-          the revision marker once; the pair (revision 2, CatalogVersion) is PINNED (any text change must bump it, L38).
-      [2] the texts run under Windows PowerShell 5.1 (Set-StrictMode -Version 1, $ErrorActionPreference 'Stop') with
+      [1] static checks: the two call blocks; PriorPredicate and PriorEvaluate byte-identical to the revision 1 texts
+          (pinned SHA-256); the regions and functions parse (host); ASCII-only; 'New-TimeSpan -Minutes 30' once; one
+          Start-ADTProcess with -WaitForChildProcesses, -Timeout and -PassThru; no KillChildProcessesWithParent,
+          NoTerminateOnTimeout, Get-ADTApplication, Uninstall-ADTApplication or here-string; the wording batch (a)-(e),
+          (g); every assigned / foreach / parameter variable is $w32t* (or -AppConfig / $adtSession); the revision marker
+          once; the pair (revision 3, CatalogVersion) is PINNED (any code change must bump it, L38), and the current
+          extension version provides that revision.
+      [2] the two functions run under Windows PowerShell 5.1 - the extension imported as a module (Set-StrictMode
+          -Version 1, $ErrorActionPreference 'Stop' set by the module), called in sequence as the deploy script does - with
           every PSADT command, the registry, the ACL and signature readers, Get-Process, Start-Sleep and the Windows
           Installer COM object shadowed (the COM fake is a C# class compiled in the child, driven through InvokeMember
           as on a device). $env:ProgramFiles / ${env:ProgramFiles(x86)} point at temp folders; the "installs" are
@@ -19,7 +24,10 @@
           arguments) plus the Appendix B rows (custom folder, empty folder, missing uninstaller, the 4.2 FileInfo
           DefaultMsiFile, a relative DefaultMsiFile, WOW-only kill switch, kill switch set after prior-check, ACL
           allow-list and owner, OwnIdentity missing, the payload MSI's own codes (69106), OpenDatabase failure,
-          duplicates, unwritable marker, already removed by an earlier uninstaller, Report never refuses).
+          duplicates, unwritable marker, already removed by an earlier uninstaller, Report never refuses), plus the
+          hand-over between the two functions (lean deploy script PR 3): remove-prior without a prior-check in this
+          deployment refuses 69105 (a Report-only set is only logged), the plan is used once, a plan of an earlier call
+          never reaches a later remove-prior, the kill switch and the Removed marker after the uninstaller still work.
       [3] the 32-bit Windows PowerShell (SysWOW64): a Report-only set is logged and the install goes on; a Block entry
           refuses 69105.
 
@@ -37,18 +45,38 @@ function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
 . (Join-Path $repo 'Private\Get-Win32ToolkitDeployScriptBlock.ps1')
+# Lean deploy script PR 3: the code lives in the extension module; the catalog reads its regions from the verified copy.
+. (Join-Path $repo 'Private\Get-Win32ToolkitDeployExtension.ps1')
+$psm1Path = Join-Path $repo 'DeployExtension\PSAppDeployToolkit.Win32Toolkit\PSAppDeployToolkit.Win32Toolkit.psm1'
+$psm1Text = [IO.File]::ReadAllText($psm1Path, [Text.Encoding]::UTF8) -replace "`r`n", "`n"
+$psm1Ast = [Management.Automation.Language.Parser]::ParseInput($psm1Text, [ref]$null, [ref]$null)
 $predicate = Get-Win32ToolkitDeployScriptBlock -Name PriorPredicate
 $evaluate = Get-Win32ToolkitDeployScriptBlock -Name PriorEvaluate
 $check = Get-Win32ToolkitDeployScriptBlock -Name RemovePriorCheck
 $remove = Get-Win32ToolkitDeployScriptBlock -Name RemovePrior
+$runtime = [regex]::Match($psm1Text, '(?ms)^#region win32-toolkit:PriorRuntime\n(.*?)\n#endregion win32-toolkit:PriorRuntime$').Groups[1].Value
+$fnText = @{}
+foreach ($f in 'Assert-W32TPriorInstall', 'Remove-W32TPriorInstall') { $fn = $psm1Ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $f }, $false); $fnText[$f] = if ($fn) { $fn.Extent.Text } else { '' } }
 
 # == [1] static checks =================================================================================
-Write-Host '[1] the catalog texts: composition, constants, 5.1/C-12 rules, variable names, the pinned revision' -ForegroundColor Cyan
+Write-Host '[1] the prior-install code: the call blocks, the regions, constants, 5.1/C-12 rules, variable names, the pinned revision' -ForegroundColor Cyan
 function Get-Count([string]$Text, [string]$Needle) { ([regex]::Matches($Text, [regex]::Escape($Needle))).Count }
-if ($check.StartsWith($predicate + "`n" + $evaluate + "`n", [StringComparison]::Ordinal)) { Ok 'RemovePriorCheck = PriorPredicate + PriorEvaluate + the prior-check body (byte identity)' } else { Bad 'RemovePriorCheck does not start with the PriorPredicate and PriorEvaluate texts' }
-$composed = $check + "`n" + $remove
+$sha = [Security.Cryptography.SHA256]::Create()
+function Get-Sha([string]$Text) { -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text)) | ForEach-Object { $_.ToString('x2') }) }
+# The predicate and the evaluation moved byte for byte (revision 1 texts, the same in the requirement script and the guest).
+if ((Get-Sha $predicate) -ceq '52d4943acede8548b6be76490badce4ef962671e359c738cc88b136cf577a9eb' -and (Get-Sha $evaluate) -ceq '4d000f17dbf040422624c92ed47fe16e8a1cfa369d7da17ea4ff86e848cfd9ca') {
+    Ok 'PriorPredicate and PriorEvaluate: the extension regions are the revision 1 texts, byte for byte (pinned SHA-256)'
+} else { Bad "PriorPredicate / PriorEvaluate changed: $(Get-Sha $predicate) / $(Get-Sha $evaluate)" }
+if ($runtime -and $fnText['Assert-W32TPriorInstall'] -and $fnText['Remove-W32TPriorInstall']) { Ok 'the extension holds the PriorRuntime region and both functions' } else { Bad 'PriorRuntime region or a function missing in the extension' }
+$codeLines = { param([string]$Text) @(($Text -split "`n") | Where-Object { $_.Trim() -and -not $_.Trim().StartsWith('#') }) }
+if (@(& $codeLines $check).Count -eq 1 -and $check.Contains('PSAppDeployToolkit.Win32Toolkit\Assert-W32TPriorInstall -AppConfig $appConfig') -and
+    @(& $codeLines $remove).Count -eq 1 -and $remove.Contains('PSAppDeployToolkit.Win32Toolkit\Remove-W32TPriorInstall -AppConfig $appConfig')) {
+    Ok 'the prior-check and remove-prior blocks are one module-qualified call each'
+} else { Bad "call blocks: $check || $remove" }
+$composed = $runtime + "`n" + $fnText['Assert-W32TPriorInstall'] + "`n" + $fnText['Remove-W32TPriorInstall']
 foreach ($c in @(
-        @{ T = $composed; N = '## remove-prior catalog revision 2 (win32-toolkit)'; W = 1 }
+        @{ T = $check; N = '## remove-prior catalog revision 3 (win32-toolkit)'; W = 1 }
+        @{ T = $composed; N = '## remove-prior catalog revision'; W = 0 }
         @{ T = $composed; N = 'New-TimeSpan -Minutes 30'; W = 1 }
         @{ T = $composed; N = 'Start-ADTProcess'; W = 1 }
         @{ T = $composed; N = '-WaitForChildProcesses -Timeout $w32tPrLimit -PassThru'; W = 1 }
@@ -62,6 +90,18 @@ foreach ($c in @(
         @{ T = $composed; N = '@"'; W = 0 }
         @{ T = $composed; N = '$appConfig ='; W = 0 }
         @{ T = $composed; N = '## win32-toolkit:'; W = 0 }
+        @{ T = $composed; N = '$adtSession = Get-ADTSession'; W = 2 }
+        @{ T = $composed; N = '$script:W32TPriorContext = $null'; W = 3 }
+        # Revision 3 wording batch (a)-(e), (g): the per-entry lines name their step, the identity match is not called a
+        # proof, the plan line says what still comes, a Windows Installer check that throws is logged, the PFRO read
+        # raises no error for an absent value.
+        @{ T = $composed; N = 'win32-toolkit remove-prior $w32tPrTag'; W = 0 }
+        @{ T = $composed; N = 'win32-toolkit $($w32tPrStage) $w32tPrTag'; W = 4 }
+        @{ T = $composed; N = 'proven: '; W = 0 }
+        @{ T = $composed; N = 'identity matched: $($w32tPrR.Text); planned for removal after the remaining checks and the close-apps dialog.'; W = 1 }
+        @{ T = $composed; N = 'the Windows Installer check failed ($(& $w32tPrShow $_.Exception.Message)); it counts as busy.'; W = 1 }
+        @{ T = $composed; N = "GetValue('PendingFileRenameOperations')"; W = 1 }
+        @{ T = $composed; N = "-Name 'PendingFileRenameOperations'"; W = 0 }
         # InvokeMember passes its arguments as they are: a Join-Path result is a PSObject-wrapped string that reflection (and
         # COM) cannot bind, so the payload path is cast to a plain [string] (found by the relative-DefaultMsiFile case below).
         @{ T = $composed; N = '$w32tPrPayload = [string](Join-Path $adtSession.DirFiles $w32tPrPayload)'; W = 1 }
@@ -69,40 +109,46 @@ foreach ($c in @(
     $n = Get-Count $c.T $c.N
     if ($n -eq $c.W) { Ok "'$($c.N)' occurs $($c.W) time(s)" } else { Bad "'$($c.N)' occurs $n time(s), want $($c.W)" }
 }
-if (@([Text.Encoding]::UTF8.GetBytes($composed) | Where-Object { $_ -gt 127 }).Count -eq 0) { Ok 'ASCII-only' } else { Bad 'non-ASCII characters in the texts' }
-if ($composed -notmatch '(?i)firefox|mozilla|helper\.exe|notepad|7-zip|chrome|google|adobe|zoom') { Ok 'no app or vendor name in the texts (they ship in every package)' } else { Bad 'an app or vendor name in the texts' }
-foreach ($pair in @(@('RemovePriorCheck', $check), @('RemovePrior', $remove), @('composed', $composed))) {
+$all = $predicate + "`n" + $evaluate + "`n" + $composed
+if (@([Text.Encoding]::UTF8.GetBytes($all) | Where-Object { $_ -gt 127 }).Count -eq 0) { Ok 'ASCII-only' } else { Bad 'non-ASCII characters in the prior-install code' }
+if ($all -notmatch '(?i)firefox|mozilla|helper\.exe|notepad|7-zip|chrome|google|adobe|zoom') { Ok 'no app or vendor name (it ships in every package)' } else { Bad 'an app or vendor name in the prior-install code' }
+foreach ($pair in @(@('PriorRuntime', $runtime), @('Assert-W32TPriorInstall', $fnText['Assert-W32TPriorInstall']), @('Remove-W32TPriorInstall', $fnText['Remove-W32TPriorInstall']), @('the call blocks', ($check + "`n" + $remove)))) {
     $perr = $null; [void][Management.Automation.Language.Parser]::ParseInput($pair[1], [ref]$null, [ref]$perr)
     if (-not $perr) { Ok "$($pair[0]) parses (host)" } else { Bad "$($pair[0]) host parse: $($perr[0].Message)" }
 }
-$ast = [Management.Automation.Language.Parser]::ParseInput($composed, [ref]$null, [ref]$null)
+$ast = [Management.Automation.Language.Parser]::ParseInput($all, [ref]$null, [ref]$null)
 $assigned = [Collections.Generic.List[string]]::new()
 foreach ($n in $ast.FindAll({ param($x) $x -is [Management.Automation.Language.AssignmentStatementAst] }, $true)) {
     $left = $n.Left
     while ($left -is [Management.Automation.Language.IndexExpressionAst] -or $left -is [Management.Automation.Language.MemberExpressionAst]) { $left = if ($left -is [Management.Automation.Language.IndexExpressionAst]) { $left.Target } else { $left.Expression } }
     if ($left -is [Management.Automation.Language.ConvertExpressionAst]) { $left = $left.Child }
-    if ($left -is [Management.Automation.Language.VariableExpressionAst]) { $assigned.Add($left.VariablePath.UserPath) }
+    if ($left -is [Management.Automation.Language.VariableExpressionAst]) { $assigned.Add(($left.VariablePath.UserPath -replace '^script:', '')) }
 }
 foreach ($n in $ast.FindAll({ param($x) $x -is [Management.Automation.Language.ForEachStatementAst] }, $true)) { $assigned.Add($n.Variable.VariablePath.UserPath) }
 foreach ($n in $ast.FindAll({ param($x) $x -is [Management.Automation.Language.ParameterAst] }, $true)) { $assigned.Add($n.Name.VariablePath.UserPath) }
-$badNames = @($assigned | Sort-Object -Unique | Where-Object { $_ -notlike 'w32t*' -and $_ -ne 'null' })
+# The functions' own parameter (-AppConfig) and session ($adtSession = Get-ADTSession) keep the names the deploy script uses.
+$badNames = @($assigned | Sort-Object -Unique | Where-Object { $_ -notlike 'w32t*' -and $_ -notin @('null', 'AppConfig', 'adtSession') })
 $reserved = @('w32tUi', 'w32tWelcome', 'w32tCountdown', 'w32tProgress', 'w32tInstallDone')
 $clash = @($assigned | Sort-Object -Unique | Where-Object { $reserved -ccontains $_ })
-if ($assigned.Count -gt 50 -and $badNames.Count -eq 0 -and $clash.Count -eq 0) { Ok "every assigned / foreach / parameter variable ($(@($assigned | Sort-Object -Unique).Count) names) is `$w32t* and none is an org-ui / loader name" } else { Bad "variables: not w32t*: $($badNames -join ', '); clashes: $($clash -join ', ')" }
+if ($assigned.Count -gt 50 -and $badNames.Count -eq 0 -and $clash.Count -eq 0) { Ok "every assigned / foreach / parameter variable ($(@($assigned | Sort-Object -Unique).Count) names) is `$w32t* (or -AppConfig / `$adtSession) and none is an org-ui / loader name" } else { Bad "variables: not w32t*: $($badNames -join ', '); clashes: $($clash -join ', ')" }
 $rev = Get-Win32ToolkitDeployScriptBlock -Name RemovePriorRevision
 $cv = Get-Win32ToolkitDeployScriptBlock -Name RemovePriorCatalogVersion
-# PINNED (L38): the requirement and the guest assertions embed the CURRENT predicate while a project keeps the block it
-# was created with (D12). A change of any of the four texts must bump the revision marker, and then this pair.
+# PINNED (L38): the requirement and the guest assertions embed the CURRENT predicate while a project keeps the extension
+# version it was created with (D12). A change of the prior-install code must bump the revision marker in the prior-check
+# block AND the extension version, and then this pair.
 # Revision 2 (installer-identity PR 3 live checks, fixer round 1): the Windows Installer check that throws counts as busy
-    # (MSIBUSY, PSADT 4.2.0-rc2), each log line names its step (prior-check or remove-prior, DEMOTE), 69110 names the app's own
-    # updater (GUP) and 69111 in remove-prior says 'after prior-check' (KILL-WOW).
-    if ($rev -is [int] -and $rev -eq 2 -and $cv -ceq '28573ba28432910a') { Ok "catalog revision 2 <-> CatalogVersion $cv (pinned)" } else { Bad "revision/CatalogVersion changed: $rev / $cv - bump the revision marker in the prior-check text and pin the new pair" }
-$sha = [Security.Cryptography.SHA256]::Create()
-$own = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($predicate + "`n" + $evaluate + "`n" + $check.Substring($predicate.Length + $evaluate.Length + 2) + "`n" + $remove)) | ForEach-Object { $_.ToString('x2') })
-if ($own.Substring(0, 16) -ceq $cv) { Ok 'CatalogVersion = the first 16 hex of the SHA-256 of the four texts' } else { Bad "CatalogVersion: $cv vs $($own.Substring(0, 16))" }
+# (MSIBUSY, PSADT 4.2.0-rc2), each log line names its step (prior-check or remove-prior, DEMOTE), 69110 names the app's own
+# updater (GUP) and 69111 in remove-prior says 'after prior-check' (KILL-WOW).
+# Revision 3 (lean deploy script PR 3): the code moved into the extension's functions (the plan and the marker roots travel
+# in the module-private context) with the wording batch (a)-(e), (g); the predicate and evaluation are unchanged.
+if ($rev -is [int] -and $rev -eq 3 -and $cv -ceq '2b29be362021c7f4') { Ok "catalog revision 3 <-> CatalogVersion $cv (pinned)" } else { Bad "revision/CatalogVersion changed: $rev / $cv - bump the revision marker in the prior-check text and the extension version, and pin the new pair" }
+$own = Get-Sha ($predicate + "`n" + $evaluate + "`n" + $runtime + "`n" + $fnText['Assert-W32TPriorInstall'] + "`n" + $fnText['Remove-W32TPriorInstall'])
+if ($own.Substring(0, 16) -ceq $cv) { Ok 'CatalogVersion = the first 16 hex of the SHA-256 of the three regions and the two functions' } else { Bad "CatalogVersion: $cv vs $($own.Substring(0, 16))" }
+$row = Get-Win32ToolkitDeployExtension
+if ($row.RemovePriorRevision -eq $rev) { Ok "the current extension version $($row.Version) provides prior-install revision $rev" } else { Bad "extension $($row.Version) RemovePriorRevision $($row.RemovePriorRevision) vs catalog $rev" }
 
 # == [2] Windows PowerShell 5.1 runs ===================================================================
-Write-Host '[2] the texts under Windows PowerShell 5.1 with shadowed PSADT, registry, ACL, signature and COM' -ForegroundColor Cyan
+Write-Host '[2] the two functions under Windows PowerShell 5.1 with shadowed PSADT, registry, ACL, signature and COM' -ForegroundColor Cyan
 $ps51 = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
 if (-not (Test-Path -LiteralPath $ps51)) {
     Write-Host '  SKIP: Windows PowerShell 5.1 not present for the runtime check' -ForegroundColor DarkYellow
@@ -111,22 +157,18 @@ if (-not (Test-Path -LiteralPath $ps51)) {
 }
 
 $harness = @'
-param([string]$CheckPath, [string]$RemovePath, [string]$Root, [string]$Author, [string]$Mode = 'full')
+param([string]$ModulePath, [string]$Root, [string]$Author, [string]$Mode = 'full')
+# Run with -File: Windows PowerShell runs this harness in the global scope, so the shadows below are global and the module's
+# functions find them before the real commands (a module looks up commands in its own scope, then the global one).
 Set-StrictMode -Version 1
 $ErrorActionPreference = 'Stop'
 $script:fail = 0
 function Ok($m) { Write-Output "PASS: $m" }
 function Bad($m) { Write-Output "FAIL: $m"; $script:fail++ }
 
-$checkText = [IO.File]::ReadAllText($CheckPath)
-$removeText = [IO.File]::ReadAllText($RemovePath)
-foreach ($t in @($checkText, $removeText, ($checkText + "`n" + $removeText))) {
-    $e = $null; [void][Management.Automation.Language.Parser]::ParseInput($t, [ref]$null, [ref]$e)
-    if (@($e).Count -ne 0) { Bad "5.1 parse: $($e[0].Message)" }
-}
-Ok 'the texts parse under Windows PowerShell 5.1'
-$checkSb = [scriptblock]::Create($checkText)
-$removeSb = [scriptblock]::Create($removeText)
+$moduleText = [IO.File]::ReadAllText($ModulePath)
+$e = $null; [void][Management.Automation.Language.Parser]::ParseInput($moduleText, [ref]$null, [ref]$e)
+if (@($e).Count -ne 0) { Bad "5.1 parse: $($e[0].Message)" } else { Ok 'the extension module parses under Windows PowerShell 5.1' }
 
 $PF = Join-Path $Root 'PF'; $PF86 = Join-Path $Root 'PF86'; $Other = Join-Path $Root 'Other'; $FilesDir = Join-Path $Root 'Files'
 foreach ($d in $PF, $PF86, $Other, $FilesDir) { [void][IO.Directory]::CreateDirectory($d) }
@@ -183,6 +225,21 @@ function Get-ADTPendingReboot { New-Object psobject -Property @{ IsCBServicingRe
 function Test-ADTMutexAvailability { param([string]$MutexName) if ($MutexName -ne 'Global\_MSIExecute') { throw "mutex $MutexName" }; if ($script:msiThrows) { throw "The property 'FilePath' cannot be found on this object. Verify that the property exists." }; -not $script:msiBusy }
 function Get-Process { [CmdletBinding()] param([string]$Name) if ($script:running -contains $Name) { New-Object psobject -Property @{ Name = $Name } } }
 function Start-Sleep { param([int]$Seconds) $script:sleeps++ }
+function Get-ADTSession { $fakeSession }
+# The PFRO read (revision 3, wording batch e): Get-Item of the Session Manager key and its GetValue, from the test registry.
+function Get-Item {
+    [CmdletBinding()] param([string]$LiteralPath, [switch]$Force)
+    if ($LiteralPath -like 'HKLM:*') {
+        Assert-Known $LiteralPath
+        $k = $script:reg[$LiteralPath.ToLowerInvariant()]
+        if ($null -eq $k) { throw "Cannot find path '$LiteralPath' because it does not exist." }
+        $o = Microsoft.PowerShell.Utility\New-Object psobject
+        $o | Add-Member -MemberType NoteProperty -Name Values -Value $k
+        $o | Add-Member -MemberType ScriptMethod -Name GetValue -Value { param($n) if ($this.Values.ContainsKey($n)) { $this.Values[$n] } else { $null } }
+        return $o
+    }
+    Microsoft.PowerShell.Management\Get-Item @PSBoundParameters
+}
 function Get-AuthenticodeSignature {
     [CmdletBinding()] param([string]$LiteralPath)
     $s = $script:sig[$LiteralPath]
@@ -276,11 +333,17 @@ function Start-ADTProcess {
     New-Object psobject -Property @{ ExitCode = $exit }
 }
 
-$adtSession = Microsoft.PowerShell.Utility\New-Object psobject
-$adtSession | Add-Member -MemberType NoteProperty -Name UseDefaultMsi -Value $true
-$adtSession | Add-Member -MemberType NoteProperty -Name DefaultMsiFile -Value ''
-$adtSession | Add-Member -MemberType NoteProperty -Name DirFiles -Value $FilesDir
-$adtSession | Add-Member -MemberType ScriptMethod -Name SetExitCode -Value { param($c) $script:exitCode = $c }
+$fakeSession = Microsoft.PowerShell.Utility\New-Object psobject
+$fakeSession | Add-Member -MemberType NoteProperty -Name UseDefaultMsi -Value $true
+$fakeSession | Add-Member -MemberType NoteProperty -Name DefaultMsiFile -Value ''
+$fakeSession | Add-Member -MemberType NoteProperty -Name DirFiles -Value $FilesDir
+$fakeSession | Add-Member -MemberType ScriptMethod -Name SetExitCode -Value { param($c) $script:exitCode = $c }
+
+# The extension module, imported once; the case runner calls its two functions as the deploy script does.
+# Imported (not only created): the module-qualified calls resolve a module by name from the session's module table.
+New-Module -Name PSAppDeployToolkit.Win32Toolkit -ScriptBlock ([scriptblock]::Create($moduleText)) | Import-Module
+$w32tModule = Get-Module -Name PSAppDeployToolkit.Win32Toolkit
+if (-not (Get-Variable -Name adtSession, appConfig -Scope Global -ErrorAction SilentlyContinue)) { Ok 'no global $adtSession / $appConfig: the functions must use Get-ADTSession and -AppConfig' } else { Bad 'a global $adtSession or $appConfig exists' }
 
 $PC = '{AAAAAAAA-1111-2222-3333-444444444444}'; $UC = '{BBBBBBBB-1111-2222-3333-444444444444}'
 $PayloadPC = '{CCCCCCCC-1111-2222-3333-444444444444}'; $PayloadUC = '{DDDDDDDD-1111-2222-3333-444444444444}'
@@ -339,15 +402,19 @@ function Reset-World {
     [W32tFakeInstaller]::DbFail = $false
     [W32tFakeInstaller]::DbProps['ProductCode'] = $PayloadPC; [W32tFakeInstaller]::DbProps['UpgradeCode'] = $PayloadUC
     [IO.File]::WriteAllText((Join-Path $FilesDir 'pkg.msi'), 'x'); [IO.File]::WriteAllText((Join-Path $FilesDir 'setup.exe'), 'x')
-    $adtSession.UseDefaultMsi = $true; $adtSession.DefaultMsiFile = (Join-Path $FilesDir 'pkg.msi')
+    $fakeSession.UseDefaultMsi = $true; $fakeSession.DefaultMsiFile = (Join-Path $FilesDir 'pkg.msi')
 }
 function Invoke-Case {
     param($Config, [scriptblock]$Between = $null)
     $script:caseN++
     $script:log = @(); $script:started = @(); $script:exitCode = $null; $script:sleeps = 0; $script:removedFiles = @(); $script:comCalls = 0
-    $appConfig = $Config
     $res = 'ok'
-    try { . $checkSb; if ($Between) { & $Between }; . $removeSb } catch { $res = 'threw: ' + $_.Exception.Message }
+    try {
+        PSAppDeployToolkit.Win32Toolkit\Assert-W32TPriorInstall -AppConfig $Config
+        if ($Between) { & $Between }
+        PSAppDeployToolkit.Win32Toolkit\Remove-W32TPriorInstall -AppConfig $Config
+    }
+    catch { $res = 'threw: ' + $_.Exception.Message }
     if (Microsoft.PowerShell.Management\Test-Path -LiteralPath "HKLM:\SOFTWARE\$Author") { Bad "case $($script:caseN): the REAL HKLM:\SOFTWARE\$Author exists on this host" }
     New-Object psobject -Property @{ Res = $res; Code = $script:exitCode; Started = @($script:started); Log = ($script:log -join ' | ') }
 }
@@ -378,7 +445,7 @@ else {
     $r = Invoke-Case $noPi
     if ($r.Res -eq 'ok' -and -not $r.Log) { Ok 'no PriorInstalls section (a project without rules): a no-op' } else { Bad "no section: $(Show $r)" }
     $r = Invoke-Case (Cfg @((Entry)))
-    if ($r.Res -eq 'ok' -and $null -eq $r.Code -and $r.Log -match 'is not present' -and @($r.Started).Count -eq 0) { Ok 'absent prior: logged, nothing started' } else { Bad "absent: $(Show $r)" }
+    if ($r.Res -eq 'ok' -and $null -eq $r.Code -and $r.Log -match 'win32-toolkit prior-check \[app-x64\] .* is not present' -and @($r.Started).Count -eq 0) { Ok 'absent prior: logged under prior-check, nothing started' } else { Bad "absent: $(Show $r)" }
 
     # ---- Enforce removal (NSIS) ----
     Reset-World
@@ -388,7 +455,7 @@ else {
     if ($r.Res -eq 'ok' -and $null -eq $r.Code -and @($r.Started).Count -eq 1 -and $s.Count -eq 1 -and $s.Args[0] -ceq "/S _?=$($p.Dir)" -and $s.Wait -and $s.Timeout.TotalMinutes -eq 30 -and $s.Bound -ceq 'ArgumentList,FilePath,PassThru,Timeout,WaitForChildProcesses') { Ok "Enforce: the NSIS uninstaller runs with ONE argument string '/S _?=<folder>', -WaitForChildProcesses, 30 min, -PassThru" } else { Bad "removal: $(Show $r) args=$(@($s.Args) -join '|') bound=$($s.Bound)" }
     if (-not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $p.Exe)) { Ok 'the leftover NSIS uninstaller is deleted' } else { Bad 'leftover uninstaller still there' }
     if ((Mark 'Native' 'App' 'Removed') -match '^\d{4}-\d{2}-\d{2}$' -and (Mark 'Native' 'App' 'Version') -ceq '8.9.8' -and (Mark 'Native' 'App' 'LastSeen') -match ' Planned 8\.9\.8$') { Ok 'markers: Removed (date), Version, and the Planned probe written before the removal' } else { Bad "markers: Removed=$(Mark 'Native' 'App' 'Removed') Version=$(Mark 'Native' 'App' 'Version') LastSeen=$(Mark 'Native' 'App' 'LastSeen')" }
-    if ($r.Log -match 'proven: .* it is removed after the close-apps dialog' -and $r.Log -match 'removed .*8\.9\.8, uninstaller') { Ok 'the plan and the removal are logged' } else { Bad "log: $($r.Log)" }
+    if ($r.Log -match 'win32-toolkit prior-check \[app-x64\] identity matched: .*; planned for removal after the remaining checks and the close-apps dialog\.' -and $r.Log -match 'removed .*8\.9\.8, uninstaller') { Ok 'the plan (prior-check, identity matched, planned after the remaining checks) and the removal are logged' } else { Bad "log: $($r.Log)" }
 
     # ---- Inno arguments; Inno uninstaller left -> 69109 ----
     Reset-World
@@ -586,7 +653,7 @@ else {
     $exeOwn.OwnIdentity.ProductCode = ''; $exeOwn.OwnIdentity.ArpKeys = @()
     $r = Invoke-Case $exeOwn
     if ((Refused $r 69105) -and $r.Log -match 'OwnIdentity') { Ok 'EXE package without any own key: 69105' } else { Bad "exe no own: $(Show $r)" }
-    $adtSession.UseDefaultMsi = $false
+    $fakeSession.UseDefaultMsi = $false
     $r = Invoke-Case (Cfg @((Entry -VersionMax '8.9.8.1')) -Type 'exe' -FileName 'setup.exe')
     if ($r.Res -eq 'ok' -and @($r.Started).Count -eq 1) { Ok 'EXE package with an older prior: removed (the payload is Files\setup.exe)' } else { Bad "exe older: $(Show $r)" }
     Reset-World
@@ -678,7 +745,7 @@ else {
     $p = New-Prior
     $script:msiThrows = $true
     $r = Invoke-Case (Cfg @((Entry)))
-    if ((Refused $r 1618) -and $r.Log -match 'Windows Installer is busy' -and $r.Res -notmatch 'FilePath') { Ok 'a Windows Installer check that throws counts as busy: 1618 (retry), nothing removed' } else { Bad "busy throw: $(Show $r)" }
+    if ((Refused $r 1618) -and $r.Log -match 'Windows Installer is busy' -and $r.Res -notmatch 'FilePath' -and $r.Log -match 'the Windows Installer check failed \(The property .FilePath. cannot be found') { Ok 'a Windows Installer check that throws counts as busy and its error is logged: 1618 (retry), nothing removed' } else { Bad "busy throw: $(Show $r)" }
     Reset-World
     $p = New-Prior
     [IO.File]::Delete((Join-Path $FilesDir 'pkg.msi'))
@@ -777,18 +844,60 @@ else {
     if ($r.Res -eq 'ok' -and @($r.Started).Count -eq 1 -and [W32tFakeInstaller]::Opened.Count -eq 1 -and [W32tFakeInstaller]::Opened[0] -ceq (Join-Path $FilesDir 'pkg.msi')) { Ok 'an MSI package with a readable database: its codes read through InvokeMember, the removal proceeds' } else { Bad "msi ok: $(Show $r) opened=$([W32tFakeInstaller]::Opened -join ',')" }
     Reset-World
     $p = New-Prior
-    $adtSession.DefaultMsiFile = (Microsoft.PowerShell.Utility\New-Object IO.DirectoryInfo $FilesDir).GetFiles('*.msi')[0]
+    $fakeSession.DefaultMsiFile = (Microsoft.PowerShell.Utility\New-Object IO.DirectoryInfo $FilesDir).GetFiles('*.msi')[0]
     $r = Invoke-Case (Cfg @((Entry)))
     if ($r.Res -eq 'ok' -and $null -eq $r.Code -and [W32tFakeInstaller]::Opened[0] -ceq (Join-Path $FilesDir 'pkg.msi')) { Ok 'PSADT 4.2: DefaultMsiFile is a FileInfo from GetFiles() (its string is the bare name under 5.1): FullName is used, no 69112' } else { Bad "fileinfo: $(Show $r) opened=$([W32tFakeInstaller]::Opened -join ',')" }
     Reset-World
     $p = New-Prior
-    $adtSession.DefaultMsiFile = 'pkg.msi'
+    $fakeSession.DefaultMsiFile = 'pkg.msi'
     $r = Invoke-Case (Cfg @((Entry)))
     if ($r.Res -eq 'ok' -and [W32tFakeInstaller]::Opened[0] -ceq (Join-Path $FilesDir 'pkg.msi')) { Ok 'a relative DefaultMsiFile string is rooted with DirFiles' } else { Bad "relative: $(Show $r)" }
+    # ---- the hand-over between Assert-W32TPriorInstall and Remove-W32TPriorInstall (lean deploy script PR 3) ----
+    $callRemove = {
+        param($Config)
+        $script:log = @(); $script:started = @(); $script:exitCode = $null
+        $res = 'ok'
+        try { PSAppDeployToolkit.Win32Toolkit\Remove-W32TPriorInstall -AppConfig $Config } catch { $res = 'threw: ' + $_.Exception.Message }
+        New-Object psobject -Property @{ Res = $res; Code = $script:exitCode; Started = @($script:started); Log = ($script:log -join ' | ') }
+    }
+    Reset-World
+    $p = New-Prior
+    & $w32tModule { $script:W32TPriorContext = $null }
+    $r = & $callRemove (Cfg @((Entry)))
+    if ((Refused $r 69105) -and $r.Log -match 'win32-toolkit remove-prior: prior-check did not run first in this deployment' -and (Microsoft.PowerShell.Management\Test-Path -LiteralPath $p.Exe) -and $script:reg[$MarkRoot.ToLowerInvariant()]['LastRefusal'] -match ' 69105 ') {
+        Ok 'remove-prior without a prior-check in this deployment: 69105, LastRefusal written, nothing removed'
+    } else { Bad "no context: $(Show $r)" }
+    $r = & $callRemove (Cfg @((Entry -Mode Report)))
+    if ($r.Res -eq 'ok' -and $null -eq $r.Code -and $r.Log -match 'the Report entries are not checked again') { Ok 'the same for a Report-only set: logged, the install goes on (D26)' } else { Bad "no context report: $(Show $r)" }
+    $r = & $callRemove (Cfg @())
+    if ($r.Res -eq 'ok' -and $null -eq $r.Code -and -not $r.Log) { Ok 'remove-prior without entries and without a context: a no-op' } else { Bad "no context no entries: $(Show $r)" }
+    Reset-World
+    $p = New-Prior
+    $r = Invoke-Case (Cfg @((Entry)))
+    $again = & $callRemove (Cfg @((Entry)))
+    if ($r.Res -eq 'ok' -and @($r.Started).Count -eq 1 -and (Refused $again 69105)) { Ok 'the plan is used once: a second remove-prior in the same process refuses 69105' } else { Bad "plan once: $(Show $r) || $(Show $again)" }
+    Reset-World
+    $p = New-Prior
+    $script:log = @(); $script:exitCode = $null
+    PSAppDeployToolkit.Win32Toolkit\Assert-W32TPriorInstall -AppConfig (Cfg @((Entry)))
+    $planned = [bool](& $w32tModule { $null -ne $script:W32TPriorContext -and @($script:W32TPriorContext.Plan).Count -eq 1 })
+    PSAppDeployToolkit.Win32Toolkit\Assert-W32TPriorInstall -AppConfig (Cfg @())
+    $r = & $callRemove (Cfg @((Entry)))
+    if ($planned -and (Refused $r 69105) -and (Microsoft.PowerShell.Management\Test-Path -LiteralPath $p.Exe)) { Ok 'a plan of an earlier prior-check never reaches a later remove-prior (the next prior-check clears it): 69105, nothing removed' } else { Bad "stale plan: planned=$planned $(Show $r)" }
+    Reset-World
+    $p = New-Prior
+    $script:log = @(); $script:exitCode = $null
+    try { PSAppDeployToolkit.Win32Toolkit\Assert-W32TPriorInstall -AppConfig (Cfg @((Entry -Mode Block))) } catch { $null = $_ }
+    $left = [bool](& $w32tModule { $null -eq $script:W32TPriorContext })
+    if ($left -and $script:exitCode -eq 69101) { Ok 'a refusing prior-check leaves no plan behind' } else { Bad "refusal context: left=$left code=$($script:exitCode)" }
+    Reset-World
+    $p = New-Prior
+    $script:reg[$SessionMgr.ToLowerInvariant()] = @{}
+    $r = Invoke-Case (Cfg @((Entry)))
+    if ($r.Res -eq 'ok' -and @($r.Started).Count -eq 1 -and $r.Log -notmatch 'PendingFileRenameOperations') { Ok 'no PendingFileRenameOperations value at all: read as empty, the removal goes on (wording batch e)' } else { Bad "no pfro value: $(Show $r)" }
 }
 }
-finally {
-    if ($script:fail -gt 0) { Write-Output "HARNESS-FAILED $($script:fail)" } else { Write-Output 'HARNESS-OK' }
+finally {    if ($script:fail -gt 0) { Write-Output "HARNESS-FAILED $($script:fail)" } else { Write-Output 'HARNESS-OK' }
 }
 '@
 
@@ -796,11 +905,9 @@ $root = Join-Path $env:USERPROFILE ('AppData\Local\Temp\w32trp-' + [guid]::NewGu
 $author = 'W32T-RemovePriorTest-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 try {
     $null = New-Item -ItemType Directory -Path $root -Force
-    $checkFile = Join-Path $root 'check.ps1'; $removeFile = Join-Path $root 'remove.ps1'; $harnessFile = Join-Path $root 'harness.ps1'
-    [IO.File]::WriteAllText($checkFile, $check, [Text.UTF8Encoding]::new($true))
-    [IO.File]::WriteAllText($removeFile, $remove, [Text.UTF8Encoding]::new($true))
+    $harnessFile = Join-Path $root 'harness.ps1'
     [IO.File]::WriteAllText($harnessFile, $harness, [Text.UTF8Encoding]::new($true))
-    $out = @(& $ps51 -NoProfile -ExecutionPolicy Bypass -File $harnessFile -CheckPath $checkFile -RemovePath $removeFile -Root (Join-Path $root 'w') -Author $author 2>&1 | ForEach-Object { "$_" })
+    $out = @(& $ps51 -NoProfile -ExecutionPolicy Bypass -File $harnessFile -ModulePath $psm1Path -Root (Join-Path $root 'w') -Author $author 2>&1 | ForEach-Object { "$_" })
     foreach ($l in $out) {
         if ($l -like 'PASS: *') { Ok $l.Substring(6) }
         elseif ($l -like 'FAIL: *') { Bad $l.Substring(6) }
@@ -813,14 +920,56 @@ try {
     Write-Host '[3] the 32-bit Windows PowerShell (Report never refuses; Block refuses 69105)' -ForegroundColor Cyan
     $ps32 = Join-Path $env:windir 'SysWOW64\WindowsPowerShell\v1.0\powershell.exe'
     if (Test-Path -LiteralPath $ps32) {
-        $out = @(& $ps32 -NoProfile -ExecutionPolicy Bypass -File $harnessFile -CheckPath $checkFile -RemovePath $removeFile -Root (Join-Path $root 'w32') -Author $author -Mode x86 2>&1 | ForEach-Object { "$_" })
+        $out = @(& $ps32 -NoProfile -ExecutionPolicy Bypass -File $harnessFile -ModulePath $psm1Path -Root (Join-Path $root 'w32') -Author $author -Mode x86 2>&1 | ForEach-Object { "$_" })
         foreach ($l in $out) { if ($l -like 'PASS: *') { Ok $l.Substring(6) } elseif ($l -like 'FAIL: *') { Bad $l.Substring(6) } elseif ($l -notlike 'HARNESS-*' -and $l.Trim()) { Write-Host "  | $l" -ForegroundColor DarkGray } }
         if (@($out | Where-Object { $_ -like 'PASS: *' }).Count -lt 3) { Bad '32-bit harness incomplete' }
     } else { Write-Host '  (no SysWOW64 Windows PowerShell on this host)' -ForegroundColor DarkYellow }
-    if (-not (Test-Path -LiteralPath "HKLM:\SOFTWARE\$author")) { Ok "the real HKLM:\SOFTWARE\$author was never created" } else { Bad "HKLM:\SOFTWARE\$author exists on the host" }
+    if (-not (Test-Path -LiteralPath "HKLM:\SOFTWARE\$author")) { Ok "the real HKLM:\SOFTWARE\$author was never created" } else { Bad "HKLM:\SOFTWARE\$author exists on the host"     # ---- the hand-over between Assert-W32TPriorInstall and Remove-W32TPriorInstall (lean deploy script PR 3) ----
+    $callRemove = {
+        param($Config)
+        $script:log = @(); $script:started = @(); $script:exitCode = $null
+        $res = 'ok'
+        try { PSAppDeployToolkit.Win32Toolkit\Remove-W32TPriorInstall -AppConfig $Config } catch { $res = 'threw: ' + $_.Exception.Message }
+        New-Object psobject -Property @{ Res = $res; Code = $script:exitCode; Started = @($script:started); Log = ($script:log -join ' | ') }
+    }
+    Reset-World
+    $p = New-Prior
+    & $w32tModule { $script:W32TPriorContext = $null }
+    $r = & $callRemove (Cfg @((Entry)))
+    if ((Refused $r 69105) -and $r.Log -match 'win32-toolkit remove-prior: prior-check did not run first in this deployment' -and (Microsoft.PowerShell.Management\Test-Path -LiteralPath $p.Exe) -and $script:reg[$MarkRoot.ToLowerInvariant()]['LastRefusal'] -match ' 69105 ') {
+        Ok 'remove-prior without a prior-check in this deployment: 69105, LastRefusal written, nothing removed'
+    } else { Bad "no context: $(Show $r)" }
+    $r = & $callRemove (Cfg @((Entry -Mode Report)))
+    if ($r.Res -eq 'ok' -and $null -eq $r.Code -and $r.Log -match 'the Report entries are not checked again') { Ok 'the same for a Report-only set: logged, the install goes on (D26)' } else { Bad "no context report: $(Show $r)" }
+    $r = & $callRemove (Cfg @())
+    if ($r.Res -eq 'ok' -and $null -eq $r.Code -and -not $r.Log) { Ok 'remove-prior without entries and without a context: a no-op' } else { Bad "no context no entries: $(Show $r)" }
+    Reset-World
+    $p = New-Prior
+    $r = Invoke-Case (Cfg @((Entry)))
+    $again = & $callRemove (Cfg @((Entry)))
+    if ($r.Res -eq 'ok' -and @($r.Started).Count -eq 1 -and (Refused $again 69105)) { Ok 'the plan is used once: a second remove-prior in the same process refuses 69105' } else { Bad "plan once: $(Show $r) || $(Show $again)" }
+    Reset-World
+    $p = New-Prior
+    $script:log = @(); $script:exitCode = $null
+    PSAppDeployToolkit.Win32Toolkit\Assert-W32TPriorInstall -AppConfig (Cfg @((Entry)))
+    $planned = [bool](& $w32tModule { $null -ne $script:W32TPriorContext -and @($script:W32TPriorContext.Plan).Count -eq 1 })
+    PSAppDeployToolkit.Win32Toolkit\Assert-W32TPriorInstall -AppConfig (Cfg @())
+    $r = & $callRemove (Cfg @((Entry)))
+    if ($planned -and (Refused $r 69105) -and (Microsoft.PowerShell.Management\Test-Path -LiteralPath $p.Exe)) { Ok 'a plan of an earlier prior-check never reaches a later remove-prior (the next prior-check clears it): 69105, nothing removed' } else { Bad "stale plan: planned=$planned $(Show $r)" }
+    Reset-World
+    $p = New-Prior
+    $script:log = @(); $script:exitCode = $null
+    try { PSAppDeployToolkit.Win32Toolkit\Assert-W32TPriorInstall -AppConfig (Cfg @((Entry -Mode Block))) } catch { $null = $_ }
+    $left = [bool](& $w32tModule { $null -eq $script:W32TPriorContext })
+    if ($left -and $script:exitCode -eq 69101) { Ok 'a refusing prior-check leaves no plan behind' } else { Bad "refusal context: left=$left code=$($script:exitCode)" }
+    Reset-World
+    $p = New-Prior
+    $script:reg[$SessionMgr.ToLowerInvariant()] = @{}
+    $r = Invoke-Case (Cfg @((Entry)))
+    if ($r.Res -eq 'ok' -and @($r.Started).Count -eq 1 -and $r.Log -notmatch 'PendingFileRenameOperations') { Ok 'no PendingFileRenameOperations value at all: read as empty, the removal goes on (wording batch e)' } else { Bad "no pfro value: $(Show $r)" }
 }
-finally {
-    if (Test-Path -LiteralPath $root) {
+}
+finally {    if (Test-Path -LiteralPath $root) {
         Get-ChildItem -LiteralPath $root -Recurse -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint } | ForEach-Object { [IO.Directory]::Delete($_.FullName) }
         Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }

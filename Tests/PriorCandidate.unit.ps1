@@ -26,7 +26,7 @@ $fail = 0
 function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
-foreach ($f in 'Get-Win32ToolkitPriorInstallCandidate', 'ConvertTo-Win32ToolkitSafeText', 'New-UpdateAssertionScript', 'Get-Win32ToolkitAppConfig', 'ConvertTo-PSSingleQuoted', 'Get-Win32ToolkitDeployScriptBlock',
+foreach ($f in 'Get-Win32ToolkitPriorInstallCandidate', 'ConvertTo-Win32ToolkitSafeText', 'New-UpdateAssertionScript', 'Get-Win32ToolkitAppConfig', 'ConvertTo-PSSingleQuoted', 'Get-Win32ToolkitDeployScriptBlock', 'Get-Win32ToolkitDeployExtension',
     'ConvertTo-Win32ToolkitPriorVersion',   # C-9: the candidate lines compare the observed version with a rule's window
     'Get-Win32ToolkitDeployScriptShape', 'Test-Win32ToolkitPsadtVersionSupported') {   # C-9: ... and read the project's remove-prior slots
     . (Join-Path $repo "Private\$f.ps1")

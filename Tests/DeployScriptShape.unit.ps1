@@ -259,8 +259,10 @@ try {
     if ($m.UninstallRevision -eq 0) { Ok 'missing file -> UninstallRevision 0' } else { Bad "missing file -> $($m.UninstallRevision)" }
 } catch { Bad "UninstallRevision threw: $($_.Exception.Message)" }
 
+# The catalog revision of this toolkit (3 since lean deploy script PR 3, the prior-install pair as extension calls).
+$curRev = [int](Get-Win32ToolkitDeployScriptBlock -Name RemovePriorRevision)
 # -- [11] RemovePriorRevision / PriorCheckFirst (installer-identity PR 3, spec 2.7, L38, L39) ---------------
-Write-Host '[11] RemovePriorRevision and PriorCheckFirst: 0/false before PR 3, the catalog revision (2)/true generated with the org dialogs' -ForegroundColor Cyan
+Write-Host "[11] RemovePriorRevision and PriorCheckFirst: 0/false before PR 3, the catalog revision ($curRev)/true generated with the org dialogs" -ForegroundColor Cyan
 foreach ($c in @(@{ N = 'psadt-4.1.8'; T = $g418 }, @{ N = 'psadt-4.2.0'; T = $g42d }, @{ N = 'psadt-4.2.0-zeroconfig'; T = $g42z },
         @{ N = 'legacy-1.1.6-auto'; T = (Get-Fixture 'legacy-1.1.6-auto') }, @{ N = 'legacy-1.1.6-org'; T = (Get-Fixture 'legacy-1.1.6-org') })) {
     $r = Shape $c.T
@@ -272,12 +274,12 @@ foreach ($c in @(@{ N = 'psadt-4.1.8'; T = $g418; S = 'Psadt41' }, @{ N = 'psadt
     $null = Set-PSADTDataDrivenScript -ScriptPath $p -InstallerType exe -WarningAction SilentlyContinue
     $bare = ([System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)) -replace "`r`n", "`n"
     $r = Shape $bare
-    if ($r.RemovePriorRevision -eq 2 -and -not $r.PriorCheckFirst) { Ok "$($c.N) generated WITHOUT the org template -> revision 2, PriorCheckFirst false (the PSADT welcome runs before prior-check)" } else { Bad "$($c.N) no org -> $($r.RemovePriorRevision) / $($r.PriorCheckFirst)" }
+    if ($r.RemovePriorRevision -eq $curRev -and -not $r.PriorCheckFirst) { Ok "$($c.N) generated WITHOUT the org template -> revision $curRev, PriorCheckFirst false (the PSADT welcome runs before prior-check)" } else { Bad "$($c.N) no org -> $($r.RemovePriorRevision) / $($r.PriorCheckFirst)" }
     $o = $bare
     $o = Remove-Win32ToolkitPhaseDefaultUi -Content $o -Phase 'Pre-Install'
     $o = Set-Win32ToolkitPhaseBlock -Content $o -Phase 'Pre-Install' -Slot 'org-ui' -Code (Get-Win32ToolkitDeployScriptBlock -Name OrgUiPreInstall)
     $r = Shape $o
-    if ($r.RemovePriorRevision -eq 2 -and $r.PriorCheckFirst -and $r.Shape -eq $c.S -and $r.Support -eq 'Supported') { Ok "$($c.N) generated with the org dialogs -> revision 2, PriorCheckFirst true" } else { Bad "$($c.N) org -> $($r.RemovePriorRevision) / $($r.PriorCheckFirst)" }
+    if ($r.RemovePriorRevision -eq $curRev -and $r.PriorCheckFirst -and $r.Shape -eq $c.S -and $r.Support -eq 'Supported') { Ok "$($c.N) generated with the org dialogs -> revision $curRev, PriorCheckFirst true" } else { Bad "$($c.N) org -> $($r.RemovePriorRevision) / $($r.PriorCheckFirst)" }
     $h = Set-Win32ToolkitPhaseBlock -Content $o -Phase 'Pre-Install' -Slot 'hook' -Code (Get-Win32ToolkitDeployScriptBlock -Name Hook -Phase 'Pre-Install' -HookFile 'PreInstall.ps1')
     $r = Shape $h
     if ($r.PriorCheckFirst) { Ok "$($c.N): an org hook between org-ui and remove-prior keeps PriorCheckFirst" } else { Bad "$($c.N) hook -> PriorCheckFirst false" }
@@ -285,32 +287,33 @@ foreach ($c in @(@{ N = 'psadt-4.1.8'; T = $g418; S = 'Psadt41' }, @{ N = 'psadt
     $byHand = if ($c.S -eq 'Psadt41') { $h.Replace("    ## <Perform Pre-Installation tasks here>`n", "    ## <Perform Pre-Installation tasks here>`n    Show-ADTInstallationWelcome -CloseProcesses 'x'`n") }
               else { $h.Replace("New-Variable -Name Pre-Install -Force -Value {`n", "New-Variable -Name Pre-Install -Force -Value {`n    Show-ADTInstallationWelcome -CloseProcesses 'x'`n") }
     $r = Shape $byHand
-    if ($byHand -ne $h -and $r.RemovePriorRevision -eq 2 -and -not $r.PriorCheckFirst) { Ok "$($c.N): a Show-ADTInstallationWelcome written by hand in Pre-Install outside a block -> PriorCheckFirst false" } else { Bad "$($c.N) hand welcome -> $($r.PriorCheckFirst)" }
+    if ($byHand -ne $h -and $r.RemovePriorRevision -eq $curRev -and -not $r.PriorCheckFirst) { Ok "$($c.N): a Show-ADTInstallationWelcome written by hand in Pre-Install outside a block -> PriorCheckFirst false" } else { Bad "$($c.N) hand welcome -> $($r.PriorCheckFirst)" }
     $prog = if ($c.S -eq 'Psadt41') { $h.Replace("    ## <Perform Pre-Installation tasks here>`n", "    ## <Perform Pre-Installation tasks here>`n    Show-ADTInstallationProgress`n") } else { $h.Replace("New-Variable -Name Pre-Install -Force -Value {`n", "New-Variable -Name Pre-Install -Force -Value {`n    Show-ADTInstallationProgress`n") }
     if (-not (Shape $prog).PriorCheckFirst) { Ok "$($c.N): a hand-written Show-ADTInstallationProgress -> PriorCheckFirst false" } else { Bad "$($c.N) hand progress kept PriorCheckFirst" }
     # The org-ui block moved before prior-check.
     $orgBlock = [regex]::Match($h, '(?ms)^[ \t]*## win32-toolkit:Pre-Install:org-ui \(begin\).*?## win32-toolkit:Pre-Install:org-ui \(end\)\n').Value
     $pcBegin = [regex]::Match($h, '(?m)^[ \t]*## win32-toolkit:Pre-Install:prior-check \(begin\)')
     $moved = $h.Replace($orgBlock, '').Insert($pcBegin.Index, $orgBlock)
-    if ((Shape $moved).PriorCheckFirst -eq $false -and (Shape $moved).RemovePriorRevision -eq 2) { Ok "$($c.N): org-ui placed before prior-check -> PriorCheckFirst false" } else { Bad "$($c.N) moved org-ui kept PriorCheckFirst" }
+    if ((Shape $moved).PriorCheckFirst -eq $false -and (Shape $moved).RemovePriorRevision -eq $curRev) { Ok "$($c.N): org-ui placed before prior-check -> PriorCheckFirst false" } else { Bad "$($c.N) moved org-ui kept PriorCheckFirst" }
     # Only one of the two blocks; the marker outside the block; an oversized revision.
     $rpBlock = [regex]::Match($h, '(?ms)^[ \t]*## win32-toolkit:Pre-Install:remove-prior \(begin\).*?## win32-toolkit:Pre-Install:remove-prior \(end\)\n').Value
     $r = Shape ($h.Replace($rpBlock, ''))
     if ($rpBlock -and $r.RemovePriorRevision -eq 0 -and -not $r.PriorCheckFirst) { Ok "$($c.N): only the prior-check block -> revision 0" } else { Bad "$($c.N) one block -> $($r.RemovePriorRevision)" }
-    $noMark = $h.Replace('## remove-prior catalog revision 2 (win32-toolkit)', '## (marker removed)')
+    $noMark = $h.Replace("## remove-prior catalog revision $curRev (win32-toolkit)", '## (marker removed)')
     $r = Shape ($noMark + "`n## remove-prior catalog revision 2 (win32-toolkit)`n")
     if ($noMark -ne $h -and $r.RemovePriorRevision -eq 0) { Ok "$($c.N): the revision marker outside the prior-check block -> revision 0" } else { Bad "$($c.N) marker outside -> $($r.RemovePriorRevision)" }
     try {
-        $r = Shape ($h.Replace('## remove-prior catalog revision 2 (win32-toolkit)', '## remove-prior catalog revision 99999999999 (win32-toolkit)'))
+        $r = Shape ($h.Replace("## remove-prior catalog revision $curRev (win32-toolkit)", '## remove-prior catalog revision 99999999999 (win32-toolkit)'))
         if ($r.RemovePriorRevision -eq 0 -and $r.Shape -eq $c.S) { Ok "$($c.N): 'revision 99999999999' -> 0, no throw" } else { Bad "$($c.N) huge -> $($r.RemovePriorRevision)" }
     } catch { Bad "$($c.N) huge revision threw: $($_.Exception.Message)" }
-    $r = Shape ($h.Replace('## remove-prior catalog revision 1 (win32-toolkit)', '## remove-prior catalog revision 2 (win32-toolkit)'))
+    $r = Shape ($h.Replace("## remove-prior catalog revision $curRev (win32-toolkit)", '## remove-prior catalog revision 2 (win32-toolkit)'))
     if ($r.RemovePriorRevision -eq 2) { Ok "$($c.N): 'revision 2' -> 2 (the number is read)" } else { Bad "$($c.N) rev 2 -> $($r.RemovePriorRevision)" }
 }
 try {
     $r = Get-Win32ToolkitDeployScriptShape -Content ''
     if ($r.RemovePriorRevision -eq 0 -and -not $r.PriorCheckFirst) { Ok "-Content '' -> RemovePriorRevision 0, PriorCheckFirst false, no throw" } else { Bad "-Content '' -> $($r.RemovePriorRevision)" }
 } catch { Bad "RemovePriorRevision threw: $($_.Exception.Message)" }
+$curExt = (Get-Win32ToolkitDeployExtension).Version
 # -- [12] GeneratorVersion 3 and the extension marker (lean deploy script PR 2) ---------------------------------
 Write-Host '[12] GeneratorVersion 3: the loader names the generator and the toolkit extension version' -ForegroundColor Cyan
 $p = Join-Path $TMP 'gv3.ps1'
@@ -318,8 +321,8 @@ $p = Join-Path $TMP 'gv3.ps1'
 $null = Set-PSADTDataDrivenScript -ScriptPath $p -InstallerType exe -WarningAction SilentlyContinue
 $g3 = ([System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)) -replace "`r`n", "`n"
 $r = Shape $g3
-if ($r.GeneratorVersion -eq 3 -and $r.ExtensionName -ceq 'PSAppDeployToolkit.Win32Toolkit' -and $r.ExtensionVersion -eq [version]'1.0.0' -and $r.Support -eq 'Supported') { Ok 'generated -> GeneratorVersion 3, ExtensionName PSAppDeployToolkit.Win32Toolkit, ExtensionVersion 1.0.0, Supported' } else { Bad "gv3 -> $($r.GeneratorVersion) $($r.ExtensionName) $($r.ExtensionVersion) $($r.Support)" }
-$marker = '## win32-toolkit generator 3; extension PSAppDeployToolkit.Win32Toolkit 1.0.0'
+if ($r.GeneratorVersion -eq 3 -and $r.ExtensionName -ceq 'PSAppDeployToolkit.Win32Toolkit' -and $r.ExtensionVersion -eq $curExt -and $r.Support -eq 'Supported') { Ok "generated -> GeneratorVersion 3, ExtensionName PSAppDeployToolkit.Win32Toolkit, ExtensionVersion $curExt, Supported" } else { Bad "gv3 -> $($r.GeneratorVersion) $($r.ExtensionName) $($r.ExtensionVersion) $($r.Support)" }
+$marker = "## win32-toolkit generator 3; extension PSAppDeployToolkit.Win32Toolkit $curExt"
 $noMarker = $g3.Replace("$marker`n", '')
 $r = Shape $noMarker
 if ($noMarker -ne $g3 -and $r.GeneratorVersion -eq 2 -and $null -eq $r.ExtensionName -and $null -eq $r.ExtensionVersion -and $r.Support -eq 'Supported') { Ok 'the marker removed -> GeneratorVersion 2 (inline-block projects stay Supported)' } else { Bad "no marker -> $($r.GeneratorVersion) $($r.ExtensionName) $($r.Support)" }

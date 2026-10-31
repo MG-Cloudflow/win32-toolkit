@@ -23,6 +23,8 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Select-Win32ToolkitOlderVersion.ps1')
 . (Join-Path $repo 'Private\New-UpdateAssertionScript.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitDeployScriptBlock.ps1')   # C-9 (installer-identity PR 3): the generator embeds the prior-install catalog texts
+# C-9 (lean deploy script PR 3): the catalog reads the prior-install texts from the verified extension module.
+. (Join-Path $repo 'Private\Get-Win32ToolkitDeployExtension.ps1')
 . (Join-Path $repo 'Private\Wait-Win32ToolkitUpdateAssertion.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitAppConfig.ps1')
 . (Join-Path $repo 'Private\ConvertTo-PSSingleQuoted.ps1')

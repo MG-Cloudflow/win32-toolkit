@@ -16,17 +16,18 @@
            verbs, no cmdlet / variable / alias exports.
       [4]  value-free: no Invoke-Expression, Add-Type, [scriptblock]::Create, ExpandString, NewScriptBlock, web or
            process commands, Import-Module; '&' / '.' only on a variable the same function assigns a scriptblock literal
-           to; no global writes; no app or vendor name.
-      [5]  the catalog's call blocks (PR 2): one module-qualified call each, into an exported function with parameters it
-           declares and constant arguments; every export has a caller; the Loader marker and the uninstall revision marker
-           name the current row.
+           to, or one assigned once at module level inside the prior-install regions (lean deploy script PR 3); no global
+           writes; no app or vendor name.
+      [5]  the catalog's call blocks (PR 2, PR 3): one module-qualified call each, into an exported function with
+           parameters it declares and constant arguments; every export has a caller; the Loader marker, the uninstall
+           revision marker and the prior-install revision marker name the current row.
       [6]  under Windows PowerShell 5.1, the module imported with PSADT's commands stubbed (and no $adtSession /
            $appConfig variable anywhere): module-level preferences; Install-W32TApp (EXE, APPX for a non-SYSTEM user,
            missing file, the 69114 refusal for every mismatch); Install-W32TMsiPatch; the two tattoo functions;
            the three org-ui functions; module-qualified calls.
       [7]  with the real PSADT the selector picks (SKIP without one, FAIL with W32T_REQUIRE_PSADT): Windows PowerShell 5.1
            imports PSADT by path, then the extension by its manifest - RequiredModules is satisfied by the loaded PSADT
-           and exactly the eight functions are exported.
+           and exactly the ten functions are exported.
       [8]  Copy-Win32ToolkitDeployExtension (copy, replace, link / file / missing project refused, -WhatIf, a changed
            source refused), Get-Win32ToolkitDeployExtension -Verify on a changed / extended / incomplete source, and
            Test-Win32ToolkitDeployExtension (stray folders as warning or error, missing / unknown / mismatch, Staging).
@@ -59,7 +60,7 @@ $extDir = Join-Path $repo "DeployExtension\$($ext.Name)"
 $psd1Path = Join-Path $extDir "$($ext.Name).psd1"
 $psm1Path = Join-Path $extDir "$($ext.Name).psm1"
 $exports = @('Install-W32TApp', 'Install-W32TMsiPatch', 'Uninstall-W32TApp', 'Set-W32TInstallTattoo', 'Remove-W32TInstallTattoo',
-    'Show-W32TInstallWelcome', 'Show-W32TMaintenanceWelcome', 'Show-W32TCompletionPrompt')
+    'Show-W32TInstallWelcome', 'Show-W32TMaintenanceWelcome', 'Show-W32TCompletionPrompt', 'Assert-W32TPriorInstall', 'Remove-W32TPriorInstall')
 
 # == [1] files ===========================================================================================
 Write-Host '[1] the folder: exactly the manifest and the module, UTF-8 with BOM, ASCII only, CRLF only' -ForegroundColor Cyan
@@ -86,7 +87,10 @@ if ($diff.Count -eq 0 -and @($ext.Files.Keys).Count -eq 2) { Ok 'the current row
 $ascending = $true
 for ($i = 1; $i -lt $all.Count; $i++) { if ($all[$i].Version -le $all[$i - 1].Version) { $ascending = $false } }
 if ($ascending -and @($all | Where-Object IsCurrent).Count -eq 1 -and $all[-1].IsCurrent) { Ok "$($all.Count) known row(s), versions ascending, only the last is current" } else { Bad 'known rows not ascending or IsCurrent wrong' }
-if ($ext.Name -ceq (Split-Path $extDir -Leaf) -and $ext.UninstallRevision -eq 2 -and $ext.RemovePriorRevision -eq 0) { Ok 'the 1.0.0 row: uninstall revision 2, no prior-install pair (PR 3)' } else { Bad "row: $($ext | Out-String)" }
+$old = Get-Win32ToolkitDeployExtension -Version '1.0.0'
+if ($ext.Name -ceq (Split-Path $extDir -Leaf) -and $ext.UninstallRevision -eq 2 -and $ext.RemovePriorRevision -eq 3 -and $old.UninstallRevision -eq 2 -and $old.RemovePriorRevision -eq 0) {
+    Ok "the current row $($ext.Version): uninstall revision 2, prior-install revision 3; the 1.0.0 row (lean deploy script PR 2): no prior-install pair"
+} else { Bad "rows: $($ext | Out-String) $($old | Out-String)" }
 if ((Get-Win32ToolkitDeployExtension -Version '1.0.0').Version -eq [version]'1.0.0' -and $null -eq (Get-Win32ToolkitDeployExtension -Version '9.9.9')) { Ok '-Version returns the known row, $null for an unknown version' } else { Bad '-Version lookup' }
 try { $v = Get-Win32ToolkitDeployExtension -Verify; if ($v.Version -eq $ext.Version) { Ok '-Verify passes on the repository copy' } else { Bad '-Verify returned another row' } } catch { Bad "-Verify on the repository copy: $($_.Exception.Message)" }
 if ($all[0].Version -eq [version]'1.0.0') { Ok 'the oldest row is 1.0.0 (rows are never removed)' } else { Bad "first row: $($all[0].Version)" }
@@ -128,18 +132,31 @@ $members = @($psm1Ast.FindAll({ param($n) $n -is [System.Management.Automation.L
 if ($members.Count -eq 0 -and $psm1Ast.Extent.Text -notmatch '(?i)-EncodedCommand|\[scriptblock\]::') { Ok 'no [scriptblock]::Create / ExpandString / NewScriptBlock / InvokeScript / -EncodedCommand' } else { Bad "code-from-text members: $($members.Extent.Text -join ' | ')" }
 $invokes = @($cmds | Where-Object { $_.InvocationOperator -in @([System.Management.Automation.Language.TokenKind]::Ampersand, [System.Management.Automation.Language.TokenKind]::Dot) })
 $badInvoke = [System.Collections.Generic.List[string]]::new()
+$isBlock = { param($n, [string]$Name) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq "`$$Name" -and
+    $n.Right -is [System.Management.Automation.Language.CommandExpressionAst] -and $n.Right.Expression -is [System.Management.Automation.Language.ScriptBlockExpressionAst] }
+# Lean deploy script PR 3: the prior-install regions assign their scriptblocks once at module level (outside every function),
+# and the two prior-install functions and those scriptblocks call them.
+$priorSpans = @([regex]::Matches($psm1Ast.Extent.Text, '(?ms)^#region win32-toolkit:Prior\w+\r?\n.*?^#endregion win32-toolkit:Prior\w+') | ForEach-Object { @{ Start = $_.Index; End = $_.Index + $_.Length } })
+$moduleBlocks = @{}
+foreach ($a in @($psm1Ast.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.AssignmentStatementAst] -and $_.Right -is [System.Management.Automation.Language.CommandExpressionAst] -and $_.Right.Expression -is [System.Management.Automation.Language.ScriptBlockExpressionAst] })) {
+    $inRegion = @($priorSpans | Where-Object { $a.Extent.StartOffset -ge $_.Start -and $a.Extent.EndOffset -le $_.End }).Count -eq 1
+    $n = $a.Left.Extent.Text.TrimStart('$')
+    if ($inRegion) { if ($moduleBlocks.ContainsKey($n)) { $moduleBlocks[$n] = 2 } else { $moduleBlocks[$n] = 1 } }
+}
 foreach ($c in $invokes) {
     $target = $c.CommandElements[0]
     $fn = $c.Parent; while ($fn -and $fn -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) { $fn = $fn.Parent }
     $ok = $false
-    if ($target -is [System.Management.Automation.Language.VariableExpressionAst] -and $fn) {
+    if ($target -is [System.Management.Automation.Language.VariableExpressionAst]) {
         $name = $target.VariablePath.UserPath
-        $ok = @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq "`$$name" -and
-                    $n.Right -is [System.Management.Automation.Language.CommandExpressionAst] -and $n.Right.Expression -is [System.Management.Automation.Language.ScriptBlockExpressionAst] }, $true)).Count -eq 1
+        $own = if ($fn) { @($fn.FindAll({ param($n) & $isBlock $n $name }, $true)).Count } else { 0 }
+        $ok = $own -eq 1 -or ($own -eq 0 -and $moduleBlocks[$name] -eq 1)
     }
     if (-not $ok) { $badInvoke.Add($c.Extent.Text) }
 }
-if ($invokes.Count -gt 0 -and $badInvoke.Count -eq 0) { Ok "every '&' / '.' ($($invokes.Count)) runs a scriptblock literal its own function assigned once" } else { Bad "invocations of something else: $($badInvoke -join ' | ')" }
+$stray = @($psm1Ast.EndBlock.Statements | Where-Object { $_ -isnot [System.Management.Automation.Language.FunctionDefinitionAst] } | Where-Object { $s = $_; @($priorSpans | Where-Object { $s.Extent.StartOffset -ge $_.Start -and $s.Extent.EndOffset -le $_.End }).Count -eq 0 } | ForEach-Object { $_.Extent.Text.Split("`n")[0] })
+if ($stray.Count -eq 4 -and $stray[0] -like '$ErrorActionPreference = *' -and $stray[-1] -like 'Export-ModuleMember *') { Ok 'module-level code outside a function: the three preferences, the prior-install regions and Export-ModuleMember only' } else { Bad "module-level statements outside the prior regions: $($stray -join ' | ')" }
+if ($invokes.Count -gt 0 -and $badInvoke.Count -eq 0) { Ok "every '&' / '.' ($($invokes.Count)) runs a scriptblock literal its own function assigned once, or one a prior-install region assigned once at module level ($($moduleBlocks.Count))" } else { Bad "invocations of something else: $($badInvoke -join ' | ')" }
 $globals = @($psm1Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.IsGlobal }, $true))
 if ($globals.Count -eq 0 -and $psm1Ast.Extent.Text -notmatch '(?i)-Scope\s+Global') { Ok 'no $global: variable and no -Scope Global' } else { Bad "global state: $($globals.Extent.Text -join ', ')" }
 $appNames = '(?i)firefox|mozilla|helper\.exe|notepad|7-zip|chrome|google|adobe|zoom|contoso'
@@ -153,7 +170,8 @@ Write-Host "[5] the catalog's call blocks: one module-qualified call each, into 
 # loader marker and the uninstall revision marker name the current row of the known-versions table.
 $calls = [ordered]@{ 'Install (Exe)' = @{ Name = 'Install'; Tech = 'Exe' }; 'Install (Appx)' = @{ Name = 'Install'; Tech = 'Appx' }; 'Msp' = @{ Name = 'Msp' }; 'Uninstall' = @{ Name = 'Uninstall' }
     'TattooInstall' = @{ Name = 'TattooInstall' }; 'TattooUninstall' = @{ Name = 'TattooUninstall' }; 'OrgUiPreInstall' = @{ Name = 'OrgUiPreInstall' }
-    'OrgUiPreMaintenance' = @{ Name = 'OrgUiPreMaintenance' }; 'OrgUiPostInstall' = @{ Name = 'OrgUiPostInstall' } }
+    'OrgUiPreMaintenance' = @{ Name = 'OrgUiPreMaintenance' }; 'OrgUiPostInstall' = @{ Name = 'OrgUiPostInstall' }
+    'RemovePriorCheck' = @{ Name = 'RemovePriorCheck' }; 'RemovePrior' = @{ Name = 'RemovePrior' } }
 $called = [System.Collections.Generic.List[string]]::new()
 $allowedArgs = @('$appConfig', '$w32tInstallDone', 'Exe', 'Appx')
 foreach ($label in $calls.Keys) {
@@ -179,6 +197,8 @@ $loader = Get-Win32ToolkitDeployScriptBlock -Name Loader
 if (($loader -split "`n")[0] -ceq "## win32-toolkit generator 3; extension $($ext.Name) $($ext.Version)") { Ok "the Loader's first line names generator 3 and the current extension $($ext.Name) $($ext.Version)" } else { Bad "Loader marker: $(($loader -split "`n")[0])" }
 $un = [regex]::Match((Get-Win32ToolkitDeployScriptBlock -Name Uninstall), '## Uninstall revision (\d+) \(win32-toolkit\)')
 if ($un.Success -and [int]$un.Groups[1].Value -eq $ext.UninstallRevision) { Ok "the Uninstall call block names uninstall revision $($ext.UninstallRevision), the extension's" } else { Bad 'Uninstall revision marker does not match the extension row' }
+$pr = [regex]::Match((Get-Win32ToolkitDeployScriptBlock -Name RemovePriorCheck), '## remove-prior catalog revision (\d+) \(win32-toolkit\)')
+if ($pr.Success -and [int]$pr.Groups[1].Value -eq $ext.RemovePriorRevision -and $ext.RemovePriorRevision -eq (Get-Win32ToolkitDeployScriptBlock -Name RemovePriorRevision)) { Ok "the prior-check call block names prior-install revision $($ext.RemovePriorRevision), the extension's" } else { Bad 'prior-install revision marker does not match the extension row' }
 # == [6] Windows PowerShell 5.1: the functions with PSADT stubbed ===========================================
 Write-Host '[6] the functions under Windows PowerShell 5.1 (PSADT commands stubbed)' -ForegroundColor Cyan
 $ps51 = Get-Command powershell.exe -ErrorAction SilentlyContinue
@@ -230,7 +250,7 @@ try {
     $strict = & $mod { try { $null = $w32tStrictProbe; 'loose' } catch { 'strict' } }
     $prefs = (& $mod { "$ErrorActionPreference|$ProgressPreference" }) + "|$strict"
     if ($prefs -eq 'Stop|SilentlyContinue|strict') { Ok 'module-level preferences: ErrorAction Stop, Progress SilentlyContinue, StrictMode 1 (an unset variable throws)' } else { Bad "module preferences: $prefs" }
-    if (@(Get-Command -Module $mod.Name | ForEach-Object { $_.Name } | Sort-Object).Count -eq 8) { Ok 'the module exports its 8 functions' } else { Bad "exported: $((Get-Command -Module $mod.Name).Name -join ', ')" }
+    if (@(Get-Command -Module $mod.Name | ForEach-Object { $_.Name } | Sort-Object).Count -eq 10) { Ok 'the module exports its 10 functions' } else { Bad "exported: $((Get-Command -Module $mod.Name).Name -join ', ')" }
 
     # ---- Install-W32TApp ----
     $exe = Join-Path $filesDir 'App_x64_1.0.exe'; Set-Content -LiteralPath $exe -Value 'x'
@@ -391,7 +411,7 @@ catch { Write-Output "ERROR $($_.Exception.Message)" }
         $names = ($out | Where-Object { $_ -like 'NAMES *' } | Select-Object -First 1)
         $want = 'NAMES ' + (($exports | Sort-Object) -join ',')
         if ($names -ceq $want -and ($out -contains "QUALIFIED $($ext.Name)") -and ($out -contains 'SESSIONCMD PSAppDeployToolkit')) {
-            Ok "PSADT $($sel.VersionText) by path, then the extension by its manifest: RequiredModules satisfied by the loaded PSADT, the 8 functions exported, a module-qualified name resolves, Get-ADTSession is PSADT's"
+            Ok "PSADT $($sel.VersionText) by path, then the extension by its manifest: RequiredModules satisfied by the loaded PSADT, the 10 functions exported, a module-qualified name resolves, Get-ADTSession is PSADT's"
         } else { Bad "real import:`n$($out -join "`n")" }
     }
 }
@@ -431,8 +451,11 @@ try {
     $fake = Join-Path $TMP 'module'
     New-Item -ItemType Directory -Path (Join-Path $fake 'Private') -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $repo 'Private\Get-Win32ToolkitDeployExtension.ps1') -Destination (Join-Path $fake 'Private')
+    # Lean deploy script PR 3: the catalog reads the prior-install texts from this source (the requirement script embeds them).
+    Copy-Item -LiteralPath (Join-Path $repo 'Private\Get-Win32ToolkitDeployScriptBlock.ps1') -Destination (Join-Path $fake 'Private')
     Copy-Item -LiteralPath (Join-Path $repo 'DeployExtension') -Destination $fake -Recurse
     . (Join-Path $fake 'Private\Get-Win32ToolkitDeployExtension.ps1')
+    . (Join-Path $fake 'Private\Get-Win32ToolkitDeployScriptBlock.ps1')
     $fakeExt = Join-Path $fake "DeployExtension\$($ext.Name)"
     foreach ($c in @(
             @{ L = 'a changed .psm1'; Do = { Add-Content -LiteralPath (Join-Path $fakeExt "$($ext.Name).psm1") -Value ' ' }; Undo = { Copy-Item -LiteralPath $psm1Path -Destination $fakeExt -Force }; W = 'was changed' }
@@ -444,13 +467,15 @@ try {
         $proj3 = Join-Path $TMP ('p' + [guid]::NewGuid().ToString('N').Substring(0, 4)); New-Item -ItemType Directory -Path $proj3 | Out-Null
         $fq = Get-Fqid { Copy-Win32ToolkitDeployExtension -ProjectPath $proj3 }
         if ($msg -like "W32T.DeployExtensionInvalid*$($c.W)*Reinstall win32-toolkit*" -and $fq -eq 'W32T.DeployExtensionInvalid' -and -not (Test-Path -LiteralPath (Join-Path $proj3 $ext.Name))) { Ok "installed source with $($c.L) -> -Verify and Copy refuse (W32T.DeployExtensionInvalid), nothing copied" } else { Bad "$($c.L): $msg / copy $fq" }
+        $fqPred = Get-Fqid { Get-Win32ToolkitDeployScriptBlock -Name PriorPredicate }
+        if ($fqPred -eq 'W32T.DeployExtensionInvalid') { Ok "installed source with $($c.L) -> the prior-install predicate is not read (W32T.DeployExtensionInvalid; the requirement script fails closed)" } else { Bad "$($c.L): PriorPredicate read -> '$fqPred'" }
         & $c.Undo
     }
     . (Join-Path $repo 'Private\Get-Win32ToolkitDeployExtension.ps1')
 
     # Test-Win32ToolkitDeployExtension
     $gv2 = [pscustomobject]@{ GeneratorVersion = 2; UninstallRevision = 2; RemovePriorRevision = 2 }
-    $gv3 = [pscustomobject]@{ GeneratorVersion = 3; ExtensionVersion = '1.0.0'; UninstallRevision = 2; RemovePriorRevision = 2 }
+    $gv3 = [pscustomobject]@{ GeneratorVersion = 3; ExtensionVersion = [string]$ext.Version; UninstallRevision = 2; RemovePriorRevision = 3 }
     $p4 = Join-Path $TMP 'p4'; New-Item -ItemType Directory -Path $p4 | Out-Null
     foreach ($n in 'PSAppDeployToolkit', 'PSAppDeployToolkit.Extensions', 'PSAppDeployToolkit.Contoso', 'Files') { New-Item -ItemType Directory -Path (Join-Path $p4 $n) | Out-Null }
     $f = @(Test-Win32ToolkitDeployExtension -ProjectPath $p4 -Shape $gv2)
@@ -465,12 +490,13 @@ try {
     $p5 = Join-Path $TMP 'p5'; New-Item -ItemType Directory -Path $p5 | Out-Null
     $null = Copy-Win32ToolkitDeployExtension -ProjectPath $p5
     $f = @(Test-Win32ToolkitDeployExtension -ProjectPath $p5 -Shape $gv3)
-    if ($f.Count -eq 0) { Ok 'GeneratorVersion 3 with the copied extension 1.0.0 -> no finding' } else { Bad "good gv3: $($f.Code -join ',')" }
-    $msiShape = [pscustomobject]@{ GeneratorVersion = 3; ExtensionVersion = '1.0.0'; UninstallRevision = 0; RemovePriorRevision = 2 }
+    if ($f.Count -eq 0) { Ok "GeneratorVersion 3 with the copied extension $($ext.Version) -> no finding" } else { Bad "good gv3: $($f.Code -join ',')" }
+    $msiShape = [pscustomobject]@{ GeneratorVersion = 3; ExtensionVersion = [string]$ext.Version; UninstallRevision = 0; RemovePriorRevision = 3 }
     if (@(Test-Win32ToolkitDeployExtension -ProjectPath $p5 -Shape $msiShape).Count -eq 0) { Ok 'an MSI deploy script without an uninstall block (UninstallRevision 0) -> no finding' } else { Bad 'msi shape flagged' }
     foreach ($c in @(
-            @{ S = [pscustomobject]@{ GeneratorVersion = 3; ExtensionVersion = '1.1.0'; UninstallRevision = 2; RemovePriorRevision = 2 }; W = 'generated for 1.1.0'; L = 'the loader marker names 1.1.0' }
-            @{ S = [pscustomobject]@{ GeneratorVersion = 3; ExtensionVersion = '1.0.0'; UninstallRevision = 3; RemovePriorRevision = 2 }; W = 'uninstall revision 3'; L = 'the script names uninstall revision 3' }
+            @{ S = [pscustomobject]@{ GeneratorVersion = 3; ExtensionVersion = '1.0.0'; UninstallRevision = 2; RemovePriorRevision = 3 }; W = 'generated for 1.0.0'; L = 'the loader marker names 1.0.0 (an older known version)' }
+            @{ S = [pscustomobject]@{ GeneratorVersion = 3; ExtensionVersion = [string]$ext.Version; UninstallRevision = 3; RemovePriorRevision = 3 }; W = 'uninstall revision 3'; L = 'the script names uninstall revision 3' }
+            @{ S = [pscustomobject]@{ GeneratorVersion = 3; ExtensionVersion = [string]$ext.Version; UninstallRevision = 2; RemovePriorRevision = 2 }; W = 'prior-install revision 2, the folder provides 3'; L = 'the script names prior-install revision 2 (inline, lean deploy script PR 2)' }
         )) {
         $f = @(Test-Win32ToolkitDeployExtension -ProjectPath $p5 -Shape $c.S)
         if ($f.Count -eq 1 -and $f[0].Code -eq 'EXTENSION-MISMATCH' -and $f[0].Message -match [regex]::Escape($c.W)) { Ok "$($c.L) -> EXTENSION-MISMATCH" } else { Bad "$($c.L): $($f | Out-String)" }

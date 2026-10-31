@@ -27,7 +27,7 @@
         Assets\AppIcon.png is the 64x64 org bitmap, not the bytes captured right after the scaffold
       * in a child powershell.exe (5.1): the bundled module imported by path, Initialize-ADTModule
         -ScriptDirectory <project>: Assets.Logo / Assets.Banner resolve to <project>\Assets\*.png (not Base64),
-        so the effective logo is the org logo; the toolkit extension (its 8 functions) and the org extension
+        so the effective logo is the org logo; the toolkit extension (its 10 functions) and the org extension
         module import next to it
 
     Scratch root %TEMP%\w32t-tc-<4 hex> (printed as 'SCRATCH: <path>'). With $env:W32T_KEEP_TEST_OUTPUT set the
@@ -284,8 +284,8 @@ InstallerSwitches:
             $c = Read-Text $scriptPath
             $shape = Get-Win32ToolkitDeployScriptShape -Content $c -IncludeLayout
             if ($shape.Shape -eq $expectShape -and $shape.GeneratorVersion -eq 3 -and $shape.Support -eq 'Supported' -and $shape.ParseErrors -eq 0 -and $shape.HasTattoo -and
-                $shape.ExtensionName -eq 'PSAppDeployToolkit.Win32Toolkit' -and $shape.ExtensionVersion -eq [version]'1.0.0') {
-                Ok "shape $($shape.Shape), GeneratorVersion 3 (extension PSAppDeployToolkit.Win32Toolkit 1.0.0), Supported, host parse clean, tattoo"
+                $shape.ExtensionName -eq 'PSAppDeployToolkit.Win32Toolkit' -and $shape.ExtensionVersion -eq (Get-Win32ToolkitDeployExtension).Version) {
+                Ok "shape $($shape.Shape), GeneratorVersion 3 (extension PSAppDeployToolkit.Win32Toolkit $($shape.ExtensionVersion)), Supported, host parse clean, tattoo"
             } else { Bad "shape $($shape.Shape) / gen $($shape.GeneratorVersion) / $($shape.Support) / parse $($shape.ParseErrors) / tattoo $($shape.HasTattoo) ($($shape.Reason))" }
             if (@($shape.Layout.BlockIssues).Count -eq 0) { Ok 'every toolkit block is well-formed and inside its phase' } else { Bad "block issues: $(@($shape.Layout.BlockIssues | ForEach-Object { $_.Message }) -join '; ')" }
             $bytes = [System.IO.File]::ReadAllBytes($scriptPath)
@@ -333,9 +333,9 @@ InstallerSwitches:
                 elseif ($hookEnd.Success -and -not (Get-CodeOnly $after)) { Ok "$phase hook block is the last code of the phase" }
                 else { Bad "$phase hook block is not the last code of the phase" }
             }
-            # The remove-prior pair (installer-identity PR 3): the catalog's revision (2 since the live-check fixer round) and the
+            # The remove-prior pair (installer-identity PR 3): the catalog's revision (3 since lean deploy script PR 3) and the
             # dialog-order guard.
-            if ($shape.RemovePriorRevision -eq 2 -and $shape.PriorCheckFirst) { Ok 'RemovePriorRevision 2, PriorCheckFirst (prior-check before the org dialogs, no default dialog left)' }
+            if ($shape.RemovePriorRevision -eq (Get-Win32ToolkitDeployScriptBlock -Name RemovePriorRevision) -and $shape.PriorCheckFirst) { Ok "RemovePriorRevision $($shape.RemovePriorRevision) (the catalog's), PriorCheckFirst (prior-check before the org dialogs, no default dialog left)" }
             else { Bad "RemovePriorRevision $($shape.RemovePriorRevision), PriorCheckFirst $($shape.PriorCheckFirst)" }
             foreach ($phase in 'Post-Install', 'Post-Uninstall', 'Post-Repair') {
                 $pt = Get-PhaseText $c $shape $phase
@@ -482,13 +482,14 @@ InstallerSwitches:
             if ($res.Logo -eq $logoWant -and (Test-Path -LiteralPath $logoWant)) { Ok "5.1 ($($res.Ps)): Assets.Logo = <project>\Assets\AppIcon.png (not Base64)" } else { Bad "5.1: Assets.Logo = [$($res.Logo)]" }
             if ($res.Banner -eq $bannerWant -and (Test-Path -LiteralPath $bannerWant)) { Ok '5.1: Assets.Banner = <project>\Assets\Banner.Classic.png (not Base64)' } else { Bad "5.1: Assets.Banner = [$($res.Banner)]" }
             if ($res.ExtensionOk) { Ok '5.1: the org extension module imports next to the bundled PSADT (<Dir>\<Dir>.psd1)' } else { Bad '5.1: the org extension module did not import' }
-            if ($res.W32TCommands -eq 8) { Ok '5.1: the toolkit extension imports next to the bundled PSADT (8 functions)' } else { Bad "5.1: the toolkit extension exported $($res.W32TCommands) functions, expected 8" }
+            if ($res.W32TCommands -eq 10) { Ok '5.1: the toolkit extension imports next to the bundled PSADT (10 functions)' } else { Bad "5.1: the toolkit extension exported $($res.W32TCommands) functions, expected 10" }
             $envNames = @($res.EnvKeys | Where-Object { $_ })
             $owned = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
             foreach ($k in @($psadtVars) + $envNames + @($res.ModuleVars)) { if ($k) { [void]$owned.Add([string]$k) } }
             $clash = @($assigned | Where-Object { $owned.Contains($_) })
             if ($envNames.Count -lt 50) { Bad "5.1: the PSADT environment table yielded only $($envNames.Count) variable names - the collision check would be vacuous" }
-            elseif ($assigned.Count -lt 5) { Bad "only $($assigned.Count) toolkit-block assignments found - the collision check would be vacuous" }
+            # Since lean deploy script PR 3 the blocks assign only the loader's $appConfig / $w32tInstallDone and the hooks' $orgHookScript.
+            elseif ($assigned.Count -lt 3) { Bad "only $($assigned.Count) toolkit-block assignments found - the collision check would be vacuous" }
             elseif ($clash.Count -eq 0) { Ok "no toolkit-block variable ($($assigned.Count)) collides with a PSADT variable ($($owned.Count): exported + environment table)" }
             else { Bad "toolkit-block variables colliding with PSADT variables: [$($clash -join ', ')] (PSADT names known: $($owned.Count))" }
             # The same check on the toolkit extension's functions (lean deploy script PR 2): their variables are function-local

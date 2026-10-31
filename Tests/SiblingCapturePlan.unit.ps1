@@ -35,7 +35,7 @@ $fail = 0
 function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
-foreach ($f in 'ConvertTo-Win32ToolkitSafeText', 'Get-Win32ToolkitInstallerFamily', 'Get-Win32ToolkitSiblingInstaller', 'Get-Win32ToolkitSiblingCapturePlan', 'Get-Win32ToolkitSiblingCaptureClass', 'Get-Win32ToolkitAppConfig', 'Get-Win32ToolkitDeployScriptBlock', 'ConvertTo-Win32ToolkitPriorVersion',
+foreach ($f in 'ConvertTo-Win32ToolkitSafeText', 'Get-Win32ToolkitInstallerFamily', 'Get-Win32ToolkitSiblingInstaller', 'Get-Win32ToolkitSiblingCapturePlan', 'Get-Win32ToolkitSiblingCaptureClass', 'Get-Win32ToolkitAppConfig', 'Get-Win32ToolkitDeployScriptBlock', 'Get-Win32ToolkitDeployExtension', 'ConvertTo-Win32ToolkitPriorVersion',
     'Get-Win32ToolkitSiblingCaptureRecord', 'ConvertTo-Win32ToolkitSiblingCaptureRecord') {
     . (Join-Path $repo "Private\$f.ps1")
 }

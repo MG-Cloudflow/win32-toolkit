@@ -3,7 +3,7 @@
     # never edit a copy in a project. A change of this file or of the .psm1 bumps ModuleVersion and adds a row to the
     # known-versions table in win32-toolkit's Private\Get-Win32ToolkitDeployExtension.ps1 (the SHA-256 of both files).
     RootModule        = 'PSAppDeployToolkit.Win32Toolkit.psm1'
-    ModuleVersion     = '1.0.0'
+    ModuleVersion     = '1.1.0'
     GUID              = '3f35da54-700b-47a7-ae9f-101dca7b153f'
     Author            = 'win32-toolkit'
     CompanyName       = 'CloudFlow'
@@ -26,6 +26,8 @@
         'Show-W32TInstallWelcome'
         'Show-W32TMaintenanceWelcome'
         'Show-W32TCompletionPrompt'
+        'Assert-W32TPriorInstall'
+        'Remove-W32TPriorInstall'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

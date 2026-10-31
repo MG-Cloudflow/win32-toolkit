@@ -55,6 +55,15 @@ function Get-Win32ToolkitDeployExtension {
                 'PSAppDeployToolkit.Win32Toolkit.psm1' = 'EBC3E53510337C0C021BA0EFA0B8862DF8DA4A8DB03A3177678C4E90F9337BD2'
             }
         }
+        @{
+            Version             = '1.1.0'
+            UninstallRevision   = 2
+            RemovePriorRevision = 3
+            Files               = [ordered]@{
+                'PSAppDeployToolkit.Win32Toolkit.psd1' = '365EA036C1C2FAD3E358E44692456EC02FF06C391D17973286D18BDCB12D43C0'
+                'PSAppDeployToolkit.Win32Toolkit.psm1' = '034507B66F74D7111953E4622554D4C6CBF49FAC5AD0912F03298B961CE3FB0F'
+            }
+        }
     )
 
     $rows = for ($i = 0; $i -lt $known.Count; $i++) {

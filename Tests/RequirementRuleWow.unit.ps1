@@ -29,7 +29,7 @@ function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ 
 . (Join-Path $repo 'Private\Test-Win32ToolkitProductCode.ps1')
 . (Join-Path $repo 'Private\Get-Win32ToolkitRequirementRule.ps1')
 # Installer-identity PR 3 (C-9): the fifth signal validates the prior-install entries and reads the catalog revision.
-foreach ($f in 'Test-Win32ToolkitPriorInstallEntry', 'ConvertTo-Win32ToolkitPriorVersion', 'Get-Win32ToolkitDeployScriptBlock', 'Get-Win32ToolkitDeployScriptShape',
+foreach ($f in 'Test-Win32ToolkitPriorInstallEntry', 'ConvertTo-Win32ToolkitPriorVersion', 'Get-Win32ToolkitDeployScriptBlock', 'Get-Win32ToolkitDeployExtension', 'Get-Win32ToolkitDeployScriptShape',
     'Test-Win32ToolkitPsadtVersionSupported', 'ConvertTo-Win32ToolkitSafeText') { . (Join-Path $repo "Private\$f.ps1") }
 $script:PsadtSupportedRange = [pscustomobject]@{ Min = [version]'4.1.0'; MaxExclusive = [version]'4.3.0'; Display = '4.1.x and 4.2.x' }
 # No MSI in these projects; never touch the WindowsInstaller COM object from a unit test.

@@ -37,7 +37,7 @@ $fail = 0
 function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
-foreach ($f in 'Test-Win32ToolkitPriorInstallEntry', 'Get-Win32ToolkitPriorInstallHash', 'ConvertTo-Win32ToolkitPriorVersion', 'Get-Win32ToolkitDeployScriptBlock', 'ConvertTo-Win32ToolkitSafeText') {
+foreach ($f in 'Test-Win32ToolkitPriorInstallEntry', 'Get-Win32ToolkitPriorInstallHash', 'ConvertTo-Win32ToolkitPriorVersion', 'Get-Win32ToolkitDeployScriptBlock', 'Get-Win32ToolkitDeployExtension', 'ConvertTo-Win32ToolkitSafeText') {
     . (Join-Path $repo "Private\$f.ps1")
 }
 
@@ -263,11 +263,14 @@ foreach ($f in 'Test-Win32ToolkitPriorInstallEntry', 'Get-Win32ToolkitPriorInsta
 # device refuses would ship past Export and fail the whole fleet. The device text runs here in-process with the registry
 # shadowed (every uninstall key absent), so a valid entry gives 'Absent' and invalid data 'Refuse' 69105.
 Write-Host '[7] the host refuses every entry the device refuses as invalid data (trailing line breaks, own identity)' -ForegroundColor Cyan
+# Read before the shadows below: the catalog reads them from the verified extension module (lean deploy script PR 3).
+$devicePredicate = Get-Win32ToolkitDeployScriptBlock -Name PriorPredicate
+$deviceEvaluate = Get-Win32ToolkitDeployScriptBlock -Name PriorEvaluate
 function Get-DeviceVerdict($Config) {
     function Test-Path { param([string]$LiteralPath, [string]$PathType) if ($LiteralPath -like 'HKLM:*') { return $false }; throw "unexpected path $LiteralPath $PathType" }
     function Get-ItemProperty { throw 'no registry value is read for an absent key' }
-    . ([scriptblock]::Create((Get-Win32ToolkitDeployScriptBlock -Name PriorPredicate)))
-    . ([scriptblock]::Create((Get-Win32ToolkitDeployScriptBlock -Name PriorEvaluate)))
+    . ([scriptblock]::Create($devicePredicate))
+    . ([scriptblock]::Create($deviceEvaluate))
     foreach ($e in @($Config.PriorInstalls.Entries)) {
         $d = & $w32tPrEvaluate $e $Config
         if ($d.Outcome -eq 'Refuse' -and $d.Code -eq 69105) { 'invalid' } else { [string]$d.Outcome }

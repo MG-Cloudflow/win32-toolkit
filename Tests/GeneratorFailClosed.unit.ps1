@@ -101,7 +101,7 @@ Write-Host '[2] spec 5.1 / 5.2 reproduced byte-for-byte (4.2 Zero-Config, automa
 $expectedSession = @'
 ## MARK: Variables
 ## win32-toolkit:Session:loader (begin) - managed by win32-toolkit; regenerated, do not edit inside
-## win32-toolkit generator 3; extension PSAppDeployToolkit.Win32Toolkit 1.0.0
+## win32-toolkit generator 3; extension PSAppDeployToolkit.Win32Toolkit 1.1.0
 # Data-driven deployment values (win32-toolkit): read app-specific settings as DATA.
 $appConfig = if (Test-Path -LiteralPath "$PSScriptRoot\SupportFiles\AppConfig.json") {
     # -Encoding UTF8: AppConfig.json is BOM-less UTF-8 and this runs under Windows PowerShell 5.1 on the
@@ -337,7 +337,7 @@ $r = Invoke-Gen $p
 if ($r.Fqid -eq 'W32T.UnsupportedInstallerType' -and (Get-Hash $p) -eq $h -and -not (Test-Path -LiteralPath (Join-Path (Split-Path $p) 'PSAppDeployToolkit.Win32Toolkit'))) { Ok 'no AppConfig Installer.Type -> W32T.UnsupportedInstallerType; script byte-identical, no extension copied' } else { Bad "no type -> '$($r.Fqid)'" }
 $null = Set-PSADTDataDrivenScript -ScriptPath $p -InstallerType msix -WarningAction SilentlyContinue
 if ((Get-Text $p).Contains('Install-W32TApp -AppConfig $appConfig -Technology Appx') -and (Test-Path -LiteralPath (Join-Path (Split-Path $p) 'PSAppDeployToolkit.Win32Toolkit\PSAppDeployToolkit.Win32Toolkit.psm1'))) { Ok '-InstallerType msix -> -Technology Appx, the extension copied next to the script' } else { Bad '-InstallerType ignored' }
-$gv2 = (Get-Text $p).Replace("## win32-toolkit generator 3; extension PSAppDeployToolkit.Win32Toolkit 1.0.0`n", '')
+$gv2 = (Get-Text $p).Replace("## win32-toolkit generator 3; extension PSAppDeployToolkit.Win32Toolkit 1.1.0`n", '')
 [System.IO.File]::WriteAllText($p, $gv2, (New-Object System.Text.UTF8Encoding($true)))
 $h = Get-Hash $p
 $r = Invoke-Gen $p

@@ -73,6 +73,8 @@ function Ok($m)  { Write-Host "  PASS: $m" -ForegroundColor Green }
 function Bad($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:fail++ }
 
 . (Join-Path $repo 'Private\Get-Win32ToolkitDeployScriptBlock.ps1')
+# C-9 (lean deploy script PR 3): the catalog reads the prior-install texts from the verified extension module.
+. (Join-Path $repo 'Private\Get-Win32ToolkitDeployExtension.ps1')
 # Lean deploy script PR 2: the uninstall code lives in Uninstall-W32TApp of the extension module (the catalog's Uninstall block is
 # one call into it). $block = that function's body from its first code comment on, de-indented: the text the device runs.
 $psm1 = Join-Path $repo 'DeployExtension\PSAppDeployToolkit.Win32Toolkit\PSAppDeployToolkit.Win32Toolkit.psm1'
